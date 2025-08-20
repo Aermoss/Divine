@@ -205,6 +205,10 @@ class Parser(sly.Parser):
     def Statement(self, p):
         return {"type": "class", "name": p.ComplexName, "members": p.MemberStatements, "impl": p.ImplStatements}
 
+    @_("CLASS ComplexName LESS TemplateParams GREATER LBRACE MemberStatements RBRACE IMPL LBRACE ImplStatements RBRACE SEMICOLON")
+    def Statement(self, p):
+        return {"type": "template", "body": {"type": "class", "name": p.ComplexName, "members": p.MemberStatements, "impl": p.ImplStatements}, "params": p.TemplateParams}
+
     @_("DO LBRACE Statements RBRACE WHILE LPAREN Expr RPAREN SEMICOLON")
     def Statement(self, p):
         return {"type": "do while", "condition": p.Expr, "body": p.Statements}
@@ -387,6 +391,27 @@ class Parser(sly.Parser):
     @_("DataType")
     def TypeParam(self, p):
         return p.DataType
+    
+    @_("")
+    def TemplateParams(self, p):
+        return []
+    
+    @_("TemplateParam")
+    def TemplateParams(self, p):
+        return [p.TemplateParam]
+    
+    @_("TemplateParams COMMA TemplateParam")
+    def TemplateParams(self, p):
+        p.TemplateParams.append(p.TemplateParam)
+        return p.TemplateParams
+    
+    @_("NAME")
+    def TemplateParam(self, p):
+        return {"name": p.NAME, "value": None}
+
+    @_("NAME EQUALS Expr")
+    def TemplateParam(self, p):
+        return {"name": p.NAME, "value": p.Expr}
 
     @_("Expr")
     def ExprOrNone(self, p):

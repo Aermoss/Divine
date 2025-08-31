@@ -1,4 +1,4 @@
-import sys, sly
+import sly
 
 def group(*choices): return rf"({'|'.join(choices)})"
 def any(*choices): return group(*choices) + r"*"
@@ -7,16 +7,22 @@ def maybe(*choices): return group(*choices) + r"?"
 HexInteger = r"0[xX][0-9a-fA-F]+"
 BinInteger = r"0[bB][01]+"
 OctInteger = r"0[oO][0-7]+"
-DecInteger = r"[0-9]+"
+DecInteger = r"[0-9]+" + maybe(*[rf"{signed}{bits}" for signed in [r"i", r"u"] for bits in [8, 16, 32, 64]])
 Exponent = r"[eE][-+]?[0-9]*"
-PointFloat = group(r"[0-9]+\.[0-9]*", r"[0-9]*\.[0-9]+") + maybe(Exponent) + r"[fF]?"
-ExpFloat = r"[0-9]+" + Exponent + r"[fF]?"
+PointFloat = group(r"[0-9]+\.[0-9]*", r"[0-9]*\.[0-9]+") + maybe(Exponent) + maybe(*[rf"f{bits}" for bits in [32, 64]])
+ExpFloat = r"[0-9]+" + Exponent + maybe(*[rf"f{bits}" for bits in [32, 64]])
 
 class Lexer(sly.Lexer):
     tokens = {
-        FLOAT, INTEGER, STRING, CHAR, NAME, IF, ELSE, FOR, DO, WHILE, FUNC, CLASS, RETURN, BREAK, CONTINUE, PUBLIC, PRIVATE, INCLUDE, USE, MOD, TYPE, NEW, DELETE, OPERATOR,
-        CONST, DEST, LET, LSHIFT, RSHIFT, NOT, BITWISE_NOT, AND, BITWISE_AND, OR, BITWISE_OR, XOR, COMMA, EQUALS, EQUAL, NOT_EQUAL, GREATER_EQUAL, LESS_EQUAL, LBRACKET, RBRACKET, QUESTION_MARK,
-        ARROW, GREATER, LESS, LBRACE, RBRACE, LPAREN, RPAREN, PLUS, MINUS, ASTERISK, SLASH, BACKSLASH, MOD, COLON, SEMICOLON, THREE_DOT, DOT, TRUE, FALSE, NULL, IMPL
+        THREE_DOT, FLOAT, INTEGER, STRING, CHAR, NAME,
+
+        IF, ELSE, FOR, WHILE, FUNC, CLASS, RETURN, BREAK, CONTINUE, CONST, OPERATOR, PUBLIC, PRIVATE,
+        INCLUDE, USE, MOD, TYPE, LET, MUT, TRUE, FALSE, NULL, IMPL, NEW, DELETE, EXTERN, ENUM,
+
+        PLUS_ASSIGN, MINUS_ASSIGN, MUL_ASSIGN, DIV_ASSIGN, MOD_ASSIGN, LSHIFT_ASSIGN, RSHIFT_ASSIGN, AND_ASSIGN, OR_ASSIGN, XOR_ASSIGN,
+
+        QUESTION_MARK, LSHIFT, RSHIFT, AND, BITWISE_AND, OR, BITWISE_OR, XOR, EQUAL, NOT_EQUAL, ARROW, GREATER_EQUAL, LESS_EQUAL, GREATER, LESS, ASSIGN,
+        LBRACKET, RBRACKET, LBRACE, RBRACE, LPAREN, RPAREN, PLUS, MINUS, COMMA, MUL, DIV, BACKSLASH, MOD, COLON, SEMICOLON, NOT, BITWISE_NOT, DOT
     }
 
     def __init__(self):
@@ -52,41 +58,53 @@ class Lexer(sly.Lexer):
     NAME["if"] = IF
     NAME["else"] = ELSE
     NAME["for"] = FOR
-    NAME["do"] = DO
     NAME["while"] = WHILE
     NAME["func"] = FUNC
     NAME["class"] = CLASS
     NAME["ret"] = RETURN
     NAME["break"] = BREAK
     NAME["continue"] = CONTINUE
-    NAME["operator"] = OPERATOR
+    NAME["const"] = CONST
+    NAME["op"] = OPERATOR
     NAME["pub"] = PUBLIC
     NAME["priv"] = PRIVATE
     NAME["include"] = INCLUDE
     NAME["use"] = USE
     NAME["mod"] = MOD
     NAME["type"] = TYPE
-    NAME["const"] = CONST
-    NAME["dest"] = DEST
     NAME["let"] = LET
+    NAME["mut"] = MUT
     NAME["true"] = TRUE
     NAME["false"] = FALSE
     NAME["null"] = NULL
     NAME["impl"] = IMPL
     NAME["new"] = NEW
     NAME["delete"] = DELETE
+    NAME["extern"] = EXTERN
+    NAME["enum"] = ENUM
+
+    PLUS_ASSIGN = r"\+="
+    MINUS_ASSIGN = r"-="
+    MUL_ASSIGN = r"\*="
+    DIV_ASSIGN = r"/="
+    MOD_ASSIGN = r"%="
+    LSHIFT_ASSIGN = r"<<="
+    RSHIFT_ASSIGN = r">>="
+    AND_ASSIGN = r"&="
+    OR_ASSIGN = r"\|="
+    XOR_ASSIGN = r"\^="
 
     LSHIFT, RSHIFT = r"<<", r">>"
     AND, BITWISE_AND = r"\&\&", r"\&"
     OR, BITWISE_OR, XOR = r"\|\|", r"\|", r"\^"
     EQUAL, NOT_EQUAL, ARROW = r"==", r"!=", r"->"
     GREATER_EQUAL, LESS_EQUAL = r">=", r"<="
-    GREATER, LESS, EQUALS = r">", r"<", r"="
+    GREATER, LESS, ASSIGN = r">", r"<", r"="
     LBRACKET, RBRACKET = r"\[", r"\]"
     LBRACE, RBRACE = r"\{", r"\}"
     LPAREN, RPAREN = r"\(", r"\)"
     PLUS, MINUS, COMMA = r"\+", r"-", r","
-    ASTERISK, SLASH, BACKSLASH = r"\*", r"/", r"\\"
+    MUL, DIV, BACKSLASH = r"\*", r"/", r"\\"
     MOD, COLON, SEMICOLON = r"%", r":", r";"
     NOT, BITWISE_NOT, DOT = r"!", r"~", r"\."
     QUESTION_MARK = r"\?"

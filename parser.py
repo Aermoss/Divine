@@ -9,7 +9,7 @@ class Parser(sly.Parser):
     precedence = (
         ("nonassoc", EQUAL, NOT_EQUAL, LESS, LESS_EQUAL, GREATER, GREATER_EQUAL),
         ("left", PLUS, MINUS),
-        ("left", ASTERISK, SLASH),
+        ("left", MUL, DIV),
         ("left", LSHIFT, RSHIFT),
         ("right", NOT, BITWISE_NOT),
         ("right", UNARY_MINUS, REFERENCE, DEREFERENCE),
@@ -18,7 +18,6 @@ class Parser(sly.Parser):
 
     def __init__(self):
         self.ast = {"type": "module", "body": []}
-        self.currentAccess = "public"
 
     def __del__(self):
         self.ast.clear()
@@ -58,13 +57,13 @@ class Parser(sly.Parser):
         p.MemberStatements[p.MemberStatement[1]] = p.MemberStatement[0]
         return p.MemberStatements
 
-    @_("PUBLIC ComplexName COLON DataType", "PRIVATE ComplexName COLON DataType")
+    @_("PUBLIC TypedName", "PRIVATE TypedName")
     def MemberStatement(self, p):
-        return {"value": None, "dataType": p.DataType, "private": True if p[0] != "pub" else False}, p.ComplexName
+        return {"value": None, "dataType": p.TypedName[1], "mutable": p.TypedName[2], "private": True if p[0] != "pub" else False}, p.TypedName[0]
 
-    @_("PUBLIC ComplexName COLON DataType EQUALS Expr", "PRIVATE ComplexName COLON DataType EQUALS Expr")
+    @_("PUBLIC TypedName ASSIGN Expr", "PRIVATE TypedName ASSIGN Expr")
     def MemberStatement(self, p):
-        return {"value": p.Expr, "dataType": p.DataType, "private": True if p[0] != "pub" else False}, p.ComplexName
+        return {"value": p.Expr, "dataType": p.TypedName[1], "mutable": p.TypedName[2], "private": True if p[0] != "pub" else False}, p.TypedName[0]
 
     @_("")
     def ImplStatements(self, p):
@@ -79,53 +78,45 @@ class Parser(sly.Parser):
         p.ImplStatements.append(p.ImplStatement)
         return p.ImplStatements
 
-    @_("DEST LPAREN FuncParams RPAREN LBRACE Statements RBRACE")
+    @_("NAME LPAREN FuncParams RPAREN LBRACE Statements RBRACE", "BITWISE_NOT NAME LPAREN FuncParams RPAREN LBRACE Statements RBRACE")
     def ImplStatement(self, p):
-        return {"type": "destructor", "body": p.Statements, "params": p.FuncParams}
+        return {"type": "constructor" if p[0] != "~" else "destructor", "body": p.Statements, "params": p.FuncParams}
 
-    @_("DEST LPAREN FuncParams RPAREN SEMICOLON")
+    @_("NAME LPAREN FuncParams RPAREN SEMICOLON", "BITWISE_NOT NAME LPAREN FuncParams RPAREN SEMICOLON")
     def ImplStatement(self, p):
-        return {"type": "destructor", "body": [], "params": p.FuncParams}
+        return {"type": "constructor" if p[0] != "~" else "destructor", "body": [], "params": p.FuncParams}
 
-    @_("CONST LPAREN FuncParams RPAREN LBRACE Statements RBRACE")
+    @_("PUBLIC OPERATOR FuncOperator LPAREN FuncParams RPAREN ARROW DataType LBRACE Statements RBRACE", "PRIVATE OPERATOR FuncOperator LPAREN FuncParams RPAREN ARROW DataType LBRACE Statements RBRACE")
     def ImplStatement(self, p):
-        return {"type": "constructor", "body": p.Statements, "params": p.FuncParams}
+        return {"type": "operator", "return": p.DataType, "operator": p.FuncOperator, "body": p.Statements, "params": p.FuncParams, "private": True if p[0] != "pub" else False}
 
-    @_("CONST LPAREN FuncParams RPAREN SEMICOLON")
+    @_("PUBLIC OPERATOR FuncOperator LPAREN FuncParams RPAREN ARROW DataType SEMICOLON", "PRIVATE OPERATOR FuncOperator LPAREN FuncParams RPAREN ARROW DataType SEMICOLON")
     def ImplStatement(self, p):
-        return {"type": "constructor", "body": [], "params": p.FuncParams}
+        return {"type": "operator", "return": p.DataType, "operator": p.FuncOperator, "body": [], "params": p.FuncParams, "private": True if p[0] != "pub" else False}
 
-    @_("OPERATOR FuncOperator LPAREN FuncParams RPAREN ARROW DataType LBRACE Statements RBRACE")
+    @_("PUBLIC OPERATOR FuncOperator LPAREN FuncParams RPAREN LBRACE Statements RBRACE", "PRIVATE OPERATOR FuncOperator LPAREN FuncParams RPAREN LBRACE Statements RBRACE")
     def ImplStatement(self, p):
-        return {"type": "operator", "return": p.DataType, "operator": p.FuncOperator, "body": p.Statements, "params": p.FuncParams}
+        return {"type": "operator", "return": "void", "operator": p.FuncOperator, "body": p.Statements, "params": p.FuncParams, "private": True if p[0] != "pub" else False}
 
-    @_("OPERATOR FuncOperator LPAREN FuncParams RPAREN ARROW DataType SEMICOLON")
+    @_("PUBLIC OPERATOR FuncOperator LPAREN FuncParams RPAREN SEMICOLON", "PRIVATE OPERATOR FuncOperator LPAREN FuncParams RPAREN SEMICOLON")
     def ImplStatement(self, p):
-        return {"type": "operator", "return": p.DataType, "operator": p.FuncOperator, "body": [], "params": p.FuncParams}
-    
-    @_("OPERATOR FuncOperator LPAREN FuncParams RPAREN LBRACE Statements RBRACE")
-    def ImplStatement(self, p):
-        return {"type": "operator", "operator": p.FuncOperator, "body": p.Statements, "params": p.FuncParams}
+        return {"type": "operator", "return": "void", "operator": p.FuncOperator, "body": [], "params": p.FuncParams, "private": True if p[0] != "pub" else False}
 
-    @_("OPERATOR FuncOperator LPAREN FuncParams RPAREN SEMICOLON")
+    @_("PUBLIC NAME LPAREN FuncParams RPAREN ARROW DataType LBRACE Statements RBRACE", "PRIVATE NAME LPAREN FuncParams RPAREN ARROW DataType LBRACE Statements RBRACE")
     def ImplStatement(self, p):
-        return {"type": "operator", "operator": p.FuncOperator, "body": [], "params": p.FuncParams}
+        return {"type": "func", "return": p.DataType, "name": p.NAME, "body": p.Statements, "params": p.FuncParams, "private": True if p[0] != "pub" else False}
 
-    @_("PUBLIC ComplexName LPAREN FuncParams RPAREN ARROW DataType LBRACE Statements RBRACE", "PRIVATE ComplexName LPAREN FuncParams RPAREN ARROW DataType LBRACE Statements RBRACE")
+    @_("PUBLIC NAME LPAREN FuncParams RPAREN ARROW DataType SEMICOLON", "PRIVATE NAME LPAREN FuncParams RPAREN ARROW DataType SEMICOLON")
     def ImplStatement(self, p):
-        return {"type": "func", "return": p.DataType, "name": p.ComplexName, "body": p.Statements, "params": p.FuncParams, "private": True if p[0] != "pub" else False}
+        return {"type": "func", "return": p.DataType, "name": p.NAME, "body": [], "params": p.FuncParams, "private": True if p[0] != "pub" else False}
 
-    @_("PUBLIC ComplexName LPAREN FuncParams RPAREN ARROW DataType SEMICOLON", "PRIVATE ComplexName LPAREN FuncParams RPAREN ARROW DataType SEMICOLON")
+    @_("PUBLIC NAME LPAREN FuncParams RPAREN LBRACE Statements RBRACE", "PRIVATE NAME LPAREN FuncParams RPAREN LBRACE Statements RBRACE")
     def ImplStatement(self, p):
-        return {"type": "func", "return": p.DataType, "name": p.ComplexName, "body": [], "params": p.FuncParams, "private": True if p[0] != "pub" else False}
+        return {"type": "func", "return": "void", "name": p.NAME, "body": p.Statements, "params": p.FuncParams, "private": True if p[0] != "pub" else False}
 
-    @_("PUBLIC ComplexName LPAREN FuncParams RPAREN LBRACE Statements RBRACE", "PRIVATE ComplexName LPAREN FuncParams RPAREN LBRACE Statements RBRACE")
+    @_("PUBLIC NAME LPAREN FuncParams RPAREN SEMICOLON", "PRIVATE NAME LPAREN FuncParams RPAREN SEMICOLON")
     def ImplStatement(self, p):
-        return {"type": "func", "name": p.ComplexName, "body": p.Statements, "params": p.FuncParams, "private": True if p[0] != "pub" else False}
-
-    @_("PUBLIC ComplexName LPAREN FuncParams RPAREN SEMICOLON", "PRIVATE ComplexName LPAREN FuncParams RPAREN SEMICOLON")
-    def ImplStatement(self, p):
-        return {"type": "func", "name": p.ComplexName, "body": [], "params": p.FuncParams, "private": True if p[0] != "pub" else False}
+        return {"type": "func", "return": "void", "name": p.NAME, "body": [], "params": p.FuncParams, "private": True if p[0] != "pub" else False}
 
     @_("TypedName")
     def TypedNameList(self, p):
@@ -136,9 +127,34 @@ class Parser(sly.Parser):
         p.TypedNameList.append(p.TypedName)
         return p.TypedNameList
 
-    @_("ComplexName COLON DataType")
+    @_("NAME COLON DataType", "MUT NAME COLON DataType")
     def TypedName(self, p):
-        return (p.ComplexName, p.DataType)
+        return (p.NAME, p.DataType, p[0] == "mut")
+
+    @_("ArrayName COLON DataType", "MUT ArrayName COLON DataType")
+    def TypedName(self, p):
+        node = p.ArrayName[0]
+        while node["value"]: node = node["value"]
+        assert node["value"] is None, "Array is already typed."
+        node["value"] = p.DataType
+        return (p.ArrayName[1], p.ArrayName[0], p[0] == "mut")
+
+    @_("EnumStatement")
+    def EnumStatements(self, p):
+        return [p.EnumStatement]
+    
+    @_("EnumStatements COMMA EnumStatement")
+    def EnumStatements(self, p):
+        p.EnumStatements.append(p.EnumStatement)
+        return p.EnumStatements
+
+    @_("NAME ASSIGN Expr")
+    def EnumStatement(self, p):
+        return {"name": p.NAME, "value": p.Expr}
+
+    @_("NAME")
+    def EnumStatement(self, p):
+        return {"name": p.NAME, "value": None}
 
     @_("Statement")
     def Statements(self, p):
@@ -163,31 +179,35 @@ class Parser(sly.Parser):
 
     @_("INCLUDE IncludeParams SEMICOLON")
     def Statement(self, p):
-        return {"type": "include", "modules": p.IncludeParams, "identifiers": [], "namespace": True, "all": True}
+        return {"type": "include", "modules": p.IncludeParams, "namespace": True}
 
-    @_("INCLUDE IncludeParams COLON IncludeParams SEMICOLON")
+    @_("INCLUDE IncludeParams COLON MUL SEMICOLON")
     def Statement(self, p):
-        return {"type": "include", "modules": p.IncludeParams0, "identifiers": p.IncludeParams1, "namespace": False, "all": False}
+        return {"type": "include", "modules": p.IncludeParams, "namespace": False}
 
-    @_("INCLUDE IncludeParams COLON ASTERISK SEMICOLON")
+    @_("QualifiedNameTilde LPAREN FuncParams RPAREN LBRACE Statements RBRACE")
     def Statement(self, p):
-        return {"type": "include", "modules": p.IncludeParams, "identifiers": [], "namespace": False, "all": True}
+        return {"type": "func", "return": "void", "name": p.QualifiedNameTilde, "body": p.Statements, "params": p.FuncParams}
 
-    @_("FUNC LPAREN FuncParams RPAREN ARROW ComplexNameTilde LBRACE Statements RBRACE")
+    @_("QualifiedNameTilde LPAREN FuncParams RPAREN SEMICOLON")
     def Statement(self, p):
-        return {"type": "func", "return": None, "name": p.ComplexNameTilde, "body": p.Statements, "params": p.FuncParams}
+        return {"type": "func", "return": "void", "name": p.QualifiedNameTilde, "body": [], "params": p.FuncParams}
 
-    @_("FUNC LPAREN FuncParams RPAREN ARROW ComplexNameTilde SEMICOLON")
+    @_("FUNC QualifiedName LPAREN FuncParams RPAREN ARROW DataType LBRACE Statements RBRACE")
     def Statement(self, p):
-        return {"type": "func", "return": None, "name": p.ComplexNameTilde, "body": [], "params": p.FuncParams}
+        return {"type": "func", "return": p.DataType, "name": p.QualifiedName, "body": p.Statements, "params": p.FuncParams}
 
-    @_("FUNC ComplexName LPAREN FuncParams RPAREN ARROW DataType LBRACE Statements RBRACE")
+    @_("FUNC QualifiedName LPAREN FuncParams RPAREN ARROW DataType SEMICOLON")
     def Statement(self, p):
-        return {"type": "func", "return": p.DataType, "name": p.ComplexName, "body": p.Statements, "params": p.FuncParams}
+        return {"type": "func", "return": p.DataType, "name": p.QualifiedName, "body": [], "params": p.FuncParams}
 
-    @_("FUNC ComplexName LPAREN FuncParams RPAREN ARROW DataType SEMICOLON")
+    @_("FUNC QualifiedName LPAREN FuncParams RPAREN LBRACE Statements RBRACE")
     def Statement(self, p):
-        return {"type": "func", "return": p.DataType, "name": p.ComplexName, "body": [], "params": p.FuncParams}
+        return {"type": "func", "return": "void", "name": p.QualifiedName, "body": p.Statements, "params": p.FuncParams}
+
+    @_("FUNC QualifiedName LPAREN FuncParams RPAREN SEMICOLON")
+    def Statement(self, p):
+        return {"type": "func", "return": "void", "name": p.QualifiedName, "body": [], "params": p.FuncParams}
 
     @_("IF Expr LBRACE Statements RBRACE ElseStatement")
     def Statement(self, p):
@@ -201,61 +221,93 @@ class Parser(sly.Parser):
     def Statement(self, p):
         return {"type": "for", "declaration": [p.ExprLikeStatement0], "condition": p.ExprOrNone, "iteration": [p.ExprLikeStatement1], "body": p.Statements}
 
-    @_("CLASS ComplexName LBRACE MemberStatements RBRACE IMPL LBRACE ImplStatements RBRACE SEMICOLON")
+    @_("CLASS QualifiedName LBRACE MemberStatements RBRACE SEMICOLON")
     def Statement(self, p):
-        return {"type": "class", "name": p.ComplexName, "members": p.MemberStatements, "impl": p.ImplStatements}
+        return {"type": "class", "name": p.QualifiedName, "members": p.MemberStatements, "impl": []}
 
-    @_("CLASS ComplexName LESS TemplateParams GREATER LBRACE MemberStatements RBRACE IMPL LBRACE ImplStatements RBRACE SEMICOLON")
+    @_("CLASS QualifiedName LBRACE MemberStatements RBRACE IMPL LBRACE ImplStatements RBRACE SEMICOLON")
     def Statement(self, p):
-        return {"type": "template", "body": {"type": "class", "name": p.ComplexName, "members": p.MemberStatements, "impl": p.ImplStatements}, "params": p.TemplateParams}
+        return {"type": "class", "name": p.QualifiedName, "members": p.MemberStatements, "impl": p.ImplStatements}
 
-    @_("DO LBRACE Statements RBRACE WHILE LPAREN Expr RPAREN SEMICOLON")
+    @_("CLASS QualifiedName LESS TemplateParams GREATER LBRACE MemberStatements RBRACE IMPL LBRACE ImplStatements RBRACE SEMICOLON")
     def Statement(self, p):
-        return {"type": "do while", "condition": p.Expr, "body": p.Statements}
+        return {"type": "template", "body": {"type": "class", "name": p.QualifiedName, "members": p.MemberStatements, "impl": p.ImplStatements}, "params": p.TemplateParams}
 
-    @_("DO LBRACE Statements RBRACE")
+    @_("MOD QualifiedName LBRACE Statements RBRACE")
     def Statement(self, p):
-        return {"type": "do", "body": p.Statements}
+        return {"type": "namespace", "name": p.QualifiedName, "body": p.Statements}
 
-    @_("MOD ComplexName LBRACE Statements RBRACE")
-    def Statement(self, p):
-        return {"type": "namespace", "name": p.ComplexName, "body": p.Statements}
-
-    @_("LBRACE Statements RBRACE")
-    def Statement(self, p):
-        return {"type": "scope", "body": p.Statements}
-
-    @_("Expr EQUALS Expr SEMICOLON")
+    @_("Expr ASSIGN Expr SEMICOLON")
     def Statement(self, p):
         return {"type": "assign", "left": p.Expr0, "right": p.Expr1}
 
-    @_("Expr EqualsOperator Expr SEMICOLON")
+    @_("Expr PLUS_ASSIGN Expr SEMICOLON", "Expr MINUS_ASSIGN Expr SEMICOLON", "Expr MUL_ASSIGN Expr SEMICOLON", "Expr DIV_ASSIGN Expr SEMICOLON", "Expr MOD_ASSIGN Expr SEMICOLON",
+       "Expr LSHIFT_ASSIGN Expr SEMICOLON", "Expr RSHIFT_ASSIGN Expr SEMICOLON", "Expr XOR_ASSIGN Expr SEMICOLON", "Expr AND_ASSIGN Expr SEMICOLON", "Expr OR_ASSIGN Expr SEMICOLON")
     def Statement(self, p):
-        return {"type": "assign", "left": p.Expr0, "right": {"type": "expression", "operator": p.EqualsOperator, "left": p.Expr0, "right": p.Expr1}}
+        return {"type": "assign", "left": p.Expr0, "right": {"type": "expression", "operator": p[1][0], "left": p.Expr0, "right": p.Expr1}}
+    
+    @_("LPAREN ExprList RPAREN ASSIGN LPAREN ExprList RPAREN SEMICOLON")
+    def Statement(self, p):
+        return {"type": "assign", "body": [{"type": "assign", "left": left, "right": right} for left, right in zip(p.ExprList0, p.ExprList1)]}
 
-    @_("LPAREN ExprList RPAREN EQUALS LPAREN ExprList RPAREN SEMICOLON")
+    @_("LET LPAREN TypedNameList RPAREN ASSIGN LPAREN ExprList RPAREN SEMICOLON")
     def Statement(self, p):
-        return {"type": "do", "body": [{"type": "assign", "left": left, "right": right} for left, right in zip(p.ExprList0, p.ExprList1)], "scope": False}
+        return {"type": "define", "body": [{"type": "define", "name": name, "value": expr, "dataType": type, "mutable": mutable} for (name, type, mutable), expr in zip(p.TypedNameList, p.ExprList)]}
 
-    @_("LET LPAREN TypedNameList RPAREN EQUALS LPAREN ExprList RPAREN SEMICOLON")
+    @_("LET TypedName ASSIGN Expr SEMICOLON")
     def Statement(self, p):
-        return {"type": "do", "body": [{"type": "define", "name": name, "value": expr, "dataType": type} for (name, type), expr in zip(p.TypedNameList, p.ExprList)], "scope": False}
+        return {"type": "define", "name": p.TypedName[0], "value": p.Expr, "dataType": p.TypedName[1], "mutable": p.TypedName[2]}
 
-    @_("LET ComplexName COLON DataType EQUALS Expr SEMICOLON")
+    @_("LET TypedName SEMICOLON")
     def Statement(self, p):
-        return {"type": "define", "name": p.ComplexName, "value": p.Expr, "dataType": p.DataType}
+        return {"type": "define", "name": p.TypedName[0], "value": None, "dataType": p.TypedName[1], "mutable": p.TypedName[2]}
 
-    @_("LET ComplexName COLON DataType SEMICOLON")
+    @_("CONST LPAREN TypedNameList RPAREN ASSIGN LPAREN ExprList RPAREN SEMICOLON")
     def Statement(self, p):
-        return {"type": "define", "name": p.ComplexName, "value": None, "dataType": p.DataType}
+        body = []
+
+        for (name, type, mutable), expr in zip(p.TypedNameList, p.ExprList):
+            body.append({"type": "define", "name": name, "value": expr, "dataType": type, "mutable": mutable})
+            assert not mutable, "Constants must be immutable."
+
+        return {"type": "constant", "body": body}
+
+    @_("CONST TypedName ASSIGN Expr SEMICOLON")
+    def Statement(self, p):
+        assert not p.TypedName[2], "Constants must be immutable."
+        return {"type": "constant", "name": p.TypedName[0], "value": p.Expr, "dataType": p.TypedName[1]}
 
     @_("FuncExpr LPAREN CallParams RPAREN SEMICOLON")
     def Statement(self, p):
         return {"type": "call", "value": p.FuncExpr, "params": p.CallParams}
 
-    @_("TYPE ComplexName EQUALS DataType SEMICOLON")
+    @_("TYPE NAME ASSIGN DataType SEMICOLON")
     def Statement(self, p):
-        return {"type": "typedef", "name": p.ComplexName, "value": p.DataType}
+        return {"type": "typedef", "name": p.NAME, "value": p.DataType}
+
+    @_("ENUM NAME LBRACE EnumStatements RBRACE SEMICOLON")
+    def Statement(self, p):
+        return {"type": "enum", "name": p.NAME, "body": p.EnumStatements, "dataType": None, "class": False}
+
+    @_("ENUM NAME COLON DataType LBRACE EnumStatements RBRACE SEMICOLON")
+    def Statement(self, p):
+        return {"type": "enum", "name": p.NAME, "body": p.EnumStatements, "dataType": p.DataType, "class": False}
+
+    @_("ENUM CLASS NAME LBRACE EnumStatements RBRACE SEMICOLON")
+    def Statement(self, p):
+        return {"type": "enum", "name": p.NAME, "body": p.EnumStatements, "dataType": None}
+
+    @_("ENUM CLASS NAME COLON DataType LBRACE EnumStatements RBRACE SEMICOLON")
+    def Statement(self, p):
+        return {"type": "enum", "name": p.NAME, "body": p.EnumStatements, "dataType": p.DataType}
+
+    @_("EXTERN STRING LBRACE Statements RBRACE")
+    def Statement(self, p):
+        return {"type": "extern", "linkage": p.STRING[1:-1], "body": p.Statements}
+
+    @_("LBRACE Statements RBRACE")
+    def Statement(self, p):
+        return {"type": "scope", "body": p.Statements}
 
     @_("ExprLikeStatementList SEMICOLON")
     def Statement(self, p):
@@ -273,7 +325,7 @@ class Parser(sly.Parser):
     def DataType(self, p):
         return p.NAME
 
-    @_("DataType ASTERISK")
+    @_("DataType MUL")
     def DataType(self, p):
         return {"type": "pointer", "value": p.DataType}
 
@@ -281,35 +333,31 @@ class Parser(sly.Parser):
     def DataType(self, p):
         return {"type": "template", "value": p.DataType, "params": p.TypeParams}
 
-    @_("LBRACKET DataType RBRACKET")
+    @_("FUNC LPAREN FuncParams RPAREN ARROW DataType")
     def DataType(self, p):
-        return {"type": "array", "value": p.DataType, "size": None}
+        return {"type": "function", "return": p.DataType, "params": [i["type"] for i in p.FuncParams]}
+    
+    @_("FUNC LPAREN FuncParams RPAREN")
+    def DataType(self, p):
+        return {"type": "function", "return": "void", "params": [i["type"] for i in p.FuncParams]}
 
-    @_("LBRACKET DataType SEMICOLON INTEGER RBRACKET")
-    def DataType(self, p):
+    @_("NAME LBRACKET RBRACKET")
+    def ArrayName(self, p):
+        return {"type": "array", "value": None, "size": None}, p.NAME
+
+    @_("NAME LBRACKET INTEGER RBRACKET")
+    def ArrayName(self, p):
         base = 16 if p.INTEGER.startswith("0x") else (8 if p.INTEGER.startswith("0o") else (2 if p.INTEGER.startswith("0b") else 10))
-        return {"type": "array", "value": p.DataType, "size": int(p.INTEGER.replace("0x", "").replace("0o", "").replace("0b", ""), base)}
+        return {"type": "array", "value": None, "size": int(p.INTEGER.replace("0x", "").replace("0o", "").replace("0b", ""), base)}, p.NAME
 
-    @_("FUNC LPAREN FuncTypeParams RPAREN ARROW DataType")
-    def DataType(self, p):
-        return {"type": "function", "return": p.DataType, "params": p.FuncTypeParams}
+    @_("ArrayName LBRACKET RBRACKET")
+    def ArrayName(self, p):
+        return {"type": "array", "value": p.ArrayName[0], "size": None}, p.ArrayName[1]
 
-    @_("FuncTypeParam")
-    def FuncTypeParams(self, p):
-        return [p.FuncTypeParam]
-
-    @_("FuncTypeParams COMMA FuncTypeParam")
-    def FuncTypeParams(self, p):
-        p.FuncTypeParams.append(p.FuncTypeParam)
-        return p.FuncTypeParams
-
-    @_("DataType")
-    def FuncTypeParam(self, p):
-        return p.DataType
-
-    @_("THREE_DOT")
-    def FuncTypeParam(self, p):
-        return "three dot"
+    @_("ArrayName LBRACKET INTEGER RBRACKET")
+    def ArrayName(self, p):
+        base = 16 if p.INTEGER.startswith("0x") else (8 if p.INTEGER.startswith("0o") else (2 if p.INTEGER.startswith("0b") else 10))
+        return {"type": "array", "value": p.ArrayName[0], "size": int(p.INTEGER.replace("0x", "").replace("0o", "").replace("0b", ""), base)}, p.ArrayName[1]
 
     @_("IncludeParams COMMA IncludeParam")
     def IncludeParams(self, p):
@@ -328,66 +376,59 @@ class Parser(sly.Parser):
     def FuncParams(self, p):
         return []
 
+    @_("FuncParam")
+    def FuncParams(self, p):
+        return [p.FuncParam]
+
     @_("FuncParams COMMA FuncParam")
     def FuncParams(self, p):
         p.FuncParams.append(p.FuncParam)
         return p.FuncParams
 
-    @_("FuncParam")
-    def FuncParams(self, p):
-        return [p.FuncParam]
-
-    @_("NAME COLON DataType")
+    @_("TypedName")
     def FuncParam(self, p):
-        return {"type": p.DataType, "name": p.NAME}
+        return {"name": p.TypedName[0], "type": p.TypedName[1], "mutable": p.TypedName[2]}
 
     @_("THREE_DOT")
     def FuncParam(self, p):
         return {"type": "three dot"}
 
-    @_("PLUS", "MINUS", "ASTERISK", "SLASH", "MOD", "LSHIFT", "RSHIFT", "XOR", "AND", "OR", "BITWISE_AND", "BITWISE_OR", "BITWISE_NOT", "EQUAL", "NOT_EQUAL",
-       "GREATER", "LESS", "GREATER_EQUAL", "LESS_EQUAL", "ARROW", "NOT", "EQUALS", "LPAREN RPAREN", "LBRACKET RBRACKET", "NEW", "DELETE", "COLON COLON", "COMMA")
+    @_("PLUS", "MINUS", "MUL", "DIV", "MOD", "LSHIFT", "RSHIFT", "XOR", "AND", "OR", "BITWISE_AND", "BITWISE_OR", "BITWISE_NOT", "EQUAL", "NOT_EQUAL",
+       "GREATER", "LESS", "GREATER_EQUAL", "LESS_EQUAL", "ARROW", "NOT", "ASSIGN", "LPAREN RPAREN", "LBRACKET RBRACKET", "NEW", "DELETE", "COLON COLON", "COMMA",
+       "PLUS_ASSIGN", "MINUS_ASSIGN", "MUL_ASSIGN", "DIV_ASSIGN", "MOD_ASSIGN", "LSHIFT_ASSIGN", "RSHIFT_ASSIGN", "XOR_ASSIGN", "AND_ASSIGN", "OR_ASSIGN")
     def FuncOperator(self, p):
-        return "".join(p)
-    
-    @_("EqualsOperator")
-    def FuncOperator(self, p):
-        return f"{p.EqualsOperator}="
-    
-    @_("PLUS EQUALS", "MINUS EQUALS", "ASTERISK EQUALS", "SLASH EQUALS", "MOD EQUALS", "LSHIFT EQUALS", "RSHIFT EQUALS", "XOR EQUALS", "BITWISE_AND EQUALS", "BITWISE_OR EQUALS")
-    def EqualsOperator(self, p):
         return p[0]
 
     @_("")
     def CallParams(self, p):
         return []
-
+    
     @_("CallParam")
     def CallParams(self, p):
         return [p.CallParam]
-
+    
     @_("CallParams COMMA CallParam")
     def CallParams(self, p):
         p.CallParams.append(p.CallParam)
         return p.CallParams
-
+    
     @_("Expr")
     def CallParam(self, p):
         return p.Expr
-
+    
     @_("")
     def TypeParams(self, p):
         return []
-
+    
     @_("TypeParam")
     def TypeParams(self, p):
         return [p.TypeParam]
-
+    
     @_("TypeParams COMMA TypeParam")
     def TypeParams(self, p):
         p.TypeParams.append(p.TypeParam)
         return p.TypeParams
-
+    
     @_("DataType")
     def TypeParam(self, p):
         return p.DataType
@@ -408,51 +449,52 @@ class Parser(sly.Parser):
     @_("NAME")
     def TemplateParam(self, p):
         return {"name": p.NAME, "value": None}
-
-    @_("NAME EQUALS Expr")
+    
+    @_("NAME ASSIGN Expr")
     def TemplateParam(self, p):
         return {"name": p.NAME, "value": p.Expr}
-
+    
     @_("Expr")
     def ExprOrNone(self, p):
         return p.Expr
-
+    
     @_("")
     def ExprOrNone(self, p):
         return
-
+    
     @_("ExprLikeStatement")
     def ExprLikeStatementList(self, p):
         return [p.ExprLikeStatement]
-
+    
     @_("ExprLikeStatementList COMMA ExprLikeStatement")
     def ExprLikeStatementList(self, p):
         p.ExprLikeStatementList.append(p.ExprLikeStatement)
         return p.ExprLikeStatementList
-
-    @_("Expr EQUALS Expr")
+    
+    @_("Expr ASSIGN Expr")
     def ExprLikeStatement(self, p):
         return {"type": "assign", "left": p.Expr0, "right": p.Expr1}
 
-    @_("Expr EqualsOperator Expr")
+    @_("Expr PLUS_ASSIGN Expr", "Expr MINUS_ASSIGN Expr", "Expr MUL_ASSIGN Expr", "Expr DIV_ASSIGN Expr", "Expr MOD_ASSIGN Expr",
+       "Expr LSHIFT_ASSIGN Expr", "Expr RSHIFT_ASSIGN Expr", "Expr XOR_ASSIGN Expr", "Expr AND_ASSIGN Expr", "Expr OR_ASSIGN Expr")
     def ExprLikeStatement(self, p):
-        return {"type": "assign", "left": p.Expr0, "right": {"type": "expression", "operator": p.EqualsOperator, "left": p.Expr0, "right": p.Expr1}}
+        return {"type": "assign", "left": p.Expr0, "right": {"type": "expression", "operator": p[1][0], "left": p.Expr0, "right": p.Expr1}}
 
-    @_("LPAREN ExprList RPAREN EQUALS LPAREN ExprList RPAREN")
+    @_("LPAREN ExprList RPAREN ASSIGN LPAREN ExprList RPAREN")
     def ExprLikeStatement(self, p):
-        return {"type": "do", "body": [{"type": "assign", "left": left, "right": right} for left, right in zip(p.ExprList0, p.ExprList1)], "scope": False}
+        return {"type": "assign", "body": [{"type": "assign", "left": left, "right": right} for left, right in zip(p.ExprList0, p.ExprList1)]}
 
-    @_("LET LPAREN TypedNameList RPAREN EQUALS LPAREN ExprList RPAREN")
+    @_("LET LPAREN TypedNameList RPAREN ASSIGN LPAREN ExprList RPAREN")
     def ExprLikeStatement(self, p):
-        return {"type": "do", "body": [{"type": "define", "name": name, "value": expr, "dataType": type} for (name, type), expr in zip(p.TypedNameList, p.ExprList)], "scope": False}
+        return {"type": "define", "body": [{"type": "define", "name": name, "value": expr, "dataType": type, "mutable": mutable} for (name, type, mutable), expr in zip(p.TypedNameList, p.ExprList)]}
 
-    @_("LET ComplexName COLON DataType EQUALS Expr")
+    @_("LET TypedName ASSIGN Expr")
     def ExprLikeStatement(self, p):
-        return {"type": "define", "name": p.ComplexName, "value": p.Expr, "dataType": p.DataType}
+        return {"type": "define", "name": p.TypedName[0], "value": p.Expr, "dataType": p.TypedName[1], "mutable": p.TypedName[2]}
 
-    @_("LET ComplexName COLON DataType")
+    @_("LET TypedName")
     def ExprLikeStatement(self, p):
-        return {"type": "define", "name": p.ComplexName, "value": None, "dataType": p.DataType}
+        return {"type": "define", "name": p.TypedName[0], "value": None, "dataType": p.TypedName[1], "mutable": p.TypedName[2]}
 
     @_("")
     def ExprLikeStatement(self, p):
@@ -462,9 +504,9 @@ class Parser(sly.Parser):
     def FuncExpr(self, p):
         return p.Expr
 
-    @_("ComplexName")
+    @_("QualifiedName")
     def FuncExpr(self, p):
-        return {"type": "identifier", "value": p.ComplexName}
+        return {"type": "identifier", "value": p.QualifiedName}
 
     @_("FuncExpr DOT NAME")
     def FuncExpr(self, p):
@@ -507,7 +549,7 @@ class Parser(sly.Parser):
     def Expr(self, p):
         return {"type": "initializer list", "body": p.ExprList}
 
-    @_("Expr PLUS Expr", "Expr MINUS Expr", "Expr ASTERISK Expr", "Expr SLASH Expr", "Expr MOD Expr",  "Expr XOR Expr",
+    @_("Expr PLUS Expr", "Expr MINUS Expr", "Expr MUL Expr", "Expr DIV Expr", "Expr MOD Expr",  "Expr XOR Expr",
        "Expr LSHIFT Expr", "Expr RSHIFT Expr", "Expr AND Expr", "Expr OR Expr", "Expr BITWISE_AND Expr", "Expr BITWISE_OR Expr",
        "Expr GREATER Expr", "Expr GREATER_EQUAL Expr", "Expr LESS Expr", "Expr LESS_EQUAL Expr", "Expr NOT_EQUAL Expr", "Expr EQUAL Expr")
     def Expr(self, p):
@@ -515,12 +557,27 @@ class Parser(sly.Parser):
 
     @_("INTEGER")
     def Expr(self, p):
-        base = 16 if p.INTEGER.startswith("0x") else (8 if p.INTEGER.startswith("0o") else (2 if p.INTEGER.startswith("0b") else 10))
-        return {"type": "i32", "value": int(p.INTEGER.replace("0x", "").replace("0o", "").replace("0b", ""), base)}
+        type, value = "i32", p.INTEGER
+
+        for signed in ["i", "u"]:
+            if signed in value:
+                value, bits = p.INTEGER.split(signed)
+                assert bits in ["8", "16", "32", "64", "128"], f"Invalid integer bit size: '{bits}'."
+                type = f"{signed}{bits}"
+
+        base = 16 if value.startswith("0x") else (8 if value.startswith("0o") else (2 if value.startswith("0b") else 10))
+        return {"type": type, "value": int(value[2:] if base != 10 else value, base)}
 
     @_("FLOAT")
     def Expr(self, p):
-        return {"type": "float" if p.FLOAT.endswith("f") else "double", "value": float(p.FLOAT.replace("f", ""))}
+        type, value = "f32", p.FLOAT
+
+        if "f" in value:
+            value, bits = p.FLOAT.split("f")
+            assert bits in ["32", "64"], f"Invalid float bit size: '{bits}'."
+            type = f"f{bits}"
+
+        return {"type": type, "value": float(value)}
 
     @_("STRING")
     def Expr(self, p):
@@ -530,7 +587,7 @@ class Parser(sly.Parser):
     def Expr(self, p):
         char = p.CHAR[1:-1].replace("\\n", "\n").replace("\\t", "\t").replace("\\r", "\r").replace("\\0", "\0").replace("\\'", "'").replace('\\"', '"')
         assert len(char) == 1, "Expected a single character."
-        return {"type": "i8", "value": ord(char)}
+        return {"type": "char", "value": ord(char)}
 
     @_("TRUE", "FALSE", "NULL")
     def Expr(self, p):
@@ -552,18 +609,18 @@ class Parser(sly.Parser):
     def Expr(self, p):
         return {"type": "reference", "value": p.Expr}
 
-    @_("ASTERISK Expr %prec DEREFERENCE")
+    @_("MUL Expr %prec DEREFERENCE")
     def Expr(self, p):
         return {"type": "dereference", "value": p.Expr}
 
     @_("NAME")
-    def ComplexName(self, p):
+    def QualifiedName(self, p):
         return p.NAME
 
-    @_("ComplexName COLON COLON NAME")
-    def ComplexName(self, p):
-        return f"{p.ComplexName}::{p.NAME}"
+    @_("QualifiedName COLON COLON NAME")
+    def QualifiedName(self, p):
+        return f"{p.QualifiedName}::{p.NAME}"
 
-    @_("ComplexName COLON COLON NAME", "ComplexName COLON COLON BITWISE_NOT NAME")
-    def ComplexNameTilde(self, p):
-        return f"{p.ComplexName}::{"~" if len(p) > 4 else ""}{p.NAME}"
+    @_("QualifiedName COLON COLON NAME", "QualifiedName COLON COLON BITWISE_NOT NAME")
+    def QualifiedNameTilde(self, p):
+        return f"{p.QualifiedName}::{"~" if len(p) > 4 else ""}{p.NAME}"

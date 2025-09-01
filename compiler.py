@@ -314,7 +314,7 @@ class SizeOf(CompileTimeFunction):
             return ir.Constant(ir.IntType(64), 8)
 
         else:
-            assert False, "Unknown type."
+            assert False, f"Unknown type: '{type}'."
 
 class AlignOf(CompileTimeFunction):
     def __init__(self, compiler):
@@ -346,7 +346,7 @@ class AlignOf(CompileTimeFunction):
             return ir.Constant(ir.IntType(64), 8)
 
         else:
-            assert False, "Unknown type."
+            assert False, f"Unknown type: '{type}'."
 
 class OffsetOf(CompileTimeFunction):
     def __init__(self, compiler):
@@ -1306,9 +1306,23 @@ class Compiler:
             else:
                 args.append(self.TryPass(self.VisitValue(i)))
 
-        __return = self.Builder.call(func, args)
-        return __return if _return is None else _return
-    
+        if _return is not None:
+            return _return
+
+        result = self.Builder.call(func, args)
+
+        if hasattr(result.type, "_sret"):
+            assert isinstance(result.type, ir.IntType), f"Expected an integer, got '{result.type}'."
+
+            current = self.Builder.block
+            self.Builder.position_at_start(self.Builder.function.entry_basic_block)
+            ptr = self.Builder.alloca(result.type._sret)
+            self.Builder.position_at_end(current)
+            self.Builder.store(result, self.Builder.bitcast(ptr, result.type.as_pointer()), self.alignof(result.type._sret).constant)
+            ptr._return, result = True, ptr
+
+        return result
+
     def VisitFor(self, node):
         assert self.scopeManager.Scope.local, "For blocks must be defined in local scope."
         forBlock = self.Builder.append_basic_block()
@@ -1372,7 +1386,7 @@ class Compiler:
                 value = self.VisitPointer(node["value"])
 
                 if isinstance(self.Builder.function.return_value.type, ir.IntType):
-                    value = self.Builder.load(value, typ = self.Builder.function.return_value.type)
+                    self.Builder.ret(self.Builder.load(value, typ = self.Builder.function.return_value.type))
 
                 else:
                     assert isinstance(self.Builder.function.return_value.type, ir.VoidType)

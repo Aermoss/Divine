@@ -190,15 +190,19 @@ class ScopeManager:
             assert False, f"Unknown variable: '{name}'"
 
 class Class:
-    def __init__(self, compiler, name):
-        self.__compiler, self.__name = compiler, name
+    def __init__(self, compiler, name, realName):
+        self.__compiler, self.__name, self.__realName = compiler, name, realName
         self.type = ir.global_context.get_identified_type(name)
         self.__elements, self.__functions = {}, {}
 
     @property
     def Name(self):
         return self.__name
-    
+
+    @property
+    def RealName(self):
+        return self.__realName
+
     @property
     def Elements(self):
         return self.__elements.copy()
@@ -271,8 +275,11 @@ class Template:
 
         body = copy.deepcopy(self.__body)
         body["name"], body["_name"] = Mangler.MangleClass(body["name"], params), body["name"]
-        self.__instances[params] = self.__compiler.Compile([body])
+        mangling, self.__compiler.mangling = self.__compiler.mangling, True
+        self.__compiler.Compile([body])
+        self.__compiler.mangling = mangling
         _class = self.__compiler.scopeManager.Get(body["name"])
+        self.__instances[params] = _class.type
 
         for index, i in enumerate(self.__params):
             del self.__scope.variables[i["name"]]
@@ -531,10 +538,11 @@ class Compiler:
         self.Builder._block.instructions, self.Builder._anchor = self.Builder._block._stateStack.pop()
         return (self.Builder._block.instructions, self.Builder._anchor)
 
-    def InvokeDestructors(self):
+    def InvokeDestructors(self, _except = None):
         for name, value in self.scopeManager.Scope.variables.items():
             if hasattr(value, "type") and value.type.is_pointer and not value.type.is_opaque and isinstance(value.type.pointee, ir.BaseStructType):
-                self.VisitDestructor(self.scopeManager.Get(value.type.pointee.name), value)
+                if value is not _except:
+                    self.VisitDestructor(self.scopeManager.Get(value.type.pointee.name), value)
 
     def Compile(self, ast):
         for node in ast:
@@ -681,7 +689,7 @@ class Compiler:
     def VisitExtern(self, node):
         assert not self.scopeManager.Scope.local, "Extern blocks must be defined in global scope."
         assert self.mangling, "Cannot define extern blocks inside an extern block."
-        assert node["linkage"] in ["C"], "Invalid linkage type."
+        assert node["linkage"] in ["C"], f"Invalid linkage type: '{node["linkage"]}'"
 
         self.mangling = False
         self.Compile(node["body"])
@@ -694,12 +702,12 @@ class Compiler:
 
     def VisitClass(self, node):
         assert not self.scopeManager.Scope.local, "Classes must be defined in global scope."
-        self.scopeManager.PushClass(Class(self, node["name"]))
-        self.scopeManager.PushScope(Scope(node["name"]))
         impl, name = [], node.get("_name", node["name"])
+        self.scopeManager.PushClass(Class(self, node["name"], name))
+        self.scopeManager.PushScope(Scope(node["name"]))
 
-        for name, member in node["members"].items():
-            self.scopeManager.Class.RegisterElement(name, {"type": self.VisitType(member["dataType"]), "value": self.VisitValue(member["value"]), "access": "private" if member["private"] else "public"})
+        for _name, member in node["members"].items():
+            self.scopeManager.Class.RegisterElement(_name, {"type": self.VisitType(member["dataType"]), "value": self.VisitValue(member["value"]), "access": "private" if member["private"] else "public"})
 
         for i in node["impl"]:
             if i["type"] in ["constructor", "destructor"]:
@@ -1060,7 +1068,7 @@ class Compiler:
         if isinstance(node, ir.PointerType) or isinstance(node, ir.Instruction) or node is None:
             return node
 
-        if node["type"] == "identifier":
+        if node["type"] in ["identifier"]:
             if self.scopeManager.Class is not None:
                 if self.scopeManager.Class.Has(node["value"]):
                     element = self.scopeManager.Class.Get(node["value"]).copy()
@@ -1078,7 +1086,7 @@ class Compiler:
             assert self.scopeManager.Has(node["value"]), f"Unknown identifier '{node["value"]}'."
             return self.scopeManager.Get(node["value"], multiple = multiple)
 
-        elif node["type"] == "get":
+        elif node["type"] in ["get"]:
             return self.Builder.gep(self.VisitValue(node["value"]), [self.VisitValue(node["index"])])
 
         elif node["type"] in ["get element", "get element pointer"]:
@@ -1102,7 +1110,7 @@ class Compiler:
 
             return self.Builder.gep(value, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), _class.Index(node["element"]))])
         
-        elif node["type"] == "dereference":
+        elif node["type"] in ["dereference"]:
             value = self.VisitValue(node["value"])
             assert value.type.is_pointer, "Expected a pointer."
             assert not value.type.is_opaque, "Expected a non-opaque pointer."
@@ -1120,16 +1128,16 @@ class Compiler:
                 if not value["value"]: continue
                 self.VisitAssign({"left": self.Builder.gep(ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), _class.Index(name))]), "right": value["value"]})
 
-        if _class.Has(_class.Name):
-            self.VisitCall({"value": {"type": "get element pointer", "value": ptr, "element": _class.Name}, "params": params})
+        if _class.Has(_class.RealName):
+            self.VisitCall({"value": {"type": "get element pointer", "value": ptr, "element": _class.RealName}, "params": params})
 
     def VisitDestructor(self, _class, ptr):
         for name, value in _class.Elements.items():
             if isinstance(value["type"], ir.BaseStructType):
                 self.VisitDestructor(self.scopeManager.Get(value["type"].name), self.Builder.gep(ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), _class.Index(name))]))
 
-        if _class.Has(f"~{_class.Name}"):
-            self.VisitCall({"value": {"type": "get element pointer", "value": ptr, "element": f"~{_class.Name}"}, "params": []})
+        if _class.Has(f"~{_class.RealName}"):
+            self.VisitCall({"value": {"type": "get element pointer", "value": ptr, "element": f"~{_class.RealName}"}, "params": []})
 
     def VisitConstant(self, node):
         value, type = self.VisitConstExpr(node["value"]), self.VisitType(node["dataType"])
@@ -1158,6 +1166,8 @@ class Compiler:
 
                 if not isinstance(value, list) and value.type != dataType:
                     value = self.VisitCast({"value": value, "target": dataType}, force = False)
+
+                value = self.TryPass(value)
 
             if dataType.is_pointer and not dataType.is_opaque and node["value"] and not isinstance(value, list) and isinstance(value.type, ir.ArrayType):
                 dataType = ir.ArrayType(dataType.pointee, value.type.count)
@@ -1306,10 +1316,10 @@ class Compiler:
             else:
                 args.append(self.TryPass(self.VisitValue(i)))
 
+        result = self.Builder.call(func, args)
+
         if _return is not None:
             return _return
-
-        result = self.Builder.call(func, args)
 
         if hasattr(result.type, "_sret"):
             assert isinstance(result.type, ir.IntType), f"Expected an integer, got '{result.type}'."
@@ -1379,11 +1389,12 @@ class Compiler:
 
     def VisitReturn(self, node):
         assert self.scopeManager.Scope.local, "Return statements must be defined in local scope."
-        self.InvokeDestructors()
 
         if node["value"]:
             if hasattr(self.Builder.function.return_value.type, "_sret"):
                 value = self.VisitPointer(node["value"])
+                assert isinstance(value.type.pointee, ir.BaseStructType)
+                self.InvokeDestructors(_except = value)
 
                 if isinstance(self.Builder.function.return_value.type, ir.IntType):
                     self.Builder.ret(self.Builder.load(value, typ = self.Builder.function.return_value.type))
@@ -1394,9 +1405,16 @@ class Compiler:
                     self.Builder.ret_void()
 
             else:
-                self.Builder.ret(self.TryPass(self.VisitValue(node["value"]), _return = True))
+                value = self.VisitValue(node["value"])
+
+                if value.type != self.Builder.function.return_value.type:
+                    value = self.VisitCast({"value": value, "target": self.Builder.function.return_value.type}, force = False)
+
+                self.InvokeDestructors()
+                self.Builder.ret(self.TryPass(value, _return = True))
 
         else:
+            self.InvokeDestructors()
             self.Builder.ret_void()
 
     def VisitExpression(self, node):

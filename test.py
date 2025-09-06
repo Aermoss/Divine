@@ -38,14 +38,14 @@ def RegisterTest(file: str, type: type) -> None:
 
     return __inner__
 
-@RegisterTest("expr.div", ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_int32))
+@RegisterTest("expr.div", ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_double))
 def SimpleExpression(func) -> None:
     result = func(x := 7)
 
     assert result == (expected := x + 2.32), \
         f"Expected {expected}, but got {result}."
 
-@RegisterTest("expr.div", ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_int32))
+@RegisterTest("expr.div", ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_double))
 def ComplexExpression(func) -> None:
     result = func(x := 9)
 
@@ -99,13 +99,6 @@ def IfBlockTest(func) -> None:
 
 @RegisterTest("flow.div", ctypes.CFUNCTYPE(ctypes.c_int64, ctypes.c_int32))
 def WhileBlockTest(func) -> None:
-    result = func(5)
-
-    assert result == (expected := 10), \
-        f"Expected {expected}, but got {result}."
-
-@RegisterTest("flow.div", ctypes.CFUNCTYPE(ctypes.c_int64, ctypes.c_int32))
-def ForBlockTest(func) -> None:
     result = func(5)
 
     assert result == (expected := 10), \

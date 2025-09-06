@@ -7,13 +7,26 @@ class Parser(sly.Parser):
     error = lambda self, token: self.Error(token)
 
     precedence = (
-        ("nonassoc", EQUAL, NOT_EQUAL, LESS, LESS_EQUAL, GREATER, GREATER_EQUAL),
-        ("left", PLUS, MINUS),
-        ("left", MUL, DIV),
-        ("left", LSHIFT, RSHIFT),
-        ("right", NOT, BITWISE_NOT),
-        ("right", UNARY_MINUS, REFERENCE, DEREFERENCE),
-        ("left", DOT, ARROW)
+        ("left", "OR"),
+        ("left", "AND"),
+
+        ("left", "BITWISE_OR"),
+        ("left", "BITWISE_XOR"),
+        ("left", "BITWISE_AND"),
+
+        ("nonassoc", "EQUAL", "NOT_EQUAL", "LESS", "LESS_EQUAL", "GREATER", "GREATER_EQUAL"),
+
+        ("left", "LSHIFT", "RSHIFT"),
+
+        ("left", "PLUS", "MINUS"),
+        ("left", "MUL", "DIV", "MOD"),
+
+        ("right", "NOT", "BITWISE_NOT"),
+        ("right", "UMINUS", "REFERENCE", "DEREFERENCE"),
+
+        ("left", "DOT", "ARROW"),
+        ("left", "LPAREN", "LBRACKET"),
+        ("left", "CAST")
     )
 
     def __init__(self):
@@ -71,7 +84,7 @@ class Parser(sly.Parser):
 
     @_("ImplStatement")
     def ImplStatements(self, p):
-        return []
+        return [p.ImplStatement]
 
     @_("ImplStatements ImplStatement")
     def ImplStatements(self, p):
@@ -165,6 +178,10 @@ class Parser(sly.Parser):
         p.Statements.append(p.Statement)
         return p.Statements
 
+    @_("Expr SEMICOLON")
+    def Statement(self, p):
+        return p.Expr
+
     @_("RETURN SEMICOLON")
     def Statement(self, p):
         return {"type": "return", "value": None}
@@ -217,10 +234,6 @@ class Parser(sly.Parser):
     def Statement(self, p):
         return {"type": "while", "condition": p.Expr, "body": p.Statements, "else": p.ElseStatement}
 
-    @_("FOR ExprLikeStatement SEMICOLON ExprOrNone SEMICOLON ExprLikeStatement LBRACE Statements RBRACE")
-    def Statement(self, p):
-        return {"type": "for", "declaration": [p.ExprLikeStatement0], "condition": p.ExprOrNone, "iteration": [p.ExprLikeStatement1], "body": p.Statements}
-
     @_("CLASS QualifiedName LBRACE MemberStatements RBRACE SEMICOLON")
     def Statement(self, p):
         return {"type": "class", "name": p.QualifiedName, "members": p.MemberStatements, "impl": []}
@@ -236,19 +249,6 @@ class Parser(sly.Parser):
     @_("MOD QualifiedName LBRACE Statements RBRACE")
     def Statement(self, p):
         return {"type": "namespace", "name": p.QualifiedName, "body": p.Statements}
-
-    @_("Expr ASSIGN Expr SEMICOLON")
-    def Statement(self, p):
-        return {"type": "assign", "left": p.Expr0, "right": p.Expr1}
-
-    @_("Expr PLUS_ASSIGN Expr SEMICOLON", "Expr MINUS_ASSIGN Expr SEMICOLON", "Expr MUL_ASSIGN Expr SEMICOLON", "Expr DIV_ASSIGN Expr SEMICOLON", "Expr MOD_ASSIGN Expr SEMICOLON",
-       "Expr LSHIFT_ASSIGN Expr SEMICOLON", "Expr RSHIFT_ASSIGN Expr SEMICOLON", "Expr XOR_ASSIGN Expr SEMICOLON", "Expr AND_ASSIGN Expr SEMICOLON", "Expr OR_ASSIGN Expr SEMICOLON")
-    def Statement(self, p):
-        return {"type": "assign", "left": p.Expr0, "right": {"type": "expression", "operator": p[1][0], "left": p.Expr0, "right": p.Expr1}}
-    
-    @_("LPAREN ExprList RPAREN ASSIGN LPAREN ExprList RPAREN SEMICOLON")
-    def Statement(self, p):
-        return {"type": "assign", "body": [{"type": "assign", "left": left, "right": right} for left, right in zip(p.ExprList0, p.ExprList1)]}
 
     @_("LET LPAREN TypedNameList RPAREN ASSIGN LPAREN ExprList RPAREN SEMICOLON")
     def Statement(self, p):
@@ -277,10 +277,6 @@ class Parser(sly.Parser):
         assert not p.TypedName[2], "Constants must be immutable."
         return {"type": "constant", "name": p.TypedName[0], "value": p.Expr, "dataType": p.TypedName[1]}
 
-    @_("FuncExpr LPAREN CallParams RPAREN SEMICOLON")
-    def Statement(self, p):
-        return {"type": "call", "value": p.FuncExpr, "params": p.CallParams}
-
     @_("TYPE NAME ASSIGN DataType SEMICOLON")
     def Statement(self, p):
         return {"type": "typedef", "name": p.NAME, "value": p.DataType}
@@ -308,10 +304,6 @@ class Parser(sly.Parser):
     @_("LBRACE Statements RBRACE")
     def Statement(self, p):
         return {"type": "scope", "body": p.Statements}
-
-    @_("ExprLikeStatementList SEMICOLON")
-    def Statement(self, p):
-        return {"type": "expression", "body": p.ExprLikeStatementList}
 
     @_("SEMICOLON")
     def Statement(self, p):
@@ -393,7 +385,7 @@ class Parser(sly.Parser):
     def FuncParam(self, p):
         return {"type": "three dot"}
 
-    @_("PLUS", "MINUS", "MUL", "DIV", "MOD", "LSHIFT", "RSHIFT", "XOR", "AND", "OR", "BITWISE_AND", "BITWISE_OR", "BITWISE_NOT", "EQUAL", "NOT_EQUAL",
+    @_("PLUS", "MINUS", "MUL", "DIV", "MOD", "LSHIFT", "RSHIFT", "BITWISE_XOR", "AND", "OR", "BITWISE_AND", "BITWISE_OR", "BITWISE_NOT", "EQUAL", "NOT_EQUAL",
        "GREATER", "LESS", "GREATER_EQUAL", "LESS_EQUAL", "ARROW", "NOT", "ASSIGN", "LPAREN RPAREN", "LBRACKET RBRACKET", "NEW", "DELETE", "COLON COLON", "COMMA",
        "PLUS_ASSIGN", "MINUS_ASSIGN", "MUL_ASSIGN", "DIV_ASSIGN", "MOD_ASSIGN", "LSHIFT_ASSIGN", "RSHIFT_ASSIGN", "XOR_ASSIGN", "AND_ASSIGN", "OR_ASSIGN")
     def FuncOperator(self, p):
@@ -453,68 +445,6 @@ class Parser(sly.Parser):
     @_("NAME ASSIGN Expr")
     def TemplateParam(self, p):
         return {"name": p.NAME, "value": p.Expr}
-    
-    @_("Expr")
-    def ExprOrNone(self, p):
-        return p.Expr
-    
-    @_("")
-    def ExprOrNone(self, p):
-        return
-    
-    @_("ExprLikeStatement")
-    def ExprLikeStatementList(self, p):
-        return [p.ExprLikeStatement]
-    
-    @_("ExprLikeStatementList COMMA ExprLikeStatement")
-    def ExprLikeStatementList(self, p):
-        p.ExprLikeStatementList.append(p.ExprLikeStatement)
-        return p.ExprLikeStatementList
-    
-    @_("Expr ASSIGN Expr")
-    def ExprLikeStatement(self, p):
-        return {"type": "assign", "left": p.Expr0, "right": p.Expr1}
-
-    @_("Expr PLUS_ASSIGN Expr", "Expr MINUS_ASSIGN Expr", "Expr MUL_ASSIGN Expr", "Expr DIV_ASSIGN Expr", "Expr MOD_ASSIGN Expr",
-       "Expr LSHIFT_ASSIGN Expr", "Expr RSHIFT_ASSIGN Expr", "Expr XOR_ASSIGN Expr", "Expr AND_ASSIGN Expr", "Expr OR_ASSIGN Expr")
-    def ExprLikeStatement(self, p):
-        return {"type": "assign", "left": p.Expr0, "right": {"type": "expression", "operator": p[1][0], "left": p.Expr0, "right": p.Expr1}}
-
-    @_("LPAREN ExprList RPAREN ASSIGN LPAREN ExprList RPAREN")
-    def ExprLikeStatement(self, p):
-        return {"type": "assign", "body": [{"type": "assign", "left": left, "right": right} for left, right in zip(p.ExprList0, p.ExprList1)]}
-
-    @_("LET LPAREN TypedNameList RPAREN ASSIGN LPAREN ExprList RPAREN")
-    def ExprLikeStatement(self, p):
-        return {"type": "define", "body": [{"type": "define", "name": name, "value": expr, "dataType": type, "mutable": mutable} for (name, type, mutable), expr in zip(p.TypedNameList, p.ExprList)]}
-
-    @_("LET TypedName ASSIGN Expr")
-    def ExprLikeStatement(self, p):
-        return {"type": "define", "name": p.TypedName[0], "value": p.Expr, "dataType": p.TypedName[1], "mutable": p.TypedName[2]}
-
-    @_("LET TypedName")
-    def ExprLikeStatement(self, p):
-        return {"type": "define", "name": p.TypedName[0], "value": None, "dataType": p.TypedName[1], "mutable": p.TypedName[2]}
-
-    @_("")
-    def ExprLikeStatement(self, p):
-        return
-
-    @_("LPAREN Expr RPAREN")
-    def FuncExpr(self, p):
-        return p.Expr
-
-    @_("QualifiedName")
-    def FuncExpr(self, p):
-        return {"type": "identifier", "value": p.QualifiedName}
-
-    @_("FuncExpr DOT NAME")
-    def FuncExpr(self, p):
-        return {"type": "get element", "value": p.FuncExpr, "element": p.NAME}
-
-    @_("FuncExpr ARROW NAME")
-    def FuncExpr(self, p):
-        return {"type": "get element pointer", "value": p.FuncExpr, "element": p.NAME}
 
     @_("")
     def ExprList(self, p):
@@ -529,19 +459,44 @@ class Parser(sly.Parser):
         p.ExprList.append(p.Expr)
         return p.ExprList
 
-    @_("FuncExpr")
+    @_("LPAREN Expr RPAREN")
     def Expr(self, p):
-        return p.FuncExpr
+        return p.Expr
 
-    @_("FuncExpr LPAREN CallParams RPAREN")
+    @_("Expr ASSIGN Expr")
     def Expr(self, p):
-        return {"type": "call", "value": p.FuncExpr, "params": p.CallParams}
+        return {"type": "assign", "left": p.Expr0, "right": p.Expr1}
+
+    @_("Expr PLUS_ASSIGN Expr", "Expr MINUS_ASSIGN Expr", "Expr MUL_ASSIGN Expr", "Expr DIV_ASSIGN Expr", "Expr MOD_ASSIGN Expr",
+       "Expr LSHIFT_ASSIGN Expr", "Expr RSHIFT_ASSIGN Expr", "Expr XOR_ASSIGN Expr", "Expr AND_ASSIGN Expr", "Expr OR_ASSIGN Expr")
+    def Expr(self, p):
+        return {"type": "assign", "left": p.Expr0, "right": {"type": "expression", "operator": p[1][0], "left": p.Expr0, "right": p.Expr1}}
+
+    @_("LPAREN ExprList RPAREN ASSIGN LPAREN ExprList RPAREN")
+    def Expr(self, p):
+        return {"type": "assign", "body": [{"type": "assign", "left": left, "right": right} for left, right in zip(p.ExprList0, p.ExprList1)]}
+
+    @_("QualifiedName")
+    def Expr(self, p):
+        return {"type": "identifier", "value": p.QualifiedName}
+
+    @_("Expr DOT NAME")
+    def Expr(self, p):
+        return {"type": "get element", "value": p.Expr, "element": p.NAME}
+
+    @_("Expr ARROW NAME")
+    def Expr(self, p):
+        return {"type": "get element pointer", "value": p.Expr, "element": p.NAME}
+
+    @_("Expr LPAREN CallParams RPAREN")
+    def Expr(self, p):
+        return {"type": "call", "value": p.Expr, "params": p.CallParams}
 
     @_("Expr LBRACKET Expr RBRACKET")
     def Expr(self, p):
         return {"type": "get", "value": p.Expr0, "index": p.Expr1}
 
-    @_("LPAREN DataType RPAREN Expr")
+    @_("Expr AS DataType %prec CAST")
     def Expr(self, p):
         return {"type": "cast", "value": p.Expr, "target": p.DataType}
 
@@ -549,7 +504,7 @@ class Parser(sly.Parser):
     def Expr(self, p):
         return {"type": "initializer list", "body": p.ExprList}
 
-    @_("Expr PLUS Expr", "Expr MINUS Expr", "Expr MUL Expr", "Expr DIV Expr", "Expr MOD Expr",  "Expr XOR Expr",
+    @_("Expr PLUS Expr", "Expr MINUS Expr", "Expr MUL Expr", "Expr DIV Expr", "Expr MOD Expr",  "Expr BITWISE_XOR Expr",
        "Expr LSHIFT Expr", "Expr RSHIFT Expr", "Expr AND Expr", "Expr OR Expr", "Expr BITWISE_AND Expr", "Expr BITWISE_OR Expr",
        "Expr GREATER Expr", "Expr GREATER_EQUAL Expr", "Expr LESS Expr", "Expr LESS_EQUAL Expr", "Expr NOT_EQUAL Expr", "Expr EQUAL Expr")
     def Expr(self, p):
@@ -589,9 +544,13 @@ class Parser(sly.Parser):
         assert len(char) == 1, "Expected a single character."
         return {"type": "char", "value": ord(char)}
 
-    @_("TRUE", "FALSE", "NULL")
+    @_("TRUE", "FALSE")
     def Expr(self, p):
-        return {"type": "bool" if p[0] != "null" else "i64", "value": 0 if p[0] != "true" else 1}
+        return {"type": "bool", "value": 0 if p[0] != "true" else 1}
+
+    @_("NULL")
+    def Expr(self, p):
+        return {"type": "null"}
 
     @_("NOT Expr")
     def Expr(self, p):
@@ -601,7 +560,7 @@ class Parser(sly.Parser):
     def Expr(self, p):
         return {"type": "bitwise not", "value": p.Expr}
 
-    @_("MINUS Expr %prec UNARY_MINUS")
+    @_("MINUS Expr %prec UMINUS")
     def Expr(self, p):
         return {"type": "negate", "value": p.Expr}
 

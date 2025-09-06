@@ -4,24 +4,27 @@ def group(*choices): return rf"({'|'.join(choices)})"
 def any(*choices): return group(*choices) + r"*"
 def maybe(*choices): return group(*choices) + r"?"
 
-HexInteger = r"0[xX][0-9a-fA-F]+"
-BinInteger = r"0[bB][01]+"
-OctInteger = r"0[oO][0-7]+"
-DecInteger = r"[0-9]+" + maybe(*[rf"{signed}{bits}" for signed in [r"i", r"u"] for bits in [8, 16, 32, 64]])
+IntegerSuffix = maybe(*[rf"{signed}{bits}" for signed in [r"i", r"u"] for bits in [8, 16, 32, 64, 128]])
+HexInteger = r"0[xX][0-9a-fA-F]+" + IntegerSuffix
+BinInteger = r"0[bB][01]+" + IntegerSuffix
+OctInteger = r"0[oO][0-7]+" + IntegerSuffix
+DecInteger = r"[0-9]+" + IntegerSuffix
+
+FloatSuffix = maybe(*[rf"f{bits}" for bits in [32, 64]])
 Exponent = r"[eE][-+]?[0-9]*"
-PointFloat = group(r"[0-9]+\.[0-9]*", r"[0-9]*\.[0-9]+") + maybe(Exponent) + maybe(*[rf"f{bits}" for bits in [32, 64]])
-ExpFloat = r"[0-9]+" + Exponent + maybe(*[rf"f{bits}" for bits in [32, 64]])
+PointFloat = group(r"[0-9]+\.[0-9]*", r"[0-9]*\.[0-9]+") + maybe(Exponent) + FloatSuffix
+ExpFloat = r"[0-9]+" + Exponent + FloatSuffix
 
 class Lexer(sly.Lexer):
     tokens = {
         THREE_DOT, FLOAT, INTEGER, STRING, CHAR, NAME,
 
         IF, ELSE, FOR, WHILE, FUNC, CLASS, RETURN, BREAK, CONTINUE, CONST, OPERATOR, PUBLIC, PRIVATE,
-        INCLUDE, USE, MOD, TYPE, LET, MUT, TRUE, FALSE, NULL, IMPL, NEW, DELETE, EXTERN, ENUM,
+        INCLUDE, USE, MOD, TYPE, LET, MUT, TRUE, FALSE, NULL, IMPL, NEW, DELETE, EXTERN, ENUM, AS,
 
         PLUS_ASSIGN, MINUS_ASSIGN, MUL_ASSIGN, DIV_ASSIGN, MOD_ASSIGN, LSHIFT_ASSIGN, RSHIFT_ASSIGN, AND_ASSIGN, OR_ASSIGN, XOR_ASSIGN,
 
-        QUESTION_MARK, LSHIFT, RSHIFT, AND, BITWISE_AND, OR, BITWISE_OR, XOR, EQUAL, NOT_EQUAL, ARROW, GREATER_EQUAL, LESS_EQUAL, GREATER, LESS, ASSIGN,
+        QUESTION_MARK, LSHIFT, RSHIFT, AND, BITWISE_AND, OR, BITWISE_OR, BITWISE_XOR, EQUAL, NOT_EQUAL, ARROW, GREATER_EQUAL, LESS_EQUAL, GREATER, LESS, ASSIGN,
         LBRACKET, RBRACKET, LBRACE, RBRACE, LPAREN, RPAREN, PLUS, MINUS, COMMA, MUL, DIV, BACKSLASH, MOD, COLON, SEMICOLON, NOT, BITWISE_NOT, DOT
     }
 
@@ -48,7 +51,7 @@ class Lexer(sly.Lexer):
     THREE_DOT = r"\.\.\."
     FLOAT = group(PointFloat, ExpFloat)
     INTEGER = group(HexInteger, BinInteger, OctInteger, DecInteger)
-    STRING, CHAR = r"\".*?\"", r"\'(\\)?.\'"
+    STRING, CHAR = r'"(\\.|[^"\\])*"', r"'(\\.|[^'\\])'"
 
     ignore = "".join(["\t", "\r", " "])
     error = lambda self, token: self.Error(token)
@@ -82,6 +85,7 @@ class Lexer(sly.Lexer):
     NAME["delete"] = DELETE
     NAME["extern"] = EXTERN
     NAME["enum"] = ENUM
+    NAME["as"] = AS
 
     PLUS_ASSIGN = r"\+="
     MINUS_ASSIGN = r"-="
@@ -96,7 +100,7 @@ class Lexer(sly.Lexer):
 
     LSHIFT, RSHIFT = r"<<", r">>"
     AND, BITWISE_AND = r"\&\&", r"\&"
-    OR, BITWISE_OR, XOR = r"\|\|", r"\|", r"\^"
+    OR, BITWISE_OR, BITWISE_XOR = r"\|\|", r"\|", r"\^"
     EQUAL, NOT_EQUAL, ARROW = r"==", r"!=", r"->"
     GREATER_EQUAL, LESS_EQUAL = r">=", r"<="
     GREATER, LESS, ASSIGN = r">", r"<", r"="

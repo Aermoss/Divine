@@ -178,10 +178,6 @@ class Parser(sly.Parser):
         p.Statements.append(p.Statement)
         return p.Statements
 
-    @_("Expr SEMICOLON")
-    def Statement(self, p):
-        return p.Expr
-
     @_("RETURN SEMICOLON")
     def Statement(self, p):
         return {"type": "return", "value": None}
@@ -305,6 +301,10 @@ class Parser(sly.Parser):
     def Statement(self, p):
         return {"type": "scope", "body": p.Statements}
 
+    @_("Expr SEMICOLON")
+    def Statement(self, p):
+        return p.Expr
+
     @_("SEMICOLON")
     def Statement(self, p):
         return
@@ -394,54 +394,54 @@ class Parser(sly.Parser):
     @_("")
     def CallParams(self, p):
         return []
-    
+
     @_("CallParam")
     def CallParams(self, p):
         return [p.CallParam]
-    
+
     @_("CallParams COMMA CallParam")
     def CallParams(self, p):
         p.CallParams.append(p.CallParam)
         return p.CallParams
-    
+
     @_("Expr")
     def CallParam(self, p):
         return p.Expr
-    
+
     @_("")
     def TypeParams(self, p):
         return []
-    
+
     @_("TypeParam")
     def TypeParams(self, p):
         return [p.TypeParam]
-    
+
     @_("TypeParams COMMA TypeParam")
     def TypeParams(self, p):
         p.TypeParams.append(p.TypeParam)
         return p.TypeParams
-    
+
     @_("DataType")
     def TypeParam(self, p):
         return p.DataType
-    
+
     @_("")
     def TemplateParams(self, p):
         return []
-    
+
     @_("TemplateParam")
     def TemplateParams(self, p):
         return [p.TemplateParam]
-    
+
     @_("TemplateParams COMMA TemplateParam")
     def TemplateParams(self, p):
         p.TemplateParams.append(p.TemplateParam)
         return p.TemplateParams
-    
+
     @_("NAME")
     def TemplateParam(self, p):
         return {"name": p.NAME, "value": None}
-    
+
     @_("NAME ASSIGN Expr")
     def TemplateParam(self, p):
         return {"name": p.NAME, "value": p.Expr}
@@ -503,6 +503,10 @@ class Parser(sly.Parser):
     @_("LBRACE ExprList RBRACE")
     def Expr(self, p):
         return {"type": "initializer list", "body": p.ExprList}
+
+    @_("LBRACE ExprList RBRACE AS NAME %prec CAST")
+    def Expr(self, p):
+        return {"type": "list initialization", "name": p.NAME, "body": p.ExprList}
 
     @_("Expr PLUS Expr", "Expr MINUS Expr", "Expr MUL Expr", "Expr DIV Expr", "Expr MOD Expr",  "Expr BITWISE_XOR Expr",
        "Expr LSHIFT Expr", "Expr RSHIFT Expr", "Expr AND Expr", "Expr OR Expr", "Expr BITWISE_AND Expr", "Expr BITWISE_OR Expr",

@@ -10,16 +10,16 @@ def main(argv):
     parser.parse(lexer.Lex(open(argv[1], "r").read()))
     compiler.includePaths.append("./include")
     module = compiler.Compile(parser.ast["body"])
+    module.name = os.path.splitext(os.path.basename(argv[1]))[0]
     module.triple = llvm.get_default_triple()
 
     libDirs, libs, debug, msvc = ["./lib"], ["raylibdll", "legacy_stdio_definitions", "msvcrt", "ucrt", "vcruntime"], True, True
     if not msvc: libDirs, libs = [f"-L{os.path.abspath(dir).replace("\\", "/")}" for dir in libDirs], [f"-l{lib}" for lib in libs]
     else: libDirs, libs = ["/link"] + [f"/LIBPATH:{os.path.abspath(dir).replace("/", "\\")}" for dir in libDirs], [f"{lib}.lib" for lib in libs]
-    workDir, fileName = os.getcwd(), argv[1].split(".")[0]
+    workDir, fileName = os.getcwd(), os.path.splitext(argv[1])[0]
 
-    if True:
-        with open(f"{fileName}.llvm", "w") as file:
-            file.write(str(module))
+    with open(f"{fileName}.llvm", "w") as file:
+        file.write(str(module))
 
     os.chdir(tempfile.gettempdir())
 

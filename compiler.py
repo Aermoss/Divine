@@ -894,10 +894,15 @@ class Compiler:
             i = copy.deepcopy(i)
 
             if i["type"] in ["constructor", "destructor"]:
-                i = {"type": "func", "return": "void", "name": f"~{name}" if i["type"] != "constructor" else name, "params": i["params"], "body": i["body"], "private": False}
+                i["private"] = False
+                i["name"] = f"~{name}" if i["type"] != "constructor" else name
+                i["return"] = "void"
+                i["type"] = "func"
 
             if i["type"] in ["operator"]:
-                i = {"type": "func", "return": i["return"], "name": f"op{i['operator']}", "params": i["params"], "body": i["body"], "private": i["private"]}
+                i["type"] = "func"
+                i["name"] = f"op{i['operator']}"
+                del i["operator"]
 
             assert i["type"] == "func", f"Invalid implementation type: '{i["type"]}'."
             i["params"] = [{"type": self.scopeManager.Class.type.as_pointer(), "name": "this"}] + i["params"]
@@ -1003,7 +1008,7 @@ class Compiler:
             func = self.scopeManager.Get(name)
             assert not (not override and func.blocks), f"Function '{name}' already defined."
 
-        if node["body"] and body:
+        if "body" in node and body:
             self.PushBuilder(ir.IRBuilder(func.append_basic_block()))
             self.scopeManager.PushScope(Scope(local = True))
 
@@ -1053,58 +1058,38 @@ class Compiler:
     @Timer
     def VisitIf(self, node):
         assert self.scopeManager.Scope.local, "If blocks must be defined in local scope."
-        endBlock, currentNode = None, node
+        endBlock = None
 
-        while currentNode:
-            if "type" in currentNode:
-                intermediateCheck = self.Builder.append_basic_block()
-                ifBlock = self.Builder.append_basic_block()
-                condition = self.VisitValue(currentNode["condition"])
-                self.Builder.cbranch(condition, ifBlock, intermediateCheck)
-                self.Builder.position_at_end(ifBlock)
+        while node is not None:
+            hasElse = "else" in node and (node["else"]["body"] is not None or "condition" in node["else"])
 
-                self.scopeManager.PushScope(Scope(local = True))
-                self.Compile(currentNode["body"])
-                self.scopeManager.PopScope()
+            if "condition" in node:
+                ifBlock = self.Builder.append_basic_block() if node["body"] else ((endBlock := self.Builder.append_basic_block()) if endBlock is None else endBlock)
+                elseBlock = self.Builder.append_basic_block() if hasElse else ((endBlock := self.Builder.append_basic_block()) if endBlock is None else endBlock)
+                self.Builder.cbranch(self.VisitValue(node["condition"]), ifBlock, elseBlock)
 
-                if not self.Builder.block.is_terminated:
-                    if not currentNode["else"]["body"]: endBlock = intermediateCheck
-                    if endBlock == None: endBlock = self.Builder.append_basic_block()
-                    self.Builder.branch(endBlock)
+                if node["body"]:
+                    self.Builder.position_at_end(ifBlock)
+                    self.scopeManager.PushScope(Scope(local = True))
+                    self.Compile(node["body"])
+                    self.scopeManager.PopScope()
 
-                self.Builder.position_at_end(intermediateCheck)
+                    if not self.Builder.block.is_terminated:
+                        self.Builder.branch((endBlock := self.Builder.append_basic_block()) if endBlock is None else endBlock)
 
-            elif "else" in currentNode:
-                intermediateCheck = self.Builder.append_basic_block()
-                elseIfBlock = self.Builder.append_basic_block()
-                condition = self.VisitValue(currentNode["condition"])
-                self.Builder.cbranch(condition, elseIfBlock, intermediateCheck)
-                self.Builder.position_at_end(elseIfBlock)
-
-                self.scopeManager.PushScope(Scope(local = True))
-                self.Compile(currentNode["body"])
-                self.scopeManager.PopScope()
-
-                if not self.Builder.block.is_terminated:
-                    if not currentNode["else"]["body"]: endBlock = intermediateCheck
-                    if endBlock == None: endBlock = self.Builder.append_basic_block()
-                    self.Builder.branch(endBlock)
-
-                self.Builder.position_at_end(intermediateCheck)
+                self.Builder.position_at_end(elseBlock)
 
             else:
                 self.scopeManager.PushScope(Scope(local = True))
-                self.Compile(currentNode["body"])
+                self.Compile(node["body"])
                 self.scopeManager.PopScope()
 
                 if not self.Builder.block.is_terminated:
-                    if endBlock == None: endBlock = self.Builder.append_basic_block()
-                    self.Builder.branch(endBlock)
+                    self.Builder.branch((endBlock := self.Builder.append_basic_block()) if endBlock is None else endBlock)
 
-            currentNode = currentNode["else"] \
-                if "else" in currentNode and currentNode["else"]["body"] else None
-        
-        if endBlock != None:
+            node = node["else"] if hasElse else None
+
+        if endBlock is not None:
             self.Builder.position_at_end(endBlock)
 
     @Timer
@@ -1479,7 +1464,7 @@ class Compiler:
                     if _class.Has(f"op{node['right']['operator']}=", arguments = [value.type]):
                         return self.VisitCall({"value": {"type": "get element pointer", "value": ptr, "element": _class.Get(f"op{node['right']['operator']}=", arguments = [value.type])["type"].name}, "params": [ptr, value]})
 
-            value = self.VisitValue(node["right"])
+            value = self.TryPass(self.VisitValue(node["right"]))
 
             if isinstance(ptr.type.pointee, ir.BaseStructType):
                 if _class.Has(_class.RealName, arguments = [value.type]):

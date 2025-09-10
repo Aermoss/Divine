@@ -45,6 +45,10 @@ class Parser(sly.Parser):
     def Body(self, p):
         self.ast["body"] = p.Statements
 
+    @_("ELSE IF Expr LBRACE Statements RBRACE")
+    def ElseStatement(self, p):
+        return {"condition": p.Expr, "body": p.Statements}
+
     @_("ELSE IF Expr LBRACE Statements RBRACE ElseStatement")
     def ElseStatement(self, p):
         return {"condition": p.Expr, "body": p.Statements, "else": p.ElseStatement}
@@ -52,10 +56,6 @@ class Parser(sly.Parser):
     @_("ELSE LBRACE Statements RBRACE")
     def ElseStatement(self, p):
         return {"body": p.Statements}
-
-    @_("")
-    def ElseStatement(self, p):
-        return {"body": []}
 
     @_("")
     def MemberStatements(self, p):
@@ -97,7 +97,7 @@ class Parser(sly.Parser):
 
     @_("NAME LPAREN FuncParams RPAREN SEMICOLON", "BITWISE_NOT NAME LPAREN FuncParams RPAREN SEMICOLON")
     def ImplStatement(self, p):
-        return {"type": "constructor" if p[0] != "~" else "destructor", "body": [], "params": p.FuncParams}
+        return {"type": "constructor" if p[0] != "~" else "destructor", "params": p.FuncParams}
 
     @_("PUBLIC OPERATOR FuncOperator LPAREN FuncParams RPAREN ARROW DataType LBRACE Statements RBRACE", "PRIVATE OPERATOR FuncOperator LPAREN FuncParams RPAREN ARROW DataType LBRACE Statements RBRACE")
     def ImplStatement(self, p):
@@ -105,7 +105,7 @@ class Parser(sly.Parser):
 
     @_("PUBLIC OPERATOR FuncOperator LPAREN FuncParams RPAREN ARROW DataType SEMICOLON", "PRIVATE OPERATOR FuncOperator LPAREN FuncParams RPAREN ARROW DataType SEMICOLON")
     def ImplStatement(self, p):
-        return {"type": "operator", "return": p.DataType, "operator": p.FuncOperator, "body": [], "params": p.FuncParams, "private": True if p[0] != "pub" else False}
+        return {"type": "operator", "return": p.DataType, "operator": p.FuncOperator, "params": p.FuncParams, "private": True if p[0] != "pub" else False}
 
     @_("PUBLIC OPERATOR FuncOperator LPAREN FuncParams RPAREN LBRACE Statements RBRACE", "PRIVATE OPERATOR FuncOperator LPAREN FuncParams RPAREN LBRACE Statements RBRACE")
     def ImplStatement(self, p):
@@ -113,7 +113,7 @@ class Parser(sly.Parser):
 
     @_("PUBLIC OPERATOR FuncOperator LPAREN FuncParams RPAREN SEMICOLON", "PRIVATE OPERATOR FuncOperator LPAREN FuncParams RPAREN SEMICOLON")
     def ImplStatement(self, p):
-        return {"type": "operator", "return": "void", "operator": p.FuncOperator, "body": [], "params": p.FuncParams, "private": True if p[0] != "pub" else False}
+        return {"type": "operator", "return": "void", "operator": p.FuncOperator, "params": p.FuncParams, "private": True if p[0] != "pub" else False}
 
     @_("PUBLIC NAME LPAREN FuncParams RPAREN ARROW DataType LBRACE Statements RBRACE", "PRIVATE NAME LPAREN FuncParams RPAREN ARROW DataType LBRACE Statements RBRACE")
     def ImplStatement(self, p):
@@ -121,7 +121,7 @@ class Parser(sly.Parser):
 
     @_("PUBLIC NAME LPAREN FuncParams RPAREN ARROW DataType SEMICOLON", "PRIVATE NAME LPAREN FuncParams RPAREN ARROW DataType SEMICOLON")
     def ImplStatement(self, p):
-        return {"type": "func", "return": p.DataType, "name": p.NAME, "body": [], "params": p.FuncParams, "private": True if p[0] != "pub" else False}
+        return {"type": "func", "return": p.DataType, "name": p.NAME, "params": p.FuncParams, "private": True if p[0] != "pub" else False}
 
     @_("PUBLIC NAME LPAREN FuncParams RPAREN LBRACE Statements RBRACE", "PRIVATE NAME LPAREN FuncParams RPAREN LBRACE Statements RBRACE")
     def ImplStatement(self, p):
@@ -129,7 +129,7 @@ class Parser(sly.Parser):
 
     @_("PUBLIC NAME LPAREN FuncParams RPAREN SEMICOLON", "PRIVATE NAME LPAREN FuncParams RPAREN SEMICOLON")
     def ImplStatement(self, p):
-        return {"type": "func", "return": "void", "name": p.NAME, "body": [], "params": p.FuncParams, "private": True if p[0] != "pub" else False}
+        return {"type": "func", "return": "void", "name": p.NAME, "params": p.FuncParams, "private": True if p[0] != "pub" else False}
 
     @_("TypedName")
     def TypedNameList(self, p):
@@ -169,6 +169,10 @@ class Parser(sly.Parser):
     def EnumStatement(self, p):
         return {"name": p.NAME, "value": None}
 
+    @_("")
+    def Statements(self, p):
+        return []
+
     @_("Statement")
     def Statements(self, p):
         return [p.Statement]
@@ -204,7 +208,7 @@ class Parser(sly.Parser):
 
     @_("QualifiedNameTilde LPAREN FuncParams RPAREN SEMICOLON")
     def Statement(self, p):
-        return {"type": "func", "return": "void", "name": p.QualifiedNameTilde, "body": [], "params": p.FuncParams}
+        return {"type": "func", "return": "void", "name": p.QualifiedNameTilde, "params": p.FuncParams}
 
     @_("FUNC QualifiedName LPAREN FuncParams RPAREN ARROW DataType LBRACE Statements RBRACE")
     def Statement(self, p):
@@ -212,7 +216,7 @@ class Parser(sly.Parser):
 
     @_("FUNC QualifiedName LPAREN FuncParams RPAREN ARROW DataType SEMICOLON")
     def Statement(self, p):
-        return {"type": "func", "return": p.DataType, "name": p.QualifiedName, "body": [], "params": p.FuncParams}
+        return {"type": "func", "return": p.DataType, "name": p.QualifiedName, "params": p.FuncParams}
 
     @_("FUNC QualifiedName LPAREN FuncParams RPAREN LBRACE Statements RBRACE")
     def Statement(self, p):
@@ -220,15 +224,19 @@ class Parser(sly.Parser):
 
     @_("FUNC QualifiedName LPAREN FuncParams RPAREN SEMICOLON")
     def Statement(self, p):
-        return {"type": "func", "return": "void", "name": p.QualifiedName, "body": [], "params": p.FuncParams}
+        return {"type": "func", "return": "void", "name": p.QualifiedName, "params": p.FuncParams}
+
+    @_("IF Expr LBRACE Statements RBRACE")
+    def Statement(self, p):
+        return {"type": "if", "condition": p.Expr, "body": p.Statements}
 
     @_("IF Expr LBRACE Statements RBRACE ElseStatement")
     def Statement(self, p):
         return {"type": "if", "condition": p.Expr, "body": p.Statements, "else": p.ElseStatement}
 
-    @_("WHILE Expr LBRACE Statements RBRACE ElseStatement")
+    @_("WHILE Expr LBRACE Statements RBRACE")
     def Statement(self, p):
-        return {"type": "while", "condition": p.Expr, "body": p.Statements, "else": p.ElseStatement}
+        return {"type": "while", "condition": p.Expr, "body": p.Statements}
 
     @_("CLASS QualifiedName LBRACE MemberStatements RBRACE SEMICOLON")
     def Statement(self, p):
@@ -304,14 +312,6 @@ class Parser(sly.Parser):
     @_("Expr SEMICOLON")
     def Statement(self, p):
         return p.Expr
-
-    @_("SEMICOLON")
-    def Statement(self, p):
-        return
-
-    @_("")
-    def Statement(self, p):
-        return
 
     @_("NAME")
     def DataType(self, p):

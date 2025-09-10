@@ -1436,7 +1436,7 @@ class Compiler:
             value = self.VisitValue(node["right"])
 
             if isinstance(ptr.type.pointee, ir.BaseStructType):
-                if _class.Has(_class.RealName, arguments = [value.type]): # HER İKİ OBJENİNDE ÖNCEDEN CONSTRUCT EDİLMİŞ OLMASI GEREKİYOR.
+                if _class.Has(_class.RealName, arguments = [value.type]):
                     self.VisitCall({"value": {"type": "get element pointer", "value": ptr, "element": _class.Get("op=", arguments = [value.type])["type"].name}, "params": [ptr, value]})
 
                 elif value.type == _class.type:

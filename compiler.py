@@ -642,6 +642,24 @@ class Compiler:
         assert len(self.builderStack) > 0, "No builder to pop."
         return self.builderStack.pop()
 
+    @property
+    def LoopBlock(self):
+        assert hasattr(self.Builder, "_blocks") and 0 < len(self.Builder._blocks), "No loop block."
+        return self.Builder._blocks[-1][0]
+
+    @property
+    def EndBlock(self):
+        assert hasattr(self.Builder, "_blocks") and 0 < len(self.Builder._blocks), "No end block."
+        return self.Builder._blocks[-1][1]
+
+    def PushBlocks(self, loopBlock, endBlock):
+        if not hasattr(self.Builder, "_blocks"): self.Builder._blocks = []
+        self.Builder._blocks.append((loopBlock, endBlock))
+
+    def PopBlocks(self):
+        assert hasattr(self.Builder, "_blocks") and 0 < len(self.Builder._blocks), "No block to pop."
+        return self.Builder._blocks.pop()
+
     def PushBlockState(self):
         if not hasattr(self.Builder._block, "_stateStack"): self.Builder._block._stateStack = []
         self.Builder._block._stateStack.append((self.Builder._block.instructions.copy(), self.Builder._anchor, self.scopeManager.Scope._instances.copy()))
@@ -1315,6 +1333,14 @@ class Compiler:
             assert False, f"Unknown pointer '{node["type"]}'."
 
     @Timer
+    def VisitContinue(self, node):
+        self.Builder.branch(self.LoopBlock)
+
+    @Timer
+    def VisitBreak(self, node):
+        self.Builder.branch(self.EndBlock)
+
+    @Timer
     def VisitConstructor(self, _class, ptr, params = []):
         needCopy = len(params) == 1 and params[0].type == _class.type
         hasConstructor = _class.Has(_class.RealName, arguments = params)
@@ -1716,24 +1742,26 @@ class Compiler:
     @Timer
     def VisitWhile(self, node):
         assert self.scopeManager.Scope.local, "While blocks must be defined in local scope."
-        checkBlock = self.Builder.append_basic_block()
-        whileBlock = self.Builder.append_basic_block()
+        compareBlock = self.Builder.append_basic_block()
+        loopBlock = self.Builder.append_basic_block()
         endBlock = self.Builder.append_basic_block()
+        self.PushBlocks(loopBlock, endBlock)
 
-        self.Builder.branch(checkBlock)
-        self.Builder.position_at_start(checkBlock)
+        self.Builder.branch(compareBlock)
+        self.Builder.position_at_start(compareBlock)
         condition = self.VisitValue(node["condition"])
-        self.Builder.cbranch(condition, whileBlock, endBlock)
+        self.Builder.cbranch(condition, loopBlock, endBlock)
 
-        self.Builder.position_at_start(whileBlock)
+        self.Builder.position_at_start(loopBlock)
         self.scopeManager.PushScope(Scope(local = True))
         self.Compile(node["body"])
         self.scopeManager.PopScope()
 
         if not self.Builder.block.is_terminated:
-            self.Builder.branch(checkBlock)
+            self.Builder.branch(compareBlock)
 
         self.Builder.position_at_start(endBlock)
+        self.PopBlocks()
 
     @Timer
     def VisitReturn(self, node):

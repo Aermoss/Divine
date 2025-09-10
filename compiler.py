@@ -463,6 +463,29 @@ class OffsetOf(CompileTimeFunction):
         _class, sizeof = self.compiler.scopeManager.Get(type.name), self.compiler.scopeManager.Get("sizeof")
         return ir.Constant(ir.IntType(64), sum([sizeof(i).constant for i in type.elements[:_class.Index(element["value"])]]))
 
+class AddressOf(CompileTimeFunction):
+    def __init__(self, compiler):
+        super().__init__(compiler)
+
+    def __call__(self, _value):
+        try:
+            value = self.compiler.VisitPointer(_value)
+
+        except:
+            value = self.compiler.VisitValue(_value)
+
+        if isinstance(value, ir.LoadInstr):
+            self.compiler.Builder.remove(value)
+            value = value.operands[0]
+
+        if isinstance(value, ir.Constant) and hasattr(value, "_ptr"):
+            value = value._ptr
+
+        assert value.type.is_pointer and value.type.pointee == _value.type, \
+            f"Failed to get address of '{value}'."
+
+        return value
+
 class DeclType(CompileTimeFunction):
     def __init__(self, compiler):
         super().__init__(compiler)
@@ -616,11 +639,12 @@ class Compiler:
         for name, type in self.primitiveTypes.items():
             self.scopeManager.Set(name, type)
 
+        self.scopeManager.Set("decltype", DeclType(self))
         self.scopeManager.Set("sizeof", sizeof := SizeOf(self))
         self.scopeManager.Set("alignof", alignof := AlignOf(self))
         self.scopeManager.Set("offsetof", offsetof := OffsetOf(self))
-        self.sizeof, self.alignof, self.offsetof = sizeof, alignof, offsetof
-        self.scopeManager.Set("decltype", DeclType(self))
+        self.scopeManager.Set("addressof", addressof := AddressOf(self))
+        self.sizeof, self.alignof, self.offsetof, self.addressof = sizeof, alignof, offsetof, addressof
         self.memcpy = ir.Function(self.module, ir.FunctionType(ir.VoidType(), [ir.PointerType(), ir.PointerType(), ir.IntType(64), ir.IntType(1)]), "llvm.memcpy.p0.p0.i64")
         self.malloc = ir.Function(self.module, ir.FunctionType(ir.IntType(8).as_pointer(), [ir.IntType(64)]), "malloc")
         self.free = ir.Function(self.module, ir.FunctionType(ir.VoidType(), [ir.IntType(8).as_pointer()]), "free")
@@ -659,15 +683,6 @@ class Compiler:
     def PopBlocks(self):
         assert hasattr(self.Builder, "_blocks") and 0 < len(self.Builder._blocks), "No block to pop."
         return self.Builder._blocks.pop()
-
-    def PushBlockState(self):
-        if not hasattr(self.Builder._block, "_stateStack"): self.Builder._block._stateStack = []
-        self.Builder._block._stateStack.append((self.Builder._block.instructions.copy(), self.Builder._anchor, self.scopeManager.Scope._instances.copy()))
-
-    def PopBlockState(self):
-        assert hasattr(self.Builder._block, "_stateStack") and len(self.Builder._block._stateStack) > 0, "No block state to pop."
-        self.Builder._block.instructions, self.Builder._anchor, self.scopeManager.Scope._instances = self.Builder._block._stateStack.pop()
-        return (self.Builder._block.instructions, self.Builder._anchor, self.scopeManager.Scope._instances)
 
     def Compile(self, ast):
         for node in ast:
@@ -1107,23 +1122,25 @@ class Compiler:
 
         elif node["type"] in ["identifier"]:
             assert self.scopeManager.Has(node["value"]), f"Unknown type '{node["value"]}'."
-            value = self.scopeManager.Get(node["value"], types = [ir.Type, Class])
-            if isinstance(value, Class): value = value.type
-            return value
+            type = self.scopeManager.Get(node["value"], types = [ir.Type, Class])
+            if isinstance(type, Class): type = type.type
+            return type
 
         elif node["type"] in ["call"]:
-            value = self.VisitCall(node)
-            if isinstance(value, Class): value = value.type
-            assert isinstance(value, ir.Type), "Expected a type."
-            return value
+            type = self.VisitCall(node)
+            if isinstance(type, Class): type = type.type
+            assert isinstance(type, ir.Type), "Expected a type."
+            return type
 
         elif node["type"] in ["pointer"]:
-            return ir.PointerType() if isinstance(value := self.VisitType(node["value"]), ir.VoidType) else value.as_pointer()
+            type = self.VisitType(node["value"])
+            assert not hasattr(type, "_reference"), f"Cannot have a pointer to a reference."
+            return ir.PointerType() if isinstance(type, ir.VoidType) else type.as_pointer()
 
         elif node["type"] in ["reference"]:
-            value = self.VisitType({"type": "pointer", "value": node["value"]})
-            value._reference = True
-            return value
+            type = self.VisitType({"type": "pointer", "value": node["value"]})
+            type._reference = True
+            return type
 
         elif node["type"] in ["array"]:
             if node["size"]:
@@ -1237,9 +1254,10 @@ class Compiler:
             _global.linkage, _global.global_constant, _global.unnamed_addr, \
                 _global.initializer, _global.align = "private", True, True, constant, 1
             self.stringCache[node["value"]] = _global
+            constant._ptr = _global
             return _global
 
-        elif node["type"] in ["reference"]:
+        elif node["type"] in ["address of"]:
             return self.VisitPointer(node["value"])
 
         else:
@@ -1346,11 +1364,7 @@ class Compiler:
         hasConstructor = _class.Has(_class.RealName, arguments = params)
 
         if needCopy and not hasConstructor:
-            if isinstance(params[0], ir.LoadInstr):
-                self.Builder.remove(params[0])
-                params[0] = params[0].operands[0]
-
-            assert params[0].type == _class.type.as_pointer(), "Type mismatch."
+            params[0] = self.addressof(params[0])
 
         for name, value in _class.Elements.items():
             index = _class.Index(name)
@@ -1388,6 +1402,7 @@ class Compiler:
         _global = ir.GlobalVariable(self.module, type, node["name"])
         _global.global_constant, _global.initializer, _global.align = True, value, self.alignof(type).constant
         self.scopeManager.Set(node["name"], _global)
+        value._ptr = _global
 
     @Timer
     def VisitDefine(self, node):
@@ -1435,6 +1450,7 @@ class Compiler:
                         self.Builder.store(i, self.Builder.gep(ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), index)]), self.alignof(i).constant)
 
                 else:
+                    if hasattr(dataType, "_reference"): value = self.addressof(value)
                     assert value.type == dataType, f"Type mismatch for '{node['name']}'. (Expected '{dataType}', got '{value.type}'.)"
                     self.Builder.store(value, ptr, self.alignof(value).constant)
 
@@ -1448,6 +1464,10 @@ class Compiler:
 
         else:
             ptr = self.VisitPointer(node["left"])
+
+            if hasattr(ptr.type.pointee, "_reference"):
+                ptr = self.Builder.load(ptr)
+
             assert ptr.type.is_pointer, "Left side of an assignment must be a pointer."
 
             if isinstance(ptr.type.pointee, ir.BaseStructType):
@@ -1466,11 +1486,7 @@ class Compiler:
                     self.VisitCall({"value": {"type": "get element pointer", "value": ptr, "element": _class.Get("op=", arguments = [value.type])["type"].name}, "params": [ptr, value]})
 
                 elif value.type == _class.type:
-                    if isinstance(value, ir.LoadInstr):
-                        self.Builder.remove(value)
-                        value = value.operands[0]
-
-                    assert value.type == _class.type.as_pointer(), "Type mismatch."
+                    value = self.addressof(value)
 
                     for name, _ in _class.Elements.items():
                         self.VisitAssign({
@@ -1563,22 +1579,25 @@ class Compiler:
     def VisitCall(self, node):
         assert self.scopeManager.Scope.local, "Call statements must be defined in local scope."
         funcs = self.VisitPointer(node["value"])
-        func, name, highestScore = None, None, -1
+        _params = [self.VisitValue(i) for i in node["params"]]
+        func, name, best = None, None, -1
 
         if not isinstance(funcs, list):
             funcs = [funcs]
 
         for index, _func in enumerate(funcs):
-            params = node["params"].copy()
-            _index, score = 0, 1
+            params = _params.copy()
 
             if isinstance(_func, CompileTimeFunction):
                 func = _func
+                assert len(funcs) == 1, "Cannot overload compile-time functions."
                 break
 
             if isinstance(_func, dict) and "access" in _func:
+                if _func["pointer"] not in node["params"]:
+                    params = [self.VisitValue(_func["pointer"])] + params
+
                 assert _func["access"] == "public", "Access violation."
-                if _func["pointer"] not in params: params = [_func["pointer"]] + params
                 _func = _func["type"]
 
             else:
@@ -1588,7 +1607,7 @@ class Compiler:
             if not isinstance(_func, ir.Function):
                 _func = self.Builder.load(_func)
 
-            name = _func.name
+            name, _index, score = _func.name, 0, 0
 
             for j in _func.function_type.args:
                 if hasattr(j, "_sret"):
@@ -1598,13 +1617,9 @@ class Compiler:
                     score = -1
                     break
 
-                self.PushBlockState()
-                value = self.VisitValue(params[_index])
-                self.PopBlockState()
-
-                _index += 1
                 target = j._byval if hasattr(j, "_byval") else j
-                type = self.ProcessType(value.type)
+                type = self.ProcessType(params[_index].type)
+                _index += 1
 
                 if hasattr(target, "_reference"):
                     target = target.pointee
@@ -1618,8 +1633,8 @@ class Compiler:
             if len(params) < _index if _func.function_type.var_arg else len(params) != _index:
                 continue
 
-            if score > highestScore:
-                func, highestScore = _func, score
+            if best < score:
+                func, best = _func, score
 
         assert func is not None, f"Invalid arguments for: '{name}'."
 
@@ -1644,14 +1659,14 @@ class Compiler:
                 args.append(_return)
                 index += 1
 
-        for i in params:
+        for value in params:
             index += 1
 
             if isinstance(func, ir.Function) and index < len(func.args):
                 argument = func.args[index].type
 
                 if hasattr(argument, "_byval"):
-                    value = self.VisitPointer(i)
+                    value = self.addressof(value)
                     current = self.Builder.block
                     self.Builder.position_at_start(self.Builder.function.entry_basic_block)
                     _class = self.scopeManager.Get(value.type.pointee.name)
@@ -1670,19 +1685,15 @@ class Compiler:
                         args.append(value)
 
                 else:
-                    value = self.TryPass(self.VisitValue(i))
+                    value = self.TryPass(value)
 
                     if hasattr(argument, "_reference"):
-                        if isinstance(value, ir.LoadInstr):
-                            self.Builder.remove(value)
-                            value = value.operands[0]
-
-                        assert value.type.is_pointer, "Expected a pointer."
+                        value = self.addressof(value)
 
                     args.append(value)
 
             else:
-                args.append(self.TryPass(self.VisitValue(i)))
+                args.append(self.TryPass(value))
 
         result = self.Builder.call(func, args)
 
@@ -1704,40 +1715,6 @@ class Compiler:
             ptr._return, result = True, self.Builder.load(ptr)
 
         return result
-
-    @Timer
-    def VisitFor(self, node):
-        assert self.scopeManager.Scope.local, "For blocks must be defined in local scope."
-        forBlock = self.Builder.append_basic_block()
-        endBlock = self.Builder.append_basic_block()
-
-        if node["declaration"]:
-            self.Compile(node["declaration"])
-
-        if not node["condition"]:
-            self.Builder.branch(forBlock)
-
-        else:
-            condition = self.VisitValue(node["condition"])
-            self.Builder.cbranch(condition, forBlock, endBlock)
-
-        self.Builder.position_at_start(forBlock)
-        self.scopeManager.PushScope(Scope(local = True))
-        self.Compile(node["body"])
-        self.scopeManager.PopScope()
-
-        if not self.Builder.block.is_terminated:
-            if node["iteration"]:
-                self.Compile(node["iteration"])
-
-            if not node["condition"]:
-                self.Builder.branch(forBlock)
-
-            else:
-                condition = self.VisitValue(node["condition"])
-                self.Builder.cbranch(condition, forBlock, endBlock)
-
-        self.Builder.position_at_start(endBlock)
 
     @Timer
     def VisitWhile(self, node):

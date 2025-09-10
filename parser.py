@@ -22,7 +22,7 @@ class Parser(sly.Parser):
         ("left", "MUL", "DIV", "MOD"),
 
         ("right", "NOT", "BITWISE_NOT"),
-        ("right", "UMINUS", "REFERENCE", "DEREFERENCE"),
+        ("right", "UNARY_MINUS", "ADDRESS_OF", "DEREFERENCE"),
 
         ("left", "DOT", "ARROW"),
         ("left", "LPAREN", "LBRACKET"),
@@ -584,13 +584,13 @@ class Parser(sly.Parser):
     def Expr(self, p):
         return {"type": "bitwise not", "value": p.Expr}
 
-    @_("MINUS Expr %prec UMINUS")
+    @_("MINUS Expr %prec UNARY_MINUS")
     def Expr(self, p):
         return {"type": "negate", "value": p.Expr}
 
-    @_("BITWISE_AND Expr %prec REFERENCE")
+    @_("BITWISE_AND Expr %prec ADDRESS_OF")
     def Expr(self, p):
-        return {"type": "reference", "value": p.Expr}
+        return {"type": "address of", "value": p.Expr}
 
     @_("MUL Expr %prec DEREFERENCE")
     def Expr(self, p):

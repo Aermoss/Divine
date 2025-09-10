@@ -325,10 +325,14 @@ class Parser(sly.Parser):
     def DataType(self, p):
         return {"type": "template", "value": p.DataType, "params": p.TypeParams}
 
+    @_("DataType BITWISE_AND")
+    def DataType(self, p):
+        return {"type": "reference", "value": p.DataType}
+
     @_("FUNC LPAREN FuncParams RPAREN ARROW DataType")
     def DataType(self, p):
         return {"type": "function", "return": p.DataType, "params": [i["type"] for i in p.FuncParams]}
-    
+
     @_("FUNC LPAREN FuncParams RPAREN")
     def DataType(self, p):
         return {"type": "function", "return": "void", "params": [i["type"] for i in p.FuncParams]}
@@ -386,7 +390,7 @@ class Parser(sly.Parser):
         return {"type": "three dot"}
 
     @_("PLUS", "MINUS", "MUL", "DIV", "MOD", "LSHIFT", "RSHIFT", "BITWISE_XOR", "AND", "OR", "BITWISE_AND", "BITWISE_OR", "BITWISE_NOT", "EQUAL", "NOT_EQUAL",
-       "GREATER", "LESS", "GREATER_EQUAL", "LESS_EQUAL", "ARROW", "NOT", "ASSIGN", "LPAREN RPAREN", "LBRACKET RBRACKET", "NEW", "DELETE", "COLON COLON", "COMMA",
+       "GREATER", "LESS", "GREATER_EQUAL", "LESS_EQUAL", "ARROW", "NOT", "ASSIGN", "LPAREN RPAREN", "LBRACKET RBRACKET", "NEW", "DEL", "COLON COLON", "COMMA",
        "PLUS_ASSIGN", "MINUS_ASSIGN", "MUL_ASSIGN", "DIV_ASSIGN", "MOD_ASSIGN", "LSHIFT_ASSIGN", "RSHIFT_ASSIGN", "XOR_ASSIGN", "AND_ASSIGN", "OR_ASSIGN")
     def FuncOperator(self, p):
         return p[0]
@@ -496,6 +500,22 @@ class Parser(sly.Parser):
     def Expr(self, p):
         return {"type": "get", "value": p.Expr0, "index": p.Expr1}
 
+    @_("NEW DataType")
+    def Expr(self, p):
+        return {"type": "new", "value": p.DataType, "count": None}
+
+    @_("NEW DataType LBRACKET Expr RBRACKET")
+    def Expr(self, p):
+        return {"type": "new", "value": p.DataType, "count": p.Expr}
+
+    @_("DEL Expr")
+    def Expr(self, p):
+        return {"type": "delete", "value": p.Expr, "array": False}
+
+    @_("DEL LBRACKET RBRACKET Expr")
+    def Expr(self, p):
+        return {"type": "delete", "value": p.Expr, "array": True}
+
     @_("Expr AS DataType %prec CAST")
     def Expr(self, p):
         return {"type": "cast", "value": p.Expr, "target": p.DataType}
@@ -544,9 +564,9 @@ class Parser(sly.Parser):
 
     @_("CHAR")
     def Expr(self, p):
-        char = p.CHAR[1:-1].replace("\\n", "\n").replace("\\t", "\t").replace("\\r", "\r").replace("\\0", "\0").replace("\\'", "'").replace('\\"', '"')
+        char = p.CHAR[1:-1].replace("\\n", "\n").replace("\\t", "\t").replace("\\r", "\r").replace("\\0", "\0").replace("\\'", "'").replace('\\"', '"').replace("\\\\", "\\")
         assert len(char) == 1, "Expected a single character."
-        return {"type": "char", "value": ord(char)}
+        return {"type": "i8", "value": ord(char)}
 
     @_("TRUE", "FALSE")
     def Expr(self, p):

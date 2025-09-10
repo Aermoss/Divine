@@ -7,7 +7,7 @@ from compiler import Compiler
 
 def main(argv):
     lexer, parser, compiler = Lexer(), Parser(), Compiler()
-    parser.parse(lexer.Lex(open(argv[1], "r").read()))
+    parser.parse(lexer.Lex(open(argv[1], "r", encoding = "utf-8").read()))
     compiler.includePaths.append("./include")
     module = compiler.Compile(parser.ast["body"])
     module.name = os.path.splitext(os.path.basename(argv[1]))[0]
@@ -18,12 +18,12 @@ def main(argv):
     else: libDirs, libs = ["/link"] + [f"/LIBPATH:{os.path.abspath(dir).replace("/", "\\")}" for dir in libDirs], [f"{lib}.lib" for lib in libs]
     workDir, fileName = os.getcwd(), os.path.splitext(argv[1])[0]
 
-    with open(f"{fileName}.llvm", "w") as file:
+    with open(f"{fileName}.llvm", "w", encoding = "utf-8") as file:
         file.write(str(module))
 
     os.chdir(tempfile.gettempdir())
 
-    with open(f"{fileName}.llvm", "w") as file:
+    with open(f"{fileName}.llvm", "w", encoding = "utf-8") as file:
         file.write(str(module))
 
     result = subprocess.run(["opt", f"{fileName}.llvm", "-o", f"{fileName}.bc", "-O0"] + (["-O0"] if debug else []))

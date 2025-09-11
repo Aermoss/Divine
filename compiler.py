@@ -1290,16 +1290,26 @@ class Compiler:
             _class = self.scopeManager.Get(value.type.pointee.name, types = [Class])
             assert _class.Has(node["element"]), f"Class '{value.type.pointee.name}' does not contain member '{node["element"]}'."
             element = _class.Get(node["element"]).copy()
-            assert not (element["access"] != "public" and _class != self.scopeManager.Class), "Access violation."
 
-            if isinstance(element["type"], ir.Function):
-                if self.scopeManager.Class == _class:
-                    element["access"] = "public"
+            if isinstance(element, list) or isinstance(element["type"], ir.Function):
+                elements, functions = element if isinstance(element, list) else [element], []
 
-                element["pointer"] = value
-                return element
+                for i in elements:
+                    if i["access"] != "public" and _class != self.scopeManager.Class:
+                        continue
 
-            return self.Builder.gep(value, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), _class.Index(node["element"]))])
+                    if self.scopeManager.Class == _class:
+                        i["access"] = "public"
+
+                    i["pointer"] = value
+                    functions.append(i)
+
+                assert not (elements and not functions), "Access violation."
+                return functions if len(functions) > 1 else functions[0]
+
+            else:
+                assert not (element["access"] != "public" and _class != self.scopeManager.Class), "Access violation."
+                return self.Builder.gep(value, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), _class.Index(node["element"]))])
 
         elif node["type"] in ["list initialization"]:
             _class = self.scopeManager.Get(node["name"], types = [Class])

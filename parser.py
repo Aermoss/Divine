@@ -484,13 +484,17 @@ class Parser(sly.Parser):
     def Expr(self, p):
         return {"type": "identifier", "value": p.QualifiedName}
 
-    @_("Expr DOT NAME")
+    @_("OPERATOR FuncOperator")
     def Expr(self, p):
-        return {"type": "get element", "value": p.Expr, "element": p.NAME}
+        return {"type": "identifier", "value": f"op{p.FuncOperator}"}
 
-    @_("Expr ARROW NAME")
+    @_("Expr DOT NAME", "Expr DOT OPERATOR FuncOperator")
     def Expr(self, p):
-        return {"type": "get element pointer", "value": p.Expr, "element": p.NAME}
+        return {"type": "get element", "value": p.Expr, "element": f"op{p.FuncOperator}" if len(p) > 3 else p.NAME}
+
+    @_("Expr ARROW NAME", "Expr ARROW OPERATOR FuncOperator")
+    def Expr(self, p):
+        return {"type": "get element pointer", "value": p.Expr, "element": f"op{p.FuncOperator}" if len(p) > 3 else p.NAME}
 
     @_("Expr LPAREN CallParams RPAREN")
     def Expr(self, p):

@@ -1125,7 +1125,7 @@ class Compiler:
         elif node["type"] in ["pointer"]:
             type = self.VisitType(node["value"])
             assert not hasattr(type, "_reference"), f"Cannot have a pointer to a reference."
-            return ir.PointerType() if isinstance(type, ir.VoidType) else type.as_pointer()
+            return ir.IntType(8).as_pointer() if isinstance(type, ir.VoidType) else type.as_pointer()
 
         elif node["type"] in ["reference"]:
             type = self.VisitType({"type": "pointer", "value": node["value"]})

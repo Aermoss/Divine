@@ -38,49 +38,49 @@ def RegisterTest(file: str, type: type) -> None:
 
     return __inner__
 
-@RegisterTest("expr.div", ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_double))
+@RegisterTest("Expression.div", ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_double))
 def SimpleExpression(func) -> None:
     result = func(x := 7)
 
     assert result == (expected := x + 2.32), \
         f"Expected {expected}, but got {result}."
 
-@RegisterTest("expr.div", ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_double))
+@RegisterTest("Expression.div", ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_double))
 def ComplexExpression(func) -> None:
     result = func(x := 9)
 
     assert result == (expected := 8.0 + (x + 1) * 2.5), \
         f"Expected {expected}, but got {result}."
 
-@RegisterTest("expr.div", ctypes.CFUNCTYPE(ctypes.c_bool, ctypes.c_bool, ctypes.c_bool))
+@RegisterTest("Expression.div", ctypes.CFUNCTYPE(ctypes.c_bool, ctypes.c_bool, ctypes.c_bool))
 def SimpleLogicalExpression(func) -> None:
     result = func(x := True, y := True)
 
     assert result == (expected := x and y), \
         f"Expected {expected}, but got {result}."
     
-@RegisterTest("expr.div", ctypes.CFUNCTYPE(ctypes.c_bool, ctypes.c_bool, ctypes.c_bool, ctypes.c_bool))
+@RegisterTest("Expression.div", ctypes.CFUNCTYPE(ctypes.c_bool, ctypes.c_bool, ctypes.c_bool, ctypes.c_bool))
 def ComplexLogicalExpression(func) -> None:
     result = func(x := True, y := False, z := True)
 
     assert result == (expected := x and y or z), \
         f"Expected {expected}, but got {result}."
 
-@RegisterTest("expr.div", ctypes.CFUNCTYPE(ctypes.c_int64, ctypes.c_int64, ctypes.c_int64))
+@RegisterTest("Expression.div", ctypes.CFUNCTYPE(ctypes.c_int64, ctypes.c_int64, ctypes.c_int64))
 def SimpleBitwiseExpression(func) -> None:
     result = func(x := 1, y := 2)
 
     assert result == (expected := x & y), \
         f"Expected {expected}, but got {result}."
 
-@RegisterTest("expr.div", ctypes.CFUNCTYPE(ctypes.c_int64, ctypes.c_int64, ctypes.c_int64, ctypes.c_int64))
+@RegisterTest("Expression.div", ctypes.CFUNCTYPE(ctypes.c_int64, ctypes.c_int64, ctypes.c_int64, ctypes.c_int64))
 def ComplexBitwiseExpression(func) -> None:
     result = func(x := 1, y := 2, z := 3)
 
     assert result == (expected := x << y | z & 0xFF), \
         f"Expected {expected}, but got {result}."
 
-@RegisterTest("flow.div", ctypes.CFUNCTYPE(ctypes.c_int64, ctypes.c_int32))
+@RegisterTest("FlowControl.div", ctypes.CFUNCTYPE(ctypes.c_int64, ctypes.c_int32))
 def IfBlockTest(func) -> None:
     result = func(5)
 
@@ -97,35 +97,35 @@ def IfBlockTest(func) -> None:
     assert result == (expected := 5), \
         f"Expected {expected}, but got {result}."
 
-@RegisterTest("flow.div", ctypes.CFUNCTYPE(ctypes.c_int64, ctypes.c_int32))
+@RegisterTest("FlowControl.div", ctypes.CFUNCTYPE(ctypes.c_int64, ctypes.c_int32))
 def WhileBlockTest(func) -> None:
     result = func(5)
 
     assert result == (expected := 10), \
         f"Expected {expected}, but got {result}."
 
-@RegisterTest("conv.div", ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_float, ctypes.c_float))
+@RegisterTest("Convention.div", ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_float, ctypes.c_float))
 def ByValSmallArgTest(func) -> None:
     result = func(x := 5.0, y := 10.0)
 
     assert result == (expected := x + y), \
         f"Expected {expected}, but got {result}."
 
-@RegisterTest("conv.div", ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_float, ctypes.c_float))
+@RegisterTest("Convention.div", ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_float, ctypes.c_float))
 def ByValSmallRetTest(func) -> None:
     result = func(x := 2.0, y := 3.0)
 
     assert result == (expected := x + y), \
         f"Expected {expected}, but got {result}."
 
-@RegisterTest("conv.div", ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_float, ctypes.c_float, ctypes.c_float))
+@RegisterTest("Convention.div", ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_float, ctypes.c_float, ctypes.c_float))
 def ByValBigArgTest(func) -> None:
     result = func(x := 5.0, y := 10.0, z := 15.0)
 
     assert result == (expected := x + y + z), \
         f"Expected {expected}, but got {result}."
 
-@RegisterTest("conv.div", ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_float, ctypes.c_float, ctypes.c_float))
+@RegisterTest("Convention.div", ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_float, ctypes.c_float, ctypes.c_float))
 def ByValBigRetTest(func) -> None:
     result = func(x := 2.0, y := 3.0, z := 4.0)
 
@@ -138,7 +138,7 @@ class String(ctypes.Structure):
         ("length", ctypes.c_size_t)
     ]
 
-@RegisterTest("temp.div", ctypes.CFUNCTYPE(String, ctypes.c_char_p))
+@RegisterTest("Template.div", ctypes.CFUNCTYPE(String, ctypes.c_char_p))
 def StringTest(func) -> None:
     result = func((input := "Test").encode())
     data = ctypes.cast(result.data, ctypes.POINTER(ctypes.c_char * result.length))
@@ -148,7 +148,7 @@ def StringTest(func) -> None:
 
     ctypes.cdll.msvcrt.free(result.data)
 
-@RegisterTest("temp.div", ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_double))
+@RegisterTest("Template.div", ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_double))
 def VectorTest(func) -> None:
     result = func(input := 5.0)
 

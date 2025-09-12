@@ -943,7 +943,7 @@ class Compiler:
                         break
 
                     else:
-                        path = os.path.join(path, "entry.div")
+                        path = os.path.join(path, "Entry.div")
                         assert os.path.exists(path), "Module entry point not found."
                         if path in self.__includedFiles: break
                         else: self.__includedFiles.append(path)
@@ -1433,7 +1433,7 @@ class Compiler:
 
                 if dataType.is_pointer and (isinstance(value, list) or value.type.is_pointer and not value.type.is_opaque and isinstance(value.type.pointee, ir.ArrayType)):
                     if not isinstance(value, list): assert value.type.pointee.element == dataType.pointee, f"Type mismatch. (Expected '{dataType.pointee}', got '{value.type.pointee.element}'.)"
-                    dataType = ir.ArrayType(dataType.pointee, len(value) if isinstance(value, list) else value.type.pointee.count).as_pointer()
+                    dataType = ir.ArrayType(dataType.pointee, len(value) if isinstance(value, list) else value.type.pointee.count)
 
             current = self.Builder.block
             self.Builder.position_at_start(self.Builder.function.entry_basic_block)
@@ -1610,7 +1610,7 @@ class Compiler:
                 if hasattr(_func, "_parentClass") and _func._parentClass != self.scopeManager.Class:
                     assert _func._parentClass.Get(Mangler.Demangle(_func.name)[0])["access"] == "public", "Access violation."
 
-            if not isinstance(_func, ir.Function):
+            if isinstance(_func, ir.AllocaInstr):
                 _func = self.Builder.load(_func)
 
             name, _index, score = _func.name, 0, 0

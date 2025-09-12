@@ -333,6 +333,14 @@ class Parser(sly.Parser):
     def DataType(self, p):
         return {"type": "function", "return": "void", "params": [i["type"] for i in p.FuncParams]}
 
+    @_("FUNC LPAREN TypeParams RPAREN ARROW DataType")
+    def DataType(self, p):
+        return {"type": "function", "return": p.DataType, "params": p.TypeParams}
+
+    @_("FUNC LPAREN TypeParams RPAREN")
+    def DataType(self, p):
+        return {"type": "function", "return": "void", "params": p.TypeParams}
+
     @_("NAME LBRACKET RBRACKET")
     def ArrayName(self, p):
         return {"type": "array", "value": None, "size": None}, p.NAME

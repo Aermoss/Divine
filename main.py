@@ -13,7 +13,8 @@ def main(argv):
     module.name = os.path.splitext(os.path.basename(argv[1]))[0]
     module.triple = llvm.get_default_triple()
 
-    libDirs, libs, debug, msvc = ["./lib"], ["raylibdll", "legacy_stdio_definitions", "msvcrt", "ucrt", "vcruntime"], True, True
+    _llvm = ["LLVM-C"]
+    libDirs, libs, debug, msvc = ["./lib"], _llvm + ["raylibdll", "legacy_stdio_definitions", "msvcrt", "ucrt", "vcruntime"], True, True
     if not msvc: libDirs, libs = [f"-L{os.path.abspath(dir).replace("\\", "/")}" for dir in libDirs], [f"-l{lib}" for lib in libs]
     else: libDirs, libs = ["/link"] + [f"/LIBPATH:{os.path.abspath(dir).replace("/", "\\")}" for dir in libDirs], [f"{lib}.lib" for lib in libs]
     workDir, fileName = os.getcwd(), os.path.splitext(argv[1])[0]

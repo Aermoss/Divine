@@ -5,24 +5,65 @@ func main() -> i32 {
     let module: LLVMModuleRef = LLVMModuleCreateWithNameInContext("my_module", context);
     let builder: LLVMBuilderRef = LLVMCreateBuilderInContext(context);
 
-    let return_type: LLVMTypeRef = LLVMInt32Type();
-    let function_type: LLVMTypeRef = LLVMFunctionType(return_type, null, 0u32, 0i32);
+    let param_types[]: LLVMTypeRef = { LLVMInt32TypeInContext(context), LLVMInt32TypeInContext(context) };
+    let ret_type: LLVMTypeRef = LLVMFunctionType(LLVMInt32TypeInContext(context), param_types, 2, 0);
+    let add_fn: LLVMValueRef = LLVMAddFunction(module, "add", ret_type);
+    LLVMSetFunctionCallConv(add_fn, LLVMCallConv::LLVMCCallConv);
 
-    let main_function: LLVMValueRef = LLVMAddFunction(module, "main", function_type);
-    LLVMSetLinkage(main_function, LLVMLinkage::LLVMExternalLinkage);
+    let a: LLVMValueRef = LLVMGetParam(add_fn, 0);
+    let b: LLVMValueRef = LLVMGetParam(add_fn, 1);
+    LLVMSetValueName2(a, "a", 1i64);
+    LLVMSetValueName2(b, "b", 1i64);
 
-    let entry_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(context, main_function, "entry");
-    LLVMPositionBuilderAtEnd(builder, entry_block);
+    let entry: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(context, add_fn, "entry");
+    LLVMPositionBuilderAtEnd(builder, entry);
+    let sum: LLVMValueRef = LLVMBuildAdd(builder, a, b, "sum");
+    LLVMBuildRet(builder, sum);
 
-    let return_value: LLVMValueRef = LLVMConstInt(LLVMInt32Type(), 0u64, 0i32);
-    LLVMBuildRet(builder, return_value);
+    let string: i8* = LLVMPrintModuleToString(module);
+    printf("%s\n", string);
+    LLVMDisposeMessage(string);
 
-    let ir_string: i8* = LLVMPrintModuleToString(module);
-    printf("%s\n", ir_string);
+    let err: i8* = null;
 
-    LLVMDisposeMessage(ir_string);
+    if (LLVMVerifyModule(module, LLVMVerifierFailureAction::LLVMAbortProcessAction, &err) != 0) {
+        printf("Module verification failed: '%s'.\n", err);
+        LLVMDisposeMessage(err);
+        ret 1;
+    }
+
+    LLVMDisposeMessage(err);
+
+    LLVMInitializeNativeTarget();
+    LLVMInitializeNativeAsmPrinter();
+    LLVMInitializeNativeAsmParser();
+
+    let options: LLVMMCJITCompilerOptions;
+    LLVMInitializeMCJITCompilerOptions(&options, sizeof(options));
+    options.OptLevel = 2u32;
+
+    let engine: LLVMExecutionEngineRef = null;
+    err = null;
+
+    if (LLVMCreateMCJITCompilerForModule(&engine, module, &options, sizeof(options), &err) != 0) {
+        printf("Failed to create execution engine: '%s'.\n", err);
+        LLVMDisposeMessage(err);
+        ret 1;
+    }
+
+    LLVMDisposeMessage(err);
+
+    let addr: u64 = LLVMGetFunctionAddress(engine, "add");
+
+    if (addr == 0u64) {
+        printf("Couldn't get function address.\n");
+        ret 1;
+    }
+
+    printf("sum(4, 3) = %d\n", (addr as func(i32, i32) -> i32)(4, 3));
+
     LLVMDisposeBuilder(builder);
-    LLVMDisposeModule(module);
+    LLVMDisposeExecutionEngine(engine);
     LLVMContextDispose(context);
     ret 0i32;
 }

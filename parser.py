@@ -194,13 +194,9 @@ class Parser(sly.Parser):
     def Statement(self, p):
         return {"type": p[0].lower()}
 
-    @_("INCLUDE IncludeParams SEMICOLON")
-    def Statement(self, p):
-        return {"type": "include", "modules": p.IncludeParams, "namespace": True}
-
     @_("INCLUDE IncludeParams COLON MUL SEMICOLON")
     def Statement(self, p):
-        return {"type": "include", "modules": p.IncludeParams, "namespace": False}
+        return {"type": "include", "modules": p.IncludeParams}
 
     @_("QualifiedNameTilde LPAREN FuncParams RPAREN LBRACE Statements RBRACE")
     def Statement(self, p):
@@ -343,8 +339,15 @@ class Parser(sly.Parser):
 
     @_("NAME LBRACKET INTEGER RBRACKET")
     def ArrayName(self, p):
-        base = 16 if p.INTEGER.startswith("0x") else (8 if p.INTEGER.startswith("0o") else (2 if p.INTEGER.startswith("0b") else 10))
-        return {"type": "array", "value": None, "size": int(p.INTEGER.replace("0x", "").replace("0o", "").replace("0b", ""), base)}, p.NAME
+        value = p.INTEGER
+
+        for signed in ["i", "u"]:
+            if signed in value:
+                value, bits = p.INTEGER.split(signed)
+                assert bits in ["8", "16", "32", "64", "128"], f"Invalid integer bit size: '{bits}'."
+
+        base = 16 if value.startswith("0x") else (8 if value.startswith("0o") else (2 if value.startswith("0b") else 10))
+        return {"type": "array", "value": None, "size": int(value[2:] if base != 10 else value, base)}, p.NAME
 
     @_("ArrayName LBRACKET RBRACKET")
     def ArrayName(self, p):
@@ -352,8 +355,15 @@ class Parser(sly.Parser):
 
     @_("ArrayName LBRACKET INTEGER RBRACKET")
     def ArrayName(self, p):
-        base = 16 if p.INTEGER.startswith("0x") else (8 if p.INTEGER.startswith("0o") else (2 if p.INTEGER.startswith("0b") else 10))
-        return {"type": "array", "value": p.ArrayName[0], "size": int(p.INTEGER.replace("0x", "").replace("0o", "").replace("0b", ""), base)}, p.ArrayName[1]
+        value = p.INTEGER
+
+        for signed in ["i", "u"]:
+            if signed in value:
+                value, bits = p.INTEGER.split(signed)
+                assert bits in ["8", "16", "32", "64", "128"], f"Invalid integer bit size: '{bits}'."
+
+        base = 16 if value.startswith("0x") else (8 if value.startswith("0o") else (2 if value.startswith("0b") else 10))
+        return {"type": "array", "value": p.ArrayName[0], "size": int(value[2:] if base != 10 else value, base)}, p.ArrayName[1]
 
     @_("IncludeParams COMMA IncludeParam")
     def IncludeParams(self, p):
@@ -524,6 +534,10 @@ class Parser(sly.Parser):
     def Expr(self, p):
         return {"type": "cast", "value": p.Expr, "target": p.DataType}
 
+    @_("Expr AS LPAREN DataType RPAREN %prec CAST")
+    def Expr(self, p):
+        return {"type": "cast", "value": p.Expr, "target": p.DataType}
+
     @_("LBRACE ExprList RBRACE")
     def Expr(self, p):
         return {"type": "initializer list", "body": p.ExprList}
@@ -564,11 +578,11 @@ class Parser(sly.Parser):
 
     @_("STRING")
     def Expr(self, p):
-        return {"type": "string", "value": p.STRING[1:-1].replace("\\n", "\n").replace("\\t", "\t").replace("\\r", "\r").replace("\\0", "\0").replace("\\'", "'").replace('\\"', '"')}
+        return {"type": "string", "value": p.STRING[1:-1].encode("utf-8").decode("unicode_escape")}
 
     @_("CHAR")
     def Expr(self, p):
-        char = p.CHAR[1:-1].replace("\\n", "\n").replace("\\t", "\t").replace("\\r", "\r").replace("\\0", "\0").replace("\\'", "'").replace('\\"', '"').replace("\\\\", "\\")
+        char = p.CHAR[1:-1].encode("utf-8").decode("unicode_escape")
         assert len(char) == 1, "Expected a single character."
         return {"type": "i8", "value": ord(char)}
 

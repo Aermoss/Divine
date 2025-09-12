@@ -929,7 +929,7 @@ class Compiler:
     def VisitInclude(self, node):
         assert not self.scopeManager.Scope.local, "Includes must be made in global scope."
 
-        for i in node["modules"]:
+        for i in node["modules"].copy():
             source = None
 
             for j in ["./"] + self.includePaths:
@@ -937,7 +937,7 @@ class Compiler:
 
                 if os.path.exists(path):
                     if os.path.isfile(path):
-                        if path in self.__includedFiles: return
+                        if path in self.__includedFiles: break
                         else: self.__includedFiles.append(path)
                         source = open(path, "r").read()
                         break
@@ -945,22 +945,18 @@ class Compiler:
                     else:
                         path = os.path.join(path, "entry.div")
                         assert os.path.exists(path), "Module entry point not found."
-                        if path in self.__includedFiles: return
+                        if path in self.__includedFiles: break
                         else: self.__includedFiles.append(path)
                         source = open(path, "r").read()
                         break
 
+            if source is None and path in self.__includedFiles:
+                continue
+
             lexer, parser = Lexer(), Parser()
             assert source is not None, f"Module '{i}' not found."
             parser.parse(lexer.tokenize(source))
-
-            if node["namespace"]:
-                self.scopeManager.PushNamespace(i.split(".")[0])
-
             self.Compile(parser.ast["body"])
-
-            if node["namespace"]:
-                self.scopeManager.PopNamespace()
 
     @Timer
     def VisitNamespace(self, node):
@@ -1263,6 +1259,9 @@ class Compiler:
             return node
 
         elif node["type"] in ["identifier"]:
+            if self.scopeManager.Scope.Has(node["value"]):
+                return self.scopeManager.Scope.Get(node["value"])
+
             if self.scopeManager.Class is not None:
                 if self.scopeManager.Class.Has(node["value"]):
                     value = self.Builder.load(self.scopeManager.Get("this"))
@@ -1489,7 +1488,7 @@ class Compiler:
             value = self.TryPass(self.VisitValue(node["right"]))
 
             if isinstance(ptr.type.pointee, ir.BaseStructType):
-                if _class.Has(_class.RealName, arguments = [value.type]):
+                if _class.Has("op=", arguments = [value.type]):
                     self.VisitCall({"value": {"type": "get element pointer", "value": ptr, "element": _class.Get("op=", arguments = [value.type])["type"].name}, "params": [ptr, value]})
 
                 elif value.type == _class.type:

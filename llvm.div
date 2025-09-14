@@ -1,22 +1,54 @@
 include "divio", "divstr", "divvec", "divllvm" : *;
 
+class ASTNode {
+    pub a: f64
+} impl {
+    ASTNode(a: f64) {
+        this->a = a;
+    }
+};
+
+class TypeNode : ASTNode {
+    pub b: i64
+} impl {
+    TypeNode(a: f64, b: i64) : ASTNode(a) {
+        this->b = b;
+    }
+};
+
 func main() -> i32 {
+    let test: TypeNode = { 1.23f64, 42i64 };
+    printf("test.b = %d\n", test.b);
+    let nodes: Vector<ASTNode*>;
+    nodes.PushBack((&test) as (ASTNode*));
+    printf("test2.a = %f\n", nodes[0i64]->a);
+    let test3: TypeNode& = nodes[0i64] as (TypeNode*);
+    printf("test3.b = %d\n", test3.b);
+
     let context: LLVMContextRef = LLVMContextCreate();
     let module: LLVMModuleRef = LLVMModuleCreateWithNameInContext("my_module", context);
     let builder: LLVMBuilderRef = LLVMCreateBuilderInContext(context);
 
-    let param_types[]: LLVMTypeRef = { LLVMInt32TypeInContext(context), LLVMInt32TypeInContext(context) };
-    let ret_type: LLVMTypeRef = LLVMFunctionType(LLVMInt32TypeInContext(context), param_types, 2, 0);
-    let add_fn: LLVMValueRef = LLVMAddFunction(module, "add", ret_type);
-    LLVMSetFunctionCallConv(add_fn, LLVMCallConv::LLVMCCallConv);
+    let printf_params[]: LLVMTypeRef = { LLVMPointerType(LLVMInt8TypeInContext(context), 0u32) };
+    let printf_type: LLVMTypeRef = LLVMFunctionType(LLVMInt32TypeInContext(context), printf_params, 1u32, 1i32);
+    let printf_func: LLVMValueRef = LLVMAddFunction(module, "printf", printf_type);
 
-    let a: LLVMValueRef = LLVMGetParam(add_fn, 0);
-    let b: LLVMValueRef = LLVMGetParam(add_fn, 1);
-    LLVMSetValueName2(a, "a", 1i64);
-    LLVMSetValueName2(b, "b", 1i64);
+    let add_params[]: LLVMTypeRef = { LLVMInt32TypeInContext(context), LLVMInt32TypeInContext(context) };
+    let add_type: LLVMTypeRef = LLVMFunctionType(LLVMInt32TypeInContext(context), add_params, 2u32, 0i32);
+    let add_func: LLVMValueRef = LLVMAddFunction(module, "add", add_type);
 
-    let entry: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(context, add_fn, "entry");
+    let entry: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(context, add_func, "entry");
     LLVMPositionBuilderAtEnd(builder, entry);
+
+    let global_str: LLVMValueRef = LLVMBuildGlobalStringPtr(builder, "Hello from sum: %d\n", "fmt");
+    let call_params[]: LLVMValueRef = { global_str, LLVMConstInt(LLVMInt32TypeInContext(context), 42u64, 0i32) };
+    let return: LLVMValueRef = LLVMBuildCall2(builder, printf_type, printf_func, call_params, 2u32, "call");
+
+    let a: LLVMValueRef = LLVMGetParam(add_func, 0u32);
+    let b: LLVMValueRef = LLVMGetParam(add_func, 1u32);
+    LLVMSetValueName2(a, "a", 1u64);
+    LLVMSetValueName2(b, "b", 1u64);
+
     let sum: LLVMValueRef = LLVMBuildAdd(builder, a, b, "sum");
     LLVMBuildRet(builder, sum);
 
@@ -24,7 +56,7 @@ func main() -> i32 {
     printf("%s\n", string);
     LLVMDisposeMessage(string);
 
-    let err: i8* = null;
+    let mut err: i8* = null;
 
     if (LLVMVerifyModule(module, LLVMVerifierFailureAction::LLVMAbortProcessAction, &err) != 0) {
         printf("Module verification failed: '%s'.\n", err);
@@ -38,14 +70,14 @@ func main() -> i32 {
     LLVMInitializeNativeAsmPrinter();
     LLVMInitializeNativeAsmParser();
 
-    let options: LLVMMCJITCompilerOptions;
-    LLVMInitializeMCJITCompilerOptions(&options, sizeof(options));
+    let mut options: LLVMMCJITCompilerOptions;
+    LLVMInitializeMCJITCompilerOptions(&options, sizeof(options) as u64);
     options.OptLevel = 2u32;
 
     let engine: LLVMExecutionEngineRef = null;
     err = null;
 
-    if (LLVMCreateMCJITCompilerForModule(&engine, module, &options, sizeof(options), &err) != 0) {
+    if (LLVMCreateMCJITCompilerForModule(&engine, module, &options, sizeof(options) as u64, &err) != 0) {
         printf("Failed to create execution engine: '%s'.\n", err);
         LLVMDisposeMessage(err);
         ret 1;

@@ -5,6 +5,19 @@ import os, sys, copy, time
 from lexer import Lexer
 from parser import Parser
 
+def _to_string2(self):
+    return f"{'u' if hasattr(self, '_unsigned') else 'i'}{self.width}"
+
+def __eq__(self, other):
+    if isinstance(other, ir.IntType):
+        return self.width == other.width and hasattr(self, "_unsigned") == hasattr(other, "_unsigned")
+
+    else:
+        return False
+
+ir.IntType._to_string2 = _to_string2
+ir.IntType.__eq__ = __eq__
+
 class Scope:
     def __init__(self, namespace = None, local = False):
         self.variables, self.children, self.parent = {}, [], None
@@ -63,7 +76,7 @@ class Scope:
         return matches if len(matches) > 1 else matches[0]
 
 class ScopeManager:
-    def __init__(self, compiler):
+    def __init__(self, compiler: "Compiler"):
         self.__scope = self.__global = Scope()
         self.__class, self.__template = [], []
         self.__compiler = compiler
@@ -84,6 +97,7 @@ class ScopeManager:
     def PopScope(self):
         assert self.__scope.parent is not None, "No scope to pop."
         self.__scope.InvokeDestructors()
+        scope = self.__scope
 
         if self.__scope.local:
             self.__scope.parent.children.remove(self.__scope)
@@ -91,6 +105,8 @@ class ScopeManager:
 
         else:
             self.__scope = self.__scope.parent
+
+        return scope
 
     @property
     def Class(self):
@@ -225,7 +241,7 @@ class ScopeManager:
 class Class:
     def __init__(self, compiler, name, realName):
         self.__compiler, self.__name, self.__realName = compiler, name, realName
-        self.type = ir.global_context.get_identified_type(name)
+        self.type, self.parents, self.constructed = ir.global_context.get_identified_type(name), {}, []
         self.__elements, self.__functions = {}, {}
 
     @property
@@ -249,8 +265,12 @@ class Class:
         sizeof, alignof = self.__compiler.sizeof, self.__compiler.alignof
         elements, offset, alignment = {}, 0, 0
 
-        for i in self.__elements:
-            alignment = max(alignment, alignof(self.__elements[i]["type"]).constant)
+        __elements = self.__elements.copy()
+        self.__elements = {name: {"type": parent.type, "value": None, "access": None} for name, parent in self.parents.items()}
+        self.__elements.update(__elements)
+
+        for element in self.__elements.values():
+            alignment = max(alignment, alignof(element["type"]).constant)
 
         self.__elements.update({None: ...})
 
@@ -258,7 +278,9 @@ class Class:
             size = sizeof(self.__elements[i]["type"]).constant if i is not None else 0
 
             for j in [alignment, alignof(self.__elements[i]["type"]).constant if i is not None else 0]:
-                if not j > 0: continue
+                if not j > 0:
+                    continue
+
                 if (offset % j) != 0 and (i is None or (offset % j) + size > j):
                     padding = j - (offset % j)
                     elements[f"<p@{offset}:{padding}>"] = {"type": ir.ArrayType(ir.IntType(8), padding), "value": None, "access": None}
@@ -270,12 +292,19 @@ class Class:
 
         self.__elements = elements.copy()
         self.type.set_body(*[i["type"] for i in self.__elements.values()])
+        self.type._class = self
         return self
 
+    def RegisterParent(self, _class):
+        assert _class.RealName not in self.parents, f"Duplicate parent: '{_class.RealName}'."
+        self.parents[_class.RealName] = _class
+
     def RegisterElement(self, name, value):
+        assert name not in self.__elements, f"Duplicate element: '{name}'."
         self.__elements[name] = value
 
     def RegisterFunction(self, name, value):
+        assert name not in self.__functions, f"Duplicate function: '{name}'."
         self.__functions[name] = value
 
     def Index(self, name):
@@ -283,62 +312,123 @@ class Class:
 
     def Has(self, name, arguments = None):
         if arguments is not None:
-            try:
-                arguments = [self.__compiler.ProcessType(self.__compiler.VisitType(i)) for i in arguments]
+            arguments = [self.__compiler.ProcessType(i) for i in arguments]
 
-            except:
-                arguments = [self.__compiler.ProcessType(self.__compiler.VisitValue(i).type) for i in arguments]
+        if name in self.__elements and arguments is None:
+            return self.__elements[name]["access"] == "public" or self.__compiler.scopeManager.Class == self
 
-        if (name in self.__elements or name in self.__functions) and arguments is None:
-            return True
+        if name in self.__functions and arguments is None:
+            return self.__functions[name]["access"] == "public" or self.__compiler.scopeManager.Class == self
 
-        for _name in self.__functions:
+        for _name, function in self.__functions.items():
             if not Mangler.IsMangled(_name):
                 continue
 
+            if function["access"] != "public" and self.__compiler.scopeManager.Class != self:
+                continue
+
             if Mangler.Demangle(_name)[0] in [name]:
-                args = self.__functions[_name]["type"].function_type.args
+                args = function["type"].function_type.args
                 args = args[2:] if hasattr(args[0], "_sret") else args[1:]
 
                 if arguments is None:
                     return True
 
-                elif not any((((type.pointee if hasattr(type, "_reference") else type) != arguments[index]) if len(arguments) > index else True) for index, type in enumerate(args)) and len(arguments) == len(args):
+                if len(arguments) != len(args):
+                    continue
+
+                match = True
+
+                for index, type in enumerate(args):
+                    if len(arguments) > index:
+                        if hasattr(type, "_reference"):
+                            type = type.pointee
+
+                        if hasattr(type, "_byval"):
+                            type = type._byval
+
+                        if type != arguments[index]:
+                            match = False
+                            break
+
+                if match:
                     return True
 
         return False
 
-    def Get(self, name, arguments = None):
+    def Get(self, name, arguments = None, pointer = None):
         if arguments is not None:
-            try:
-                arguments = [self.__compiler.ProcessType(self.__compiler.VisitType(i)) for i in arguments]
-
-            except:
-                arguments = [self.__compiler.ProcessType(self.__compiler.VisitValue(i).type) for i in arguments]
+            arguments = [self.__compiler.ProcessType(i) for i in arguments]
 
         if name in self.__elements and arguments is None:
-            return self.__elements[name]
+            assert self.__elements[name]["access"] == "public" or self.__compiler.scopeManager.Class == self, f"Function '{name}' is not accessible."
+
+            if pointer is not None:
+                return self.__compiler.Builder.gep(pointer, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), self.Index(name))])
+
+            else:
+                return self.__elements[name].copy()
 
         if name in self.__functions and arguments is None:
-            return self.__functions[name]
+            function = self.__functions[name].copy()
+            assert function["access"] == "public" or self.__compiler.scopeManager.Class == self, \
+                f"Function '{name}' is not accessible."
 
-        matches = []
+            if pointer is not None:
+                function["pointer"] = pointer
 
-        for _name in self.__functions:
+            return function
+
+        matches, state = [], 0
+
+        for _name, function in self.__functions.items():
             if not Mangler.IsMangled(_name):
                 continue
 
             if Mangler.Demangle(_name)[0] in [name]:
-                args = self.__functions[_name]["type"].function_type.args
+                if function["access"] != "public" and self.__compiler.scopeManager.Class != self:
+                    if state < 1: state = 1
+                    continue
+
+                function = function.copy()
+
+                if pointer is not None:
+                    function["pointer"] = pointer
+
+                args = function["type"].function_type.args
                 args = args[2:] if hasattr(args[0], "_sret") else args[1:]
 
                 if arguments is None:
-                    matches.append(self.__functions[_name])
+                    matches.append(function)
+                    continue
 
-                elif not any((((type.pointee if hasattr(type, "_reference") else type) != arguments[index]) if len(arguments) > index else True) for index, type in enumerate(args)) and len(arguments) == len(args):
-                    return self.__functions[_name]
+                if len(arguments) != len(args):
+                    continue
 
-        assert matches, f"Unknown variable '{name}'."
+                match = True
+
+                for index, type in enumerate(args):
+                    if len(arguments) > index:
+                        if hasattr(type, "_reference"):
+                            type = type.pointee
+
+                        if hasattr(type, "_byval"):
+                            type = type._byval
+
+                        if type != arguments[index]:
+                            match = False
+                            break
+
+                if match:
+                    return function
+
+                else:
+                    state = 2
+
+        assert not (len(matches) == 0 and state == 0), f"Class '{self.Name}' doesn't contain any member named '{name}'."
+        assert not (len(matches) == 0 and state == 1), f"Function '{name}' is not accessible."
+        assert not (len(matches) == 0 and state == 2 and arguments is not None), \
+            f"Invalid arguments for: '{name}'. ({', '.join([str(type) for type in arguments]) if arguments else 'nothing'})"
         return matches if len(matches) > 1 else matches[0]
 
 class Template:
@@ -566,7 +656,7 @@ class Mangler:
             digit = ""
 
             if mangle[index] in ["I"]:
-                ignore = 0
+                _digit, ignore = "", 0
 
                 while len(mangle) > index:
                     names[-1] += mangle[index]
@@ -581,7 +671,12 @@ class Mangler:
                             break
 
                     while mangle[index].isdigit():
+                        _digit += mangle[index]
                         index += 1
+
+                    if _digit:
+                        names[-1] += mangle[index:index + int(_digit)]
+                        index += int(_digit)
 
                     else:
                         index += 1
@@ -634,11 +729,15 @@ class Compiler:
         self.primitiveTypes = {
             "void": ir.VoidType(), "bool": ir.IntType(1), "char": ir.IntType(32),
             "i8": ir.IntType(8), "i16": ir.IntType(16), "i32": ir.IntType(32), "i64": ir.IntType(64), "i128": ir.IntType(128),
-            "u8": ir.IntType(8), "u16": ir.IntType(16), "u32": ir.IntType(32), "u64": ir.IntType(64), "u128": ir.IntType(128),
             "f32": ir.FloatType(), "f64": ir.DoubleType()
         }
 
+        _instance_cache, ir.IntType._instance_cache = ir.IntType._instance_cache, {}
+        self.primitiveTypes.update({"u8": ir.IntType(8), "u16": ir.IntType(16), "u32": ir.IntType(32), "u64": ir.IntType(64), "u128": ir.IntType(128)})
+        ir.IntType._instance_cache = {} # _instance_cache
+
         for name, type in self.primitiveTypes.items():
+            if name.startswith("u"): type._unsigned = True
             self.scopeManager.Set(name, type)
 
         self.scopeManager.Set("decltype", DeclType(self))
@@ -704,15 +803,21 @@ class Compiler:
         return self.module
 
     def ProcessType(self, type):
+        try:
+            type = self.VisitType(type)
+
+        except:
+            type = self.VisitValue(type).type
+
         if type.is_pointer and not type.is_opaque and isinstance(type.pointee, ir.ArrayType):
             return type.pointee.element.as_pointer()
 
         return type
 
     def TryPack(self, return_, arguments):
-        _return, names, types = ir.VoidType(), [], []
+        _return, names, types, mutables = ir.VoidType(), [], [], []
 
-        for index, (name, type) in enumerate([(None, return_)] + arguments):
+        for index, (name, type, mutable) in enumerate([(None, return_, None)] + arguments):
             if isinstance(type, ir.BaseStructType):
                 if (size := self.sizeof(type).constant) > 8:
                     new = type.as_pointer()
@@ -720,6 +825,7 @@ class Compiler:
                     else: new._sret, type = type, new
                     names.append(name)
                     types.append(type)
+                    mutables.append(mutable)
                     continue
 
                 else:
@@ -742,11 +848,12 @@ class Compiler:
             if index != 0:
                 names.append(name)
                 types.append(type)
+                mutables.append(mutable)
 
             else:
                 _return = type
 
-        return _return, tuple(names), tuple(types)
+        return _return, tuple(names), tuple(types), tuple(mutables)
 
     def TryPass(self, value, _return = False):
         if not value.type.is_pointer and isinstance(value.type, ir.ArrayType) and not _return:
@@ -770,7 +877,7 @@ class Compiler:
         elif node["type"] in ["list initialization"]:
             elements, result = [self.VisitConstExpr(i) for i in node["body"]], []
 
-            for element in self.scopeManager.Get(node["name"])._Class__elements.values():
+            for element in self.scopeManager.Get(node["name"], types = [Class])._Class__elements.values():
                 if element["access"] is None:
                     result.append(ir.Constant(element["type"].count, [ir.Constant(ir.IntType(8), 0)] * element["type"].count))
 
@@ -791,24 +898,19 @@ class Compiler:
         elif node["type"] in ["expression"]:
             left, right = self.VisitConstExpr(node["left"]), self.VisitConstExpr(node["right"])
 
-            if isinstance(left.type, ir.DoubleType) or isinstance(right.type, ir.DoubleType):
-                type = ir.DoubleType()
+            if (isinstance(left.type, ir.FloatType) or isinstance(left.type, ir.DoubleType)) and (isinstance(right.type, ir.FloatType) or isinstance(right.type, ir.DoubleType)):
+                assert left.type == right.type, f"Float size mismatch. ({left.type} {node["operator"]} {right.type})"
 
-            elif isinstance(left.type, ir.FloatType) or isinstance(right.type, ir.FloatType):
-                type = ir.FloatType()
-
-            elif isinstance(left.type, ir.IntType) or isinstance(right.type, ir.IntType):
-                type = ir.IntType(max(left.type.width, right.type.width))
+            elif isinstance(left.type, ir.IntType) and isinstance(right.type, ir.IntType):
+                assert left.type.width == right.type.width, f"Integer size mismatch. ({left.type._to_string2()} {node["operator"]} {right.type._to_string2()})"
+                assert hasattr(left.type, "_unsigned") == hasattr(right.type, "_unsigned"), f"Integer sign mismatch. ({left.type._to_string2()} {node["operator"]} {right.type._to_string2()})"
 
             else:
-                assert False, f"Unknown type: '{left.type}' and/or '{right.type}'."
+                assert False, f"Invalid expression. ({left.type} {node["operator"]} {right.type})"
 
-            if left.type != type: left = ir.Constant(type, left.constant)
-            if right.type != type: right = ir.Constant(type, right.constant)
-
-            assert node["operator"] not in ["&", "|", "^", ">>", "<<"] or isinstance(type, ir.IntType), "Bitwise operations can only be performed on integers."
-            assert node["operator"] not in ["&&", "||"] or (isinstance(type, ir.IntType) and type.width == 1), "Logical operations can only be performed on booleans."
-            return ir.Constant(ir.IntType(1) if node["operator"] in ["<", "<=", ">", ">=", "!=", "=="] else (ir.FloatType() if node["operator"] in ["/", "%"] and not (isinstance(type, ir.FloatType) or isinstance(type, ir.DoubleType)) else type), eval(f"left.constant {node["operator"]} right.constant"))
+            assert node["operator"] not in ["&", "|", "^", ">>", "<<"] or isinstance(left.type, ir.IntType), "Bitwise operations can only be performed on integers."
+            assert node["operator"] not in ["&&", "||"] or (isinstance(left.type, ir.IntType) and left.type.width == 1), "Logical operations can only be performed on booleans."
+            return ir.Constant(ir.IntType(1) if node["operator"] in ["<", "<=", ">", ">=", "!=", "=="] else (ir.FloatType() if node["operator"] in ["/", "%"] and not (isinstance(left.type, ir.FloatType) or isinstance(left.type, ir.DoubleType)) else left.type), eval(f"left.constant {node["operator"]} right.constant"))
 
         elif node["type"] in self.primitiveTypes:
             return ir.Constant(self.VisitType(node["type"]), node["value"])
@@ -826,15 +928,11 @@ class Compiler:
             value, target = self.VisitConstExpr(node["value"]), self.VisitType(node["target"])
 
             if isinstance(target, ir.IntType):
-                if target.width == 1:
-                    return ir.Constant(target, bool(value.constant))
+                return ir.Constant(target, int(value.constant) if target.width != 1 else bool(value.constant))
 
-                else:
-                    return ir.Constant(target, int(value.constant))
-                
             elif isinstance(target, ir.FloatType) or isinstance(target, ir.DoubleType):
                 return ir.Constant(target, float(value.constant))
-            
+
             else:
                 assert False, f"Unknown type: '{target}'."
 
@@ -859,7 +957,8 @@ class Compiler:
         for i in node["body"]:
             if i["value"]:
                 value = self.VisitConstExpr(i["value"])
-                assert value.type == type, f"Expected an integer, got {value.type}."
+                assert isinstance(value.type, ir.IntType), f"Expected an {type._to_string2()}, got {value.type}."
+                assert value.type == type, f"Expected an {type._to_string2()}, got {value.type._to_string2()}."
 
             else:
                 value = ir.Constant(type, value.constant + 1)
@@ -891,8 +990,11 @@ class Compiler:
         self.scopeManager.PushClass(Class(self, node["name"], name))
         self.scopeManager.PushScope(Scope(node["name"]))
 
+        for parent in node["parents"]:
+            self.scopeManager.Class.RegisterParent(self.VisitType(parent)._class)
+
         for _name, member in node["members"].items():
-            self.scopeManager.Class.RegisterElement(_name, {"type": self.VisitType(member["dataType"]), "value": self.VisitValue(member["value"]), "access": "private" if member["private"] else "public"})
+            self.scopeManager.Class.RegisterElement(_name, {"type": self.VisitType(member["dataType"]), "value": member["value"], "access": "private" if member["private"] else "public"})
 
         self.scopeManager.Scope.parent.Set(node["name"], _class := self.scopeManager.Class.Cook())
 
@@ -914,7 +1016,7 @@ class Compiler:
                 del i["operator"]
 
             assert i["type"] == "func", f"Invalid implementation type: '{i["type"]}'."
-            i["params"] = [{"type": self.scopeManager.Class.type.as_pointer(), "name": "this"}] + i["params"]
+            i["params"] = [{"type": self.scopeManager.Class.type.as_pointer(), "name": "this", "mutable": True}] + i["params"]
             func = {"type": self.VisitFunc(i, body = False), "access": "private" if i["private"] else "public"}
             self.scopeManager.Class.RegisterFunction(func["type"].name, func)
             impl.append(i)
@@ -975,22 +1077,22 @@ class Compiler:
         if not self.scopeManager.Class:
             if namespaces and self.scopeManager.Has(namespaces[-1]):
                 _class = self.scopeManager.Get(namespaces[-1], types = [Class])
-                
+
                 if isinstance(_class, Class):
                     assert _class.Has(name), f"Class '{namespaces[-1]}' does not have function '{name}'."
-                    node["params"] = [{"type": _class.type.as_pointer(), "name": "this"}] + node["params"]
+                    node["params"] = [{"type": _class.type.as_pointer(), "name": "this", "mutable": True}] + node["params"]
                     self.scopeManager.PushClass(_class)
                     classState = True
 
         for index, param in enumerate(node["params"]):
             if param["type"] != "three dot":
-                arguments += [(param["name"], self.VisitType(param["type"]))]
+                arguments += [(param["name"], self.VisitType(param["type"]), param["mutable"])]
 
             else:
                 assert index == len(node["params"]) - 1, "Three dots must be the last parameter."
                 threeDots = True
 
-        _return, names, types = self.TryPack(self.VisitType(node["return"]), arguments)
+        _return, names, types, mutables = self.TryPack(self.VisitType(node["return"]), arguments)
 
         if not Mangler.IsMangled(name) and name not in self.entryPoints and self.mangling:
             name = Mangler.MangleFunction(name, types, namespaces = self.scopeManager.NamespacesByScope(self.scopeManager.ScopeByNamespaces(namespaces), demangle = False))
@@ -1017,12 +1119,14 @@ class Compiler:
             self.PushBuilder(ir.IRBuilder(func.append_basic_block()))
             self.scopeManager.PushScope(Scope(local = True))
 
-            for index, (name, type) in enumerate(zip(names, types)):
+            for index, (name, type, mutable) in enumerate(zip(names, types, mutables)):
                 if hasattr(func.args[index].type, "_byval"):
                     current = self.Builder.block
                     self.Builder.position_at_start(self.Builder.function.entry_basic_block)
                     ptr = self.Builder.alloca(func.args[index].type._byval)
                     self.Builder.position_at_end(current)
+                    ptr.type._mutable = mutable
+                    ptr.type._name = name
 
                     if isinstance(func.args[index].type._byval, ir.BaseStructType):
                         self.scopeManager.Scope.RegisterInstance(ptr)
@@ -1045,6 +1149,16 @@ class Compiler:
                     self.Builder.position_at_end(current)
                     self.Builder.store(func.args[index], ptr, self.alignof(func.args[index]).constant)
                     self.scopeManager.Set(name, ptr)
+                    ptr.type._mutable = mutable
+                    ptr.type._name = name
+
+            if "constructors" in node:
+                for constructor in node["constructors"]:
+                    _class = self.scopeManager.Get(constructor["class"], types = [Class])
+                    ptr = func.args[1] if hasattr(func.args[0].type, "_sret") else func.args[0]
+                    ptr = self.VisitCast({"type": "cast", "value": ptr, "target": _class.type.as_pointer()})
+                    self.VisitConstructor(_class, ptr, [self.VisitValue(i) for i in constructor["params"]])
+                    self.scopeManager.Class.constructed.append(_class.RealName)
 
             self.Compile(node["body"])
             self.scopeManager.PopScope()
@@ -1107,7 +1221,10 @@ class Compiler:
         if isinstance(node, str):
             node = {"type": "identifier", "value": node}
 
-        if isinstance(node, ir.Type) or node is None:
+        if not isinstance(node, dict):
+            if hasattr(node, "type"):
+                return node.type
+
             return node
 
         elif node["type"] in ["identifier"]:
@@ -1153,27 +1270,49 @@ class Compiler:
     @Timer
     def VisitCast(self, node):
         value, target = self.VisitValue(node["value"]), self.VisitType(node["target"])
+        assert value.type != target, f"Redundant cast. ({value.type} to {target})"
 
-        if value.type.is_pointer and isinstance(target, ir.IntType):
+        if isinstance(value, ir.Constant):
+            return self.VisitConstExpr({"type": "cast", "value": value, "target": target})
+
+        elif value.type.is_pointer and isinstance(target, ir.IntType):
             return self.Builder.ptrtoint(value, target)
 
+        elif value.type.is_pointer and isinstance(value.type.pointee, ir.BaseStructType) and target.is_pointer and isinstance(target.pointee, ir.BaseStructType):
+            valueClass = self.scopeManager.Get(value.type.pointee.name, types = [Class])
+            targetClass = self.scopeManager.Get(target.pointee.name, types = [Class])
+
+            assert (left := targetClass.RealName in valueClass._Class__elements) or valueClass.RealName in targetClass._Class__elements, \
+                f"Class '{value.type.pointee.name}' is not related to '{target.pointee.name}'."
+
+            index = valueClass.Index(targetClass.RealName) if left else targetClass.Index(valueClass.RealName)
+            if index != 0: value = self.Builder.gep(value, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), index if left else -index)])
+            return self.Builder.bitcast(value, target)
+
         elif isinstance(value.type, ir.FloatType):
-            if isinstance(target, ir.IntType): return self.Builder.fptosi(value, target)
-            if isinstance(target, ir.DoubleType): return self.Builder.fpext(value, target)
-            if isinstance(target, ir.FloatType): return value
+            if isinstance(target, ir.IntType):
+                if hasattr(target, "_unsigned"): return self.Builder.fptoui(value, target)
+                else: return self.Builder.fptosi(value, target)
+
+            if isinstance(target, ir.DoubleType):
+                return self.Builder.fpext(value, target)
 
         elif isinstance(value.type, ir.DoubleType):
-            if isinstance(target, ir.IntType): return self.Builder.fptosi(value, target)
-            if isinstance(target, ir.FloatType): return self.Builder.fptrunc(value, target)
-            if isinstance(target, ir.DoubleType): return value
+            if isinstance(target, ir.IntType):
+                if hasattr(target, "_unsigned"): return self.Builder.fptoui(value, target)
+                else: return self.Builder.fptosi(value, target)
+
+            if isinstance(target, ir.FloatType):
+                return self.Builder.fptrunc(value, target)
 
         elif isinstance(value.type, ir.IntType):
             if target.is_pointer:
                 return self.Builder.inttoptr(value, target)
 
             if isinstance(target, ir.FloatType) or isinstance(target, ir.DoubleType):
-                return self.Builder.sitofp(value, target)
-            
+                if hasattr(value.type, "_unsigned"): return self.Builder.uitofp(value, target)
+                else: return self.Builder.sitofp(value, target)
+
             if isinstance(target, ir.IntType):
                 if target.width > value.type.width: return self.Builder.sext(value, target)
                 else: return self.Builder.trunc(value, target)
@@ -1184,13 +1323,13 @@ class Compiler:
 
     @Timer
     def VisitValue(self, node):
-        if isinstance(node, ir.Value) or node is None:
+        if not isinstance(node, dict) or "access" in node:
             return node
 
         elif node["type"] in self.primitiveTypes or isinstance(node["type"], dict):
             return ir.Constant(self.VisitType(node["type"]), node["value"])
 
-        elif node["type"] in ["identifier", "get", "get element", "get element pointer"]:
+        elif node["type"] in ["identifier", "assign", "get", "get element", "get element pointer"]:
             value = self.VisitPointer(node)
 
             if isinstance(value, ir.GlobalVariable) and value.global_constant:
@@ -1255,7 +1394,7 @@ class Compiler:
 
     @Timer
     def VisitPointer(self, node):
-        if isinstance(node, ir.PointerType) or isinstance(node, ir.Instruction) or isinstance(node, ir.Argument) or node is None:
+        if not isinstance(node, dict) or "access" in node:
             return node
 
         elif node["type"] in ["identifier"]:
@@ -1267,48 +1406,27 @@ class Compiler:
                     value = self.Builder.load(self.scopeManager.Get("this"))
                     assert value.type.is_pointer, "Expected a pointer."
                     assert not value.type.is_opaque, "Expected a non-opaque pointer."
-                    element = self.scopeManager.Class.Get(node["value"]).copy()
-                    assert value.type.pointee == self.scopeManager.Class.type
-
-                    if isinstance(element["type"], ir.Function):
-                        element["pointer"], element["access"] = value, "public"
-                        return element
-
-                    return self.Builder.gep(value, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), self.scopeManager.Class.Index(node["value"]))])
+                    return self.scopeManager.Class.Get(node["value"], pointer = value)
 
             assert self.scopeManager.Has(node["value"]), f"Unknown identifier '{node["value"]}'."
             return self.scopeManager.Get(node["value"])
 
         elif node["type"] in ["get"]:
-            return self.Builder.gep(self.VisitValue(node["value"]), [self.VisitValue(node["index"])])
+            value, index = self.VisitValue(node["value"]), self.VisitValue(node["index"])
+
+            if isinstance(value.type, ir.BaseStructType):
+                _class = self.scopeManager.Get(value.type.name, types = [Class])
+                function = _class.Get("op[]", arguments = [index], pointer = self.addressof(value))
+                return self.VisitCall({"value": function, "params": [index]})
+
+            return self.Builder.gep(value, [index])
 
         elif node["type"] in ["get element", "get element pointer"]:
             value = {"get element pointer": self.VisitValue, "get element": self.VisitPointer}[node["type"]](node["value"])
             if hasattr(value.type.pointee, "_reference"): value = self.Builder.load(value)
             assert value.type.is_pointer and not value.type.is_opaque and isinstance(value.type.pointee, ir.BaseStructType), f"Expected a class, got '{value.type}'."
             _class = self.scopeManager.Get(value.type.pointee.name, types = [Class])
-            assert _class.Has(node["element"]), f"Class '{value.type.pointee.name}' does not contain member '{node["element"]}'."
-            element = _class.Get(node["element"]).copy()
-
-            if isinstance(element, list) or isinstance(element["type"], ir.Function):
-                elements, functions = element if isinstance(element, list) else [element], []
-
-                for i in elements:
-                    if i["access"] != "public" and _class != self.scopeManager.Class:
-                        continue
-
-                    if self.scopeManager.Class == _class:
-                        i["access"] = "public"
-
-                    i["pointer"] = value
-                    functions.append(i)
-
-                assert not (elements and not functions), "Access violation."
-                return functions if len(functions) > 1 else functions[0]
-
-            else:
-                assert not (element["access"] != "public" and _class != self.scopeManager.Class), "Access violation."
-                return self.Builder.gep(value, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), _class.Index(node["element"]))])
+            return _class.Get(node["element"], pointer = value)
 
         elif node["type"] in ["list initialization"]:
             _class = self.scopeManager.Get(node["name"], types = [Class])
@@ -1354,6 +1472,9 @@ class Compiler:
         elif node["type"] in ["new"]:
             return self.VisitNew(node)
 
+        elif node["type"] in ["assign"]:
+            return self.VisitAssign(node)
+
         else:
             assert False, f"Unknown pointer '{node["type"]}'."
 
@@ -1368,15 +1489,16 @@ class Compiler:
     @Timer
     def VisitConstructor(self, _class, ptr, params = []):
         needCopy = len(params) == 1 and params[0].type == _class.type
-        hasConstructor = _class.Has(_class.RealName, arguments = params)
+        isConstructed = _class.RealName in _class.constructed
+        hasConstructor = _class.Has(_class.RealName)
 
-        if needCopy and not hasConstructor:
+        if needCopy and not (hasConstructor and not isConstructed):
             params[0] = self.addressof(params[0])
 
         for index, (name, value) in enumerate(_class.Elements.items()):
-            _value = (params[index] if not hasConstructor and index < len(params) else value["value"])
+            _value = (params[index] if not (hasConstructor and not isConstructed) and index < len(params) else self.VisitValue(value["value"]))
 
-            if needCopy and not hasConstructor:
+            if needCopy and not (hasConstructor and not isConstructed):
                 _value = self.Builder.load(self.Builder.gep(params[0], [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), _class.Index(name))]))
 
             if isinstance(value["type"], ir.BaseStructType):
@@ -1384,10 +1506,13 @@ class Compiler:
                 continue
 
             if _value is not None:
-                self.VisitAssign({"left": self.Builder.gep(ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), _class.Index(name))]), "right": _value})
+                self.VisitAssign({"left": self.Builder.gep(ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), _class.Index(name))]), "right": _value}, ignore = True)
 
-        if hasConstructor:
-            self.VisitCall({"value": {"type": "get element pointer", "value": ptr, "element": _class.Get(_class.RealName, arguments = params)["type"].name}, "params": params})
+        if hasConstructor and not isConstructed:
+            assert _class.Has(_class.RealName, arguments = params), \
+                f"Class '{_class.RealName}' does not have a constructor that takes {('(' + ', '.join([str(i.type) for i in params]) + ')') if params else 'nothing'}."
+
+            return self.VisitCall({"value": _class.Get(_class.RealName, arguments = params, pointer = ptr), "params": params})
 
         else:
             assert len(params) <= len(_class.Elements), "Too many parameters."
@@ -1399,7 +1524,7 @@ class Compiler:
                 self.VisitDestructor(self.scopeManager.Get(value["type"].name, types = [Class]), self.Builder.gep(ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), _class.Index(name))]))
 
         if _class.Has(f"~{_class.RealName}"):
-            self.VisitCall({"value": {"type": "get element pointer", "value": ptr, "element": f"~{_class.RealName}"}, "params": []})
+            return self.VisitCall({"value": _class.Get(f"~{_class.RealName}", arguments = [], pointer = ptr), "params": []})
 
     @Timer
     def VisitConstant(self, node):
@@ -1420,6 +1545,7 @@ class Compiler:
 
         else:
             assert not self.scopeManager.Scope.Has(node["name"]), f"Redefinition of '{node["name"]}'."
+            assert not (node["name"] in ["this"] and self.scopeManager.Class is not None), "Illegal variable name."
             dataType = self.VisitType(node["dataType"])
 
             if node["value"] is not None:
@@ -1428,6 +1554,8 @@ class Compiler:
                 if isinstance(value, ir.LoadInstr) and hasattr(value.operands[0], "_return"):
                     assert value.type == dataType, "Type mismatch."
                     self.scopeManager.Set(node["name"], value.operands[0])
+                    value.operands[0].type._mutable = node["mutable"]
+                    value.operands[0].type._name = node["name"]
                     self.Builder.remove(value)
                     return
 
@@ -1440,6 +1568,8 @@ class Compiler:
             ptr = self.Builder.alloca(dataType)
             self.Builder.position_at_end(current)
             self.scopeManager.Set(node["name"], ptr)
+            ptr.type._mutable = node["mutable"]
+            ptr.type._name = node["name"]
 
             if isinstance(dataType, ir.BaseStructType):
                 self.VisitConstructor(self.scopeManager.Get(dataType.name, types = [Class]), ptr, (value if isinstance(value, list) else [value]) if node["value"] else [])
@@ -1456,12 +1586,17 @@ class Compiler:
                         self.Builder.store(i, self.Builder.gep(ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), index)]), self.alignof(i).constant)
 
                 else:
-                    if hasattr(dataType, "_reference"): value = self.addressof(value)
+                    if hasattr(dataType, "_reference") and dataType != value.type:
+                        value = self.addressof(value)
+
+                    if hasattr(value.type, "_mutable") and hasattr(value.type, "_name"):
+                        assert ptr.type._mutable == value.type._mutable, f"Mutability mismatch: '{value.type._name}'."
+
                     assert value.type == dataType, f"Type mismatch for '{node['name']}'. (Expected '{dataType}', got '{value.type}'.)"
                     self.Builder.store(value, ptr, self.alignof(value).constant)
 
     @Timer
-    def VisitAssign(self, node):
+    def VisitAssign(self, node, ignore = False):
         assert self.scopeManager.Scope.local, "Assign statements must be defined in local scope."
 
         if "body" in node:
@@ -1469,7 +1604,13 @@ class Compiler:
                 self.Compile([i])
 
         else:
-            ptr = self.VisitPointer(node["left"])
+            _ptr = ptr = self.VisitPointer(node["left"])
+
+            while isinstance(_ptr, ir.GEPInstr):
+                _ptr = _ptr.operands[0]
+
+            if hasattr(_ptr.type, "_mutable") and hasattr(_ptr.type, "_name") and not ignore:
+                assert _ptr.type._mutable, f"Cannot assign to an immutable variable: '{_ptr.type._name}'."
 
             if hasattr(ptr.type.pointee, "_reference"):
                 ptr = self.Builder.load(ptr)
@@ -1483,13 +1624,14 @@ class Compiler:
                     value = self.TryPass(self.VisitValue(node["right"]["left" if node["left"] != node["right"]["left"] else "right"]))
 
                     if _class.Has(f"op{node['right']['operator']}=", arguments = [value.type]):
-                        return self.VisitCall({"value": {"type": "get element pointer", "value": ptr, "element": _class.Get(f"op{node['right']['operator']}=", arguments = [value.type])["type"].name}, "params": [ptr, value]})
+                        return self.VisitCall({"value": _class.Get(f"op{node['right']['operator']}=", arguments = [value], pointer = ptr), "params": [value]})
 
             value = self.TryPass(self.VisitValue(node["right"]))
 
             if isinstance(ptr.type.pointee, ir.BaseStructType):
-                if _class.Has("op=", arguments = [value.type]):
-                    self.VisitCall({"value": {"type": "get element pointer", "value": ptr, "element": _class.Get("op=", arguments = [value.type])["type"].name}, "params": [ptr, value]})
+                if _class.Has("op=", arguments = [value]):
+                    self.VisitCall({"value": _class.Get("op=", arguments = [value], pointer = ptr), "params": [value]})
+                    return ptr
 
                 elif value.type == _class.type:
                     value = self.addressof(value)
@@ -1500,11 +1642,15 @@ class Compiler:
                             "right": self.Builder.load(self.Builder.gep(value, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), _class.Index(name))]))
                         })
 
+                    return ptr
+
                 else:
                     assert False, f"Type mismatch. (Expected '{_class.type}', got '{value.type}'.)"
 
             else:
+                assert value.type == ptr.type.pointee, f"Type mismatch for '{ptr}'. (Expected '{ptr.type.pointee}', got '{value.type}'.)"
                 self.Builder.store(value, ptr, self.alignof(value).constant)
+                return ptr
 
     @Timer
     def VisitNew(self, node):
@@ -1538,10 +1684,14 @@ class Compiler:
                 self.Builder.position_at_end(end)
 
         else:
+            params = [self.VisitValue(i) for i in node["params"]] if node["params"] else []
             ptr = self.Builder.bitcast(self.Builder.call(self.malloc, [self.sizeof(type)]), type.as_pointer())
 
             if isinstance(type, ir.BaseStructType):
-                self.VisitConstructor(self.scopeManager.Get(type.name, types = [Class]), ptr, [])
+                self.VisitConstructor(self.scopeManager.Get(type.name, types = [Class]), ptr, params)
+
+            else:
+                assert not params, "Cannot initialize non-class types with parameters."
 
         return ptr
 
@@ -1603,12 +1753,13 @@ class Compiler:
                 if _func["pointer"] not in node["params"]:
                     params = [self.VisitValue(_func["pointer"])] + params
 
-                assert _func["access"] == "public", "Access violation."
-                _func = _func["type"]
+                _func, _ptr = _func["type"], params[0]
 
-            else:
-                if hasattr(_func, "_parentClass") and _func._parentClass != self.scopeManager.Class:
-                    assert _func._parentClass.Get(Mangler.Demangle(_func.name)[0])["access"] == "public", "Access violation."
+                while isinstance(_ptr, ir.GEPInstr):
+                    _ptr = _ptr.operands[0]
+
+                if hasattr(_ptr.type, "_mutable") and False:
+                    assert _ptr.type._mutable, f"Cannot call methods of an immutable class: '{_ptr.type._name}: {_ptr.type.pointee.name}'."
 
             if isinstance(_func, ir.AllocaInstr):
                 _func = self.Builder.load(_func)
@@ -1642,7 +1793,7 @@ class Compiler:
             if best < score:
                 func, best = _func, score
 
-        assert func is not None, f"Invalid arguments for: '{name}'."
+        assert func is not None, f"Invalid arguments for: '{name}'. ({', '.join([str(i.type) for i in params]) if params else 'nothing'})"
 
         if isinstance(func, CompileTimeFunction):
             return func(*params)
@@ -1693,7 +1844,7 @@ class Compiler:
                 else:
                     value = self.TryPass(value)
 
-                    if hasattr(argument, "_reference"):
+                    if hasattr(argument, "_reference") and argument != value.type:
                         value = self.addressof(value)
 
                     args.append(value)
@@ -1769,6 +1920,7 @@ class Compiler:
 
             else:
                 value = self.TryPass(self.VisitValue(node["value"]), _return = True)
+                if hasattr(self.Builder.function.return_value.type, "_reference") and self.Builder.function.return_value.type != value.type: value = self.addressof(value)
                 assert value.type == self.Builder.function.return_value.type, f"Return type mismatch for '{self.Builder.function.name}'. (Expected '{self.Builder.function.return_value.type}', got '{value.type}'.)"
                 self.InvokeDestructors()
                 self.Builder.ret(value)
@@ -1795,7 +1947,7 @@ class Compiler:
                 ptr, value = self.addressof(ptr), self.TryPass(value)
 
                 if _class.Has(f"op{node['operator']}", arguments = [value.type]):
-                    return self.VisitCall({"value": {"type": "get element pointer", "value": ptr, "element": _class.Get(f"op{node['operator']}", arguments = [value.type])["type"].name}, "params": [ptr, value]})
+                    return self.VisitCall({"value": _class.Get(f"op{node['operator']}", arguments = [value], pointer = ptr), "params": [value]})
 
             if left.type.is_pointer and right.type.is_pointer:
                 if node["operator"] == "-":
@@ -1805,7 +1957,7 @@ class Compiler:
                     return self.Builder.icmp_unsigned(node["operator"], left, right)
 
                 else:
-                    assert False, f"Invalid operator for pointers: '{node["operator"]}'."
+                    assert False, f"Invalid operator for pointers. ({left.type} {node["operator"]} {right.type})"
 
             elif (left.type.is_pointer and isinstance(right.type, ir.IntType)) or (right.type.is_pointer and isinstance(left.type, ir.IntType)):
                 ptr, index = (left, right) if left.type.is_pointer else (right, left)
@@ -1815,10 +1967,10 @@ class Compiler:
                     return self.Builder.gep(ptr, [index if node["operator"] != "-" else self.Builder.neg(index)])
 
                 else:
-                    assert False, f"Invalid operator for pointers: '{node["operator"]}'."
+                    assert False, f"Invalid operator for pointers. ({left.type} {node["operator"]} {right.type})"
 
             elif (isinstance(left.type, ir.FloatType) or isinstance(left.type, ir.DoubleType)) and (isinstance(right.type, ir.FloatType) or isinstance(right.type, ir.DoubleType)):
-                assert left.type == right.type, f"Float size mismatch. ({left.type} != {right.type})"
+                assert left.type == right.type, f"Float size mismatch. ({left.type} {node["operator"]} {right.type})"
 
                 if node["operator"] == "+":
                     return self.Builder.fadd(left, right)
@@ -1839,10 +1991,12 @@ class Compiler:
                     return self.Builder.fcmp_ordered(node["operator"], left, right)
 
                 else:
-                    assert False, f"Invalid operator for floats: '{node["operator"]}'."
-            
+                    assert False, f"Invalid operator for floats. ({left.type} {node["operator"]} {right.type})"
+
             elif isinstance(left.type, ir.IntType) and isinstance(right.type, ir.IntType):
-                assert left.type.width == right.type.width, f"Integer size mismatch. ({left.type.width} != {right.type.width})"
+                assert left.type.width == right.type.width, f"Integer size mismatch. ({left.type._to_string2()} {node["operator"]} {right.type._to_string2()})"
+                assert (unsigned := hasattr(left.type, "_unsigned")) == hasattr(right.type, "_unsigned"), \
+                    f"Integer sign mismatch. ({left.type._to_string2()} {node["operator"]} {right.type._to_string2()})"
 
                 if node["operator"] == "+":
                     return self.Builder.add(left, right)
@@ -1851,16 +2005,19 @@ class Compiler:
                     return self.Builder.mul(left, right)
 
                 elif node["operator"] == "/":
-                    return self.Builder.sdiv(left, right)
+                    if unsigned: return self.Builder.udiv(left, right)
+                    else: return self.Builder.sdiv(left, right)
 
                 elif node["operator"] == "%":
-                    return self.Builder.srem(left, right)
+                    if unsigned: return self.Builder.urem(left, right)
+                    else: return self.Builder.srem(left, right)
 
                 elif node["operator"] == "-":
                     return self.Builder.sub(left, right)
 
                 elif node["operator"] in ["<", "<=", ">", ">=", "!=", "=="]:
-                    return self.Builder.icmp_signed(node["operator"], left, right)
+                    if unsigned: return self.Builder.icmp_unsigned(node["operator"], left, right)
+                    else: return self.Builder.icmp_signed(node["operator"], left, right)
 
                 elif node["operator"] in ["&", "&&"]:
                     return self.Builder.and_(left, right)
@@ -1872,13 +2029,14 @@ class Compiler:
                     return self.Builder.xor(left, right)
 
                 elif node["operator"] == ">>":
-                    return self.Builder.ashr(left, right)
+                    if unsigned: return self.Builder.lshr(left, right)
+                    else: return self.Builder.ashr(left, right)
 
                 elif node["operator"] == "<<":
                     return self.Builder.shl(left, right)
 
                 else:
-                    assert False, f"Invalid operator for integers: '{node["operator"]}'."
+                    assert False, f"Invalid operator for integers. ({left.type._to_string2()} {node["operator"]} {right.type._to_string2()})"
 
             else:
                 assert False, f"Invalid expression. ({left.type} {node["operator"]} {right.type})"

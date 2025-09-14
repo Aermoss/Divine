@@ -72,11 +72,13 @@ class Parser(sly.Parser):
 
     @_("PUBLIC TypedName", "PRIVATE TypedName")
     def MemberStatement(self, p):
-        return {"value": None, "dataType": p.TypedName[1], "mutable": p.TypedName[2], "private": True if p[0] != "pub" else False}, p.TypedName[0]
+        assert not p.TypedName[2], "Class members are mutable by default."
+        return {"value": None, "dataType": p.TypedName[1], "private": True if p[0] != "pub" else False}, p.TypedName[0]
 
     @_("PUBLIC TypedName ASSIGN Expr", "PRIVATE TypedName ASSIGN Expr")
     def MemberStatement(self, p):
-        return {"value": p.Expr, "dataType": p.TypedName[1], "mutable": p.TypedName[2], "private": True if p[0] != "pub" else False}, p.TypedName[0]
+        assert not p.TypedName[2], "Class members are mutable by default."
+        return {"value": p.Expr, "dataType": p.TypedName[1], "private": True if p[0] != "pub" else False}, p.TypedName[0]
 
     @_("")
     def ImplStatements(self, p):
@@ -90,6 +92,26 @@ class Parser(sly.Parser):
     def ImplStatements(self, p):
         p.ImplStatements.append(p.ImplStatement)
         return p.ImplStatements
+
+    @_("Constructor")
+    def ConstructorList(self, p):
+        return [p.Constructor]
+    
+    @_("ConstructorList COMMA Constructor")
+    def ConstructorList(self, p):
+        for constructor in p.ConstructorList:
+            assert constructor["class"] != p.Constructor["class"], f"Constructor for '{constructor['class']}' is already called."
+
+        p.ConstructorList.append(p.Constructor)
+        return p.ConstructorList
+
+    @_("QualifiedName LPAREN ExprList RPAREN")
+    def Constructor(self, p):
+        return {"type": "constructor", "class": p.QualifiedName, "params": p.ExprList}
+
+    @_("NAME LPAREN FuncParams RPAREN COLON ConstructorList LBRACE Statements RBRACE")
+    def ImplStatement(self, p):
+        return {"type": "constructor", "body": p.Statements, "params": p.FuncParams, "constructors": p.ConstructorList}
 
     @_("NAME LPAREN FuncParams RPAREN LBRACE Statements RBRACE", "BITWISE_NOT NAME LPAREN FuncParams RPAREN LBRACE Statements RBRACE")
     def ImplStatement(self, p):
@@ -236,15 +258,27 @@ class Parser(sly.Parser):
 
     @_("CLASS QualifiedName LBRACE MemberStatements RBRACE SEMICOLON")
     def Statement(self, p):
-        return {"type": "class", "name": p.QualifiedName, "members": p.MemberStatements, "impl": []}
+        return {"type": "class", "name": p.QualifiedName, "members": p.MemberStatements, "impl": [], "parents": []}
 
     @_("CLASS QualifiedName LBRACE MemberStatements RBRACE IMPL LBRACE ImplStatements RBRACE SEMICOLON")
     def Statement(self, p):
-        return {"type": "class", "name": p.QualifiedName, "members": p.MemberStatements, "impl": p.ImplStatements}
+        return {"type": "class", "name": p.QualifiedName, "members": p.MemberStatements, "impl": p.ImplStatements, "parents": []}
 
     @_("CLASS QualifiedName LESS TemplateParams GREATER LBRACE MemberStatements RBRACE IMPL LBRACE ImplStatements RBRACE SEMICOLON")
     def Statement(self, p):
-        return {"type": "template", "body": {"type": "class", "name": p.QualifiedName, "members": p.MemberStatements, "impl": p.ImplStatements}, "params": p.TemplateParams}
+        return {"type": "template", "body": {"type": "class", "name": p.QualifiedName, "members": p.MemberStatements, "impl": p.ImplStatements, "parents": []}, "params": p.TemplateParams}
+
+    @_("CLASS QualifiedName COLON TypeParams LBRACE MemberStatements RBRACE SEMICOLON")
+    def Statement(self, p):
+        return {"type": "class", "name": p.QualifiedName, "members": p.MemberStatements, "impl": [], "parents": p.TypeParams}
+
+    @_("CLASS QualifiedName COLON TypeParams LBRACE MemberStatements RBRACE IMPL LBRACE ImplStatements RBRACE SEMICOLON")
+    def Statement(self, p):
+        return {"type": "class", "name": p.QualifiedName, "members": p.MemberStatements, "impl": p.ImplStatements, "parents": p.TypeParams}
+
+    @_("CLASS QualifiedName COLON TypeParams LESS TemplateParams GREATER LBRACE MemberStatements RBRACE IMPL LBRACE ImplStatements RBRACE SEMICOLON")
+    def Statement(self, p):
+        return {"type": "template", "body": {"type": "class", "name": p.QualifiedName, "members": p.MemberStatements, "impl": p.ImplStatements, "parents": p.TypeParams}, "params": p.TemplateParams}
 
     @_("MOD QualifiedName LBRACE Statements RBRACE")
     def Statement(self, p):
@@ -283,17 +317,9 @@ class Parser(sly.Parser):
 
     @_("ENUM NAME LBRACE EnumStatements RBRACE SEMICOLON")
     def Statement(self, p):
-        return {"type": "enum", "name": p.NAME, "body": p.EnumStatements, "dataType": None, "class": False}
-
-    @_("ENUM NAME COLON DataType LBRACE EnumStatements RBRACE SEMICOLON")
-    def Statement(self, p):
-        return {"type": "enum", "name": p.NAME, "body": p.EnumStatements, "dataType": p.DataType, "class": False}
-
-    @_("ENUM CLASS NAME LBRACE EnumStatements RBRACE SEMICOLON")
-    def Statement(self, p):
         return {"type": "enum", "name": p.NAME, "body": p.EnumStatements, "dataType": None}
 
-    @_("ENUM CLASS NAME COLON DataType LBRACE EnumStatements RBRACE SEMICOLON")
+    @_("ENUM NAME COLON DataType LBRACE EnumStatements RBRACE SEMICOLON")
     def Statement(self, p):
         return {"type": "enum", "name": p.NAME, "body": p.EnumStatements, "dataType": p.DataType}
 
@@ -309,9 +335,9 @@ class Parser(sly.Parser):
     def Statement(self, p):
         return p.Expr
 
-    @_("NAME")
+    @_("QualifiedName")
     def DataType(self, p):
-        return p.NAME
+        return p.QualifiedName
 
     @_("DataType MUL")
     def DataType(self, p):
@@ -411,24 +437,7 @@ class Parser(sly.Parser):
        "GREATER", "LESS", "GREATER_EQUAL", "LESS_EQUAL", "ARROW", "NOT", "ASSIGN", "LPAREN RPAREN", "LBRACKET RBRACKET", "NEW", "DEL", "COLON COLON", "COMMA",
        "PLUS_ASSIGN", "MINUS_ASSIGN", "MUL_ASSIGN", "DIV_ASSIGN", "MOD_ASSIGN", "LSHIFT_ASSIGN", "RSHIFT_ASSIGN", "XOR_ASSIGN", "AND_ASSIGN", "OR_ASSIGN")
     def FuncOperator(self, p):
-        return p[0]
-
-    @_("")
-    def CallParams(self, p):
-        return []
-
-    @_("CallParam")
-    def CallParams(self, p):
-        return [p.CallParam]
-
-    @_("CallParams COMMA CallParam")
-    def CallParams(self, p):
-        p.CallParams.append(p.CallParam)
-        return p.CallParams
-
-    @_("Expr")
-    def CallParam(self, p):
-        return p.Expr
+        return "".join(p)
 
     @_("")
     def TypeParams(self, p):
@@ -514,9 +523,9 @@ class Parser(sly.Parser):
     def Expr(self, p):
         return {"type": "get element pointer", "value": p.Expr, "element": f"op{p.FuncOperator}" if len(p) > 3 else p.NAME}
 
-    @_("Expr LPAREN CallParams RPAREN")
+    @_("Expr LPAREN ExprList RPAREN")
     def Expr(self, p):
-        return {"type": "call", "value": p.Expr, "params": p.CallParams}
+        return {"type": "call", "value": p.Expr, "params": p.ExprList}
 
     @_("Expr LBRACKET Expr RBRACKET")
     def Expr(self, p):
@@ -524,11 +533,15 @@ class Parser(sly.Parser):
 
     @_("NEW DataType")
     def Expr(self, p):
-        return {"type": "new", "value": p.DataType, "count": None}
+        return {"type": "new", "value": p.DataType, "count": None, "params": None}
+
+    @_("NEW DataType LPAREN ExprList RPAREN")
+    def Expr(self, p):
+        return {"type": "new", "value": p.DataType, "count": None, "params": p.ExprList}
 
     @_("NEW DataType LBRACKET Expr RBRACKET")
     def Expr(self, p):
-        return {"type": "new", "value": p.DataType, "count": p.Expr}
+        return {"type": "new", "value": p.DataType, "count": p.Expr, "params": None}
 
     @_("DEL Expr")
     def Expr(self, p):
@@ -550,9 +563,9 @@ class Parser(sly.Parser):
     def Expr(self, p):
         return {"type": "initializer list", "body": p.ExprList}
 
-    @_("LBRACE ExprList RBRACE AS NAME %prec CAST")
+    @_("LBRACE ExprList RBRACE AS DataType %prec CAST")
     def Expr(self, p):
-        return {"type": "list initialization", "name": p.NAME, "body": p.ExprList}
+        return {"type": "list initialization", "name": p.DataType, "body": p.ExprList}
 
     @_("Expr PLUS Expr", "Expr MINUS Expr", "Expr MUL Expr", "Expr DIV Expr", "Expr MOD Expr",  "Expr BITWISE_XOR Expr",
        "Expr LSHIFT Expr", "Expr RSHIFT Expr", "Expr AND Expr", "Expr OR Expr", "Expr BITWISE_AND Expr", "Expr BITWISE_OR Expr",

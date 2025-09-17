@@ -5,18 +5,23 @@ import os, sys, copy, time
 from lexer import Lexer
 from parser import Parser
 
-def _to_string2(self):
-    return f"{'u' if hasattr(self, '_unsigned') else 'i'}{self.width}"
+def __new__(cls, bits):
+    assert isinstance(bits, int) and bits >= 0
+    self = super(ir.IntType, cls).__new__(cls)
+    self.width, self._signed = bits, True
+    return self
+
+ir.IntType.__new__ = __new__
 
 def __eq__(self, other):
-    if isinstance(other, ir.IntType):
-        return self.width == other.width and hasattr(self, "_unsigned") == hasattr(other, "_unsigned")
+    return isinstance(other, ir.IntType) and self.width == other.width and self._signed == other._signed
 
-    else:
-        return False
+ir.IntType.__eq__ = __eq__
+
+def _to_string2(self):
+    return f"{'i' if self._signed else 'u'}{self.width}"
 
 ir.IntType._to_string2 = _to_string2
-ir.IntType.__eq__ = __eq__
 
 class Scope:
     def __init__(self, namespace = None, local = False):
@@ -737,7 +742,8 @@ class Compiler:
         ir.IntType._instance_cache = {} # _instance_cache
 
         for name, type in self.primitiveTypes.items():
-            if name.startswith("u"): type._unsigned = True
+            if name.startswith("i"): type._signed = True
+            if name.startswith("u"): type._signed = False
             self.scopeManager.Set(name, type)
 
         self.scopeManager.Set("decltype", DeclType(self))
@@ -903,7 +909,7 @@ class Compiler:
 
             elif isinstance(left.type, ir.IntType) and isinstance(right.type, ir.IntType):
                 assert left.type.width == right.type.width, f"Integer size mismatch. ({left.type._to_string2()} {node["operator"]} {right.type._to_string2()})"
-                assert hasattr(left.type, "_unsigned") == hasattr(right.type, "_unsigned"), f"Integer sign mismatch. ({left.type._to_string2()} {node["operator"]} {right.type._to_string2()})"
+                assert left.type._signed == right.type._signed, f"Integer sign mismatch. ({left.type._to_string2()} {node["operator"]} {right.type._to_string2()})"
 
             else:
                 assert False, f"Invalid expression. ({left.type} {node["operator"]} {right.type})"
@@ -1016,7 +1022,6 @@ class Compiler:
                 del i["operator"]
 
             assert i["type"] == "func", f"Invalid implementation type: '{i["type"]}'."
-            i["params"] = [{"type": self.scopeManager.Class.type.as_pointer(), "name": "this", "mutable": True}] + i["params"]
             func = {"type": self.VisitFunc(i, body = False), "access": "private" if i["private"] else "public"}
             self.scopeManager.Class.RegisterFunction(func["type"].name, func)
             impl.append(i)
@@ -1070,19 +1075,10 @@ class Compiler:
     @Timer
     def VisitFunc(self, node, body = True, override = False):
         assert not self.scopeManager.Scope.local, "Functions must be defined in global scope."
-        arguments, threeDots, classState = [], False, False
+
         names = node["name"].split("::")
         namespaces, name = names[:-1], names[-1]
-
-        if not self.scopeManager.Class:
-            if namespaces and self.scopeManager.Has(namespaces[-1]):
-                _class = self.scopeManager.Get(namespaces[-1], types = [Class])
-
-                if isinstance(_class, Class):
-                    assert _class.Has(name), f"Class '{namespaces[-1]}' does not have function '{name}'."
-                    node["params"] = [{"type": _class.type.as_pointer(), "name": "this", "mutable": True}] + node["params"]
-                    self.scopeManager.PushClass(_class)
-                    classState = True
+        arguments, threeDots, classState = [], False, False
 
         for index, param in enumerate(node["params"]):
             if param["type"] != "three dot":
@@ -1108,12 +1104,21 @@ class Compiler:
                     if hasattr(argument.type, "_sret"):
                         argument.attributes.add("sret")
 
-            if self.scopeManager.Class: func._parentClass = self.scopeManager.Class
+            if self.scopeManager.Class is not None:
+                func._parentClass = self.scopeManager.Class
+
             self.scopeManager.Set(name, func)
 
         else:
             func = self.scopeManager.Get(name)
             assert not (not override and func.blocks), f"Function '{name}' already defined."
+
+        if self.scopeManager.Class is not None:
+            this = (names[1], types[1], mutables[1]) if hasattr(types[0], "_sret") else (names[0], types[0], mutables[0])
+            assert this[0] == "this", f"Invalid name for instance variable. (Expected 'this', got '{this[0]}'.)"
+            assert this[1].is_pointer and this[1].pointee == self.scopeManager.Class.type and hasattr(this[1], "_reference"), \
+                f"Invalid type for instance variable. (Expected '{self.scopeManager.Class.type.as_pointer()}', got '{this[1]}'.)"
+            this[1]._mutable, this[1]._name = this[2], this[0]
 
         if "body" in node and body:
             self.PushBuilder(ir.IRBuilder(func.append_basic_block()))
@@ -1291,16 +1296,22 @@ class Compiler:
 
         elif isinstance(value.type, ir.FloatType):
             if isinstance(target, ir.IntType):
-                if hasattr(target, "_unsigned"): return self.Builder.fptoui(value, target)
-                else: return self.Builder.fptosi(value, target)
+                if target._signed:
+                    return self.Builder.fptosi(value, target)
+
+                else:
+                    return self.Builder.fptoui(value, target)
 
             if isinstance(target, ir.DoubleType):
                 return self.Builder.fpext(value, target)
 
         elif isinstance(value.type, ir.DoubleType):
             if isinstance(target, ir.IntType):
-                if hasattr(target, "_unsigned"): return self.Builder.fptoui(value, target)
-                else: return self.Builder.fptosi(value, target)
+                if target._signed:
+                    return self.Builder.fptosi(value, target)
+
+                else:
+                    return self.Builder.fptoui(value, target)
 
             if isinstance(target, ir.FloatType):
                 return self.Builder.fptrunc(value, target)
@@ -1310,12 +1321,22 @@ class Compiler:
                 return self.Builder.inttoptr(value, target)
 
             if isinstance(target, ir.FloatType) or isinstance(target, ir.DoubleType):
-                if hasattr(value.type, "_unsigned"): return self.Builder.uitofp(value, target)
-                else: return self.Builder.sitofp(value, target)
+                if value.type._signed:
+                    return self.Builder.sitofp(value, target)
+
+                else:
+                    return self.Builder.uitofp(value, target)
 
             if isinstance(target, ir.IntType):
-                if target.width > value.type.width: return self.Builder.sext(value, target)
-                else: return self.Builder.trunc(value, target)
+                if target.width > value.type.width:
+                    return self.Builder.sext(value, target)
+
+                elif target.width < value.type.width:
+                    return self.Builder.trunc(value, target)
+
+                else:
+                    value.type = self.primitiveTypes[target._to_string2()]
+                    return value
 
         else:
             assert value.type.is_pointer and target.is_pointer, f"Cannot cast '{value.type}' to '{target}'."
@@ -1398,16 +1419,6 @@ class Compiler:
             return node
 
         elif node["type"] in ["identifier"]:
-            if self.scopeManager.Scope.Has(node["value"]):
-                return self.scopeManager.Scope.Get(node["value"])
-
-            if self.scopeManager.Class is not None:
-                if self.scopeManager.Class.Has(node["value"]):
-                    value = self.Builder.load(self.scopeManager.Get("this"))
-                    assert value.type.is_pointer, "Expected a pointer."
-                    assert not value.type.is_opaque, "Expected a non-opaque pointer."
-                    return self.scopeManager.Class.Get(node["value"], pointer = value)
-
             assert self.scopeManager.Has(node["value"]), f"Unknown identifier '{node["value"]}'."
             return self.scopeManager.Get(node["value"])
 
@@ -1512,7 +1523,7 @@ class Compiler:
             assert _class.Has(_class.RealName, arguments = params), \
                 f"Class '{_class.RealName}' does not have a constructor that takes {('(' + ', '.join([str(i.type) for i in params]) + ')') if params else 'nothing'}."
 
-            return self.VisitCall({"value": _class.Get(_class.RealName, arguments = params, pointer = ptr), "params": params})
+            return self.VisitCall({"value": _class.Get(_class.RealName, arguments = params, pointer = ptr), "params": params}, ignore = True)
 
         else:
             assert len(params) <= len(_class.Elements), "Too many parameters."
@@ -1524,7 +1535,7 @@ class Compiler:
                 self.VisitDestructor(self.scopeManager.Get(value["type"].name, types = [Class]), self.Builder.gep(ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), _class.Index(name))]))
 
         if _class.Has(f"~{_class.RealName}"):
-            return self.VisitCall({"value": _class.Get(f"~{_class.RealName}", arguments = [], pointer = ptr), "params": []})
+            return self.VisitCall({"value": _class.Get(f"~{_class.RealName}", arguments = [], pointer = ptr), "params": []}, ignore = True)
 
     @Timer
     def VisitConstant(self, node):
@@ -1606,11 +1617,11 @@ class Compiler:
         else:
             _ptr = ptr = self.VisitPointer(node["left"])
 
-            while isinstance(_ptr, ir.GEPInstr):
+            while isinstance(_ptr, ir.GEPInstr) or isinstance(_ptr, ir.LoadInstr):
                 _ptr = _ptr.operands[0]
 
             if hasattr(_ptr.type, "_mutable") and hasattr(_ptr.type, "_name") and not ignore:
-                assert _ptr.type._mutable, f"Cannot assign to an immutable variable: '{_ptr.type._name}'."
+                assert _ptr.type._mutable, f"Cannot assign to immutable variable '{_ptr.type._name}'."
 
             if hasattr(ptr.type.pointee, "_reference"):
                 ptr = self.Builder.load(ptr)
@@ -1732,7 +1743,7 @@ class Compiler:
         self.Builder.call(self.free, [_ptr])
 
     @Timer
-    def VisitCall(self, node):
+    def VisitCall(self, node, ignore = False):
         assert self.scopeManager.Scope.local, "Call statements must be defined in local scope."
         funcs = self.VisitPointer(node["value"])
         _params = [self.VisitValue(i) for i in node["params"]]
@@ -1755,11 +1766,19 @@ class Compiler:
 
                 _func, _ptr = _func["type"], params[0]
 
-                while isinstance(_ptr, ir.GEPInstr):
+                while isinstance(_ptr, ir.GEPInstr) or isinstance(_ptr, ir.LoadInstr):
                     _ptr = _ptr.operands[0]
 
-                if hasattr(_ptr.type, "_mutable") and False:
-                    assert _ptr.type._mutable, f"Cannot call methods of an immutable class: '{_ptr.type._name}: {_ptr.type.pointee.name}'."
+                if hasattr(_ptr.type, "_mutable") and hasattr(_ptr.type, "_name") and not ignore:
+                    this = _func.args[1].type if hasattr(_func.args[0].type, "_sret") else _func.args[0].type
+
+                    assert not (this._mutable and not _ptr.type._mutable and _ptr.type._name == "this"), \
+                        f"Cannot call mutable method '{_func.name}' in immutable method '{self.Builder.function.name}'."
+
+                    assert not (this._mutable and not _ptr.type._mutable and _ptr.type._name != "this"), \
+                        f"Cannot call mutable method '{_func.name}' on immutable variable '{_ptr.type._name}'."
+
+                    # Bu fonksiyon çağırılmayacak olsa bile hata verecek.
 
             if isinstance(_func, ir.AllocaInstr):
                 _func = self.Builder.load(_func)
@@ -1778,7 +1797,7 @@ class Compiler:
                 type = self.ProcessType(params[_index].type)
                 _index += 1
 
-                if hasattr(target, "_reference"):
+                if hasattr(target, "_reference") and type != target:
                     target = target.pointee
 
                 if type != target:
@@ -1995,8 +2014,7 @@ class Compiler:
 
             elif isinstance(left.type, ir.IntType) and isinstance(right.type, ir.IntType):
                 assert left.type.width == right.type.width, f"Integer size mismatch. ({left.type._to_string2()} {node["operator"]} {right.type._to_string2()})"
-                assert (unsigned := hasattr(left.type, "_unsigned")) == hasattr(right.type, "_unsigned"), \
-                    f"Integer sign mismatch. ({left.type._to_string2()} {node["operator"]} {right.type._to_string2()})"
+                assert (signed := left.type._signed) == right.type._signed, f"Integer sign mismatch. ({left.type._to_string2()} {node["operator"]} {right.type._to_string2()})"
 
                 if node["operator"] == "+":
                     return self.Builder.add(left, right)
@@ -2005,19 +2023,19 @@ class Compiler:
                     return self.Builder.mul(left, right)
 
                 elif node["operator"] == "/":
-                    if unsigned: return self.Builder.udiv(left, right)
-                    else: return self.Builder.sdiv(left, right)
+                    if signed: return self.Builder.sdiv(left, right)
+                    else: return self.Builder.udiv(left, right)
 
                 elif node["operator"] == "%":
-                    if unsigned: return self.Builder.urem(left, right)
-                    else: return self.Builder.srem(left, right)
+                    if signed: return self.Builder.srem(left, right)
+                    else: return self.Builder.urem(left, right)
 
                 elif node["operator"] == "-":
                     return self.Builder.sub(left, right)
 
                 elif node["operator"] in ["<", "<=", ">", ">=", "!=", "=="]:
-                    if unsigned: return self.Builder.icmp_unsigned(node["operator"], left, right)
-                    else: return self.Builder.icmp_signed(node["operator"], left, right)
+                    if signed: return self.Builder.icmp_signed(node["operator"], left, right)
+                    else: return self.Builder.icmp_unsigned(node["operator"], left, right)
 
                 elif node["operator"] in ["&", "&&"]:
                     return self.Builder.and_(left, right)
@@ -2029,8 +2047,8 @@ class Compiler:
                     return self.Builder.xor(left, right)
 
                 elif node["operator"] == ">>":
-                    if unsigned: return self.Builder.lshr(left, right)
-                    else: return self.Builder.ashr(left, right)
+                    if signed: return self.Builder.ashr(left, right)
+                    else: return self.Builder.lshr(left, right)
 
                 elif node["operator"] == "<<":
                     return self.Builder.shl(left, right)

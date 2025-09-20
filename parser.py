@@ -16,6 +16,9 @@ class Parser(sly.Parser):
 
         ("nonassoc", "EQUAL", "NOT_EQUAL", "LESS", "LESS_EQUAL", "GREATER", "GREATER_EQUAL"),
 
+        ("left", "CAST"),
+        ("right", "TERNARY"),
+
         ("left", "LSHIFT", "RSHIFT"),
 
         ("left", "PLUS", "MINUS"),
@@ -25,8 +28,7 @@ class Parser(sly.Parser):
         ("right", "UNARY_MINUS", "ADDRESS_OF", "DEREFERENCE"),
 
         ("left", "DOT", "ARROW"),
-        ("left", "LPAREN", "LBRACKET"),
-        ("left", "CAST")
+        ("left", "LPAREN", "LBRACKET")
     )
 
     def __init__(self):
@@ -105,9 +107,9 @@ class Parser(sly.Parser):
         p.ConstructorList.append(p.Constructor)
         return p.ConstructorList
 
-    @_("QualifiedName LPAREN ExprList RPAREN")
+    @_("DataType LPAREN ExprList RPAREN")
     def Constructor(self, p):
-        return {"type": "constructor", "class": p.QualifiedName, "params": p.ExprList}
+        return {"type": "constructor", "class": p.DataType, "params": p.ExprList}
 
     @_("NAME LPAREN FuncParams RPAREN COLON ConstructorList LBRACE Statements RBRACE")
     def ImplStatement(self, p):
@@ -220,29 +222,21 @@ class Parser(sly.Parser):
     def Statement(self, p):
         return {"type": "include", "modules": p.IncludeParams}
 
-    @_("QualifiedNameTilde LPAREN FuncParams RPAREN LBRACE Statements RBRACE")
+    @_("FUNC NAME LPAREN FuncParams RPAREN ARROW DataType LBRACE Statements RBRACE")
     def Statement(self, p):
-        return {"type": "func", "return": "void", "name": p.QualifiedNameTilde, "body": p.Statements, "params": p.FuncParams}
+        return {"type": "func", "return": p.DataType, "name": p.NAME, "body": p.Statements, "params": p.FuncParams}
 
-    @_("QualifiedNameTilde LPAREN FuncParams RPAREN SEMICOLON")
+    @_("FUNC NAME LPAREN FuncParams RPAREN ARROW DataType SEMICOLON")
     def Statement(self, p):
-        return {"type": "func", "return": "void", "name": p.QualifiedNameTilde, "params": p.FuncParams}
+        return {"type": "func", "return": p.DataType, "name": p.NAME, "params": p.FuncParams}
 
-    @_("FUNC QualifiedName LPAREN FuncParams RPAREN ARROW DataType LBRACE Statements RBRACE")
+    @_("FUNC NAME LPAREN FuncParams RPAREN LBRACE Statements RBRACE")
     def Statement(self, p):
-        return {"type": "func", "return": p.DataType, "name": p.QualifiedName, "body": p.Statements, "params": p.FuncParams}
+        return {"type": "func", "return": "void", "name": p.NAME, "body": p.Statements, "params": p.FuncParams}
 
-    @_("FUNC QualifiedName LPAREN FuncParams RPAREN ARROW DataType SEMICOLON")
+    @_("FUNC NAME LPAREN FuncParams RPAREN SEMICOLON")
     def Statement(self, p):
-        return {"type": "func", "return": p.DataType, "name": p.QualifiedName, "params": p.FuncParams}
-
-    @_("FUNC QualifiedName LPAREN FuncParams RPAREN LBRACE Statements RBRACE")
-    def Statement(self, p):
-        return {"type": "func", "return": "void", "name": p.QualifiedName, "body": p.Statements, "params": p.FuncParams}
-
-    @_("FUNC QualifiedName LPAREN FuncParams RPAREN SEMICOLON")
-    def Statement(self, p):
-        return {"type": "func", "return": "void", "name": p.QualifiedName, "params": p.FuncParams}
+        return {"type": "func", "return": "void", "name": p.NAME, "params": p.FuncParams}
 
     @_("IF Expr LBRACE Statements RBRACE")
     def Statement(self, p):
@@ -256,33 +250,33 @@ class Parser(sly.Parser):
     def Statement(self, p):
         return {"type": "while", "condition": p.Expr, "body": p.Statements}
 
-    @_("CLASS QualifiedName LBRACE MemberStatements RBRACE SEMICOLON")
+    @_("CLASS NAME LBRACE MemberStatements RBRACE SEMICOLON")
     def Statement(self, p):
-        return {"type": "class", "name": p.QualifiedName, "members": p.MemberStatements, "impl": [], "parents": []}
+        return {"type": "class", "name": p.NAME, "members": p.MemberStatements, "impl": [], "parents": []}
 
-    @_("CLASS QualifiedName LBRACE MemberStatements RBRACE IMPL LBRACE ImplStatements RBRACE SEMICOLON")
+    @_("CLASS NAME LBRACE MemberStatements RBRACE IMPL LBRACE ImplStatements RBRACE SEMICOLON")
     def Statement(self, p):
-        return {"type": "class", "name": p.QualifiedName, "members": p.MemberStatements, "impl": p.ImplStatements, "parents": []}
+        return {"type": "class", "name": p.NAME, "members": p.MemberStatements, "impl": p.ImplStatements, "parents": []}
 
-    @_("CLASS QualifiedName LESS TemplateParams GREATER LBRACE MemberStatements RBRACE IMPL LBRACE ImplStatements RBRACE SEMICOLON")
+    @_("CLASS NAME LESS TemplateParams GREATER LBRACE MemberStatements RBRACE IMPL LBRACE ImplStatements RBRACE SEMICOLON")
     def Statement(self, p):
-        return {"type": "template", "body": {"type": "class", "name": p.QualifiedName, "members": p.MemberStatements, "impl": p.ImplStatements, "parents": []}, "params": p.TemplateParams}
+        return {"type": "template", "body": {"type": "class", "name": p.NAME, "members": p.MemberStatements, "impl": p.ImplStatements, "parents": []}, "params": p.TemplateParams}
 
-    @_("CLASS QualifiedName COLON TypeParams LBRACE MemberStatements RBRACE SEMICOLON")
+    @_("CLASS NAME COLON TypeList LBRACE MemberStatements RBRACE SEMICOLON")
     def Statement(self, p):
-        return {"type": "class", "name": p.QualifiedName, "members": p.MemberStatements, "impl": [], "parents": p.TypeParams}
+        return {"type": "class", "name": p.NAME, "members": p.MemberStatements, "impl": [], "parents": p.TypeList}
 
-    @_("CLASS QualifiedName COLON TypeParams LBRACE MemberStatements RBRACE IMPL LBRACE ImplStatements RBRACE SEMICOLON")
+    @_("CLASS NAME COLON TypeList LBRACE MemberStatements RBRACE IMPL LBRACE ImplStatements RBRACE SEMICOLON")
     def Statement(self, p):
-        return {"type": "class", "name": p.QualifiedName, "members": p.MemberStatements, "impl": p.ImplStatements, "parents": p.TypeParams}
+        return {"type": "class", "name": p.NAME, "members": p.MemberStatements, "impl": p.ImplStatements, "parents": p.TypeList}
 
-    @_("CLASS QualifiedName COLON TypeParams LESS TemplateParams GREATER LBRACE MemberStatements RBRACE IMPL LBRACE ImplStatements RBRACE SEMICOLON")
+    @_("CLASS NAME COLON TypeList LESS TemplateParams GREATER LBRACE MemberStatements RBRACE IMPL LBRACE ImplStatements RBRACE SEMICOLON")
     def Statement(self, p):
-        return {"type": "template", "body": {"type": "class", "name": p.QualifiedName, "members": p.MemberStatements, "impl": p.ImplStatements, "parents": p.TypeParams}, "params": p.TemplateParams}
+        return {"type": "template", "body": {"type": "class", "name": p.NAME, "members": p.MemberStatements, "impl": p.ImplStatements, "parents": p.TypeList}, "params": p.TemplateParams}
 
-    @_("MOD QualifiedName LBRACE Statements RBRACE")
+    @_("MOD NAME LBRACE Statements RBRACE")
     def Statement(self, p):
-        return {"type": "namespace", "name": p.QualifiedName, "body": p.Statements}
+        return {"type": "namespace", "name": p.NAME, "body": p.Statements}
 
     @_("LET LPAREN TypedNameList RPAREN ASSIGN LPAREN ExprList RPAREN SEMICOLON")
     def Statement(self, p):
@@ -343,13 +337,13 @@ class Parser(sly.Parser):
     def DataType(self, p):
         return {"type": "pointer", "value": p.DataType}
 
-    @_("DataType LESS TypeParams GREATER")
-    def DataType(self, p):
-        return {"type": "template", "value": p.DataType, "params": p.TypeParams}
-
     @_("DataType BITWISE_AND")
     def DataType(self, p):
         return {"type": "reference", "value": p.DataType}
+
+    @_("DataType LESS TypeList GREATER")
+    def DataType(self, p):
+        return {"type": "template", "value": p.DataType, "params": p.TypeList}
 
     @_("FUNC LPAREN FuncParams RPAREN ARROW DataType")
     def DataType(self, p):
@@ -359,13 +353,13 @@ class Parser(sly.Parser):
     def DataType(self, p):
         return {"type": "function", "return": "void", "params": [i["type"] for i in p.FuncParams]}
 
-    @_("FUNC LPAREN TypeParams RPAREN ARROW DataType")
+    @_("FUNC LPAREN TypeList RPAREN ARROW DataType")
     def DataType(self, p):
-        return {"type": "function", "return": p.DataType, "params": p.TypeParams}
+        return {"type": "function", "return": p.DataType, "params": p.TypeList}
 
-    @_("FUNC LPAREN TypeParams RPAREN")
+    @_("FUNC LPAREN TypeList RPAREN")
     def DataType(self, p):
-        return {"type": "function", "return": "void", "params": p.TypeParams}
+        return {"type": "function", "return": "void", "params": p.TypeList}
 
     @_("NAME LBRACKET RBRACKET")
     def ArrayName(self, p):
@@ -433,28 +427,24 @@ class Parser(sly.Parser):
     def FuncParam(self, p):
         return {"type": "three dot"}
 
-    @_("PLUS", "MINUS", "MUL", "DIV", "MOD", "LSHIFT", "RSHIFT", "BITWISE_XOR", "AND", "OR", "BITWISE_AND", "BITWISE_OR", "BITWISE_NOT", "EQUAL", "NOT_EQUAL",
+    @_("PLUS", "MINUS", "MUL", "DIV", "MOD", "LESS LESS", "GREATER GREATER", "BITWISE_XOR", "AND", "OR", "BITWISE_AND", "BITWISE_OR", "BITWISE_NOT", "EQUAL", "NOT_EQUAL",
        "GREATER", "LESS", "GREATER_EQUAL", "LESS_EQUAL", "ARROW", "NOT", "ASSIGN", "LPAREN RPAREN", "LBRACKET RBRACKET", "NEW", "DEL", "COLON COLON", "COMMA",
        "PLUS_ASSIGN", "MINUS_ASSIGN", "MUL_ASSIGN", "DIV_ASSIGN", "MOD_ASSIGN", "LSHIFT_ASSIGN", "RSHIFT_ASSIGN", "XOR_ASSIGN", "AND_ASSIGN", "OR_ASSIGN")
     def FuncOperator(self, p):
         return "".join(p)
 
     @_("")
-    def TypeParams(self, p):
+    def TypeList(self, p):
         return []
 
-    @_("TypeParam")
-    def TypeParams(self, p):
-        return [p.TypeParam]
-
-    @_("TypeParams COMMA TypeParam")
-    def TypeParams(self, p):
-        p.TypeParams.append(p.TypeParam)
-        return p.TypeParams
-
     @_("DataType")
-    def TypeParam(self, p):
-        return p.DataType
+    def TypeList(self, p):
+        return [p.DataType]
+
+    @_("TypeList COMMA DataType")
+    def TypeList(self, p):
+        p.TypeList.append(p.DataType)
+        return p.TypeList
 
     @_("")
     def TemplateParams(self, p):
@@ -515,6 +505,10 @@ class Parser(sly.Parser):
     def Expr(self, p):
         return {"type": "identifier", "value": f"op{p.FuncOperator}"}
 
+    @_("Expr QUESTION_MARK Expr COLON Expr %prec TERNARY")
+    def Expr(self, p):
+        return {"type": "ternary", "condition": p.Expr0, "left": p.Expr1, "right": p.Expr2}
+
     @_("Expr DOT NAME", "Expr DOT OPERATOR FuncOperator")
     def Expr(self, p):
         return {"type": "get element", "value": p.Expr, "element": f"op{p.FuncOperator}" if len(p) > 3 else p.NAME}
@@ -526,6 +520,14 @@ class Parser(sly.Parser):
     @_("Expr LPAREN ExprList RPAREN")
     def Expr(self, p):
         return {"type": "call", "value": p.Expr, "params": p.ExprList}
+    
+    @_("Expr LESS TypeList GREATER")
+    def Expr(self, p):
+        return {"type": "template", "value": p.Expr, "params": p.TypeList}
+
+    # @_("DataType LPAREN ExprList RPAREN")
+    # def Expr(self, p):
+    #     return {"type": "call", "value": p.DataType, "params": p.ExprList}
 
     @_("Expr LBRACKET Expr RBRACKET")
     def Expr(self, p):
@@ -568,10 +570,10 @@ class Parser(sly.Parser):
         return {"type": "list initialization", "name": p.DataType, "body": p.ExprList}
 
     @_("Expr PLUS Expr", "Expr MINUS Expr", "Expr MUL Expr", "Expr DIV Expr", "Expr MOD Expr",  "Expr BITWISE_XOR Expr",
-       "Expr LSHIFT Expr", "Expr RSHIFT Expr", "Expr AND Expr", "Expr OR Expr", "Expr BITWISE_AND Expr", "Expr BITWISE_OR Expr",
+       "Expr LESS LESS Expr %prec LSHIFT", "Expr GREATER GREATER Expr %prec RSHIFT", "Expr AND Expr", "Expr OR Expr", "Expr BITWISE_AND Expr", "Expr BITWISE_OR Expr",
        "Expr GREATER Expr", "Expr GREATER_EQUAL Expr", "Expr LESS Expr", "Expr LESS_EQUAL Expr", "Expr NOT_EQUAL Expr", "Expr EQUAL Expr")
     def Expr(self, p):
-        return {"type": "expression", "operator": p[1], "left": p.Expr0, "right": p.Expr1}
+        return {"type": "expression", "operator": p[1] + p[2] if len(p) > 3 else p[1], "left": p.Expr0, "right": p.Expr1}
 
     @_("INTEGER")
     def Expr(self, p):
@@ -635,14 +637,10 @@ class Parser(sly.Parser):
     def Expr(self, p):
         return {"type": "dereference", "value": p.Expr}
 
-    @_("NAME")
+    @_("NAME", "OPERATOR FuncOperator")
     def QualifiedName(self, p):
-        return p.NAME
+        return "".join(p)
 
-    @_("QualifiedName COLON COLON NAME")
+    @_("QualifiedName COLON COLON NAME", "QualifiedName COLON COLON OPERATOR FuncOperator")
     def QualifiedName(self, p):
-        return f"{p.QualifiedName}::{p.NAME}"
-
-    @_("QualifiedName COLON COLON NAME", "QualifiedName COLON COLON BITWISE_NOT NAME")
-    def QualifiedNameTilde(self, p):
-        return f"{p.QualifiedName}::{"~" if len(p) > 4 else ""}{p.NAME}"
+        return "".join(p)

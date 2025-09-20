@@ -8,7 +8,7 @@ def main(argv: list[str]) -> int:
         os.rmdir("__pycache__")
 
     for i in os.listdir():
-        if os.path.splitext(i)[1] in [".ilk", ".pdb", ".exe", ".llvm", ".json"]:
+        if os.path.splitext(i)[1] in [".ilk", ".obj", ".pdb", ".exe", ".llvm", ".json"]:
             os.remove(i)
 
     return 0

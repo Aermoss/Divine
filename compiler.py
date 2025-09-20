@@ -288,7 +288,7 @@ class Class:
 
                 if (offset % j) != 0 and (i is None or (offset % j) + size > j):
                     padding = j - (offset % j)
-                    elements[f"<p@{offset}:{padding}>"] = {"type": ir.ArrayType(ir.IntType(8), padding), "value": None, "access": None}
+                    elements[f"<p@{offset}:{padding}>"] = {"type": ir.ArrayType(self.__compiler.primitiveTypes["i8"], padding), "value": None, "access": None}
                     offset += padding
 
             if i is not None:
@@ -366,10 +366,11 @@ class Class:
             arguments = [self.__compiler.ProcessType(i) for i in arguments]
 
         if name in self.__elements and arguments is None:
-            assert self.__elements[name]["access"] == "public" or self.__compiler.scopeManager.Class == self, f"Function '{name}' is not accessible."
+            assert self.__elements[name]["access"] == "public" or self.__compiler.scopeManager.Class == self, \
+                f"Variable '{name}' is not accessible."
 
             if pointer is not None:
-                return self.__compiler.Builder.gep(pointer, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), self.Index(name))])
+                return self.__compiler.Builder.gep(pointer, [ir.Constant(self.__compiler.primitiveTypes["i32"], 0), ir.Constant(self.__compiler.primitiveTypes["i32"], self.Index(name))])
 
             else:
                 return self.__elements[name].copy()
@@ -492,22 +493,22 @@ class SizeOf(CompileTimeFunction):
             type = self.compiler.VisitValue(value).type
 
         if isinstance(type, ir.ArrayType):
-            return ir.Constant(ir.IntType(64), type.count * self(type.element).constant)
+            return ir.Constant(self.compiler.primitiveTypes["u64"], type.count * self(type.element).constant)
 
         elif isinstance(type, ir.BaseStructType):
-            return ir.Constant(ir.IntType(64), sum([self(i).constant for i in type.elements]))
+            return ir.Constant(self.compiler.primitiveTypes["u64"], sum([self(i).constant for i in type.elements]))
 
         elif isinstance(type, ir.PointerType):
-            return ir.Constant(ir.IntType(64), 8)
+            return ir.Constant(self.compiler.primitiveTypes["u64"], 8)
 
         elif isinstance(type, ir.IntType):
-            return ir.Constant(ir.IntType(64), max(type.width // 8, 1))
+            return ir.Constant(self.compiler.primitiveTypes["u64"], max(type.width // 8, 1))
 
         elif isinstance(type, ir.FloatType):
-            return ir.Constant(ir.IntType(64), 4)
+            return ir.Constant(self.compiler.primitiveTypes["u64"], 4)
 
         elif isinstance(type, ir.DoubleType):
-            return ir.Constant(ir.IntType(64), 8)
+            return ir.Constant(self.compiler.primitiveTypes["u64"], 8)
 
         else:
             assert False, f"Unknown type: '{type}'."
@@ -524,22 +525,22 @@ class AlignOf(CompileTimeFunction):
             type = self.compiler.VisitValue(value).type
 
         if isinstance(type, ir.ArrayType):
-            return ir.Constant(ir.IntType(64), self(type.element).constant)
+            return ir.Constant(self.compiler.primitiveTypes["u64"], self(type.element).constant)
 
         elif isinstance(type, ir.BaseStructType):
-            return ir.Constant(ir.IntType(64), max([self(i).constant for i in type.elements]))
+            return ir.Constant(self.compiler.primitiveTypes["u64"], max([self(i).constant for i in type.elements]))
 
         elif isinstance(type, ir.PointerType):
-            return ir.Constant(ir.IntType(64), 8)
+            return ir.Constant(self.compiler.primitiveTypes["u64"], 8)
 
         elif isinstance(type, ir.IntType):
-            return ir.Constant(ir.IntType(64), max(type.width // 8, 1))
+            return ir.Constant(self.compiler.primitiveTypes["u64"], max(type.width // 8, 1))
 
         elif isinstance(type, ir.FloatType):
-            return ir.Constant(ir.IntType(64), 4)
+            return ir.Constant(self.compiler.primitiveTypes["u64"], 4)
 
         elif isinstance(type, ir.DoubleType):
-            return ir.Constant(ir.IntType(64), 8)
+            return ir.Constant(self.compiler.primitiveTypes["u64"], 8)
 
         else:
             assert False, f"Unknown type: '{type}'."
@@ -558,7 +559,7 @@ class OffsetOf(CompileTimeFunction):
         assert isinstance(type, ir.BaseStructType), "Expected a class."
         assert element["type"] == "identifier", "Expected an identifier."
         _class, sizeof = self.compiler.scopeManager.Get(type.name), self.compiler.scopeManager.Get("sizeof")
-        return ir.Constant(ir.IntType(64), sum([sizeof(i).constant for i in type.elements[:_class.Index(element["value"])]]))
+        return ir.Constant(self.compiler.primitiveTypes["u64"], sum([sizeof(i).constant for i in type.elements[:_class.Index(element["value"])]]))
 
 class AddressOf(CompileTimeFunction):
     def __init__(self, compiler):
@@ -658,10 +659,8 @@ class Mangler:
         names, depth, index = [], 0, len(cls.prefix)
 
         while len(mangle) > index:
-            digit = ""
-
             if mangle[index] in ["I"]:
-                _digit, ignore = "", 0
+                ignore = 0
 
                 while len(mangle) > index:
                     names[-1] += mangle[index]
@@ -675,13 +674,15 @@ class Mangler:
                         if not ignore:
                             break
 
+                    digit = ""
+
                     while mangle[index].isdigit():
-                        _digit += mangle[index]
+                        digit += mangle[index]
                         index += 1
 
-                    if _digit:
-                        names[-1] += mangle[index:index + int(_digit)]
-                        index += int(_digit)
+                    if digit:
+                        names[-1] += mangle[index:index + int(digit)]
+                        index += int(digit)
 
                     else:
                         index += 1
@@ -697,6 +698,8 @@ class Mangler:
 
                 if not depth:
                     break
+
+            digit = ""
 
             while mangle[index].isdigit():
                 digit += mangle[index]
@@ -738,7 +741,7 @@ class Compiler:
         }
 
         _instance_cache, ir.IntType._instance_cache = ir.IntType._instance_cache, {}
-        self.primitiveTypes.update({"u8": ir.IntType(8), "u16": ir.IntType(16), "u32": ir.IntType(32), "u64": ir.IntType(64), "u128": ir.IntType(128)})
+        self.primitiveTypes.update({"u8": self.primitiveTypes["i8"], "u16": ir.IntType(16), "u32": ir.IntType(32), "u64": ir.IntType(64), "u128": ir.IntType(128)})
         ir.IntType._instance_cache = {} # _instance_cache
 
         for name, type in self.primitiveTypes.items():
@@ -752,11 +755,13 @@ class Compiler:
         self.scopeManager.Set("offsetof", offsetof := OffsetOf(self))
         self.scopeManager.Set("addressof", addressof := AddressOf(self))
         self.sizeof, self.alignof, self.offsetof, self.addressof = sizeof, alignof, offsetof, addressof
-        self.memcpy = ir.Function(self.module, ir.FunctionType(ir.VoidType(), [ir.PointerType(), ir.PointerType(), ir.IntType(64), ir.IntType(1)]), "llvm.memcpy.p0.p0.i64")
-        self.malloc = ir.Function(self.module, ir.FunctionType(ir.IntType(8).as_pointer(), [ir.IntType(64)]), "malloc")
-        self.free = ir.Function(self.module, ir.FunctionType(ir.VoidType(), [ir.IntType(8).as_pointer()]), "free")
+        self.memcmp = ir.Function(self.module, ir.FunctionType(self.primitiveTypes["i32"], [ir.PointerType(), ir.PointerType(), self.primitiveTypes["u64"]]), "memcmp")
+        self.memcpy = ir.Function(self.module, ir.FunctionType(ir.VoidType(), [ir.PointerType(), ir.PointerType(), self.primitiveTypes["u64"], self.primitiveTypes["bool"]]), "llvm.memcpy.p0.p0.i64")
+        self.malloc = ir.Function(self.module, ir.FunctionType(self.primitiveTypes["i8"].as_pointer(), [self.primitiveTypes["u64"]]), "malloc")
+        self.free = ir.Function(self.module, ir.FunctionType(ir.VoidType(), [self.primitiveTypes["i8"].as_pointer()]), "free")
         self.includePaths, self.entryPoints = [], ["main", "WinMain", "DllMain"]
         self.stringCache, self.builderStack, self.mangling = {}, [], True
+        self.scopeManager.Set("memcmp", self.memcmp)
         self.scopeManager.Set("malloc", self.malloc)
         self.scopeManager.Set("free", self.free)
         self.__includedFiles = []
@@ -774,8 +779,8 @@ class Compiler:
         return self.builderStack.pop()
 
     @property
-    def LoopBlock(self):
-        assert hasattr(self.Builder, "_blocks") and 0 < len(self.Builder._blocks), "No loop block."
+    def CompareBlock(self):
+        assert hasattr(self.Builder, "_blocks") and 0 < len(self.Builder._blocks), "No compare block."
         return self.Builder._blocks[-1][0]
 
     @property
@@ -783,9 +788,9 @@ class Compiler:
         assert hasattr(self.Builder, "_blocks") and 0 < len(self.Builder._blocks), "No end block."
         return self.Builder._blocks[-1][1]
 
-    def PushBlocks(self, loopBlock, endBlock):
+    def PushBlocks(self, compareBlock, endBlock):
         if not hasattr(self.Builder, "_blocks"): self.Builder._blocks = []
-        self.Builder._blocks.append((loopBlock, endBlock))
+        self.Builder._blocks.append((compareBlock, endBlock))
 
     def PopBlocks(self):
         assert hasattr(self.Builder, "_blocks") and 0 < len(self.Builder._blocks), "No block to pop."
@@ -841,7 +846,7 @@ class Compiler:
                     if size > 4: new = ir.IntType(64)
                     elif size > 2: new = ir.IntType(32)
                     elif size > 1: new = ir.IntType(16)
-                    else: new = ir.IntType(8)
+                    else: new = self.primitiveTypes["i8"]
 
                     ir.IntType._instance_cache = {} # _instance_cache
 
@@ -871,7 +876,7 @@ class Compiler:
             value = ptr
 
         if value.type.is_pointer and not value.type.is_opaque and isinstance(value.type.pointee, ir.ArrayType):
-            value = self.Builder.gep(value, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+            value = self.Builder.gep(value, [ir.Constant(self.primitiveTypes["i32"], 0), ir.Constant(self.primitiveTypes["i32"], 0)])
 
         return value
 
@@ -885,7 +890,7 @@ class Compiler:
 
             for element in self.scopeManager.Get(node["name"], types = [Class])._Class__elements.values():
                 if element["access"] is None:
-                    result.append(ir.Constant(element["type"].count, [ir.Constant(ir.IntType(8), 0)] * element["type"].count))
+                    result.append(ir.Constant(element["type"].count, [ir.Constant(self.primitiveTypes["i8"], 0)] * element["type"].count))
 
                 else:
                     assert elements or element["value"], "Not enough elements in list initialization."
@@ -899,7 +904,7 @@ class Compiler:
 
         elif node["type"] in ["string"]:
             buffer = bytearray((node["value"] + "\0").encode("utf-8"))
-            return ir.Constant(ir.ArrayType(ir.IntType(8), len(buffer)), buffer)
+            return ir.Constant(ir.ArrayType(self.primitiveTypes["i8"], len(buffer)), buffer)
 
         elif node["type"] in ["expression"]:
             left, right = self.VisitConstExpr(node["left"]), self.VisitConstExpr(node["right"])
@@ -916,7 +921,7 @@ class Compiler:
 
             assert node["operator"] not in ["&", "|", "^", ">>", "<<"] or isinstance(left.type, ir.IntType), "Bitwise operations can only be performed on integers."
             assert node["operator"] not in ["&&", "||"] or (isinstance(left.type, ir.IntType) and left.type.width == 1), "Logical operations can only be performed on booleans."
-            return ir.Constant(ir.IntType(1) if node["operator"] in ["<", "<=", ">", ">=", "!=", "=="] else (ir.FloatType() if node["operator"] in ["/", "%"] and not (isinstance(left.type, ir.FloatType) or isinstance(left.type, ir.DoubleType)) else left.type), eval(f"left.constant {node["operator"]} right.constant"))
+            return ir.Constant(self.primitiveTypes["bool"] if node["operator"] in ["<", "<=", ">", ">=", "!=", "=="] else (self.primitiveTypes["f32"] if node["operator"] in ["/", "%"] and not (isinstance(left.type, ir.FloatType) or isinstance(left.type, ir.DoubleType)) else left.type), eval(f"left.constant {node["operator"]} right.constant"))
 
         elif node["type"] in self.primitiveTypes:
             return ir.Constant(self.VisitType(node["type"]), node["value"])
@@ -954,7 +959,7 @@ class Compiler:
     @Timer
     def VisitEnum(self, node):
         assert not self.scopeManager.Scope.local, "Enums must be defined in global scope."
-        type = ir.IntType(32) if node["dataType"] is None else self.VisitType(node["dataType"])
+        type = self.primitiveTypes["i32"] if node["dataType"] is None else self.VisitType(node["dataType"])
         assert isinstance(type, ir.IntType), f"Expected an integer type."
         self.scopeManager.Set(node["name"], type)
         self.scopeManager.PushScope(Scope(node["name"]))
@@ -998,6 +1003,8 @@ class Compiler:
 
         for parent in node["parents"]:
             self.scopeManager.Class.RegisterParent(self.VisitType(parent)._class)
+
+        self.scopeManager.Scope.parent.Set(node["name"], self.scopeManager.Class.type)
 
         for _name, member in node["members"].items():
             self.scopeManager.Class.RegisterElement(_name, {"type": self.VisitType(member["dataType"]), "value": member["value"], "access": "private" if member["private"] else "public"})
@@ -1137,7 +1144,7 @@ class Compiler:
                         self.scopeManager.Scope.RegisterInstance(ptr)
 
                     if isinstance(func.args[index].type, ir.PointerType):
-                        self.Builder.call(self.memcpy, [ptr, func.args[index], self.sizeof(func.args[index].type._byval), ir.Constant(ir.IntType(1), 0)])
+                        self.Builder.call(self.memcpy, [ptr, func.args[index], self.sizeof(func.args[index].type._byval), ir.Constant(self.primitiveTypes["bool"], 0)])
 
                     else:
                         self.Builder.store(func.args[index], self.Builder.bitcast(ptr, func.args[index].type.as_pointer()), self.alignof(func.args[index]).constant)
@@ -1178,6 +1185,13 @@ class Compiler:
             self.scopeManager.PopClass()
 
         return func
+
+    @Timer
+    def VisitScope(self, node):
+        assert self.scopeManager.Scope.local, "Scope blocks must be defined in local scope."
+        self.scopeManager.PushScope(Scope(local = True))
+        self.Compile(node["body"])
+        self.scopeManager.PopScope()
 
     @Timer
     def VisitIf(self, node):
@@ -1247,7 +1261,7 @@ class Compiler:
         elif node["type"] in ["pointer"]:
             type = self.VisitType(node["value"])
             assert not hasattr(type, "_reference"), f"Cannot have a pointer to a reference."
-            return ir.IntType(8).as_pointer() if isinstance(type, ir.VoidType) else type.as_pointer()
+            return self.primitiveTypes["i8"].as_pointer() if isinstance(type, ir.VoidType) else type.as_pointer()
 
         elif node["type"] in ["reference"]:
             type = self.VisitType({"type": "pointer", "value": node["value"]})
@@ -1291,7 +1305,7 @@ class Compiler:
                 f"Class '{value.type.pointee.name}' is not related to '{target.pointee.name}'."
 
             index = valueClass.Index(targetClass.RealName) if left else targetClass.Index(valueClass.RealName)
-            if index != 0: value = self.Builder.gep(value, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), index if left else -index)])
+            if index != 0: value = self.Builder.gep(value, [ir.Constant(self.primitiveTypes["i32"], 0), ir.Constant(self.primitiveTypes["i32"], index if left else -index)])
             return self.Builder.bitcast(value, target)
 
         elif isinstance(value.type, ir.FloatType):
@@ -1356,7 +1370,7 @@ class Compiler:
             if isinstance(value, ir.GlobalVariable) and value.global_constant:
                 return value.initializer
 
-            if value.type.is_pointer and not value.type.is_opaque and not isinstance(value.type.pointee, ir.ArrayType):
+            if value.type.is_pointer and not value.type.is_opaque and not isinstance(value.type.pointee, ir.ArrayType) and not isinstance(value.type.pointee, ir.FunctionType):
                 return self.Builder.load(value)
 
             else:
@@ -1377,7 +1391,9 @@ class Compiler:
             return getattr(self.Builder, "fneg" if isinstance(value.type, ir.FloatType) else "neg")(value)
 
         elif node["type"] in ["dereference"]:
-            return self.VisitValue(node["value"])
+            ptr = self.VisitValue(node["value"])
+            assert ptr.type.is_pointer, "Expected a pointer."
+            return self.Builder.load(ptr)
 
         elif node["type"] in ["expression"]:
             return self.VisitExpression(node)
@@ -1394,12 +1410,17 @@ class Compiler:
         elif node["type"] in ["null"]:
             return ir.Constant(ir.PointerType(), None)
 
+        elif node["type"] in ["ternary"]:
+            left, right = self.TryPass(self.VisitValue(node["left"])), self.TryPass(self.VisitValue(node["right"]))
+            assert left.type == right.type, f"Type mismatch in ternary. (Expected '{left.type}', got '{right.type}'.)"
+            return self.Builder.select(self.VisitValue(node["condition"]), left, right)
+
         elif node["type"] in ["string"]:
             if node["value"] in self.stringCache:
                 return self.stringCache[node["value"]]
 
             buffer = bytearray((node["value"] + "\0").encode("utf-8"))
-            constant = ir.Constant(ir.ArrayType(ir.IntType(8), len(buffer)), buffer)
+            constant = ir.Constant(ir.ArrayType(self.primitiveTypes["i8"], len(buffer)), buffer)
             _global = ir.GlobalVariable(self.module, constant.type, Mangler.MangleString(node["value"]))
             _global.linkage, _global.global_constant, _global.unnamed_addr, \
                 _global.initializer, _global.align = "private", True, True, constant, 1
@@ -1420,7 +1441,15 @@ class Compiler:
 
         elif node["type"] in ["identifier"]:
             assert self.scopeManager.Has(node["value"]), f"Unknown identifier '{node["value"]}'."
-            return self.scopeManager.Get(node["value"])
+            value = self.scopeManager.Get(node["value"])
+
+            if isinstance(value, ir.Value) and value.type.is_pointer and hasattr(value.type.pointee, "_reference"):
+                value = self.Builder.load(value)
+
+            return value
+
+        elif node["type"] in ["template"]:
+            return self.VisitPointer(node["value"]).Get(node["params"])._class
 
         elif node["type"] in ["get"]:
             value, index = self.VisitValue(node["value"]), self.VisitValue(node["index"])
@@ -1434,7 +1463,6 @@ class Compiler:
 
         elif node["type"] in ["get element", "get element pointer"]:
             value = {"get element pointer": self.VisitValue, "get element": self.VisitPointer}[node["type"]](node["value"])
-            if hasattr(value.type.pointee, "_reference"): value = self.Builder.load(value)
             assert value.type.is_pointer and not value.type.is_opaque and isinstance(value.type.pointee, ir.BaseStructType), f"Expected a class, got '{value.type}'."
             _class = self.scopeManager.Get(value.type.pointee.name, types = [Class])
             return _class.Get(node["element"], pointer = value)
@@ -1450,58 +1478,42 @@ class Compiler:
             self.scopeManager.Scope.RegisterInstance(ptr)
             return ptr
 
-        elif node["type"] in ["dereference"]:
-            value = self.VisitValue(node["value"])
-            assert value.type.is_pointer, "Expected a pointer."
-            return value
-
-        elif node["type"] in ["expression"]:
-            value = self.VisitExpression(node)
-
-            if isinstance(value, ir.LoadInstr) and hasattr(value.operands[0], "_return"):
-                self.Builder.remove(value)
-                value = value.operands[0]
-
-            assert value.type.is_pointer, "Expected a pointer."
-            return value
-
-        elif node["type"] in ["cast"]:
-            value = self.VisitCast(node)
-            assert value.type.is_pointer, "Expected a pointer."
-            return value
-
-        elif node["type"] in ["call"]:
-            value = self.VisitCall(node)
-
-            if isinstance(value, ir.LoadInstr) and hasattr(value.operands[0], "_return"):
-                self.Builder.remove(value)
-                value = value.operands[0]
-
-            assert value.type.is_pointer, "Expected a pointer."
-            return value
-        
-        elif node["type"] in ["new"]:
-            return self.VisitNew(node)
-
         elif node["type"] in ["assign"]:
             return self.VisitAssign(node)
+
+        elif node["type"] in ["dereference"]:
+            ptr = self.VisitPointer(node["value"])
+            assert ptr.type.is_pointer, "Expected a pointer."
+            return self.Builder.load(ptr)
+
+        elif node["type"] in ["expression", "cast", "call", "new", "ternary"]:
+            value = self.VisitValue(node)
+
+            if isinstance(value, ir.LoadInstr) and hasattr(value.operands[0], "_return"):
+                self.Builder.remove(value)
+                value = value.operands[0]
+
+            assert value.type.is_pointer, "Expected a pointer."
+            return value
 
         else:
             assert False, f"Unknown pointer '{node["type"]}'."
 
     @Timer
     def VisitContinue(self, node):
-        self.Builder.branch(self.LoopBlock)
+        self.InvokeDestructors()
+        self.Builder.branch(self.CompareBlock)
 
     @Timer
     def VisitBreak(self, node):
+        self.InvokeDestructors()
         self.Builder.branch(self.EndBlock)
 
     @Timer
     def VisitConstructor(self, _class, ptr, params = []):
         needCopy = len(params) == 1 and params[0].type == _class.type
         isConstructed = _class.RealName in _class.constructed
-        hasConstructor = _class.Has(_class.RealName)
+        hasConstructor = _class.Has(_class.RealName, arguments = params)
 
         if needCopy and not (hasConstructor and not isConstructed):
             params[0] = self.addressof(params[0])
@@ -1510,14 +1522,14 @@ class Compiler:
             _value = (params[index] if not (hasConstructor and not isConstructed) and index < len(params) else self.VisitValue(value["value"]))
 
             if needCopy and not (hasConstructor and not isConstructed):
-                _value = self.Builder.load(self.Builder.gep(params[0], [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), _class.Index(name))]))
+                _value = self.Builder.load(self.Builder.gep(params[0], [ir.Constant(self.primitiveTypes["i32"], 0), ir.Constant(self.primitiveTypes["i32"], _class.Index(name))]))
 
             if isinstance(value["type"], ir.BaseStructType):
-                self.VisitConstructor(self.scopeManager.Get(value["type"].name, types = [Class]), self.Builder.gep(ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), _class.Index(name))]), (_value if isinstance(_value, list) else [_value]) if _value else [])
+                self.VisitConstructor(self.scopeManager.Get(value["type"].name, types = [Class]), self.Builder.gep(ptr, [ir.Constant(self.primitiveTypes["i32"], 0), ir.Constant(self.primitiveTypes["i32"], _class.Index(name))]), (_value if isinstance(_value, list) else [_value]) if _value else [])
                 continue
 
             if _value is not None:
-                self.VisitAssign({"left": self.Builder.gep(ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), _class.Index(name))]), "right": _value}, ignore = True)
+                self.VisitAssign({"left": self.Builder.gep(ptr, [ir.Constant(self.primitiveTypes["i32"], 0), ir.Constant(self.primitiveTypes["i32"], _class.Index(name))]), "right": _value}, ignore = True)
 
         if hasConstructor and not isConstructed:
             assert _class.Has(_class.RealName, arguments = params), \
@@ -1532,7 +1544,7 @@ class Compiler:
     def VisitDestructor(self, _class, ptr):
         for name, value in _class.Elements.items():
             if isinstance(value["type"], ir.BaseStructType):
-                self.VisitDestructor(self.scopeManager.Get(value["type"].name, types = [Class]), self.Builder.gep(ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), _class.Index(name))]))
+                self.VisitDestructor(self.scopeManager.Get(value["type"].name, types = [Class]), self.Builder.gep(ptr, [ir.Constant(self.primitiveTypes["i32"], 0), ir.Constant(self.primitiveTypes["i32"], _class.Index(name))]))
 
         if _class.Has(f"~{_class.RealName}"):
             return self.VisitCall({"value": _class.Get(f"~{_class.RealName}", arguments = [], pointer = ptr), "params": []}, ignore = True)
@@ -1563,7 +1575,7 @@ class Compiler:
                 value = self.VisitValue(node["value"])
 
                 if isinstance(value, ir.LoadInstr) and hasattr(value.operands[0], "_return"):
-                    assert value.type == dataType, "Type mismatch."
+                    assert value.type == dataType, f"Type mismatch. (Expected '{dataType}', got '{value.type}'.)"
                     self.scopeManager.Set(node["name"], value.operands[0])
                     value.operands[0].type._mutable = node["mutable"]
                     value.operands[0].type._name = node["name"]
@@ -1594,7 +1606,7 @@ class Compiler:
 
                     for index, i in enumerate(value):
                         assert i.type == dataType.element, f"Element type mismatch at '{node['name']}[{index}]'. (Expected '{dataType.element}', got '{i.type}'.)"
-                        self.Builder.store(i, self.Builder.gep(ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), index)]), self.alignof(i).constant)
+                        self.Builder.store(i, self.Builder.gep(ptr, [ir.Constant(self.primitiveTypes["i32"], 0), ir.Constant(self.primitiveTypes["i32"], index)]), self.alignof(i).constant)
 
                 else:
                     if hasattr(dataType, "_reference") and dataType != value.type:
@@ -1623,9 +1635,6 @@ class Compiler:
             if hasattr(_ptr.type, "_mutable") and hasattr(_ptr.type, "_name") and not ignore:
                 assert _ptr.type._mutable, f"Cannot assign to immutable variable '{_ptr.type._name}'."
 
-            if hasattr(ptr.type.pointee, "_reference"):
-                ptr = self.Builder.load(ptr)
-
             assert ptr.type.is_pointer, "Left side of an assignment must be a pointer."
 
             if isinstance(ptr.type.pointee, ir.BaseStructType):
@@ -1649,8 +1658,8 @@ class Compiler:
 
                     for name, _ in _class.Elements.items():
                         self.VisitAssign({
-                            "left": self.Builder.gep(ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), _class.Index(name))]),
-                            "right": self.Builder.load(self.Builder.gep(value, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), _class.Index(name))]))
+                            "left": self.Builder.gep(ptr, [ir.Constant(self.primitiveTypes["i32"], 0), ir.Constant(self.primitiveTypes["i32"], _class.Index(name))]),
+                            "right": self.Builder.load(self.Builder.gep(value, [ir.Constant(self.primitiveTypes["i32"], 0), ir.Constant(self.primitiveTypes["i32"], _class.Index(name))]))
                         })
 
                     return ptr
@@ -1670,14 +1679,16 @@ class Compiler:
 
         if node["count"]:
             count = self.VisitValue(node["count"])
-            _ptr = self.Builder.call(self.malloc, [self.Builder.add(ir.Constant(ir.IntType(64), 8), self.Builder.mul(self.sizeof(type), count))])
-            self.Builder.store(count, self.Builder.bitcast(_ptr, ir.IntType(64).as_pointer()))
-            ptr = self.Builder.gep(self.Builder.bitcast(_ptr, ir.IntType(8).as_pointer()), [ir.Constant(ir.IntType(64), 8)])
+            assert isinstance(count.type, ir.IntType), "Count must be an integer."
+            assert count.type == self.primitiveTypes["u64"], "Count must be an unsigned 64-bit integer."
+            _ptr = self.Builder.call(self.malloc, [self.Builder.add(ir.Constant(self.primitiveTypes["u64"], 8), self.Builder.mul(self.sizeof(type), count))])
+            self.Builder.store(count, self.Builder.bitcast(_ptr, self.primitiveTypes["u64"].as_pointer()))
+            ptr = self.Builder.gep(self.Builder.bitcast(_ptr, self.primitiveTypes["i8"].as_pointer()), [ir.Constant(self.primitiveTypes["u64"], 8)])
             ptr = self.Builder.bitcast(ptr, type.as_pointer())
 
             if isinstance(type, ir.BaseStructType):
-                value = self.Builder.alloca(ir.IntType(64))
-                self.Builder.store(ir.Constant(ir.IntType(64), 0), value)
+                value = self.Builder.alloca(self.primitiveTypes["u64"])
+                self.Builder.store(ir.Constant(self.primitiveTypes["u64"], 0), value)
 
                 compare = self.Builder.append_basic_block()
                 loop = self.Builder.append_basic_block()
@@ -1690,7 +1701,7 @@ class Compiler:
 
                 self.Builder.position_at_end(loop)
                 self.VisitConstructor(self.scopeManager.Get(type.name, types = [Class]), self.Builder.gep(ptr, [index]), [])
-                self.Builder.store(self.Builder.add(index, ir.Constant(ir.IntType(64), 1)), value, self.alignof(value).constant)
+                self.Builder.store(self.Builder.add(index, ir.Constant(self.primitiveTypes["u64"], 1)), value, self.alignof(value).constant)
                 self.Builder.branch(compare)
                 self.Builder.position_at_end(end)
 
@@ -1711,15 +1722,15 @@ class Compiler:
         assert self.scopeManager.Scope.local, "Delete statements must be defined in local scope."
         ptr = self.VisitValue(node["value"])
         assert ptr.type.is_pointer, "Delete value must be a pointer."
-        _ptr = self.Builder.bitcast(ptr, ir.IntType(8).as_pointer()) if ptr.type.pointee != ir.IntType(8) else ptr
+        _ptr = self.Builder.bitcast(ptr, self.primitiveTypes["i8"].as_pointer()) if ptr.type.pointee != self.primitiveTypes["i8"] else ptr
 
         if node["array"]:
-            _ptr = self.Builder.gep(_ptr, [ir.Constant(ir.IntType(32), -8)])
-            count = self.Builder.load(self.Builder.bitcast(_ptr, ir.IntType(64).as_pointer()))
+            _ptr = self.Builder.gep(_ptr, [ir.Constant(self.primitiveTypes["i32"], -8)])
+            count = self.Builder.load(self.Builder.bitcast(_ptr, self.primitiveTypes["i64"].as_pointer()))
 
             if isinstance(ptr.type.pointee, ir.BaseStructType):
-                value = self.Builder.alloca(ir.IntType(64))
-                self.Builder.store(ir.Constant(ir.IntType(64), 0), value)
+                value = self.Builder.alloca(self.primitiveTypes["i64"])
+                self.Builder.store(ir.Constant(self.primitiveTypes["i64"], 0), value)
 
                 compare = self.Builder.append_basic_block()
                 loop = self.Builder.append_basic_block()
@@ -1732,7 +1743,7 @@ class Compiler:
 
                 self.Builder.position_at_end(loop)
                 self.VisitDestructor(self.scopeManager.Get(ptr.type.pointee.name, types = [Class]), self.Builder.gep(ptr, [index]))
-                self.Builder.store(self.Builder.add(index, ir.Constant(ir.IntType(64), 1)), value, self.alignof(value).constant)
+                self.Builder.store(self.Builder.add(index, ir.Constant(self.primitiveTypes["i64"], 1)), value, self.alignof(value).constant)
                 self.Builder.branch(compare)
                 self.Builder.position_at_end(end)
 
@@ -1754,6 +1765,16 @@ class Compiler:
 
         for index, _func in enumerate(funcs):
             params = _params.copy()
+
+            if isinstance(_func, Class) and _func.Has(_func.RealName, arguments = params):
+                current = self.Builder.block
+                self.Builder.position_at_start(self.Builder.function.entry_basic_block)
+                ptr = self.Builder.alloca(_func.type)
+                self.Builder.position_at_end(current)
+                self.VisitConstructor(_func, ptr, params)
+                self.scopeManager.Scope.RegisterInstance(ptr)
+                ptr._return = True
+                return self.Builder.load(ptr)
 
             if isinstance(_func, CompileTimeFunction):
                 func = _func
@@ -1898,7 +1919,7 @@ class Compiler:
         compareBlock = self.Builder.append_basic_block()
         loopBlock = self.Builder.append_basic_block()
         endBlock = self.Builder.append_basic_block()
-        self.PushBlocks(loopBlock, endBlock)
+        self.PushBlocks(compareBlock, endBlock)
 
         self.Builder.branch(compareBlock)
         self.Builder.position_at_start(compareBlock)
@@ -1963,14 +1984,28 @@ class Compiler:
             if isinstance(left.type, ir.BaseStructType) or isinstance(right.type, ir.BaseStructType):
                 ptr, value = (left, right) if isinstance(left.type, ir.BaseStructType) else (right, left)
                 _class = self.scopeManager.Get(ptr.type.name, types = [Class])
-                ptr, value = self.addressof(ptr), self.TryPass(value)
 
                 if _class.Has(f"op{node['operator']}", arguments = [value.type]):
+                    ptr, value = self.addressof(ptr), self.TryPass(value)
                     return self.VisitCall({"value": _class.Get(f"op{node['operator']}", arguments = [value], pointer = ptr), "params": [value]})
+
+                if left.type == right.type and node["operator"] in ["==", "!="]:
+                    left, right, _result = self.addressof(left), self.addressof(right), None
+
+                    for name, _ in _class.Elements.items():
+                        result = self.VisitExpression({"type": "expression", "operator": "==", "left": _class.Get(name, pointer = left), "right": _class.Get(name, pointer = right)})
+
+                        if _result is not None:
+                            _result = self.Builder.and_(_result, result)
+
+                        else:
+                            _result = result
+
+                    return _result if node["operator"] in ["=="] else self.Builder.not_(_result)
 
             if left.type.is_pointer and right.type.is_pointer:
                 if node["operator"] == "-":
-                    return self.Builder.sub(self.Builder.ptrtoint(left, ir.IntType(64)), self.Builder.ptrtoint(right, ir.IntType(64)))
+                    return self.Builder.sub(self.Builder.ptrtoint(left, self.primitiveTypes["i64"]), self.Builder.ptrtoint(right, self.primitiveTypes["i64"]))
 
                 elif node["operator"] in ["<", "<=", ">", ">=", "!=", "=="]:
                     return self.Builder.icmp_unsigned(node["operator"], left, right)

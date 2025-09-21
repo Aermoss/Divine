@@ -282,6 +282,10 @@ class Parser(sly.Parser):
     def Statement(self, p):
         return {"type": "define", "body": [{"type": "define", "name": name, "value": expr, "dataType": type, "mutable": mutable} for (name, type, mutable), expr in zip(p.TypedNameList, p.ExprList)]}
 
+    @_("LET LPAREN TypedNameList RPAREN SEMICOLON")
+    def Statement(self, p):
+        return {"type": "define", "body": [{"type": "define", "name": name, "value": None, "dataType": type, "mutable": mutable} for name, type, mutable in p.TypedNameList]}
+
     @_("LET TypedName ASSIGN Expr SEMICOLON")
     def Statement(self, p):
         return {"type": "define", "name": p.TypedName[0], "value": p.Expr, "dataType": p.TypedName[1], "mutable": p.TypedName[2]}

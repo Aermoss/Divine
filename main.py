@@ -41,12 +41,12 @@ def main(argv):
     if os.path.exists(f"{fileName}.bc"): os.remove(f"{fileName}.bc")
     if result.returncode != 0: return -1
 
+    print(f"Program compiled in {time.time() - start} seconds.")
     result = subprocess.run([f"{vs_path}\\bin\\Hostx64\\x64\\link.exe", "/NOLOGO"] + (["/DEBUG"] if debug else []) + [f"{fileName}.obj", f"/OUT:{os.path.join(workDir, f'{fileName}.exe')}"] + libDirs + libs)
     if os.path.exists(f"{fileName}.obj"): os.remove(f"{fileName}.obj")
     if result.returncode != 0: return -1
 
     os.chdir(workDir)
-    print(f"Program compiled in {time.time() - start} seconds.")
     result = subprocess.run([os.path.join(workDir, f"{fileName}.exe").replace("\\", "/")] + argv[2:])
     print(f"Program finished with exit code: {result.returncode}.")
     return 0

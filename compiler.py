@@ -1176,7 +1176,7 @@ class Compiler:
             self.scopeManager.PopScope()
 
             if not self.Builder.block.is_terminated:
-                assert func.return_value.type == ir.VoidType(), f"Function '{node["name"]}' must return a value."
+                assert func.return_value.type == ir.VoidType() and not (len(func.args) > 0 and hasattr(func.args[0].type, "_sret")), f"Function '{node["name"]}' must return a value."
                 self.Builder.ret_void()
 
             self.PopBuilder()
@@ -1766,7 +1766,10 @@ class Compiler:
         for index, _func in enumerate(funcs):
             params = _params.copy()
 
-            if isinstance(_func, Class) and _func.Has(_func.RealName, arguments = params):
+            if isinstance(_func, Class):
+                assert _func.Has(_func.RealName, arguments = params), \
+                    f"Class '{_func.RealName}' does not have a constructor that takes {('(' + ', '.join([str(i.type) for i in params]) + ')') if params else 'nothing'}."
+
                 current = self.Builder.block
                 self.Builder.position_at_start(self.Builder.function.entry_basic_block)
                 ptr = self.Builder.alloca(_func.type)

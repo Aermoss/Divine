@@ -1,4 +1,4 @@
-include "divio", "divstr", "divvec", "divpair", "divllvm", "lexer.div", "parser.div" : *;
+include "divio", "divstr", "divvec", "divpair", "divptr", "divllvm", "lexer.div", "parser.div" : *;
 
 enum SymbolKind {
     Variable, Function, Parameter
@@ -151,6 +151,133 @@ func LLVMPositionBuilderAtStart(builder: LLVMBuilderRef, block: LLVMBasicBlockRe
     }
 }
 
+func LLVMIsTypeEqual(left: LLVMTypeRef, right: LLVMTypeRef) -> bool {
+    if left == right { ret true; }
+    let left_kind: LLVMTypeKind = LLVMGetTypeKind(left);
+    let right_kind: LLVMTypeKind = LLVMGetTypeKind(right);
+
+    if left_kind != right_kind {
+        ret false;
+    } else if left_kind == LLVMTypeKind::LLVMVoidTypeKind || left_kind == LLVMTypeKind::LLVMPointerTypeKind || left_kind == LLVMTypeKind::LLVMHalfTypeKind || left_kind == LLVMTypeKind::LLVMFloatTypeKind || left_kind == LLVMTypeKind::LLVMDoubleTypeKind || left_kind == LLVMTypeKind::LLVMX86_FP80TypeKind || left_kind == LLVMTypeKind::LLVMFP128TypeKind || left_kind == LLVMTypeKind::LLVMPPC_FP128TypeKind || left_kind == LLVMTypeKind::LLVMLabelTypeKind {
+        ret true;
+    } else if left_kind == LLVMTypeKind::LLVMIntegerTypeKind {
+        ret LLVMGetIntTypeWidth(left) == LLVMGetIntTypeWidth(right);
+    } else if left_kind == LLVMTypeKind::LLVMFunctionTypeKind {
+        if !LLVMIsTypeEqual(LLVMGetReturnType(left), LLVMGetReturnType(right)) {
+            ret false;
+        }
+
+        let left_param_count: u32 = LLVMCountParamTypes(left);
+        let right_param_count: u32 = LLVMCountParamTypes(right);
+
+        if (left_param_count != right_param_count) {
+            ret false;
+        }
+
+        let left_params: LLVMTypeRef* = new LLVMTypeRef[left_param_count as u64];
+        let right_params: LLVMTypeRef* = new LLVMTypeRef[right_param_count as u64];
+
+        LLVMGetParamTypes(left, left_params);
+        LLVMGetParamTypes(right, right_params);
+        let mut i: u32 = 0u32;
+
+        while i < left_param_count {
+            if !LLVMIsTypeEqual(left_params[i], right_params[i]) {
+                del[] left_params;
+                del[] right_params;
+                ret false;
+            } i += 1u32;
+        }
+
+        del[] left_params;
+        del[] right_params;
+        ret true;
+    } else if left_kind == LLVMTypeKind::LLVMArrayTypeKind {
+        ret LLVMGetArrayLength(left) == LLVMGetArrayLength(right) && LLVMIsTypeEqual(LLVMGetElementType(left), LLVMGetElementType(right));
+    } else if left_kind == LLVMTypeKind::LLVMStructTypeKind {
+        let left_name: i8* = LLVMGetStructName(left);
+        let right_name: i8* = LLVMGetStructName(right);
+            
+        if left_name != null && right_name != null {
+            ret strcmp(left_name, right_name) == 0i32;
+        }
+
+        let left_elem_count: u32 = LLVMCountStructElementTypes(left);
+        let right_elem_count: u32 = LLVMCountStructElementTypes(right);
+        
+        if left_elem_count != right_elem_count {
+            ret false;
+        }
+
+        if LLVMIsPackedStruct(left) != LLVMIsPackedStruct(right) {
+            ret false;
+        }
+
+        let left_elems: LLVMTypeRef* = new LLVMTypeRef[left_elem_count as u64];
+        let right_elems: LLVMTypeRef* = new LLVMTypeRef[right_elem_count as u64];
+
+        LLVMGetStructElementTypes(left, left_elems);
+        LLVMGetStructElementTypes(right, right_elems);
+        let mut i: u32 = 0u32;
+
+        while i < left_elem_count {
+            if !LLVMIsTypeEqual(left_elems[i], right_elems[i]) {
+                del[] left_elems;
+                del[] right_elems;
+                ret false;
+            } i += 1u32;
+        }
+        
+        del[] left_elems;
+        del[] right_elems;
+        ret true;
+    } else if left_kind == LLVMTypeKind::LLVMVectorTypeKind {
+        ret LLVMGetVectorSize(left) == LLVMGetVectorSize(right) && LLVMIsTypeEqual(LLVMGetElementType(left), LLVMGetElementType(right));
+    } else {
+        ret false;
+    }
+}
+
+func LLVMElementTypeOf(value: LLVMValueRef) -> LLVMTypeRef {
+    if LLVMGetInstructionOpcode(value) == LLVMOpcode::LLVMAlloca {
+        ret LLVMGetAllocatedType(value);
+    } else {
+        ret LLVMGetElementType(LLVMTypeOf(value));
+    }
+}
+
+func LLVMPrintType(_type: LLVMTypeRef) {
+    let string: i8* = LLVMPrintTypeToString(_type);
+    printf("%s\n", string);
+    LLVMDisposeMessage(string);
+}
+
+class QualifiedType {
+    pub mutable: bool, pub signed: bool, pub pointer: bool,
+    pub _type: LLVMTypeRef, pub pointee: SharedPtr<QualifiedType>
+} impl {
+    QualifiedType(mut this: QualifiedType&, mutable: bool, signed: bool, pointer: bool, _type: LLVMTypeRef, pointee: SharedPtr<QualifiedType>) {
+        (this.mutable, this.signed, this.pointer, this._type, this.pointee) = (mutable, signed, pointer, _type, pointee);
+    }
+
+    pub AsPointer(this: QualifiedType&) -> QualifiedType {
+        ret QualifiedType(this.mutable, this.signed, true, LLVMPointerType(this._type, 0u32), SharedPtr<QualifiedType>(this));
+    }
+
+    pub op==(this: QualifiedType&, other: QualifiedType&) -> bool {
+        ret this.mutable == other.mutable && this.signed == other.signed && this.pointer == other.pointer && LLVMIsTypeEqual(this._type, other._type) && this.pointee == other.pointee;
+    }
+
+    pub op!=(this: QualifiedType&, other: QualifiedType&) -> bool {
+        ret !this.op==(other);
+    }
+};
+
+class QualifiedValue {
+    pub value: LLVMValueRef,
+    pub _type: QualifiedType
+};
+
 class Compiler {
     priv scope_manager: ScopeManager,
     priv context: LLVMContextRef = null,
@@ -296,6 +423,8 @@ class Compiler {
             this.CompileIf(stmt as IfStmtNode*);
         } else if stmt->node_type == ASTNodeType::VARIABLE_DECL {
             this.CompileVariable(stmt as VariableDeclNode*);
+        } else if stmt->node_type == ASTNodeType::ASSIGNMENT {
+            this.CompileAssignment(stmt as AssignmentNode*);
         } else {
             this.Error((String("Unknown statement: ") + ASTNodeTypeToString(stmt->node_type) + ".").Data());
         }
@@ -392,7 +521,7 @@ class Compiler {
         let initializer: Pair<LLVMValueRef, LLVMTypeRef> = this.CompileExpression(variable->initializer);
         let _type: LLVMTypeRef = this.CompileType(variable->var_type);
 
-        if initializer.right != _type {
+        if !LLVMIsTypeEqual(initializer.right, _type) {
             this.Error("Incompatible types.");
             ret;
         }
@@ -400,9 +529,38 @@ class Compiler {
         let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
         LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
         let pointer: LLVMValueRef = LLVMBuildAlloca(this.builder, _type, this.GetUniqueName().Data());
-        this.scope_manager.Set(variable->name, SymbolKind::Variable, pointer, _type);
+        this.scope_manager.Set(variable->name, SymbolKind::Variable, pointer, LLVMTypeOf(pointer));
         LLVMBuildStore(this.builder, initializer.left, pointer);
         LLVMPositionBuilderAtEnd(this.builder, current);
+    }
+
+    priv CompileAssignment(mut this: Compiler&, assignment: AssignmentNode*) {
+        let pointer: Pair<LLVMValueRef, LLVMTypeRef> = this.CompilePointerExpression(assignment->left);
+        let value: Pair<LLVMValueRef, LLVMTypeRef> = this.CompileExpression(assignment->right);
+
+        if !LLVMIsTypeEqual(value.right, LLVMElementTypeOf(pointer.left)) {
+            this.Error("Incompatible types.");
+            ret;
+        }
+
+        LLVMBuildStore(this.builder, value.left, pointer.left);
+    }
+
+    priv CompilePointerExpression(mut this: Compiler&, expr: ASTNode*) -> Pair<LLVMValueRef, LLVMTypeRef> {
+        if expr->node_type == ASTNodeType::IDENTIFIER {
+            let identifier: IdentifierNode* = expr as IdentifierNode*;
+
+            if !this.scope_manager.Has(identifier->name) {
+                this.Error((String("Symbol not found: ") + identifier->name + ".").Data());
+                ret Pair<LLVMValueRef, LLVMTypeRef>(null, null);
+            }
+
+            let symbol: Symbol* = this.scope_manager.Get(identifier->name);
+            ret Pair<LLVMValueRef, LLVMTypeRef>(symbol->value, symbol->_type);
+        } else {
+            this.Error((String("Unknown pointer expression: ") + ASTNodeTypeToString(expr->node_type) + ".").Data());
+            ret Pair<LLVMValueRef, LLVMTypeRef>(null, null);
+        }
     }
 
     priv CompileExpression(mut this: Compiler&, expr: ASTNode*) -> Pair<LLVMValueRef, LLVMTypeRef> {
@@ -507,13 +665,21 @@ class Compiler {
             }
 
             let symbol: Symbol* = this.scope_manager.Get(identifier->name);
-            ret Pair<LLVMValueRef, LLVMTypeRef>(symbol->value, symbol->_type);
+
+            if symbol->kind == SymbolKind::Variable {
+                ret Pair<LLVMValueRef, LLVMTypeRef>(LLVMBuildLoad2(this.builder, symbol->_type, symbol->value, this.GetUniqueName().Data()), LLVMGetElementType(symbol->_type));
+            } else if symbol->kind == SymbolKind::Function || symbol->kind == SymbolKind::Parameter {
+                ret Pair<LLVMValueRef, LLVMTypeRef>(symbol->value, symbol->_type);
+            } else {
+                this.Error("Unknown symbol kind.");
+                ret Pair<LLVMValueRef, LLVMTypeRef>(null, null);
+            }
         } else if expr->node_type == ASTNodeType::BINARY_OP {
             let binary_op: BinaryOpNode* = expr as BinaryOpNode*;
             let left: Pair<LLVMValueRef, LLVMTypeRef> = this.CompileExpression(binary_op->left);
             let right: Pair<LLVMValueRef, LLVMTypeRef> = this.CompileExpression(binary_op->right);
 
-            if left.right != right.right {
+            if !LLVMIsTypeEqual(left.right, right.right) {
                 this.Error("Incompatible types.");
                 ret Pair<LLVMValueRef, LLVMTypeRef>(null, null);
             }

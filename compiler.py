@@ -33,12 +33,13 @@ class Scope:
         assert self.local, "Cannot register instance in non-local scope."
         self._instances.append(value)
 
-    def InvokeDestructors(self, _except = None):
+    def InvokeDestructors(self, _except = None, clear = False):
         for value in self._instances:
             if value is not _except:
                 self._compiler.VisitDestructor(self._compiler.scopeManager.Get(value.type.pointee.name, types = [Class]), value)
 
-        self._instances = []
+        if clear:
+            self._instances = []
 
     def Has(self, name, types = None):
         if name in self.variables and (any(isinstance(self.variables[name], type) for type in types) if types else True):
@@ -101,8 +102,13 @@ class ScopeManager:
 
     def PopScope(self):
         assert self.__scope.parent is not None, "No scope to pop."
-        self.__scope.InvokeDestructors()
         scope = self.__scope
+
+        if self.__compiler.Builder is not None and not self.__compiler.Builder.block.is_terminated:
+            self.__scope.InvokeDestructors(clear = True)
+
+        else:
+            self.__scope._instances = []
 
         if self.__scope.local:
             self.__scope.parent.children.remove(self.__scope)
@@ -1535,22 +1541,23 @@ class Compiler:
             assert _class.Has(_class.RealName, arguments = params), \
                 f"Class '{_class.RealName}' does not have a constructor that takes {('(' + ', '.join([str(i.type) for i in params]) + ')') if params else 'nothing'}."
 
-            return self.VisitCall({"value": _class.Get(_class.RealName, arguments = params, pointer = ptr), "params": params}, ignore = True)
+            self.VisitCall({"value": _class.Get(_class.RealName, arguments = params, pointer = ptr), "params": params}, ignore = True)
 
         else:
             assert len(params) <= len(_class.Elements), "Too many parameters."
 
     @Timer
     def VisitDestructor(self, _class, ptr):
+        if _class.Has(f"~{_class.RealName}"):
+            self.VisitCall({"value": _class.Get(f"~{_class.RealName}", arguments = [], pointer = ptr), "params": []}, ignore = True)
+
         for name, value in _class.Elements.items():
             if isinstance(value["type"], ir.BaseStructType):
                 self.VisitDestructor(self.scopeManager.Get(value["type"].name, types = [Class]), self.Builder.gep(ptr, [ir.Constant(self.primitiveTypes["i32"], 0), ir.Constant(self.primitiveTypes["i32"], _class.Index(name))]))
 
-        if _class.Has(f"~{_class.RealName}"):
-            return self.VisitCall({"value": _class.Get(f"~{_class.RealName}", arguments = [], pointer = ptr), "params": []}, ignore = True)
-
     @Timer
     def VisitConstant(self, node):
+        assert not self.scopeManager.Scope.local, "Constants must be defined in global scope."
         type = self.VisitType(node["dataType"])
         value = self.VisitConstExpr(node["value"], target = type)
         _global = ir.GlobalVariable(self.module, type, node["name"])

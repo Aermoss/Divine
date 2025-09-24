@@ -2,7 +2,10 @@ import time
 
 start = time.time()
 
-import os, sys, tempfile, subprocess
+import os, sys, tempfile, subprocess, llvmlite
+
+llvmlite.opaque_pointers_enabled = True
+
 import llvmlite.binding as llvm
 
 from lexer import Lexer
@@ -38,18 +41,17 @@ def main(argv):
 
     os.chdir(tempfile.gettempdir())
 
-    with open(f"{fileName}.llvm", "w", encoding = "utf-8") as file:
-        file.write(str(module))
+    llvm.initialize()
+    llvm.initialize_native_target()
+    llvm.initialize_native_asmprinter()
 
-    print(os.listdir("C:\\Program Files\\LLVM\\bin"))
+    target = llvm.get_default_triple()
+    target_machine = llvm.Target.from_triple(target).create_target_machine(codemodel = "large")
+    _module = llvm.parse_assembly(str(module))
+    _module.verify()
 
-    result = subprocess.run(["opt", f"{fileName}.llvm", "-o", f"{fileName}.bc", "-O0"] + (["-O0"] if debug else []))
-    if os.path.exists(f"{fileName}.llvm"): os.remove(f"{fileName}.llvm")
-    if result.returncode != 0: return -1
-
-    result = subprocess.run(["llc", "-filetype=obj", f"{fileName}.bc", "-o", f"{fileName}.obj"] + (["-O0"] if debug else []))
-    if os.path.exists(f"{fileName}.bc"): os.remove(f"{fileName}.bc")
-    if result.returncode != 0: return -1
+    with open(f"{fileName}.obj", "wb") as file:
+        file.write(target_machine.emit_object(_module))
 
     print(f"Program compiled in {time.time() - start} seconds.")
     result = subprocess.run([f"{vs_path}\\bin\\Hostx64\\x64\\link.exe", "/NOLOGO"] + (["/DEBUG"] if debug else []) + [f"{fileName}.obj", f"/OUT:{os.path.join(workDir, f'{fileName}.exe')}"] + libDirs + libs)

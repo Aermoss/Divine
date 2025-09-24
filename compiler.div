@@ -246,10 +246,12 @@ func LLVMElementTypeOf(value: LLVMValueRef) -> LLVMTypeRef {
     }
 }
 
-func LLVMPrintType(_type: LLVMTypeRef) {
+func LLVMTypeToString(_type: LLVMTypeRef) -> String {
+    let mut result: String;
     let string: i8* = LLVMPrintTypeToString(_type);
-    printf("%s\n", string);
+    result += string;
     LLVMDisposeMessage(string);
+    ret result;
 }
 
 class QualifiedType {
@@ -276,6 +278,7 @@ class QualifiedValue {
 
 class Compiler {
     priv scope_manager: ScopeManager,
+    priv blocks: Vector<Pair<LLVMBasicBlockRef, LLVMBasicBlockRef>>,
     priv context: LLVMContextRef = null,
     priv module: LLVMModuleRef = null,
     priv builder: LLVMBuilderRef = null,
@@ -417,6 +420,12 @@ class Compiler {
             this.CompileExpression(expr_stmt->expression);
         } else if stmt->node_type == ASTNodeType::IF_STMT {
             this.CompileIf(stmt as IfStmtNode*);
+        } else if stmt->node_type == ASTNodeType::WHILE_STMT {
+            this.CompileWhile(stmt as WhileStmtNode*);
+        } else if stmt->node_type == ASTNodeType::CONTINUE_STMT {
+            this.CompileContinue(stmt as ContinueStmtNode*);
+        } else if stmt->node_type == ASTNodeType::BREAK_STMT {
+            this.CompileBreak(stmt as BreakStmtNode*);
         } else if stmt->node_type == ASTNodeType::VARIABLE_DECL {
             this.CompileVariable(stmt as VariableDeclNode*);
         } else if stmt->node_type == ASTNodeType::ASSIGNMENT {
@@ -480,7 +489,7 @@ class Compiler {
                 this.CompileBlock(then_stmt);
                 this.scope_manager.PopScope();
 
-                if LLVMGetBasicBlockTerminator(then_block) == null {
+                if LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(this.builder)) == null {
                     if end_block == null {
                         end_block = LLVMAppendBasicBlockInContext(this.context, this.function, this.GetUniqueName().Data());
                     } LLVMBuildBr(this.builder, end_block);
@@ -495,7 +504,7 @@ class Compiler {
                     this.CompileBlock(else_stmt as BlockStmtNode*);
                     this.scope_manager.PopScope();
 
-                    if LLVMGetBasicBlockTerminator(else_block) == null {
+                    if LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(this.builder)) == null {
                         if end_block == null {
                             end_block = LLVMAppendBasicBlockInContext(this.context, this.function, this.GetUniqueName().Data());
                         } LLVMBuildBr(this.builder, end_block);
@@ -513,12 +522,59 @@ class Compiler {
         }
     }
 
+    priv CompileWhile(mut this: Compiler&, while_stmt: WhileStmtNode*) {
+        if this.function == null {
+            this.Error("While statement outside of function.");
+            ret;
+        }
+
+        let compare_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, this.function, this.GetUniqueName().Data());
+        let loop_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, this.function, this.GetUniqueName().Data());
+        let end_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, this.function, this.GetUniqueName().Data());
+        this.blocks.PushBack(Pair<LLVMBasicBlockRef, LLVMBasicBlockRef>(compare_block, end_block));
+
+        LLVMBuildBr(this.builder, compare_block);
+        LLVMPositionBuilderAtStart(this.builder, compare_block);
+        let condition: Pair<LLVMValueRef, LLVMTypeRef> = this.CompileExpression(while_stmt->condition);
+        LLVMBuildCondBr(this.builder, condition.left, loop_block, end_block);
+
+        LLVMPositionBuilderAtStart(this.builder, loop_block);
+        this.scope_manager.PushScope(String("while"), false);
+        this.CompileBlock(while_stmt->body as BlockStmtNode*);
+        this.scope_manager.PopScope();
+
+        if LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(this.builder)) == null {
+            LLVMBuildBr(this.builder, compare_block);
+        }
+
+        LLVMPositionBuilderAtStart(this.builder, end_block);
+        this.blocks.PopBack();
+    }
+
+    priv CompileContinue(mut this: Compiler&, continue_stmt: ContinueStmtNode*) {
+        if this.blocks.Size() == 0u64 {
+            this.Error("Continue statement outside of loop.");
+            ret;
+        }
+
+        LLVMBuildBr(this.builder, this.blocks[this.blocks.Size() - 1u64].left);
+    }
+
+    priv CompileBreak(mut this: Compiler&, break_stmt: BreakStmtNode*) {
+        if this.blocks.Size() == 0u64 {
+            this.Error("Break statement outside of loop.");
+            ret;
+        }
+
+        LLVMBuildBr(this.builder, this.blocks[this.blocks.Size() - 1u64].right);
+    }
+
     priv CompileVariable(mut this: Compiler&, variable: VariableDeclNode*) {
         let initializer: Pair<LLVMValueRef, LLVMTypeRef> = this.CompileExpression(variable->initializer);
         let _type: LLVMTypeRef = this.CompileType(variable->var_type);
 
         if !LLVMIsTypeEqual(initializer.right, _type) {
-            this.Error("Incompatible types.");
+            this.Error((String("Incompatible types: ") + LLVMTypeToString(initializer.right) + " and " + LLVMTypeToString(_type) + ".").Data());
             ret;
         }
 
@@ -535,7 +591,7 @@ class Compiler {
         let value: Pair<LLVMValueRef, LLVMTypeRef> = this.CompileExpression(assignment->right);
 
         if !LLVMIsTypeEqual(value.right, LLVMElementTypeOf(pointer.left)) {
-            this.Error("Incompatible types.");
+            this.Error((String("Incompatible types: ") + LLVMTypeToString(value.right) + " and " + LLVMTypeToString(LLVMElementTypeOf(pointer.left)) + ".").Data());
             ret;
         }
 
@@ -663,7 +719,8 @@ class Compiler {
             let symbol: Symbol* = this.scope_manager.Get(identifier->name);
 
             if symbol->kind == SymbolKind::Variable {
-                ret Pair<LLVMValueRef, LLVMTypeRef>(LLVMBuildLoad2(this.builder, symbol->_type, symbol->value, this.GetUniqueName().Data()), LLVMGetElementType(symbol->_type));
+                let _type: LLVMTypeRef = LLVMElementTypeOf(symbol->value);
+                ret Pair<LLVMValueRef, LLVMTypeRef>(LLVMBuildLoad2(this.builder, _type, symbol->value, this.GetUniqueName().Data()), _type);
             } else if symbol->kind == SymbolKind::Function || symbol->kind == SymbolKind::Parameter {
                 ret Pair<LLVMValueRef, LLVMTypeRef>(symbol->value, symbol->_type);
             } else {
@@ -676,7 +733,7 @@ class Compiler {
             let right: Pair<LLVMValueRef, LLVMTypeRef> = this.CompileExpression(binary_op->right);
 
             if !LLVMIsTypeEqual(left.right, right.right) {
-                this.Error("Incompatible types.");
+                this.Error((String("Incompatible types: ") + LLVMTypeToString(left.right) + " and " + LLVMTypeToString(right.right) + ".").Data());
                 ret Pair<LLVMValueRef, LLVMTypeRef>(null, null);
             }
 

@@ -41,12 +41,8 @@ def main(argv):
     with open(f"{fileName}.llvm", "w", encoding = "utf-8") as file:
         file.write(str(module))
 
-    result = subprocess.run(["opt", f"{fileName}.llvm", "-o", f"{fileName}.bc", "-O0"] + (["-O0"] if debug else []))
+    result = subprocess.run(["llc", "-filetype=obj", f"{fileName}.llvm", "-o", f"{fileName}.obj"] + (["-O0"] if debug else []))
     if os.path.exists(f"{fileName}.llvm"): os.remove(f"{fileName}.llvm")
-    if result.returncode != 0: return -1
-
-    result = subprocess.run(["llc", "-filetype=obj", f"{fileName}.bc", "-o", f"{fileName}.obj"] + (["-O0"] if debug else []))
-    if os.path.exists(f"{fileName}.bc"): os.remove(f"{fileName}.bc")
     if result.returncode != 0: return -1
 
     print(f"Program compiled in {time.time() - start} seconds.")

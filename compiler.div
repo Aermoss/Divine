@@ -1,146 +1,5 @@
 include "divio", "divstr", "divvec", "divpair", "divptr", "divllvm", "lexer.div", "parser.div" : *;
 
-enum SymbolKind {
-    Variable, Function, Parameter
-};
-
-class Symbol {
-    pub name: String,
-    pub kind: SymbolKind,
-    pub value: LLVMValueRef,
-    pub _type: LLVMTypeRef
-};
-
-class Scope {
-    pub parent: Scope*,
-    pub children: Vector<Scope*>,
-    pub global: bool,
-    pub symbols: Vector<Symbol*>,
-    pub name: String
-} impl {
-    Scope(mut this: Scope&, parent: Scope*, name: String, global: bool) {
-        (this.parent, this.name, this.global) = (parent, name, global);
-    }
-
-    ~Scope(mut this: Scope&) {
-        let mut i: u64 = 0u64;
-
-        while i < this.symbols.Size() {
-            del this.symbols[i];
-            i += 1u64;
-        }
-    }
-
-    pub Has(mut this: Scope&, name: String) -> bool {
-        let mut i: u64 = 0u64;
-
-        while i < this.symbols.Size() {
-            if this.symbols[i]->name == name {
-                ret true;
-            } i += 1u64;
-        } ret false;
-    }
-
-    pub Set(mut this: Scope&, name: String, kind: SymbolKind, value: LLVMValueRef, _type: LLVMTypeRef) {
-        if this.Has(name) {
-            this.Error("Symbol already exists.");
-        } else {
-            let symbol: Symbol* = new Symbol(name, kind, value, _type);
-            this.symbols.PushBack(symbol);
-        }
-    }
-
-    pub Get(mut this: Scope&, name: String) -> Symbol* {
-        let mut i: u64 = 0u64;
-
-        while i < this.symbols.Size() {
-            if this.symbols[i]->name == name {
-                ret this.symbols[i];
-            } i += 1u64;
-        } ret null;
-    }
-
-    priv Error(mut this: Scope&, string: i8*) {
-        printf("Scope error: %s\n", string);
-        exit(1i32);
-    }
-};
-
-class ScopeManager {
-    pub scopes: Vector<Scope*>,
-    pub current: Scope* = null
-} impl {
-    ScopeManager(mut this: ScopeManager&) {
-        this.PushScope(String("global"), true);
-    }
-
-    ~ScopeManager(mut this: ScopeManager&) {
-        this.PopScope();
-    }
-
-    pub PushScope(mut this: ScopeManager&, name: String, global: bool) {
-        let scope: Scope* = new Scope(this.current, name, global);
-
-        if global {
-            this.scopes.PushBack(scope);
-        }
-
-        if this.current != null {
-            this.current->children.PushBack(scope);
-        } this.current = scope;
-    }
-
-    pub PopScope(mut this: ScopeManager&) {
-        if this.current != null {
-            let temp: Scope* = this.current;
-            this.current = this.current->parent;
-
-            if this.current == null {
-                let mut i: u64 = 0u64;
-
-                while i < this.scopes.Size() {
-                    del this.scopes[i];
-                    i += 1u64;
-                }
-            }
-
-            if !temp->global {
-                this.current->children.Remove(temp);
-                del temp;
-            }
-        } else {
-            this.Error("No scope to pop.");
-        }
-    }
-
-    pub Has(mut this: ScopeManager&, name: String) -> bool {
-        let mut scope: Scope* = this.current;
-
-        while scope != null {
-            if scope->Has(name) { ret true; }
-            scope = scope->parent;
-        } ret false;
-    }
-
-    pub Set(mut this: ScopeManager&, name: String, kind: SymbolKind, value: LLVMValueRef, _type: LLVMTypeRef) {
-        this.current->Set(name, kind, value, _type);
-    }
-
-    pub Get(mut this: ScopeManager&, name: String) -> Symbol* {
-        let mut scope: Scope* = this.current;
-
-        while scope != null {
-            if scope->Has(name) { ret scope->Get(name); }
-            scope = scope->parent;
-        } ret null;
-    }
-
-    priv Error(mut this: ScopeManager&, string: i8*) {
-        printf("Scope manager error: %s\n", string);
-        exit(1i32);
-    }
-};
-
 func LLVMPositionBuilderAtStart(builder: LLVMBuilderRef, block: LLVMBasicBlockRef) {
     let first_instr: LLVMValueRef = LLVMGetFirstInstruction(block);
 
@@ -255,15 +114,39 @@ func LLVMTypeToString(_type: LLVMTypeRef) -> String {
 }
 
 class QualifiedType {
-    pub mutable: bool, pub signed: bool, pub pointer: bool,
-    pub _type: LLVMTypeRef, pub pointee: QualifiedType* = null
+    priv value: LLVMTypeRef,
+    priv mutable: bool, priv signed: bool,
+    priv pointee: QualifiedType* = null
 } impl {
-    pub AsPointer(this: QualifiedType&) -> QualifiedType {
-        ret { this.mutable, this.signed, true, LLVMPointerType(this._type, 0u32), &this } as QualifiedType;
+    QualifiedType(mut this: QualifiedType&, value: LLVMTypeRef, mutable: bool, signed: bool, pointee: QualifiedType*) {
+        (this.value, this.mutable, this.signed, this.pointee) = (value, mutable, signed, pointee);
+    }
+
+    ~QualifiedType(this: QualifiedType&) {}
+
+    pub Value(this: QualifiedType&) -> LLVMTypeRef {
+        if this.value == null {
+            printf("Null type value!\n");
+            exit(1i32);
+        }
+
+        ret this.value;
+    }
+
+    pub Mutable(this: QualifiedType&) -> bool { ret this.mutable; }
+    pub Signed(this: QualifiedType&) -> bool { ret this.signed; }
+
+    pub Pointee(this: QualifiedType&) -> QualifiedType& {
+        if this.pointee == null {
+            printf("Null pointee!\n");
+            exit(1i32);
+        }
+
+        ret this.pointee;
     }
 
     pub op==(this: QualifiedType&, other: QualifiedType&) -> bool {
-        ret this.mutable == other.mutable && this.signed == other.signed && this.pointer == other.pointer && LLVMIsTypeEqual(this._type, other._type) && this.pointee == other.pointee;
+        ret this.mutable == other.mutable && this.signed == other.signed && LLVMIsTypeEqual(this.value, other.value) && this.pointee == other.pointee;
     }
 
     pub op!=(this: QualifiedType&, other: QualifiedType&) -> bool {
@@ -271,12 +154,215 @@ class QualifiedType {
     }
 };
 
+class TypeManager {
+    priv types: Vector<QualifiedType*>
+} impl {
+    TypeManager(this: TypeManager&) {}
+
+    ~TypeManager(mut this: TypeManager&) {
+        printf("Disposing %llu types...\n", this.types.Size());
+        let mut i: u64 = 0u64;
+
+        while i < this.types.Size() {
+            del this.types[i];
+            i += 1u64;
+        }
+
+        this.types.Clear();
+    }
+
+    pub New(mut this: TypeManager&, value: LLVMTypeRef, mutable: bool, signed: bool) -> QualifiedType* {
+        let _type: QualifiedType* = new QualifiedType(value, mutable, signed, null);
+        this.types.PushBack(_type);
+        ret _type;
+    }
+
+    pub Pointer(mut this: TypeManager&, pointee: QualifiedType*) -> QualifiedType* {
+        let _type: QualifiedType* = new QualifiedType(LLVMPointerType(pointee->Value(), 0u32), pointee->Mutable(), pointee->Signed(), pointee);
+        this.types.PushBack(_type);
+        ret _type;
+    }
+};
+
 class QualifiedValue {
-    pub value: LLVMValueRef,
-    pub _type: QualifiedType
+    priv value: LLVMValueRef,
+    priv _type: QualifiedType*
+} impl {
+    QualifiedValue(mut this: QualifiedValue&, value: LLVMValueRef, _type: QualifiedType*) {
+        (this.value, this._type) = (value, _type);
+    }
+
+    ~QualifiedValue(this: QualifiedValue&) {}
+
+    pub Value(this: QualifiedValue&) -> LLVMValueRef {
+        if this._type == null {
+            printf("Null value!\n");
+            exit(1i32);
+        }
+
+        ret this.value;
+    }
+
+    pub Type(this: QualifiedValue&) -> QualifiedType& {
+        if this._type == null {
+            printf("Null type!\n");
+            exit(1i32);
+        }
+
+        ret this._type;
+    }
+
+    pub op==(this: QualifiedValue&, other: QualifiedValue&) -> bool {
+        ret this.value == other.value && this._type == other._type;
+    }
+
+    pub op!=(this: QualifiedValue&, other: QualifiedValue&) -> bool {
+        ret !this.op==(other);
+    }
+};
+
+enum SymbolKind {
+    Variable, Function, Parameter
+};
+
+class Symbol {
+    pub name: String,
+    pub kind: SymbolKind,
+    pub value: QualifiedValue
+};
+
+class Scope {
+    pub parent: Scope*,
+    pub children: Vector<Scope*>,
+    pub global: bool,
+    pub symbols: Vector<Symbol*>,
+    pub name: String
+} impl {
+    Scope(mut this: Scope&, parent: Scope*, name: String, global: bool) {
+        (this.parent, this.name, this.global) = (parent, name, global);
+    }
+
+    ~Scope(mut this: Scope&) {
+        let mut i: u64 = 0u64;
+
+        while i < this.symbols.Size() {
+            del this.symbols[i];
+            i += 1u64;
+        }
+    }
+
+    pub Has(mut this: Scope&, name: String) -> bool {
+        let mut i: u64 = 0u64;
+
+        while i < this.symbols.Size() {
+            if this.symbols[i]->name == name {
+                ret true;
+            } i += 1u64;
+        } ret false;
+    }
+
+    pub Set(mut this: Scope&, name: String, kind: SymbolKind, value: QualifiedValue) {
+        if this.Has(name) {
+            this.Error("Symbol already exists.");
+        } else {
+            let symbol: Symbol* = new Symbol(name, kind, value);
+            this.symbols.PushBack(symbol);
+        }
+    }
+
+    pub Get(mut this: Scope&, name: String) -> Symbol* {
+        let mut i: u64 = 0u64;
+
+        while i < this.symbols.Size() {
+            if this.symbols[i]->name == name {
+                ret this.symbols[i];
+            } i += 1u64;
+        } ret null;
+    }
+
+    priv Error(mut this: Scope&, string: i8*) {
+        printf("Scope error: %s\n", string);
+        exit(1i32);
+    }
+};
+
+class ScopeManager {
+    pub scopes: Vector<Scope*>,
+    pub current: Scope* = null
+} impl {
+    ScopeManager(mut this: ScopeManager&) {
+        this.PushScope(String("global"), true);
+    }
+
+    ~ScopeManager(mut this: ScopeManager&) {
+        this.PopScope();
+    }
+
+    pub PushScope(mut this: ScopeManager&, name: String, global: bool) {
+        let scope: Scope* = new Scope(this.current, name, global);
+
+        if global {
+            this.scopes.PushBack(scope);
+        }
+
+        if this.current != null {
+            this.current->children.PushBack(scope);
+        } this.current = scope;
+    }
+
+    pub PopScope(mut this: ScopeManager&) {
+        if this.current != null {
+            let temp: Scope* = this.current;
+            this.current = this.current->parent;
+
+            if this.current == null {
+                let mut i: u64 = 0u64;
+
+                while i < this.scopes.Size() {
+                    del this.scopes[i];
+                    i += 1u64;
+                }
+            }
+
+            if !temp->global {
+                this.current->children.Remove(temp);
+                del temp;
+            }
+        } else {
+            this.Error("No scope to pop.");
+        }
+    }
+
+    pub Has(mut this: ScopeManager&, name: String) -> bool {
+        let mut scope: Scope* = this.current;
+
+        while scope != null {
+            if scope->Has(name) { ret true; }
+            scope = scope->parent;
+        } ret false;
+    }
+
+    pub Set(mut this: ScopeManager&, name: String, kind: SymbolKind, value: QualifiedValue) {
+        this.current->Set(name, kind, value);
+    }
+
+    pub Get(mut this: ScopeManager&, name: String) -> Symbol* {
+        let mut scope: Scope* = this.current;
+
+        while scope != null {
+            if scope->Has(name) { ret scope->Get(name); }
+            scope = scope->parent;
+        } ret null;
+    }
+
+    priv Error(mut this: ScopeManager&, string: i8*) {
+        printf("Scope manager error: %s\n", string);
+        exit(1i32);
+    }
 };
 
 class Compiler {
+    priv type_manager: TypeManager,
     priv scope_manager: ScopeManager,
     priv blocks: Vector<Pair<LLVMBasicBlockRef, LLVMBasicBlockRef>>,
     priv context: LLVMContextRef = null,
@@ -311,6 +397,10 @@ class Compiler {
         sprintf(buffer, "%llu", this.number);
         this.number += 1u64;
         ret String(".") + buffer;
+    }
+
+    pub Forget(mut this: Compiler&) {
+        this.module = null;
     }
 
     pub Compile(mut this: Compiler&, ast: RootNode*) -> LLVMModuleRef {
@@ -374,7 +464,7 @@ class Compiler {
         let return_type: LLVMTypeRef = this.CompileType(func_decl->return_type);
         let func_type: LLVMTypeRef = LLVMFunctionType(return_type, param_types.Data(), param_types.Size() as u32, func_decl->var_arg ? 1i32 : 0i32);
         this.function = LLVMAddFunction(this.module, func_name, func_type);
-        this.scope_manager.Set(func_decl->name, SymbolKind::Function, this.function, func_type);
+        this.scope_manager.Set(func_decl->name, SymbolKind::Function, QualifiedValue(this.function, this.type_manager.New(func_type, false, false)));
         let mut j: u64 = 0u64;
 
         while j < func_decl->parameters.Size() {
@@ -390,7 +480,7 @@ class Compiler {
 
             while k < func_decl->parameters.Size() {
                 let param: ParameterNode* = func_decl->parameters[k];
-                this.scope_manager.Set(param->name, SymbolKind::Parameter, LLVMGetParam(this.function, k as u32), param_types[k]);
+                this.scope_manager.Set(param->name, SymbolKind::Parameter, QualifiedValue(LLVMGetParam(this.function, k as u32), this.type_manager.New(param_types[k], false, false)));
                 k += 1u64;
             }
 
@@ -414,7 +504,7 @@ class Compiler {
     priv CompileStatement(mut this: Compiler&, stmt: ASTNode*) {
         if stmt->node_type == ASTNodeType::RETURN_STMT {
             let ret_stmt: ReturnStmtNode* = stmt as ReturnStmtNode*;
-            LLVMBuildRet(this.builder, this.CompileExpression(ret_stmt->value).left);
+            LLVMBuildRet(this.builder, this.CompileExpression(ret_stmt->value).Value());
         } else if stmt->node_type == ASTNodeType::EXPRESSION_STMT {
             let expr_stmt: ExpressionStmtNode* = stmt as ExpressionStmtNode*;
             this.CompileExpression(expr_stmt->expression);
@@ -480,8 +570,8 @@ class Compiler {
                 } else_block = end_block;
             }
 
-            let condition: Pair<LLVMValueRef, LLVMTypeRef> = this.CompileExpression(current->condition);
-            LLVMBuildCondBr(this.builder, condition.left, then_block, else_block);
+            let condition: QualifiedValue = this.CompileExpression(current->condition);
+            LLVMBuildCondBr(this.builder, condition.Value(), then_block, else_block);
 
             if then_stmt->statements.Size() > 0u64 {
                 LLVMPositionBuilderAtEnd(this.builder, then_block);
@@ -535,8 +625,8 @@ class Compiler {
 
         LLVMBuildBr(this.builder, compare_block);
         LLVMPositionBuilderAtStart(this.builder, compare_block);
-        let condition: Pair<LLVMValueRef, LLVMTypeRef> = this.CompileExpression(while_stmt->condition);
-        LLVMBuildCondBr(this.builder, condition.left, loop_block, end_block);
+        let condition: QualifiedValue = this.CompileExpression(while_stmt->condition);
+        LLVMBuildCondBr(this.builder, condition.Value(), loop_block, end_block);
 
         LLVMPositionBuilderAtStart(this.builder, loop_block);
         this.scope_manager.PushScope(String("while"), false);
@@ -570,52 +660,51 @@ class Compiler {
     }
 
     priv CompileVariable(mut this: Compiler&, variable: VariableDeclNode*) {
-        let initializer: Pair<LLVMValueRef, LLVMTypeRef> = this.CompileExpression(variable->initializer);
+        let initializer: QualifiedValue = this.CompileExpression(variable->initializer);
         let _type: LLVMTypeRef = this.CompileType(variable->var_type);
 
-        if !LLVMIsTypeEqual(initializer.right, _type) {
-            this.Error((String("Incompatible types: ") + LLVMTypeToString(initializer.right) + " and " + LLVMTypeToString(_type) + ".").Data());
+        if !LLVMIsTypeEqual(initializer.Type().Value(), _type) {
+            this.Error((String("Incompatible types: ") + LLVMTypeToString(initializer.Type().Value()) + " and " + LLVMTypeToString(_type) + ".").Data());
             ret;
         }
 
         let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
         LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
         let pointer: LLVMValueRef = LLVMBuildAlloca(this.builder, _type, this.GetUniqueName().Data());
-        this.scope_manager.Set(variable->name, SymbolKind::Variable, pointer, LLVMTypeOf(pointer));
-        LLVMBuildStore(this.builder, initializer.left, pointer);
+        this.scope_manager.Set(variable->name, SymbolKind::Variable, QualifiedValue(pointer, this.type_manager.Pointer(initializer.Type())));
+        LLVMBuildStore(this.builder, initializer.Value(), pointer);
         LLVMPositionBuilderAtEnd(this.builder, current);
     }
 
     priv CompileAssignment(mut this: Compiler&, assignment: AssignmentNode*) {
-        let pointer: Pair<LLVMValueRef, LLVMTypeRef> = this.CompilePointerExpression(assignment->left);
-        let value: Pair<LLVMValueRef, LLVMTypeRef> = this.CompileExpression(assignment->right);
+        let pointer: QualifiedValue = this.CompilePointerExpression(assignment->left);
+        let value: QualifiedValue = this.CompileExpression(assignment->right);
 
-        if !LLVMIsTypeEqual(value.right, LLVMElementTypeOf(pointer.left)) {
-            this.Error((String("Incompatible types: ") + LLVMTypeToString(value.right) + " and " + LLVMTypeToString(LLVMElementTypeOf(pointer.left)) + ".").Data());
+        if !LLVMIsTypeEqual(value.Type().Value(), pointer.Type().Pointee().Value()) {
+            this.Error((String("Incompatible types: ") + LLVMTypeToString(value.Type().Value()) + " and " + LLVMTypeToString(pointer.Type().Pointee().Value()) + ".").Data());
             ret;
         }
 
-        LLVMBuildStore(this.builder, value.left, pointer.left);
+        LLVMBuildStore(this.builder, value.Value(), pointer.Value());
     }
 
-    priv CompilePointerExpression(mut this: Compiler&, expr: ASTNode*) -> Pair<LLVMValueRef, LLVMTypeRef> {
+    priv CompilePointerExpression(mut this: Compiler&, expr: ASTNode*) -> QualifiedValue {
         if expr->node_type == ASTNodeType::IDENTIFIER {
             let identifier: IdentifierNode* = expr as IdentifierNode*;
 
             if !this.scope_manager.Has(identifier->name) {
                 this.Error((String("Symbol not found: ") + identifier->name + ".").Data());
-                ret Pair<LLVMValueRef, LLVMTypeRef>(null, null);
+                ret QualifiedValue(null, null);
             }
 
-            let symbol: Symbol* = this.scope_manager.Get(identifier->name);
-            ret Pair<LLVMValueRef, LLVMTypeRef>(symbol->value, symbol->_type);
+            ret this.scope_manager.Get(identifier->name)->value;
         } else {
             this.Error((String("Unknown pointer expression: ") + ASTNodeTypeToString(expr->node_type) + ".").Data());
-            ret Pair<LLVMValueRef, LLVMTypeRef>(null, null);
+            ret QualifiedValue(null, null);
         }
     }
 
-    priv CompileExpression(mut this: Compiler&, expr: ASTNode*) -> Pair<LLVMValueRef, LLVMTypeRef> {
+    priv CompileExpression(mut this: Compiler&, expr: ASTNode*) -> QualifiedValue {
         if expr->node_type == ASTNodeType::LITERAL {
             let literal: LiteralNode* = expr as LiteralNode*;
 
@@ -653,10 +742,10 @@ class Compiler {
                     _type = LLVMInt8TypeInContext(this.context);
                 } else {
                     this.Error("Invalid integer size.");
-                    ret Pair<LLVMValueRef, LLVMTypeRef>(null, null);
+                    ret QualifiedValue(null, null);
                 }
 
-                ret Pair<LLVMValueRef, LLVMTypeRef>(LLVMConstInt(_type, value.ToInteger() as u64, 1i32), _type);
+                ret QualifiedValue(LLVMConstInt(_type, value.ToInteger() as u64, 1i32), this.type_manager.New(_type, false, signed));
             } else if literal->literal_type == TokenType::FLOAT {
                 let (mut state: bool, mut i: u64) = (false, 0u64);
                 let (mut value: String, mut size: String);
@@ -683,16 +772,16 @@ class Compiler {
                     _type = LLVMFloatTypeInContext(this.context);
                 } else {
                     this.Error("Invalid float size.");
-                    ret Pair<LLVMValueRef, LLVMTypeRef>(null, null);
+                    ret QualifiedValue(null, null);
                 }
 
-                ret Pair<LLVMValueRef, LLVMTypeRef>(LLVMConstReal(_type, value.ToFloat()), _type);
+                ret QualifiedValue(LLVMConstReal(_type, value.ToFloat()), this.type_manager.New(_type, false, false));
             } else if literal->literal_type == TokenType::STRING {
                 let value: LLVMValueRef = LLVMBuildGlobalStringPtr(this.builder, literal->value.Data(), "fmt");
-                ret Pair<LLVMValueRef, LLVMTypeRef>(value, LLVMTypeOf(value));
+                ret QualifiedValue(value, this.type_manager.New(LLVMTypeOf(value), false, false));
             } else {
                 this.Error((String("Unknown literal type: ") + TokenTypeToString(literal->literal_type) + ".").Data());
-                ret Pair<LLVMValueRef, LLVMTypeRef>(null, null);
+                ret QualifiedValue(null, null);
             }
         } else if expr->node_type == ASTNodeType::CALL {
             let call: CallNode* = expr as CallNode*;
@@ -701,115 +790,115 @@ class Compiler {
 
             while i < call->arguments.Size() {
                 let arg: ASTNode* = call->arguments[i];
-                args.PushBack(this.CompileExpression(arg).left);
+                args.PushBack(this.CompileExpression(arg).Value());
                 i += 1u64;
             }
 
-            let _func: Pair<LLVMValueRef, LLVMTypeRef> = this.CompileExpression(call->function);
-            let value: LLVMValueRef = LLVMBuildCall2(this.builder, _func.right, _func.left, args.Data(), args.Size() as u32, this.GetUniqueName().Data());
-            ret Pair<LLVMValueRef, LLVMTypeRef>(value, LLVMGetReturnType(_func.right));
+            let _func: QualifiedValue = this.CompileExpression(call->function);
+            let value: LLVMValueRef = LLVMBuildCall2(this.builder, _func.Type().Value(), _func.Value(), args.Data(), args.Size() as u32, this.GetUniqueName().Data());
+            ret QualifiedValue(value, this.type_manager.New(LLVMGetReturnType(_func.Type().Value()), false, false));
         } else if expr->node_type == ASTNodeType::IDENTIFIER {
             let identifier: IdentifierNode* = expr as IdentifierNode*;
 
             if !this.scope_manager.Has(identifier->name) {
                 this.Error((String("Symbol not found: ") + identifier->name + ".").Data());
-                ret Pair<LLVMValueRef, LLVMTypeRef>(null, null);
+                ret QualifiedValue(null, null);
             }
 
             let symbol: Symbol* = this.scope_manager.Get(identifier->name);
 
             if symbol->kind == SymbolKind::Variable {
-                let _type: LLVMTypeRef = LLVMElementTypeOf(symbol->value);
-                ret Pair<LLVMValueRef, LLVMTypeRef>(LLVMBuildLoad2(this.builder, _type, symbol->value, this.GetUniqueName().Data()), _type);
+                let _type: LLVMTypeRef = symbol->value.Type().Pointee().Value();
+                ret QualifiedValue(LLVMBuildLoad2(this.builder, _type, symbol->value.Value(), this.GetUniqueName().Data()), this.type_manager.New(_type, false, false));
             } else if symbol->kind == SymbolKind::Function || symbol->kind == SymbolKind::Parameter {
-                ret Pair<LLVMValueRef, LLVMTypeRef>(symbol->value, symbol->_type);
+                ret symbol->value;
             } else {
                 this.Error("Unknown symbol kind.");
-                ret Pair<LLVMValueRef, LLVMTypeRef>(null, null);
+                ret QualifiedValue(null, null);
             }
         } else if expr->node_type == ASTNodeType::BINARY_OP {
             let binary_op: BinaryOpNode* = expr as BinaryOpNode*;
-            let left: Pair<LLVMValueRef, LLVMTypeRef> = this.CompileExpression(binary_op->left);
-            let right: Pair<LLVMValueRef, LLVMTypeRef> = this.CompileExpression(binary_op->right);
+            let left: QualifiedValue = this.CompileExpression(binary_op->left);
+            let right: QualifiedValue = this.CompileExpression(binary_op->right);
 
-            if !LLVMIsTypeEqual(left.right, right.right) {
-                this.Error((String("Incompatible types: ") + LLVMTypeToString(left.right) + " and " + LLVMTypeToString(right.right) + ".").Data());
-                ret Pair<LLVMValueRef, LLVMTypeRef>(null, null);
+            if !LLVMIsTypeEqual(left.Type().Value(), right.Type().Value()) {
+                this.Error((String("Incompatible types: ") + LLVMTypeToString(left.Type().Value()) + " and " + LLVMTypeToString(right.Type().Value()) + ".").Data());
+                ret QualifiedValue(null, null);
             }
 
-            let kind: LLVMTypeKind = LLVMGetTypeKind(left.right);
+            let kind: LLVMTypeKind = LLVMGetTypeKind(left.Type().Value());
 
             if kind == LLVMTypeKind::LLVMIntegerTypeKind {
                 if binary_op->operator == TokenType::PLUS {
-                    ret Pair<LLVMValueRef, LLVMTypeRef>(LLVMBuildAdd(this.builder, left.left, right.left, this.GetUniqueName().Data()), left.right);
+                    ret QualifiedValue(LLVMBuildAdd(this.builder, left.Value(), right.Value(), this.GetUniqueName().Data()), left.Type());
                 } else if binary_op->operator == TokenType::MINUS {
-                    ret Pair<LLVMValueRef, LLVMTypeRef>(LLVMBuildSub(this.builder, left.left, right.left, this.GetUniqueName().Data()), left.right);
+                    ret QualifiedValue(LLVMBuildSub(this.builder, left.Value(), right.Value(), this.GetUniqueName().Data()), left.Type());
                 } else if binary_op->operator == TokenType::MUL {
-                    ret Pair<LLVMValueRef, LLVMTypeRef>(LLVMBuildMul(this.builder, left.left, right.left, this.GetUniqueName().Data()), left.right);
+                    ret QualifiedValue(LLVMBuildMul(this.builder, left.Value(), right.Value(), this.GetUniqueName().Data()), left.Type());
                 } else if binary_op->operator == TokenType::DIV {
-                    ret Pair<LLVMValueRef, LLVMTypeRef>(LLVMBuildSDiv(this.builder, left.left, right.left, this.GetUniqueName().Data()), left.right);
+                    ret QualifiedValue(LLVMBuildSDiv(this.builder, left.Value(), right.Value(), this.GetUniqueName().Data()), left.Type());
                 } else if binary_op->operator == TokenType::MOD {
-                    ret Pair<LLVMValueRef, LLVMTypeRef>(LLVMBuildSRem(this.builder, left.left, right.left, this.GetUniqueName().Data()), left.right);
+                    ret QualifiedValue(LLVMBuildSRem(this.builder, left.Value(), right.Value(), this.GetUniqueName().Data()), left.Type());
                 } else if binary_op->operator == TokenType::EQUAL {
-                    ret Pair<LLVMValueRef, LLVMTypeRef>(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntEQ, left.left, right.left, this.GetUniqueName().Data()), left.right);
+                    ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntEQ, left.Value(), right.Value(), this.GetUniqueName().Data()), left.Type());
                 } else if binary_op->operator == TokenType::NOT_EQUAL {
-                    ret Pair<LLVMValueRef, LLVMTypeRef>(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntNE, left.left, right.left, this.GetUniqueName().Data()), left.right);
+                    ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntNE, left.Value(), right.Value(), this.GetUniqueName().Data()), left.Type());
                 } else if binary_op->operator == TokenType::GREATER {
-                    ret Pair<LLVMValueRef, LLVMTypeRef>(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntSGT, left.left, right.left, this.GetUniqueName().Data()), left.right);
+                    ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntSGT, left.Value(), right.Value(), this.GetUniqueName().Data()), left.Type());
                 } else if binary_op->operator == TokenType::GREATER_EQUAL {
-                    ret Pair<LLVMValueRef, LLVMTypeRef>(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntSGE, left.left, right.left, this.GetUniqueName().Data()), left.right);
+                    ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntSGE, left.Value(), right.Value(), this.GetUniqueName().Data()), left.Type());
                 } else if binary_op->operator == TokenType::LESS {
-                    ret Pair<LLVMValueRef, LLVMTypeRef>(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntSLT, left.left, right.left, this.GetUniqueName().Data()), left.right);
+                    ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntSLT, left.Value(), right.Value(), this.GetUniqueName().Data()), left.Type());
                 } else if binary_op->operator == TokenType::LESS_EQUAL {
-                    ret Pair<LLVMValueRef, LLVMTypeRef>(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntSLE, left.left, right.left, this.GetUniqueName().Data()), left.right);
+                    ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntSLE, left.Value(), right.Value(), this.GetUniqueName().Data()), left.Type());
                 } else if binary_op->operator == TokenType::AND || binary_op->operator == TokenType::BITWISE_AND {
-                    ret Pair<LLVMValueRef, LLVMTypeRef>(LLVMBuildAnd(this.builder, left.left, right.left, this.GetUniqueName().Data()), left.right);
+                    ret QualifiedValue(LLVMBuildAnd(this.builder, left.Value(), right.Value(), this.GetUniqueName().Data()), left.Type());
                 } else if binary_op->operator == TokenType::OR || binary_op->operator == TokenType::BITWISE_OR {
-                    ret Pair<LLVMValueRef, LLVMTypeRef>(LLVMBuildOr(this.builder, left.left, right.left, this.GetUniqueName().Data()), left.right);
+                    ret QualifiedValue(LLVMBuildOr(this.builder, left.Value(), right.Value(), this.GetUniqueName().Data()), left.Type());
                 } else if binary_op->operator == TokenType::BITWISE_XOR {
-                    ret Pair<LLVMValueRef, LLVMTypeRef>(LLVMBuildXor(this.builder, left.left, right.left, this.GetUniqueName().Data()), left.right);
+                    ret QualifiedValue(LLVMBuildXor(this.builder, left.Value(), right.Value(), this.GetUniqueName().Data()), left.Type());
                 } else if binary_op->operator == TokenType::LSHIFT {
-                    ret Pair<LLVMValueRef, LLVMTypeRef>(LLVMBuildShl(this.builder, left.left, right.left, this.GetUniqueName().Data()), left.right);
+                    ret QualifiedValue(LLVMBuildShl(this.builder, left.Value(), right.Value(), this.GetUniqueName().Data()), left.Type());
                 } else if binary_op->operator == TokenType::RSHIFT {
-                    ret Pair<LLVMValueRef, LLVMTypeRef>(LLVMBuildAShr(this.builder, left.left, right.left, this.GetUniqueName().Data()), left.right);
+                    ret QualifiedValue(LLVMBuildAShr(this.builder, left.Value(), right.Value(), this.GetUniqueName().Data()), left.Type());
                 } else {
                     this.Error((String("Invalid operator for integers: ") + TokenTypeToString(binary_op->operator) + ".").Data());
-                    ret Pair<LLVMValueRef, LLVMTypeRef>(null, null);
+                    ret QualifiedValue(null, null);
                 }
             } else if kind == LLVMTypeKind::LLVMFloatTypeKind || kind == LLVMTypeKind::LLVMDoubleTypeKind {
                 if binary_op->operator == TokenType::PLUS {
-                    ret Pair<LLVMValueRef, LLVMTypeRef>(LLVMBuildFAdd(this.builder, left.left, right.left, this.GetUniqueName().Data()), left.right);
+                    ret QualifiedValue(LLVMBuildFAdd(this.builder, left.Value(), right.Value(), this.GetUniqueName().Data()), left.Type());
                 } else if binary_op->operator == TokenType::MINUS {
-                    ret Pair<LLVMValueRef, LLVMTypeRef>(LLVMBuildFSub(this.builder, left.left, right.left, this.GetUniqueName().Data()), left.right);
+                    ret QualifiedValue(LLVMBuildFSub(this.builder, left.Value(), right.Value(), this.GetUniqueName().Data()), left.Type());
                 } else if binary_op->operator == TokenType::MUL {
-                    ret Pair<LLVMValueRef, LLVMTypeRef>(LLVMBuildFMul(this.builder, left.left, right.left, this.GetUniqueName().Data()), left.right);
+                    ret QualifiedValue(LLVMBuildFMul(this.builder, left.Value(), right.Value(), this.GetUniqueName().Data()), left.Type());
                 } else if binary_op->operator == TokenType::DIV {
-                    ret Pair<LLVMValueRef, LLVMTypeRef>(LLVMBuildFDiv(this.builder, left.left, right.left, this.GetUniqueName().Data()), left.right);
+                    ret QualifiedValue(LLVMBuildFDiv(this.builder, left.Value(), right.Value(), this.GetUniqueName().Data()), left.Type());
                 } else if binary_op->operator == TokenType::MOD {
-                    ret Pair<LLVMValueRef, LLVMTypeRef>(LLVMBuildFRem(this.builder, left.left, right.left, this.GetUniqueName().Data()), left.right);
+                    ret QualifiedValue(LLVMBuildFRem(this.builder, left.Value(), right.Value(), this.GetUniqueName().Data()), left.Type());
                 } else if binary_op->operator == TokenType::EQUAL {
-                    ret Pair<LLVMValueRef, LLVMTypeRef>(LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOEQ, left.left, right.left, this.GetUniqueName().Data()), left.right);
+                    ret QualifiedValue(LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOEQ, left.Value(), right.Value(), this.GetUniqueName().Data()), left.Type());
                 } else if binary_op->operator == TokenType::NOT_EQUAL {
-                    ret Pair<LLVMValueRef, LLVMTypeRef>(LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealONE, left.left, right.left, this.GetUniqueName().Data()), left.right);
+                    ret QualifiedValue(LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealONE, left.Value(), right.Value(), this.GetUniqueName().Data()), left.Type());
                 } else if binary_op->operator == TokenType::GREATER {
-                    ret Pair<LLVMValueRef, LLVMTypeRef>(LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOGT, left.left, right.left, this.GetUniqueName().Data()), left.right);
+                    ret QualifiedValue(LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOGT, left.Value(), right.Value(), this.GetUniqueName().Data()), left.Type());
                 } else if binary_op->operator == TokenType::GREATER_EQUAL {
-                    ret Pair<LLVMValueRef, LLVMTypeRef>(LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOGE, left.left, right.left, this.GetUniqueName().Data()), left.right);
+                    ret QualifiedValue(LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOGE, left.Value(), right.Value(), this.GetUniqueName().Data()), left.Type());
                 } else if binary_op->operator == TokenType::LESS {
-                    ret Pair<LLVMValueRef, LLVMTypeRef>(LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOLT, left.left, right.left, this.GetUniqueName().Data()), left.right);
+                    ret QualifiedValue(LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOLT, left.Value(), right.Value(), this.GetUniqueName().Data()), left.Type());
                 } else if binary_op->operator == TokenType::LESS_EQUAL {
-                    ret Pair<LLVMValueRef, LLVMTypeRef>(LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOLE, left.left, right.left, this.GetUniqueName().Data()), left.right);
+                    ret QualifiedValue(LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOLE, left.Value(), right.Value(), this.GetUniqueName().Data()), left.Type());
                 } else {
                     this.Error((String("Invalid operator for floats: ") + TokenTypeToString(binary_op->operator) + ".").Data());
-                    ret Pair<LLVMValueRef, LLVMTypeRef>(null, null);
+                    ret QualifiedValue(null, null);
                 }
             } else {
                 this.Error("Invalid type.");
-                ret Pair<LLVMValueRef, LLVMTypeRef>(null, null);
+                ret QualifiedValue(null, null);
             }
         } else {
             this.Error((String("Unknown expression: ") + ASTNodeTypeToString(expr->node_type) + ".").Data());
-            ret Pair<LLVMValueRef, LLVMTypeRef>(null, null);
+            ret QualifiedValue(null, null);
         }
     }
 

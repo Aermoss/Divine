@@ -9,6 +9,8 @@ from lexer import Lexer
 from parser import Parser
 from compiler import Compiler
 
+from packaging import version
+
 def main(argv):
     path = os.path.split(__file__)[0]
     lexer, parser, compiler = Lexer(), Parser(), Compiler()
@@ -18,8 +20,14 @@ def main(argv):
     module.name = os.path.splitext(os.path.basename(argv[1]))[0]
     module.triple = llvm.get_default_triple()
 
-    sdk_path = "C:\\Program Files (x86)\\Windows Kits\\10\\Lib\\10.0.26100.0"
-    vs_path = "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207"
+    sdk_path = "C:\\Program Files (x86)\\Windows Kits\\10\\Lib\\"
+    sdk_path += max(os.listdir(sdk_path), key = version.parse)
+
+    vs_path = "C:\\Program Files\\Microsoft Visual Studio\\"
+    vs_path += max(os.listdir(vs_path), key = int)
+    vs_path += "\\Community\\VC\\Tools\\MSVC\\"
+    vs_path += max(os.listdir(vs_path), key = version.parse)
+
     libDirs, libs, debug = [os.path.join(path, "lib"), f"{vs_path}\\lib\\x64", f"{sdk_path}\\um\\x64", f"{sdk_path}\\ucrt\\x64"], \
         ["LLVM-C", "raylibdll", "legacy_stdio_definitions", "msvcrt", "ucrt", "vcruntime"], True # msvcrt yerine ucrt + vcruntime olmalı
     libDirs, libs = [f"/LIBPATH:{os.path.abspath(dir).replace("/", "\\")}" for dir in libDirs], [f"{lib}.lib" for lib in libs]

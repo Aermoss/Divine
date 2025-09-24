@@ -42,12 +42,12 @@ def main(argv):
 
     os.chdir(tempfile.gettempdir())
 
-    llvm.initialize()
     llvm.initialize_native_target()
     llvm.initialize_native_asmprinter()
 
-    target = llvm.get_default_triple()
-    target_machine = llvm.Target.from_triple(target).create_target_machine(codemodel = "large", opt = (0 if debug else 2))
+    target = llvm.Target.from_default_triple()
+    target_machine = target.create_target_machine(codemodel = "large", opt = (0 if debug else 2))
+
     _module = llvm.parse_assembly(str(module))
     _module.verify()
 

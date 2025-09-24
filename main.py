@@ -23,18 +23,19 @@ def main(argv):
     module.name = os.path.splitext(os.path.basename(argv[1]))[0]
     module.triple = llvm.get_default_triple()
 
-    sdk_path = "C:\\Program Files (x86)\\Windows Kits\\10\\Lib\\"
-    sdk_path += max([i for i in os.listdir(sdk_path) if i not in ["wdf"]], key = version.parse)
+    sdkPath = "C:\\Program Files (x86)\\Windows Kits\\10\\Lib\\"
+    sdkPath += max([i for i in os.listdir(sdkPath) if i not in ["wdf"]], key = version.parse)
 
-    vs_path = "C:\\Program Files\\Microsoft Visual Studio\\"
-    vs_path += max(os.listdir(vs_path), key = int)
-    vs_path += f"\\{os.listdir(vs_path)[0]}\\VC\\Tools\\MSVC\\"
-    vs_path += max(os.listdir(vs_path), key = version.parse)
+    vsPath = "C:\\Program Files\\Microsoft Visual Studio\\"
+    vsPath += max(os.listdir(vsPath), key = int)
+    vsPath += f"\\{os.listdir(vsPath)[0]}\\VC\\Tools\\MSVC\\"
+    vsPath += max(os.listdir(vsPath), key = version.parse)
 
-    libDirs, libs, debug = [os.path.join(path, "lib"), f"{vs_path}\\lib\\x64", f"{sdk_path}\\um\\x64", f"{sdk_path}\\ucrt\\x64"], \
-        ["LLVM-C", "raylibdll", "legacy_stdio_definitions", "msvcrt", "ucrt", "vcruntime"], True # msvcrt yerine ucrt + vcruntime olmalı
+    libDirs, libs = [os.path.join(path, "lib"), f"{vsPath}\\lib\\x64", f"{sdkPath}\\um\\x64", f"{sdkPath}\\ucrt\\x64"], \
+        ["LLVM-C", "raylibdll", "legacy_stdio_definitions", "msvcrt", "ucrt", "vcruntime"]
+
     libDirs, libs = [f"/LIBPATH:{os.path.abspath(dir).replace("/", "\\")}" for dir in libDirs], [f"{lib}.lib" for lib in libs]
-    workDir, fileName = os.getcwd(), os.path.splitext(argv[1])[0]
+    workDir, fileName, debug = os.getcwd(), os.path.splitext(argv[1])[0], True
 
     with open(f"{fileName}.llvm", "w", encoding = "utf-8") as file:
         file.write(str(module))
@@ -46,7 +47,7 @@ def main(argv):
     llvm.initialize_native_asmprinter()
 
     target = llvm.get_default_triple()
-    target_machine = llvm.Target.from_triple(target).create_target_machine(codemodel = "large")
+    target_machine = llvm.Target.from_triple(target).create_target_machine(codemodel = "large", opt = (0 if debug else 2))
     _module = llvm.parse_assembly(str(module))
     _module.verify()
 
@@ -54,7 +55,7 @@ def main(argv):
         file.write(target_machine.emit_object(_module))
 
     print(f"Program compiled in {time.time() - start} seconds.")
-    result = subprocess.run([f"{vs_path}\\bin\\Hostx64\\x64\\link.exe", "/NOLOGO"] + (["/DEBUG"] if debug else []) + [f"{fileName}.obj", f"/OUT:{os.path.join(workDir, f'{fileName}.exe')}"] + libDirs + libs)
+    result = subprocess.run([f"{vsPath}\\bin\\Hostx64\\x64\\link.exe", "/NOLOGO"] + (["/DEBUG"] if debug else []) + [f"{fileName}.obj", f"/OUT:{os.path.join(workDir, f'{fileName}.exe')}"] + libDirs + libs)
     if os.path.exists(f"{fileName}.obj"): os.remove(f"{fileName}.obj")
     if result.returncode != 0: return -1
 

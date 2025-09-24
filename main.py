@@ -21,6 +21,7 @@ def main(argv):
     module.triple = llvm.get_default_triple()
 
     sdk_path = "C:\\Program Files (x86)\\Windows Kits\\10\\Lib\\"
+    print(os.listdir(sdk_path))
     sdk_path += max(os.listdir(sdk_path), key = version.parse)
 
     vs_path = "C:\\Program Files\\Microsoft Visual Studio\\"

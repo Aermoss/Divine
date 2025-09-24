@@ -25,7 +25,7 @@ def main(argv):
 
     vs_path = "C:\\Program Files\\Microsoft Visual Studio\\"
     vs_path += max(os.listdir(vs_path), key = int)
-    vs_path += "\\Community\\VC\\Tools\\MSVC\\"
+    vs_path += f"\\{os.listdir(vs_path)[0]}\\VC\\Tools\\MSVC\\"
     vs_path += max(os.listdir(vs_path), key = version.parse)
 
     libDirs, libs, debug = [os.path.join(path, "lib"), f"{vs_path}\\lib\\x64", f"{sdk_path}\\um\\x64", f"{sdk_path}\\ucrt\\x64"], \

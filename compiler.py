@@ -1988,6 +1988,12 @@ class Compiler:
         else:
             left, right = self.VisitValue(node["left"]), self.VisitValue(node["right"])
 
+            if hasattr(left.type, "_reference"):
+                left = self.Builder.load(left)
+
+            if hasattr(right.type, "_reference"):
+                right = self.Builder.load(right)
+
             if isinstance(left, ir.Constant) and isinstance(right, ir.Constant):
                 return self.VisitConstExpr({"type": "expression", "operator": node["operator"], "left": left, "right": right})
 

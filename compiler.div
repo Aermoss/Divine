@@ -146,7 +146,7 @@ class QualifiedType {
     }
 
     pub op==(this: QualifiedType&, other: QualifiedType&) -> bool {
-        ret this.mutable == other.mutable && this.signed == other.signed && LLVMIsTypeEqual(this.value, other.value) && this.pointee == other.pointee;
+        ret this.signed == other.signed && LLVMIsTypeEqual(this.value, other.value) && this.pointee == other.pointee;
     }
 
     pub op!=(this: QualifiedType&, other: QualifiedType&) -> bool {
@@ -177,8 +177,8 @@ class TypeManager {
         ret _type;
     }
 
-    pub Pointer(mut this: TypeManager&, pointee: QualifiedType*) -> QualifiedType* {
-        let _type: QualifiedType* = new QualifiedType(LLVMPointerType(pointee->Value(), 0u32), pointee->Mutable(), pointee->Signed(), pointee);
+    pub Pointer(mut this: TypeManager&, pointee: QualifiedType*, mutable: bool) -> QualifiedType* {
+        let _type: QualifiedType* = new QualifiedType(LLVMPointerType(pointee->Value(), 0u32), mutable, pointee->Signed(), pointee);
         this.types.PushBack(_type);
         ret _type;
     }
@@ -457,11 +457,11 @@ class Compiler {
 
         while i < func_decl->parameters.Size() {
             let param: ParameterNode* = func_decl->parameters[i];
-            param_types.PushBack(this.CompileType(param->param_type));
+            param_types.PushBack(this.CompileType(param->param_type).Value());
             i += 1u64;
         }
 
-        let return_type: LLVMTypeRef = this.CompileType(func_decl->return_type);
+        let return_type: LLVMTypeRef = this.CompileType(func_decl->return_type).Value();
         let func_type: LLVMTypeRef = LLVMFunctionType(return_type, param_types.Data(), param_types.Size() as u32, func_decl->var_arg ? 1i32 : 0i32);
         this.function = LLVMAddFunction(this.module, func_name, func_type);
         this.scope_manager.Set(func_decl->name, SymbolKind::Function, QualifiedValue(this.function, this.type_manager.New(func_type, false, false)));
@@ -661,17 +661,17 @@ class Compiler {
 
     priv CompileVariable(mut this: Compiler&, variable: VariableDeclNode*) {
         let initializer: QualifiedValue = this.CompileExpression(variable->initializer);
-        let _type: LLVMTypeRef = this.CompileType(variable->var_type);
+        let _type: QualifiedType& = this.CompileType(variable->var_type);
 
-        if !LLVMIsTypeEqual(initializer.Type().Value(), _type) {
-            this.Error((String("Incompatible types: ") + LLVMTypeToString(initializer.Type().Value()) + " and " + LLVMTypeToString(_type) + ".").Data());
+        if initializer.Type() != _type {
+            this.Error((String("Incompatible types: ") + LLVMTypeToString(initializer.Type().Value()) + " and " + LLVMTypeToString(_type.Value()) + ".").Data());
             ret;
         }
 
         let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
         LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
-        let pointer: LLVMValueRef = LLVMBuildAlloca(this.builder, _type, this.GetUniqueName().Data());
-        this.scope_manager.Set(variable->name, SymbolKind::Variable, QualifiedValue(pointer, this.type_manager.Pointer(initializer.Type())));
+        let pointer: LLVMValueRef = LLVMBuildAlloca(this.builder, _type.Value(), this.GetUniqueName().Data());
+        this.scope_manager.Set(variable->name, SymbolKind::Variable, QualifiedValue(pointer, this.type_manager.Pointer(initializer.Type(), variable->is_mutable)));
         LLVMBuildStore(this.builder, initializer.Value(), pointer);
         LLVMPositionBuilderAtEnd(this.builder, current);
     }
@@ -680,7 +680,12 @@ class Compiler {
         let pointer: QualifiedValue = this.CompilePointerExpression(assignment->left);
         let value: QualifiedValue = this.CompileExpression(assignment->right);
 
-        if !LLVMIsTypeEqual(value.Type().Value(), pointer.Type().Pointee().Value()) {
+        if !pointer.Type().Mutable() {
+            this.Error("Cannot assign to immutable variable.");
+            ret;
+        }
+
+        if value.Type() != pointer.Type().Pointee() {
             this.Error((String("Incompatible types: ") + LLVMTypeToString(value.Type().Value()) + " and " + LLVMTypeToString(pointer.Type().Pointee().Value()) + ".").Data());
             ret;
         }
@@ -820,13 +825,12 @@ class Compiler {
             let binary_op: BinaryOpNode* = expr as BinaryOpNode*;
             let left: QualifiedValue = this.CompileExpression(binary_op->left);
             let right: QualifiedValue = this.CompileExpression(binary_op->right);
+            let kind: LLVMTypeKind = LLVMGetTypeKind(left.Type().Value());
 
-            if !LLVMIsTypeEqual(left.Type().Value(), right.Type().Value()) {
+            if left.Type() != right.Type() {
                 this.Error((String("Incompatible types: ") + LLVMTypeToString(left.Type().Value()) + " and " + LLVMTypeToString(right.Type().Value()) + ".").Data());
                 ret QualifiedValue(null, null);
             }
-
-            let kind: LLVMTypeKind = LLVMGetTypeKind(left.Type().Value());
 
             if kind == LLVMTypeKind::LLVMIntegerTypeKind {
                 if binary_op->operator == TokenType::PLUS {
@@ -902,39 +906,33 @@ class Compiler {
         }
     }
 
-    priv CompileType(mut this: Compiler&, type_node: ASTNode*) -> LLVMTypeRef {
+    priv CompileType(mut this: Compiler&, type_node: ASTNode*) -> QualifiedType& {
         if type_node->node_type == ASTNodeType::PRIMITIVE_TYPE {
             let primitive_type: PrimitiveTypeNode* = type_node as PrimitiveTypeNode*;
 
             if primitive_type->type_name == "i8" || primitive_type->type_name == "u8" {
-                ret LLVMInt8TypeInContext(this.context);
+                ret this.type_manager.New(LLVMInt8TypeInContext(this.context), false, primitive_type->type_name[0u64] != 'u' ? true : false);
             } else if primitive_type->type_name == "i16" || primitive_type->type_name == "u16" {
-                ret LLVMInt16TypeInContext(this.context);
+                ret this.type_manager.New(LLVMInt16TypeInContext(this.context), false, primitive_type->type_name[0u64] != 'u' ? true : false);
             } else if primitive_type->type_name == "i32" || primitive_type->type_name == "u32" || primitive_type->type_name == "char" {
-                ret LLVMInt32TypeInContext(this.context);
+                ret this.type_manager.New(LLVMInt32TypeInContext(this.context), false, primitive_type->type_name[0u64] != 'u' ? true : false);
             } else if primitive_type->type_name == "i64" || primitive_type->type_name == "u64" {
-                ret LLVMInt64TypeInContext(this.context);
+                ret this.type_manager.New(LLVMInt64TypeInContext(this.context), false, primitive_type->type_name[0u64] != 'u' ? true : false);
             } else if primitive_type->type_name == "i128" || primitive_type->type_name == "u128" {
-                ret LLVMInt128TypeInContext(this.context);
+                ret this.type_manager.New(LLVMInt128TypeInContext(this.context), false, primitive_type->type_name[0u64] != 'u' ? true : false);
             } else if primitive_type->type_name == "f32" {
-                ret LLVMFloatTypeInContext(this.context);
+                ret this.type_manager.New(LLVMFloatTypeInContext(this.context), false, false);
             } else if primitive_type->type_name == "f64" {
-                ret LLVMDoubleTypeInContext(this.context);
+                ret this.type_manager.New(LLVMDoubleTypeInContext(this.context), false, false);
             } else if primitive_type->type_name == "void" {
-                ret LLVMVoidTypeInContext(this.context);
+                ret this.type_manager.New(LLVMVoidTypeInContext(this.context), false, false);
             } else {
                 this.Error("Unknown primitive type.");
                 ret null;
             }
         } else if type_node->node_type == ASTNodeType::POINTER_TYPE {
             let pointer_type: PointerTypeNode* = type_node as PointerTypeNode*;
-            let result: LLVMTypeRef = LLVMPointerType(this.CompileType(pointer_type->base_type), 0u32);
-
-            if result == null {
-                this.Error("Failed to create pointer type.");
-            }
-
-            ret result;
+            ret this.type_manager.Pointer(this.CompileType(pointer_type->base_type), false);
         } else {
             this.Error("Unknown type.");
             ret null;

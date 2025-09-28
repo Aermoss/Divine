@@ -358,7 +358,7 @@ class Class:
                         if hasattr(type, "_byval"):
                             type = type._byval
 
-                        if type != arguments[index]:
+                        if not (type == arguments[index] or (getattr(arguments[index], "_dereferenced", False) and type == arguments[index].as_pointer())):
                             match = False
                             break
 
@@ -427,7 +427,7 @@ class Class:
                         if hasattr(type, "_byval"):
                             type = type._byval
 
-                        if type != arguments[index]:
+                        if not (type == arguments[index] or (getattr(arguments[index], "_dereferenced", False) and type == arguments[index].as_pointer())):
                             match = False
                             break
 
@@ -743,12 +743,9 @@ class Compiler:
         self.primitiveTypes = {
             "void": ir.VoidType(), "bool": ir.IntType(1), "char": ir.IntType(32),
             "i8": ir.IntType(8), "i16": ir.IntType(16), "i32": ir.IntType(32), "i64": ir.IntType(64), "i128": ir.IntType(128),
+            "u8": ir.IntType(8), "u16": ir.IntType(16), "u32": ir.IntType(32), "u64": ir.IntType(64), "u128": ir.IntType(128),
             "f32": ir.FloatType(), "f64": ir.DoubleType()
         }
-
-        _instance_cache, ir.IntType._instance_cache = ir.IntType._instance_cache, {}
-        self.primitiveTypes.update({"u8": self.primitiveTypes["i8"], "u16": ir.IntType(16), "u32": ir.IntType(32), "u64": ir.IntType(64), "u128": ir.IntType(128)})
-        ir.IntType._instance_cache = {} # _instance_cache
 
         for name, type in self.primitiveTypes.items():
             if name.startswith("i"): type._signed = True
@@ -846,15 +843,10 @@ class Compiler:
                     continue
 
                 else:
-                    _instance_cache, ir.IntType._instance_cache = \
-                        ir.IntType._instance_cache, {}
-
                     if size > 4: new = ir.IntType(64)
                     elif size > 2: new = ir.IntType(32)
                     elif size > 1: new = ir.IntType(16)
                     else: new = self.primitiveTypes["i8"]
-
-                    ir.IntType._instance_cache = {} # _instance_cache
 
                     if index != 0:
                         new._byval, type = type, new
@@ -1377,10 +1369,12 @@ class Compiler:
                 return value.initializer
 
             if value.type.is_pointer and not value.type.is_opaque and not isinstance(value.type.pointee, ir.ArrayType) and not isinstance(value.type.pointee, ir.FunctionType):
-                return self.Builder.load(value)
+                value = self.Builder.load(value)
 
-            else:
-                return value
+                if hasattr(value.operands[0].type, "_dereferenced"):
+                    value.type._dereferenced = True
+
+            return value
 
         elif node["type"] in ["not", "bitwise not"]:
             return self.Builder.not_(self.VisitValue(node["value"]))
@@ -1451,6 +1445,7 @@ class Compiler:
 
             if isinstance(value, ir.Value) and value.type.is_pointer and hasattr(value.type.pointee, "_reference"):
                 value = self.Builder.load(value)
+                value.type._dereferenced = True
 
             return value
 
@@ -1831,7 +1826,7 @@ class Compiler:
                 if hasattr(target, "_reference") and type != target:
                     target = target.pointee
 
-                if type != target:
+                if not (type == target or (getattr(type, "_dereferenced", False) and type.as_pointer() == target)):
                     score = -1
                     break
 
@@ -1894,7 +1889,7 @@ class Compiler:
                 else:
                     value = self.TryPass(value)
 
-                    if hasattr(argument, "_reference") and argument != value.type:
+                    if (getattr(argument, "_reference", False) or getattr(value.type, "_dereferenced", False)) and argument != value.type:
                         value = self.addressof(value)
 
                     args.append(value)

@@ -432,7 +432,7 @@ class Parser(sly.Parser):
         return {"type": "three dot"}
 
     @_("PLUS", "MINUS", "MUL", "DIV", "MOD", "LESS LESS", "GREATER GREATER", "BITWISE_XOR", "AND", "OR", "BITWISE_AND", "BITWISE_OR", "BITWISE_NOT", "EQUAL", "NOT_EQUAL",
-       "GREATER", "LESS", "GREATER_EQUAL", "LESS_EQUAL", "ARROW", "NOT", "ASSIGN", "LPAREN RPAREN", "LBRACKET RBRACKET", "NEW", "DEL", "COLON COLON", "COMMA",
+       "GREATER", "LESS", "GREATER_EQUAL", "LESS_EQUAL", "ARROW", "NOT", "ASSIGN", "LPAREN RPAREN", "LBRACKET RBRACKET", "NEW", "DEL", "DOUBLE_COLON", "COMMA",
        "PLUS_ASSIGN", "MINUS_ASSIGN", "MUL_ASSIGN", "DIV_ASSIGN", "MOD_ASSIGN", "LSHIFT_ASSIGN", "RSHIFT_ASSIGN", "XOR_ASSIGN", "AND_ASSIGN", "OR_ASSIGN")
     def FuncOperator(self, p):
         return "".join(p)
@@ -645,6 +645,6 @@ class Parser(sly.Parser):
     def QualifiedName(self, p):
         return "".join(p)
 
-    @_("QualifiedName COLON COLON NAME", "QualifiedName COLON COLON OPERATOR FuncOperator")
+    @_("QualifiedName DOUBLE_COLON NAME", "QualifiedName DOUBLE_COLON OPERATOR FuncOperator")
     def QualifiedName(self, p):
         return "".join(p)

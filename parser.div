@@ -78,11 +78,10 @@ class BinaryOpNode : ASTNode {
 
 class UnaryOpNode : ASTNode {
     pub operand: ASTNode*,
-    pub operator: TokenType,
-    pub is_prefix: bool
+    pub operator: TokenType
 } impl {
-    UnaryOpNode(mut this: UnaryOpNode&, operand: ASTNode*, operator: TokenType, is_prefix: bool, line: u64, col: u64) : ASTNode(ASTNodeType::UNARY_OP, line, col) {
-        (this.operand, this.operator, this.is_prefix) = (operand, operator, is_prefix);
+    UnaryOpNode(mut this: UnaryOpNode&, operand: ASTNode*, operator: TokenType, line: u64, col: u64) : ASTNode(ASTNodeType::UNARY_OP, line, col) {
+        (this.operand, this.operator) = (operand, operator);
     }
 };
 
@@ -360,12 +359,21 @@ func PrintAST(node: ASTNode*, depth: i32) {
         printf(")");
     } else if node->node_type == ASTNodeType::UNARY_OP {
         let unary: UnaryOpNode* = node as UnaryOpNode*;
-        printf("(operator: %s, prefix: %s, operand: ", TokenTypeToString(unary->operator).Data(), unary->is_prefix ? "true" : "false");
+        printf("(operator: %s, operand: ", TokenTypeToString(unary->operator).Data());
         PrintAST(unary->operand, 0i32);
+        printf(")");
+    } else if node->node_type == ASTNodeType::CAST {
+        let cast: CastNode* = node as CastNode*;
+        printf("(value: ");
+        PrintAST(cast->expression, 0i32);
+        printf(", target: ");
+        PrintAST(cast->target_type, 0i32);
         printf(")");
     } else if node->node_type == ASTNodeType::VARIABLE_DECL {
         let var_decl: VariableDeclNode* = node as VariableDeclNode*;
-        printf("(name: %s, mutable: %s, const: %s)", var_decl->name.Data(), var_decl->is_mutable ? "true" : "false", var_decl->is_const ? "true" : "false");
+        printf("(name: %s, mutable: %s, const: %s, value: ", var_decl->name.Data(), var_decl->is_mutable ? "true" : "false", var_decl->is_const ? "true" : "false");
+        PrintAST(var_decl->initializer, 0i32);
+        printf(")");
     } else if node->node_type == ASTNodeType::RETURN_STMT {
         let ret_stmt: ReturnStmtNode* = node as ReturnStmtNode*;
         printf("(value: ");
@@ -565,15 +573,17 @@ class Parser {
         else if _type == TokenType::LSHIFT || _type == TokenType::RSHIFT { ret 8i32; }
         else if _type == TokenType::PLUS || _type == TokenType::MINUS { ret 9i32; }
         else if _type == TokenType::MUL || _type == TokenType::DIV || _type == TokenType::MOD { ret 10i32; }
+        else if _type == TokenType::AS { ret 11i32; }
         else { ret -1i32; }
     }
 
     priv IsBinaryOperator(this: Parser&, _type: TokenType) -> bool {
-        ret this.GetBinaryOpPrecedence(_type) >= 0i32;
+        let precedence: i32 = this.GetBinaryOpPrecedence(_type);
+        ret precedence >= 0i32 && precedence != 11i32;
     }
 
     priv IsUnaryOperator(this: Parser&, _type: TokenType) -> bool {
-        ret _type == TokenType::NOT || _type == TokenType::BITWISE_NOT || _type == TokenType::MINUS || _type == TokenType::PLUS || _type == TokenType::MUL;
+        ret _type == TokenType::NOT || _type == TokenType::MINUS || _type == TokenType::BITWISE_AND || _type == TokenType::MUL;
     }
 
     priv IsAssignmentOperator(this: Parser&, _type: TokenType) -> bool {
@@ -601,16 +611,6 @@ class Parser {
             let expr: ASTNode* = this.ParseExpression();
             this.Expect(TokenType::RPAREN);
             ret expr;
-        }
-
-        if token._type == TokenType::LBRACE {
-            this.Advance();
-            let expr: ASTNode* = this.ParseExpression();
-            this.Expect(TokenType::RBRACE);
-            this.Expect(TokenType::AS);
-            let target_type: ASTNode* = this.ParseType();
-            let cast: CastNode* = new CastNode(expr, target_type, token.lineno, token.column);
-            ret cast as ASTNode*;
         }
 
         if token._type == TokenType::NEW {
@@ -674,11 +674,11 @@ class Parser {
         if this.IsUnaryOperator(token._type) {
             this.Advance();
             let operand: ASTNode* = this.ParseUnary();
-            let unary: UnaryOpNode* = new UnaryOpNode(operand, token._type, true, token.lineno, token.column);
+            let unary: UnaryOpNode* = new UnaryOpNode(operand, token._type, token.lineno, token.column);
             ret unary as ASTNode*;
+        } else {
+            ret this.ParsePostfix();
         }
-
-        ret this.ParsePostfix();
     }
 
     priv ParseBinaryExpression(mut this: Parser&, min_precedence: i32) -> ASTNode* {
@@ -688,11 +688,17 @@ class Parser {
             let token: Token = this.CurrentToken();
             let precedence: i32 = this.GetBinaryOpPrecedence(token._type);
             if precedence < min_precedence { break; }
-
             this.Advance();
-            let right: ASTNode* = this.ParseBinaryExpression(precedence + 1i32);
-            let binary: BinaryOpNode* = new BinaryOpNode(left, right, token._type, token.lineno, token.column);
-            left = binary as ASTNode*;
+
+            if token._type == TokenType::AS {
+                let target_type: ASTNode* = this.ParseType();
+                let cast: CastNode* = new CastNode(left, target_type, token.lineno, token.column);
+                left = cast as ASTNode*;
+            } else {
+                let right: ASTNode* = this.ParseBinaryExpression(precedence + 1i32);
+                let binary: BinaryOpNode* = new BinaryOpNode(left, right, token._type, token.lineno, token.column);
+                left = binary as ASTNode*;
+            }
         }
 
         ret left;

@@ -585,6 +585,10 @@ class AddressOf(CompileTimeFunction):
         if isinstance(value, ir.Constant) and hasattr(value, "_ptr"):
             value = value._ptr
 
+        if isinstance(value, ir.SelectInstr):
+            self.compiler.Builder.remove(value)
+            value = self.compiler.Builder.select(value.operands[0], self(value.operands[1]), self(value.operands[2]))
+
         assert value.type.is_pointer and value.type.pointee == _value.type, \
             f"Failed to get address of '{value}'."
 

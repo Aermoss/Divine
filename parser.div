@@ -25,18 +25,20 @@ class ASTNode {
 };
 
 class PrimitiveTypeNode : ASTNode {
-    pub type_name: String
+    pub type_name: String,
+    pub mutable: bool
 } impl {
-    PrimitiveTypeNode(mut this: PrimitiveTypeNode&, type_name: String, line: u64, col: u64) : ASTNode(ASTNodeType::PRIMITIVE_TYPE, line, col) {
-        this.type_name = type_name;
+    PrimitiveTypeNode(mut this: PrimitiveTypeNode&, type_name: String, mutable: bool, line: u64, col: u64) : ASTNode(ASTNodeType::PRIMITIVE_TYPE, line, col) {
+        (this.type_name, this.mutable) = (type_name, mutable);
     }
 };
 
 class PointerTypeNode : ASTNode {
-    pub base_type: ASTNode*
+    pub base_type: ASTNode*,
+    pub mutable: bool
 } impl {
-    PointerTypeNode(mut this: PointerTypeNode&, base_type: ASTNode*, line: u64, col: u64) : ASTNode(ASTNodeType::POINTER_TYPE, line, col) {
-        this.base_type = base_type;
+    PointerTypeNode(mut this: PointerTypeNode&, base_type: ASTNode*, mutable: bool, line: u64, col: u64) : ASTNode(ASTNodeType::POINTER_TYPE, line, col) {
+        (this.base_type, this.mutable) = (base_type, mutable);
     }
 };
 
@@ -436,7 +438,7 @@ func PrintAST(node: ASTNode*, depth: i32) {
         printf("(name: %s)", enum_decl->name.Data());
     } else if node->node_type == ASTNodeType::PRIMITIVE_TYPE {
         let type_node: PrimitiveTypeNode* = node as PrimitiveTypeNode*;
-        printf("(_type: %s)", type_node->type_name.Data());
+        printf("(_type: %s, mutable: %s)", type_node->type_name.Data(), type_node->mutable ? "true" : "false");
     } else if node->node_type == ASTNodeType::CALL {
         let call: CallNode* = node as CallNode*;
         printf("(function: ");
@@ -709,8 +711,9 @@ class Parser {
     }
 
     pub ParseType(mut this: Parser&) -> ASTNode* {
+        let mutable: bool = this.Match(TokenType::MUT);
         let token: Token = this.CurrentToken();
-        
+
         if token._type != TokenType::NAME {
             printf("Parser error: Expected type name at line %d, column %d.\n", token.lineno, token.column);
             this.has_error = true;
@@ -718,25 +721,18 @@ class Parser {
         }
 
         this.Advance();
-        let type_node: PrimitiveTypeNode* = new PrimitiveTypeNode(token.value, token.lineno, token.column);
+        let type_node: PrimitiveTypeNode* = new PrimitiveTypeNode(token.value, mutable, token.lineno, token.column);
         let mut ast_node: ASTNode* = type_node as ASTNode*;
 
         while !this.has_error && this.Match(TokenType::MUL) {
-            let pointer_type: PointerTypeNode* = new PointerTypeNode(ast_node, token.lineno, token.column);
+            let pointer_type: PointerTypeNode* = new PointerTypeNode(ast_node, mutable, token.lineno, token.column);
             ast_node = pointer_type as ASTNode*;
         }
 
-        if this.Match(TokenType::LBRACKET) {
-            let mut size: ASTNode* = null;
-
-            if this.CurrentToken()._type != TokenType::RBRACKET {
-                size = this.ParseExpression();
-            }
-
-            this.Expect(TokenType::RBRACKET);
-            let array_type: ArrayTypeNode* = new ArrayTypeNode(ast_node, size, token.lineno, token.column);
-            ast_node = array_type as ASTNode*;
-        }
+        /* while !this.has_error && this.Match(TokenType::BITWISE_AND) {
+            let reference_type: ReferenceTypeNode* = new ReferenceTypeNode(ast_node, token.lineno, token.column);
+            ast_node = reference_type as ASTNode*;
+        } */
 
         ret ast_node;
     }

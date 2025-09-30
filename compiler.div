@@ -469,17 +469,20 @@ class Compiler {
     priv CompileFunction(mut this: Compiler&, func_decl: FunctionDeclNode*) {
         this.number = 0u64;
         let func_name: i8* = func_decl->name.Data();
-        let mut param_types: Vector<LLVMTypeRef>;
+        let mut param_type_refs: Vector<LLVMTypeRef>;
+        let mut param_types: Vector<QualifiedType*>;
         let mut i: u64 = 0u64;
 
         while i < func_decl->parameters.Size() {
             let param: ParameterNode* = func_decl->parameters[i];
-            param_types.PushBack(this.CompileType(param->param_type).Value());
+            let _type: QualifiedType& = this.CompileType(param->param_type);
+            param_type_refs.PushBack(_type.Value());
+            param_types.PushBack(_type);
             i += 1u64;
         }
 
         let return_type: LLVMTypeRef = this.CompileType(func_decl->return_type).Value();
-        let func_type: LLVMTypeRef = LLVMFunctionType(return_type, param_types.Data(), param_types.Size() as u32, func_decl->var_arg ? 1i32 : 0i32);
+        let func_type: LLVMTypeRef = LLVMFunctionType(return_type, param_type_refs.Data(), param_type_refs.Size() as u32, func_decl->var_arg ? 1i32 : 0i32);
         this.function = LLVMAddFunction(this.module, func_name, func_type);
         this.scope_manager.Set(func_decl->name, SymbolKind::Function, QualifiedValue(this.function, this.type_manager.New(func_type, false, false)));
         let mut j: u64 = 0u64;
@@ -493,16 +496,26 @@ class Compiler {
 
         if func_decl->body != null {
             this.scope_manager.PushScope(func_decl->name, false);
+            let entry: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, this.function, this.GetUniqueName().Data());
+            LLVMPositionBuilderAtEnd(this.builder, entry);
             let mut k: u64 = 0u64;
 
             while k < func_decl->parameters.Size() {
                 let param: ParameterNode* = func_decl->parameters[k];
-                this.scope_manager.Set(param->name, SymbolKind::Parameter, QualifiedValue(LLVMGetParam(this.function, k as u32), this.type_manager.New(param_types[k], false, false)));
-                k += 1u64;
+
+                if param->is_mutable {
+                    let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
+                    LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
+                    let pointer: LLVMValueRef = LLVMBuildAlloca(this.builder, param_type_refs[k], this.GetUniqueName().Data());
+
+                    LLVMPositionBuilderAtEnd(this.builder, current);
+                    this.scope_manager.Set(param->name, SymbolKind::Parameter, QualifiedValue(pointer, this.type_manager.Pointer(param_types[k], param->is_mutable)));
+                    LLVMBuildStore(this.builder, LLVMGetParam(this.function, k as u32), pointer);
+                } else {
+                    this.scope_manager.Set(param->name, SymbolKind::Parameter, QualifiedValue(LLVMGetParam(this.function, k as u32), param_types[k])); // might cause mutability problems
+                } k += 1u64;
             }
 
-            let entry: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, this.function, this.GetUniqueName().Data());
-            LLVMPositionBuilderAtEnd(this.builder, entry);
             this.CompileBlock(func_decl->body);
             this.scope_manager.PopScope();
         } this.function = null;
@@ -737,10 +750,13 @@ class Compiler {
 
             let symbol: Symbol* = this.scope_manager.Get(identifier->name);
 
-            if symbol->kind == SymbolKind::Variable && !pointer {
-                let _type: QualifiedType& = symbol->value.Type().Pointee();
-                ret QualifiedValue(LLVMBuildLoad2(this.builder, _type.Value(), symbol->value.Value(), this.GetUniqueName().Data()), _type);
-            } else if symbol->kind == SymbolKind::Function || symbol->kind == SymbolKind::Parameter || pointer {
+            if (symbol->kind == SymbolKind::Variable || symbol->kind == SymbolKind::Parameter) && !pointer {
+                if symbol->kind == SymbolKind::Parameter && !symbol->value.Type().IsMutable() {
+                    ret symbol->value;
+                } else {
+                    ret QualifiedValue(LLVMBuildLoad2(this.builder, symbol->value.Type().Pointee().Value(), symbol->value.Value(), this.GetUniqueName().Data()), symbol->value.Type().Pointee());
+                }
+            } else if symbol->kind == SymbolKind::Function || pointer {
                 ret symbol->value;
             } else {
                 this.Error("Unknown symbol kind.");
@@ -856,7 +872,7 @@ class Compiler {
             i += 1u64;
         }
 
-        let _func: QualifiedValue = this.CompileExpression(call->function, false);
+        let _func: QualifiedValue = this.CompileExpression(call->function, true);
         let value: LLVMValueRef = LLVMBuildCall2(this.builder, _func.Type().Value(), _func.Value(), args.Data(), args.Size() as u32, this.GetUniqueName().Data());
         ret QualifiedValue(value, this.type_manager.New(LLVMGetReturnType(_func.Type().Value()), false, false));
     }

@@ -23,6 +23,17 @@ def _to_string2(self):
 
 ir.IntType._to_string2 = _to_string2
 
+def load(self, ptr, name = "", align = None, typ = None):
+    value = self.load2(ptr, name, align, typ)
+
+    if hasattr(value.operands[0], "_dereferenced"):
+        value._dereferenced = True
+
+    return value
+
+ir.builder.IRBuilder.load2 = ir.builder.IRBuilder.load
+ir.builder.IRBuilder.load = load
+
 class Scope:
     def __init__(self, namespace = None, local = False):
         self.variables, self.children, self.parent = {}, [], None
@@ -323,7 +334,7 @@ class Class:
 
     def Has(self, name, arguments = None):
         if arguments is not None:
-            arguments = [self.__compiler.ProcessType(i) for i in arguments]
+            _arguments = [self.__compiler.ProcessType(i) for i in arguments]
 
         if name in self.__elements and arguments is None:
             return self.__elements[name]["access"] == "public" or self.__compiler.scopeManager.Class == self
@@ -345,20 +356,20 @@ class Class:
                 if arguments is None:
                     return True
 
-                if len(arguments) != len(args):
+                if len(_arguments) != len(args):
                     continue
 
                 match = True
 
                 for index, type in enumerate(args):
-                    if len(arguments) > index:
+                    if len(_arguments) > index:
                         if hasattr(type, "_reference"):
                             type = type.pointee
 
                         if hasattr(type, "_byval"):
                             type = type._byval
 
-                        if not (type == arguments[index] or (getattr(arguments[index], "_dereferenced", False) and type == arguments[index].as_pointer())):
+                        if not (type == _arguments[index] or (getattr(arguments[index], "_dereferenced", False) and type == _arguments[index].as_pointer())):
                             match = False
                             break
 
@@ -369,7 +380,7 @@ class Class:
 
     def Get(self, name, arguments = None, pointer = None):
         if arguments is not None:
-            arguments = [self.__compiler.ProcessType(i) for i in arguments]
+            _arguments = [self.__compiler.ProcessType(i) for i in arguments]
 
         if name in self.__elements and arguments is None:
             assert self.__elements[name]["access"] == "public" or self.__compiler.scopeManager.Class == self, \
@@ -414,25 +425,25 @@ class Class:
                     matches.append(function)
                     continue
 
-                if len(arguments) != len(args):
+                if len(_arguments) != len(args):
                     continue
 
                 match = True
 
                 for index, type in enumerate(args):
-                    if len(arguments) > index:
+                    if len(_arguments) > index:
                         if hasattr(type, "_reference"):
                             type = type.pointee
 
                         if hasattr(type, "_byval"):
                             type = type._byval
 
-                        if not (type == arguments[index] or (getattr(arguments[index], "_dereferenced", False) and type == arguments[index].as_pointer())):
+                        if not (type == _arguments[index] or (getattr(arguments[index], "_dereferenced", False) and type == _arguments[index].as_pointer())):
                             match = False
                             break
 
                 if match:
-                    return function
+                    matches.append(function)
 
                 else:
                     state = 2
@@ -1291,6 +1302,7 @@ class Compiler:
     @Timer
     def VisitCast(self, node):
         value, target = self.VisitValue(node["value"]), self.VisitType(node["target"])
+        if getattr(value, "_dereferenced", False): value = self.addressof(value)
         assert value.type != target, f"Redundant cast. ({value.type} to {target})"
 
         if isinstance(value, ir.Constant):
@@ -1375,9 +1387,6 @@ class Compiler:
             if value.type.is_pointer and not value.type.is_opaque and not isinstance(value.type.pointee, ir.ArrayType) and not isinstance(value.type.pointee, ir.FunctionType):
                 value = self.Builder.load(value)
 
-                if hasattr(value.operands[0].type, "_dereferenced"):
-                    value.type._dereferenced = True
-
             return value
 
         elif node["type"] in ["not", "bitwise not"]:
@@ -1449,7 +1458,7 @@ class Compiler:
 
             if isinstance(value, ir.Value) and value.type.is_pointer and hasattr(value.type.pointee, "_reference"):
                 value = self.Builder.load(value)
-                value.type._dereferenced = True
+                value._dereferenced = True
 
             return value
 
@@ -1464,10 +1473,19 @@ class Compiler:
                 function = _class.Get("op[]", arguments = [index], pointer = self.addressof(value))
                 return self.VisitCall({"value": function, "params": [index]})
 
-            return self.Builder.gep(value, [index])
+            if getattr(value, "_dereferenced", False):
+                value = self.addressof(value)
+
+            value = self.Builder.gep(value, [index])
+            value._dereferenced = True
+            return value
 
         elif node["type"] in ["get element", "get element pointer"]:
             value = {"get element pointer": self.VisitValue, "get element": self.VisitPointer}[node["type"]](node["value"])
+
+            if getattr(value, "_dereferenced", False) and (not value.type.is_pointer or value.type.is_opaque or not isinstance(value.type.pointee, ir.BaseStructType)):
+                value = self.addressof(value)
+
             assert value.type.is_pointer and not value.type.is_opaque and isinstance(value.type.pointee, ir.BaseStructType), f"Expected a class, got '{value.type}'."
             _class = self.scopeManager.Get(value.type.pointee.name, types = [Class])
             return _class.Get(node["element"], pointer = value)
@@ -1493,6 +1511,9 @@ class Compiler:
 
         elif node["type"] in ["expression", "cast", "call", "new", "ternary"]:
             value = self.VisitValue(node)
+
+            if getattr(value, "_dereferenced", False):
+                value = self.addressof(value)
 
             if isinstance(value, ir.LoadInstr) and hasattr(value.operands[0], "_return"):
                 self.Builder.remove(value)
@@ -1615,7 +1636,7 @@ class Compiler:
                         self.Builder.store(i, self.Builder.gep(ptr, [ir.Constant(self.primitiveTypes["i32"], 0), ir.Constant(self.primitiveTypes["i32"], index)]), self.alignof(i).constant)
 
                 else:
-                    if hasattr(dataType, "_reference") and dataType != value.type:
+                    if (hasattr(dataType, "_reference") or getattr(value, "_dereferenced", False)) and dataType != value.type:
                         value = self.addressof(value)
 
                     if hasattr(value.type, "_mutable") and hasattr(value.type, "_name"):
@@ -1634,6 +1655,9 @@ class Compiler:
 
         else:
             _ptr = ptr = self.VisitPointer(node["left"])
+
+            if getattr(ptr, "_dereferenced", False):
+                _ptr = ptr = self.addressof(ptr)
 
             while isinstance(_ptr, ir.GEPInstr) or isinstance(_ptr, ir.LoadInstr):
                 _ptr = _ptr.operands[0]
@@ -1668,15 +1692,15 @@ class Compiler:
                             "right": self.Builder.load(self.Builder.gep(value, [ir.Constant(self.primitiveTypes["i32"], 0), ir.Constant(self.primitiveTypes["i32"], _class.Index(name))]))
                         })
 
-                    return ptr
-
                 else:
                     assert False, f"Type mismatch. (Expected '{_class.type}', got '{value.type}'.)"
 
             else:
+                if getattr(value, "_dereferenced", False) and value.type != ptr.type.pointee: value = self.addressof(value)
                 assert value.type == ptr.type.pointee, f"Type mismatch for '{ptr}'. (Expected '{ptr.type.pointee}', got '{value.type}'.)"
                 self.Builder.store(value, ptr, self.alignof(value).constant)
-                return ptr
+
+            return value
 
     @Timer
     def VisitNew(self, node):
@@ -1727,16 +1751,17 @@ class Compiler:
     def VisitDelete(self, node):
         assert self.scopeManager.Scope.local, "Delete statements must be defined in local scope."
         ptr = self.VisitValue(node["value"])
+        if getattr(ptr, "_dereferenced", False): ptr = self.addressof(ptr)
         assert ptr.type.is_pointer, "Delete value must be a pointer."
         _ptr = self.Builder.bitcast(ptr, self.primitiveTypes["i8"].as_pointer()) if ptr.type.pointee != self.primitiveTypes["i8"] else ptr
 
         if node["array"]:
-            _ptr = self.Builder.gep(_ptr, [ir.Constant(self.primitiveTypes["i32"], -8)])
-            count = self.Builder.load(self.Builder.bitcast(_ptr, self.primitiveTypes["i64"].as_pointer()))
+            _ptr = self.Builder.gep(_ptr, [ir.Constant(self.primitiveTypes["i64"], -8)])
+            count = self.Builder.load(self.Builder.bitcast(_ptr, self.primitiveTypes["u64"].as_pointer()))
 
             if isinstance(ptr.type.pointee, ir.BaseStructType):
-                value = self.Builder.alloca(self.primitiveTypes["i64"])
-                self.Builder.store(ir.Constant(self.primitiveTypes["i64"], 0), value)
+                value = self.Builder.alloca(self.primitiveTypes["u64"])
+                self.Builder.store(ir.Constant(self.primitiveTypes["u64"], 0), value)
 
                 compare = self.Builder.append_basic_block()
                 loop = self.Builder.append_basic_block()
@@ -1749,7 +1774,7 @@ class Compiler:
 
                 self.Builder.position_at_end(loop)
                 self.VisitDestructor(self.scopeManager.Get(ptr.type.pointee.name, types = [Class]), self.Builder.gep(ptr, [index]))
-                self.Builder.store(self.Builder.add(index, ir.Constant(self.primitiveTypes["i64"], 1)), value, self.alignof(value).constant)
+                self.Builder.store(self.Builder.add(index, ir.Constant(self.primitiveTypes["u64"], 1)), value, self.alignof(value).constant)
                 self.Builder.branch(compare)
                 self.Builder.position_at_end(end)
 
@@ -1824,17 +1849,21 @@ class Compiler:
                     break
 
                 target = j._byval if hasattr(j, "_byval") else j
-                type = self.ProcessType(params[_index].type)
+                type = self.ProcessType((value := params[_index]).type)
                 _index += 1
 
                 if hasattr(target, "_reference") and type != target:
                     target = target.pointee
 
-                if not (type == target or (getattr(type, "_dereferenced", False) and type.as_pointer() == target)):
+                if type == target:
+                    score += 2
+
+                elif getattr(value, "_dereferenced", False) and type.as_pointer() == target:
+                    score += 1
+
+                else:
                     score = -1
                     break
-
-                score += 1
 
             if len(params) < _index if _func.function_type.var_arg else len(params) != _index:
                 continue
@@ -1893,7 +1922,7 @@ class Compiler:
                 else:
                     value = self.TryPass(value)
 
-                    if (getattr(argument, "_reference", False) or getattr(value.type, "_dereferenced", False)) and argument != value.type:
+                    if (getattr(argument, "_reference", False) or getattr(value, "_dereferenced", False)) and argument != value.type:
                         value = self.addressof(value)
 
                     args.append(value)
@@ -1919,6 +1948,10 @@ class Compiler:
                 self.scopeManager.Scope.RegisterInstance(ptr)
 
             ptr._return, result = True, self.Builder.load(ptr)
+
+        if hasattr(result.type, "_reference"):
+            result = self.Builder.load(result)
+            result._dereferenced = True
 
         return result
 
@@ -1969,7 +2002,10 @@ class Compiler:
 
             else:
                 value = self.TryPass(self.VisitValue(node["value"]), _return = True)
-                if hasattr(self.Builder.function.return_value.type, "_reference") and self.Builder.function.return_value.type != value.type: value = self.addressof(value)
+
+                if (hasattr(self.Builder.function.return_value.type, "_reference") or getattr(value, "_dereferenced", False)) and self.Builder.function.return_value.type != value.type:
+                    value = self.addressof(value)
+
                 assert value.type == self.Builder.function.return_value.type, f"Return type mismatch for '{self.Builder.function.name}'. (Expected '{self.Builder.function.return_value.type}', got '{value.type}'.)"
                 self.InvokeDestructors()
                 self.Builder.ret(value)
@@ -1987,11 +2023,12 @@ class Compiler:
         else:
             left, right = self.VisitValue(node["left"]), self.VisitValue(node["right"])
 
-            if hasattr(left.type, "_reference"):
-                left = self.Builder.load(left)
+            if left.type != right.type:
+                if getattr(left, "_dereferenced", False):
+                    left = self.addressof(left)
 
-            if hasattr(right.type, "_reference"):
-                right = self.Builder.load(right)
+                if getattr(right, "_dereferenced", False):
+                    right = self.addressof(right)
 
             if isinstance(left, ir.Constant) and isinstance(right, ir.Constant):
                 return self.VisitConstExpr({"type": "expression", "operator": node["operator"], "left": left, "right": right})

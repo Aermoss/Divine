@@ -23,7 +23,24 @@ def _to_string2(self):
 
 ir.IntType._to_string2 = _to_string2
 
+def alloca(self, typ, size = None, name = "", align = None):
+    if align is None:
+        align = self.compiler.alignof(typ).constant
+
+    ptr = self.alloca2(typ, size, name)
+    ptr.align = align
+    return ptr
+
+ir.builder.IRBuilder.alloca2 = ir.builder.IRBuilder.alloca
+ir.builder.IRBuilder.alloca = alloca
+
 def load(self, ptr, name = "", align = None, typ = None):
+    if typ is None:
+        typ = ptr.type.pointee
+
+    if align is None:
+        align = self.compiler.alignof(typ).constant
+
     value = self.load2(ptr, name, align, typ)
 
     if hasattr(value.operands[0], "_dereferenced"):
@@ -33,6 +50,15 @@ def load(self, ptr, name = "", align = None, typ = None):
 
 ir.builder.IRBuilder.load2 = ir.builder.IRBuilder.load
 ir.builder.IRBuilder.load = load
+
+def store(self, value, ptr, align = None):
+    if align is None:
+        align = self.compiler.alignof(ptr.type.pointee).constant
+
+    return self.store2(value, ptr, align)
+
+ir.builder.IRBuilder.store2 = ir.builder.IRBuilder.store
+ir.builder.IRBuilder.store = store
 
 class Scope:
     def __init__(self, namespace = None, local = False):
@@ -263,8 +289,8 @@ class ScopeManager:
 class Class:
     def __init__(self, compiler, name, realName):
         self.__compiler, self.__name, self.__realName = compiler, name, realName
-        self.type, self.parents, self.constructed = ir.global_context.get_identified_type(name), {}, []
-        self.__elements, self.__functions = {}, {}
+        self.type, self.parents, self.constructed = ir.global_context.get_identified_type(name, True), {}, []
+        self.type._alignment, self.__elements, self.__functions = 8, {}, {}
 
     @property
     def Name(self):
@@ -283,23 +309,25 @@ class Class:
         return self.__functions.copy()
 
     def Cook(self):
-        if self.type.elements is not None: return
-        sizeof, alignof = self.__compiler.sizeof, self.__compiler.alignof
+        assert self.type.elements is None, "Class already cooked."
         elements, offset, alignment = {}, 0, 0
 
         __elements = self.__elements.copy()
         self.__elements = {name: {"type": parent.type, "value": None, "access": None} for name, parent in self.parents.items()}
         self.__elements.update(__elements)
 
+        if len(self.__elements) == 0:
+            return self
+
         for element in self.__elements.values():
-            alignment = max(alignment, alignof(element["type"]).constant)
+            alignment = max(alignment, self.__compiler.alignof(element["type"]).constant)
 
         self.__elements.update({None: ...})
 
         for i in self.__elements:
-            size = sizeof(self.__elements[i]["type"]).constant if i is not None else 0
+            size = self.__compiler.sizeof(self.__elements[i]["type"]).constant if i is not None else 0
 
-            for j in [alignment, alignof(self.__elements[i]["type"]).constant if i is not None else 0]:
+            for j in [alignment, self.__compiler.alignof(self.__elements[i]["type"]).constant if i is not None else 0]:
                 if not j > 0:
                     continue
 
@@ -314,7 +342,7 @@ class Class:
 
         self.__elements = elements.copy()
         self.type.set_body(*[i["type"] for i in self.__elements.values()])
-        self.type._class = self
+        self.type._class, self.type._alignment = self, alignment
         return self
 
     def RegisterParent(self, _class):
@@ -545,7 +573,7 @@ class AlignOf(CompileTimeFunction):
             return ir.Constant(self.compiler.primitiveTypes["u64"], self(type.element).constant)
 
         elif isinstance(type, ir.BaseStructType):
-            return ir.Constant(self.compiler.primitiveTypes["u64"], max([self(i).constant for i in type.elements]))
+            return ir.Constant(self.compiler.primitiveTypes["u64"], type._alignment)
 
         elif isinstance(type, ir.PointerType):
             return ir.Constant(self.compiler.primitiveTypes["u64"], 8)
@@ -884,7 +912,7 @@ class Compiler:
             current = self.Builder.block
             self.Builder.position_at_start(self.Builder.function.entry_basic_block)
             ptr = self.Builder.alloca(value.type)
-            self.Builder.store(value, ptr, self.alignof(value).constant)
+            self.Builder.store(value, ptr)
             self.Builder.position_at_end(current)
             value = ptr
 
@@ -1143,6 +1171,7 @@ class Compiler:
         if "body" in node and body:
             self.PushBuilder(ir.IRBuilder(func.append_basic_block()))
             self.scopeManager.PushScope(Scope(local = True))
+            self.Builder.compiler = self
 
             for index, (name, type, mutable) in enumerate(zip(names, types, mutables)):
                 if hasattr(func.args[index].type, "_byval"):
@@ -1160,7 +1189,7 @@ class Compiler:
                         self.Builder.call(self.memcpy, [ptr, func.args[index], self.sizeof(func.args[index].type._byval), ir.Constant(self.primitiveTypes["bool"], 0)])
 
                     else:
-                        self.Builder.store(func.args[index], self.Builder.bitcast(ptr, func.args[index].type.as_pointer()), self.alignof(func.args[index]).constant)
+                        self.Builder.store(func.args[index], self.Builder.bitcast(ptr, func.args[index].type.as_pointer()))
 
                     self.scopeManager.Set(name, ptr)
 
@@ -1172,7 +1201,7 @@ class Compiler:
                     self.Builder.position_at_start(self.Builder.function.entry_basic_block)
                     ptr = self.Builder.alloca(type)
                     self.Builder.position_at_end(current)
-                    self.Builder.store(func.args[index], ptr, self.alignof(func.args[index]).constant)
+                    self.Builder.store(func.args[index], ptr)
                     self.scopeManager.Set(name, ptr)
                     ptr.type._mutable = mutable
                     ptr.type._name = name
@@ -1396,7 +1425,7 @@ class Compiler:
             return [self.VisitValue(i) for i in node["body"]]
 
         elif node["type"] in ["list initialization"]:
-            return self.Builder.load(self.VisitPointer(node))
+            return self.Builder.load(value := self.VisitPointer(node))
 
         elif node["type"] in ["negate"]:
             value = self.VisitValue(node["value"])
@@ -1633,7 +1662,7 @@ class Compiler:
 
                     for index, i in enumerate(value):
                         assert i.type == dataType.element, f"Element type mismatch at '{node['name']}[{index}]'. (Expected '{dataType.element}', got '{i.type}'.)"
-                        self.Builder.store(i, self.Builder.gep(ptr, [ir.Constant(self.primitiveTypes["i32"], 0), ir.Constant(self.primitiveTypes["i32"], index)]), self.alignof(i).constant)
+                        self.Builder.store(i, self.Builder.gep(ptr, [ir.Constant(self.primitiveTypes["i32"], 0), ir.Constant(self.primitiveTypes["i32"], index)]))
 
                 else:
                     if (hasattr(dataType, "_reference") or getattr(value, "_dereferenced", False)) and dataType != value.type:
@@ -1643,7 +1672,7 @@ class Compiler:
                         assert ptr.type._mutable == value.type._mutable, f"Mutability mismatch: '{value.type._name}'."
 
                     assert value.type == dataType, f"Type mismatch for '{node['name']}'. (Expected '{dataType}', got '{value.type}'.)"
-                    self.Builder.store(value, ptr, self.alignof(value).constant)
+                    self.Builder.store(value, ptr)
 
     @Timer
     def VisitAssign(self, node, ignore = False):
@@ -1698,7 +1727,7 @@ class Compiler:
             else:
                 if getattr(value, "_dereferenced", False) and value.type != ptr.type.pointee: value = self.addressof(value)
                 assert value.type == ptr.type.pointee, f"Type mismatch for '{ptr}'. (Expected '{ptr.type.pointee}', got '{value.type}'.)"
-                self.Builder.store(value, ptr, self.alignof(value).constant)
+                self.Builder.store(value, ptr)
 
             return value
 
@@ -1731,7 +1760,7 @@ class Compiler:
 
                 self.Builder.position_at_end(loop)
                 self.VisitConstructor(self.scopeManager.Get(type.name, types = [Class]), self.Builder.gep(ptr, [index]), [])
-                self.Builder.store(self.Builder.add(index, ir.Constant(self.primitiveTypes["u64"], 1)), value, self.alignof(value).constant)
+                self.Builder.store(self.Builder.add(index, ir.Constant(self.primitiveTypes["u64"], 1)), value)
                 self.Builder.branch(compare)
                 self.Builder.position_at_end(end)
 
@@ -1774,7 +1803,7 @@ class Compiler:
 
                 self.Builder.position_at_end(loop)
                 self.VisitDestructor(self.scopeManager.Get(ptr.type.pointee.name, types = [Class]), self.Builder.gep(ptr, [index]))
-                self.Builder.store(self.Builder.add(index, ir.Constant(self.primitiveTypes["u64"], 1)), value, self.alignof(value).constant)
+                self.Builder.store(self.Builder.add(index, ir.Constant(self.primitiveTypes["u64"], 1)), value)
                 self.Builder.branch(compare)
                 self.Builder.position_at_end(end)
 
@@ -1942,7 +1971,7 @@ class Compiler:
             self.Builder.position_at_start(self.Builder.function.entry_basic_block)
             ptr = self.Builder.alloca(result.type._sret)
             self.Builder.position_at_end(current)
-            self.Builder.store(result, self.Builder.bitcast(ptr, result.type.as_pointer()), self.alignof(result.type._sret).constant)
+            self.Builder.store(result, self.Builder.bitcast(ptr, result.type.as_pointer()))
 
             if isinstance(result.type._sret, ir.BaseStructType):
                 self.scopeManager.Scope.RegisterInstance(ptr)

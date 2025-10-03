@@ -1,4 +1,4 @@
-include "divio", "divstr", "divvec", "divpair", "divptr", "divllvm", "lexer.div", "parser.div" : *;
+include "divio", "divstr", "divvec", "divmap", "divpair", "divptr", "divllvm", "lexer.div", "parser.div" : *;
 
 func LLVMPositionBuilderAtStart(builder: LLVMBuilderRef, block: LLVMBasicBlockRef) {
     let first_instr: LLVMValueRef = LLVMGetFirstInstruction(block);
@@ -126,36 +126,68 @@ func LLVMAddressOf(value: LLVMValueRef) -> LLVMValueRef {
 }
 
 class QualifiedType {
-    priv value: LLVMTypeRef, priv pointee: QualifiedType* = null,
-    priv mutable: bool, priv signed: bool, priv reference: bool
+    priv pointee: QualifiedType* = null, priv reference: bool = false,
+    priv value: LLVMTypeRef, priv mutable: bool = false, priv signed: bool = false,
+    priv fields: Map<String, QualifiedType*>, priv _class: bool = false
 } impl {
-    QualifiedType(mut this: QualifiedType&, value: LLVMTypeRef, mutable: bool, signed: bool, reference: bool, pointee: QualifiedType*) {
-        (this.value, this.mutable, this.signed, this.reference, this.pointee) = (value, mutable, signed, reference, pointee);
+    QualifiedType(mut this: QualifiedType&, value: LLVMTypeRef, signed: bool) {
+        (this.value, this.signed) = (value, signed);
+    }
+
+    QualifiedType(mut this: QualifiedType&, value: LLVMTypeRef, mutable: bool, fields: Map<String, QualifiedType*>) {
+        (this.value, this.mutable, this.fields, this._class) = (value, mutable, fields, true);
+    }
+
+    QualifiedType(mut this: QualifiedType&, value: LLVMTypeRef, mutable: bool, reference: bool, pointee: QualifiedType*) {
+        (this.value, this.mutable, this.reference, this.pointee) = (value, mutable, reference, pointee);
     }
 
     ~QualifiedType(this: QualifiedType&) {}
-
-    pub Value(this: QualifiedType&) -> LLVMTypeRef {
-        if this.value == null {
-            printf("Null type value!\n");
-            exit(1i32);
-        }
-
-        ret this.value;
-    }
 
     pub IsMutable(this: QualifiedType&) -> bool { ret this.mutable; }
     pub IsSigned(this: QualifiedType&) -> bool { ret this.signed; }
     pub IsPointer(this: QualifiedType&) -> bool { ret this.pointee != null; }
     pub IsReference(this: QualifiedType&) -> bool { ret this.reference; }
+    pub IsPrimitive(this: QualifiedType&) -> bool { ret !this.IsPointer() && !this.IsClass(); }
+    pub IsClass(this: QualifiedType&) -> bool { ret this._class; }
+
+    pub Value(this: QualifiedType&) -> LLVMTypeRef {
+        if this.value != null {
+            ret this.value;
+        } else {
+            printf("Null type!\n");
+            exit(1i32);
+            ret null;
+        }
+    }
 
     pub Pointee(this: QualifiedType&) -> QualifiedType& {
-        if this.pointee == null {
+        if this.pointee != null {
+            ret this.pointee;
+        } else {
             printf("Null pointee!\n");
+            exit(1i32);
+            ret null;
+        }
+    }
+
+    pub Fields(this: QualifiedType&) -> Map<String, QualifiedType*> {
+        if !this._class {
+            printf("Not a class!\n");
             exit(1i32);
         }
 
-        ret this.pointee;
+        ret this.fields;
+    }
+
+    pub Index(this: QualifiedType&, name: String) -> i32 {
+        let mut i: u64 = 0u64;
+
+        while i < this.fields.Size() {
+            if this.fields.Data()[i].left == name {
+                ret i as i32;
+            } i += 1u64;
+        } ret -1i32;
     }
 
     pub op==(this: QualifiedType&, other: QualifiedType&) -> bool {
@@ -168,6 +200,11 @@ class QualifiedType {
 
     pub op!=(this: QualifiedType&, other: QualifiedType&) -> bool {
         ret !this.op==(other);
+    }
+
+    priv Error(this: QualifiedType&, string: i8*) {
+        printf("Qualified type error: %s\n", string);
+        exit(1i32);
     }
 };
 
@@ -188,22 +225,52 @@ class TypeManager {
         this.types.Clear();
     }
 
-    pub Primitive(mut this: TypeManager&, value: LLVMTypeRef, mutable: bool, signed: bool) -> QualifiedType* {
-        let _type: QualifiedType* = new QualifiedType(value, mutable, signed, false, null);
+    pub Primitive(mut this: TypeManager&, value: LLVMTypeRef, signed: bool) -> QualifiedType* {
+        let _type: QualifiedType* = new QualifiedType(value, signed);
+        this.types.PushBack(_type);
+        ret _type;
+    }
+
+    pub Class(mut this: TypeManager&, value: LLVMTypeRef, fields: Map<String, QualifiedType*>) -> QualifiedType* {
+        let _type: QualifiedType* = new QualifiedType(value, false, fields);
         this.types.PushBack(_type);
         ret _type;
     }
 
     pub Pointer(mut this: TypeManager&, pointee: QualifiedType*, mutable: bool) -> QualifiedType* {
-        let _type: QualifiedType* = new QualifiedType(LLVMPointerType(pointee->Value(), 0u32), mutable, pointee->IsSigned(), false, pointee);
+        let _type: QualifiedType* = new QualifiedType(LLVMPointerType(pointee->Value(), 0u32), mutable, false, pointee);
         this.types.PushBack(_type);
         ret _type;
     }
 
     pub Reference(mut this: TypeManager&, pointee: QualifiedType*, mutable: bool) -> QualifiedType* {
-        let _type: QualifiedType* = new QualifiedType(LLVMPointerType(pointee->Value(), 0u32), mutable, pointee->IsSigned(), true, pointee);
+        let _type: QualifiedType* = new QualifiedType(LLVMPointerType(pointee->Value(), 0u32), mutable, true, pointee);
         this.types.PushBack(_type);
         ret _type;
+    }
+
+    pub Copy(mut this: TypeManager&, _type: QualifiedType*, mutable: bool) -> QualifiedType* {
+        if mutable != _type->IsMutable() {
+            let mut copy: QualifiedType* = null;
+
+            if _type->IsClass() {
+                copy = new QualifiedType(_type->Value(), mutable, _type->Fields());
+            } else if _type->IsPointer() {
+                copy = new QualifiedType(_type->Value(), mutable, _type->IsReference(), _type->Pointee());
+            } else {
+                this.Error("Cannot copy primitive type.");
+            }
+
+            this.types.PushBack(copy);
+            ret copy;
+        } else {
+            ret _type;
+        }
+    }
+
+    priv Error(this: TypeManager&, string: i8*) {
+        printf("Type manager error: %s\n", string);
+        exit(1i32);
     }
 };
 
@@ -218,27 +285,40 @@ class QualifiedValue {
     ~QualifiedValue(this: QualifiedValue&) {}
 
     pub Value(this: QualifiedValue&) -> LLVMValueRef {
-        if this._type == null {
-            printf("Null value!\n");
-            exit(1i32);
+        if this.value != null {
+            ret this.value;
+        } else {
+            this.Error("Null value!");
+            ret null;
         }
-
-        ret this.value;
     }
 
     pub Type(this: QualifiedValue&) -> QualifiedType& {
-        if this._type == null {
-            printf("Null type!\n");
-            exit(1i32);
+        if this._type != null {
+            ret this._type;
+        } else {
+            this.Error("Null type!");
+            ret null;
         }
+    }
 
-        ret this._type;
+    priv Error(this: QualifiedValue&, string: i8*) {
+        printf("Qualified value error: %s\n", string);
+        exit(1i32);
     }
 };
 
 enum SymbolKind {
-    Variable, Function, Parameter
+    Variable, Function, Parameter, Type
 };
+
+func SymbolKindToString(kind: SymbolKind) -> String {
+    if kind == SymbolKind::Variable { ret { "Variable" } as String; }
+    else if kind == SymbolKind::Function { ret { "Function" } as String; }
+    else if kind == SymbolKind::Parameter { ret { "Parameter" } as String; }
+    else if kind == SymbolKind::Type { ret { "Type" } as String; }
+    else { ret { "Unknown" } as String; }
+}
 
 class Symbol {
     pub name: String,
@@ -481,20 +561,15 @@ class Compiler {
     priv CompileDeclaration(mut this: Compiler&, decl: ASTNode*) {
         if decl->node_type == ASTNodeType::FUNCTION_DECL {
             this.CompileFunction(decl as FunctionDeclNode*);
+        } else if decl->node_type == ASTNodeType::CLASS_DECL {
+            this.CompileClass(decl as ClassDeclNode*);
         } else if decl->node_type == ASTNodeType::EXTERN_BLOCK {
             this.CompileExtern(decl as ExternBlockNode*);
+        } else if decl->node_type == ASTNodeType::TYPE_DECL {
+            let type_decl: TypeDeclNode* = decl as TypeDeclNode*;
+            this.scope_manager.Set(type_decl->name, SymbolKind::Type, QualifiedValue(null, this.CompileType(type_decl->_type)));
         } else {
             this.Error((String("Unknown declaration '") + ASTNodeTypeToString(decl->node_type) + "'.").Data());
-        }
-    }
-
-    priv CompileExtern(mut this: Compiler&, extern_block: ExternBlockNode*) {
-        let mut i: u64 = 0u64;
-
-        while i < extern_block->declarations.Size() {
-            let decl: ASTNode* = extern_block->declarations[i];
-            this.CompileDeclaration(decl);
-            i += 1u64;
         }
     }
 
@@ -512,10 +587,37 @@ class Compiler {
         let return_type: LLVMTypeRef = this.CompileType(func_decl->return_type).Value();
         let func_type: LLVMTypeRef = LLVMFunctionType(return_type, param_types.Data(), param_types.Size() as u32, func_decl->var_arg ? 1i32 : 0i32);
         let function: LLVMValueRef = LLVMAddFunction(this.module, func_name, func_type);
-        this.scope_manager.Set(func_decl->name, SymbolKind::Function, QualifiedValue(function, this.type_manager.Primitive(func_type, false, false)));
+        this.scope_manager.Set(func_decl->name, SymbolKind::Function, QualifiedValue(function, this.type_manager.Primitive(func_type, false)));
 
         if func_decl->body != null {
             this.forwards.PushBack(Pair<FunctionDeclNode*, LLVMValueRef>(func_decl, function));
+        }
+    }
+
+    priv CompileClass(mut this: Compiler&, class_decl: ClassDeclNode*) {
+        let mut field_types: Vector<LLVMTypeRef>;
+        let mut fields: Map<String, QualifiedType*>;
+        let mut i: u64 = 0u64;
+
+        while i < class_decl->fields.Size() {
+            let field: FieldNode* = class_decl->fields[i];
+            fields[field->name] = this.CompileType(field->field_type);
+            field_types.PushBack(fields[field->name]->Value());
+            i += 1u64;
+        }
+
+        let struct_type: LLVMTypeRef = LLVMStructCreateNamed(this.context, class_decl->name.Data());
+        this.scope_manager.Set(class_decl->name, SymbolKind::Type, QualifiedValue(null, this.type_manager.Class(struct_type, fields)));
+        LLVMStructSetBody(struct_type, field_types.Data(), field_types.Size() as u32, 0i32);
+    }
+
+    priv CompileExtern(mut this: Compiler&, extern_block: ExternBlockNode*) {
+        let mut i: u64 = 0u64;
+
+        while i < extern_block->declarations.Size() {
+            let decl: ASTNode* = extern_block->declarations[i];
+            this.CompileDeclaration(decl);
+            i += 1u64;
         }
     }
 
@@ -575,7 +677,6 @@ class Compiler {
             }
 
             let mut then_block: LLVMBasicBlockRef;
-            let mut else_block: LLVMBasicBlockRef;
 
             if then_stmt->statements.Size() > 0u64 {
                 then_block = LLVMAppendBasicBlockInContext(this.context, function, "");
@@ -584,6 +685,8 @@ class Compiler {
                     end_block = LLVMAppendBasicBlockInContext(this.context, function, "");
                 } then_block = end_block;
             }
+
+            let mut else_block: LLVMBasicBlockRef;
 
             if has_else {
                 else_block = LLVMAppendBasicBlockInContext(this.context, function, "");
@@ -680,20 +783,22 @@ class Compiler {
 
     priv CompileVariable(mut this: Compiler&, variable: VariableDeclNode*) {
         let _type: QualifiedType& = this.CompileType(variable->var_type);
-        let initializer: QualifiedValue = this.CompileExpression(variable->initializer, _type.IsReference());
-
-        if initializer.Type() != _type {
-            this.Error((String("Incompatible types. ('") + LLVMTypeToString(_type.Value()) + "' != '" + LLVMTypeToString(initializer.Type().Value()) + "').").Data());
-            ret;
-        }
-
         let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
         LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
         let pointer: LLVMValueRef = LLVMBuildAlloca(this.builder, _type.Value(), "");
-
-        LLVMPositionBuilderAtEnd(this.builder, current);
         this.scope_manager.Set(variable->name, SymbolKind::Variable, QualifiedValue(pointer, this.type_manager.Pointer(_type, variable->is_mutable)));
-        LLVMBuildStore(this.builder, initializer.Value(), pointer);
+        LLVMPositionBuilderAtEnd(this.builder, current);
+
+        if variable->initializer != null {
+            let initializer: QualifiedValue = this.CompileExpression(variable->initializer, _type.IsReference());
+
+            if initializer.Type() != _type {
+                this.Error((String("Incompatible types. ('") + LLVMTypeToString(_type.Value()) + "' != '" + LLVMTypeToString(initializer.Type().Value()) + "').").Data());
+                ret;
+            }
+
+            LLVMBuildStore(this.builder, initializer.Value(), pointer);
+        }
     }
 
     priv CompileAssignment(mut this: Compiler&, assignment: AssignmentNode*) -> QualifiedValue {
@@ -737,7 +842,7 @@ class Compiler {
             let identifier: IdentifierNode* = expr as IdentifierNode*;
 
             if !this.scope_manager.Has(identifier->name) {
-                this.Error((String("Symbol not found: ") + identifier->name + ".").Data());
+                this.Error((String("Symbol '") + identifier->name + "' not found.").Data());
                 ret QualifiedValue(null, null);
             }
 
@@ -752,9 +857,11 @@ class Compiler {
             } else if symbol->kind == SymbolKind::Function || pointer {
                 ret symbol->value;
             } else {
-                this.Error("Unknown symbol kind.");
+                this.Error((String("Invalid symbol kind '") + SymbolKindToString(symbol->kind) + "'.").Data());
                 ret QualifiedValue(null, null);
             }
+        } else if expr->node_type == ASTNodeType::MEMBER_ACCESS {
+            ret this.CompileMemberAccess(expr as MemberAccessNode*, pointer);
         } else if expr->node_type == ASTNodeType::CAST {
             if !pointer {
                 ret this.CompileCast(expr as CastNode*);
@@ -815,7 +922,7 @@ class Compiler {
                 ret QualifiedValue(null, null);
             }
 
-            ret QualifiedValue(LLVMConstInt(_type, value.ToInteger() as u64, 1i32), this.type_manager.Primitive(_type, false, signed));
+            ret QualifiedValue(LLVMConstInt(_type, value.ToInteger() as u64, 1i32), this.type_manager.Primitive(_type, signed));
         } else if literal->literal_type == TokenType::FLOAT {
             let (mut state: bool, mut i: u64) = (false, 0u64);
             let (mut value: String, mut size: String);
@@ -845,10 +952,10 @@ class Compiler {
                 ret QualifiedValue(null, null);
             }
 
-            ret QualifiedValue(LLVMConstReal(_type, value.ToFloat()), this.type_manager.Primitive(_type, false, false));
+            ret QualifiedValue(LLVMConstReal(_type, value.ToFloat()), this.type_manager.Primitive(_type, false));
         } else if literal->literal_type == TokenType::STRING {
             let value: LLVMValueRef = LLVMBuildGlobalStringPtr(this.builder, literal->value.Data(), "fmt");
-            ret QualifiedValue(value, this.type_manager.Primitive(LLVMTypeOf(value), false, false));
+            ret QualifiedValue(value, this.type_manager.Primitive(LLVMTypeOf(value), false));
         } else {
             this.Error((String("Unknown literal type '") + TokenTypeToString(literal->literal_type) + "'.").Data());
             ret QualifiedValue(null, null);
@@ -867,7 +974,41 @@ class Compiler {
 
         let _func: QualifiedValue = this.CompileExpression(call->function, true);
         let value: LLVMValueRef = LLVMBuildCall2(this.builder, _func.Type().Value(), _func.Value(), args.Data(), args.Size() as u32, "");
-        ret QualifiedValue(value, this.type_manager.Primitive(LLVMGetReturnType(_func.Type().Value()), false, false));
+        ret QualifiedValue(value, this.type_manager.Primitive(LLVMGetReturnType(_func.Type().Value()), false));
+    }
+
+    priv CompileMemberAccess(mut this: Compiler&, member_access: MemberAccessNode*, pointer: bool) -> QualifiedValue {
+        let mut object: QualifiedValue = this.CompileExpression(member_access->object, true);
+
+        if member_access->arrow {
+            object = QualifiedValue(LLVMBuildLoad2(this.builder, object.Type().Pointee().Value(), object.Value(), ""), object.Type().Pointee());
+
+            if !object.Type().IsPointer() {
+                this.Error("Expected a pointer.");
+                ret QualifiedValue(null, null);
+            }
+        }
+
+        if !object.Type().Pointee().IsClass() {
+            this.Error("Cannot access member of non-class type.");
+            ret QualifiedValue(null, null);
+        }
+
+        let index: i32 = object.Type().Pointee().Index(member_access->member);
+
+        if index == -1i32 {
+            this.Error((String("Class does not have member '") + member_access->member + "'.").Data());
+            ret QualifiedValue(null, null);
+        }
+
+        let member_pointer: LLVMValueRef = LLVMBuildStructGEP2(this.builder, object.Type().Pointee().Value(), object.Value(), index as u32, "");
+        let member_type: QualifiedType& = object.Type().Pointee().Fields()[member_access->member];
+
+        if !pointer {
+            ret QualifiedValue(LLVMBuildLoad2(this.builder, member_type.Value(), member_pointer, ""), member_type);
+        } else {
+            ret QualifiedValue(member_pointer, this.type_manager.Pointer(member_type, object.Type().Pointee().IsMutable()));
+        }
     }
 
     priv CompileCast(mut this: Compiler&, cast: CastNode*) -> QualifiedValue {
@@ -1020,19 +1161,19 @@ class Compiler {
             if binary_op->operator == TokenType::MINUS {
                 let left_int: LLVMValueRef = LLVMBuildPtrToInt(this.builder, left.Value(), LLVMInt64TypeInContext(this.context), "");
                 let right_int: LLVMValueRef = LLVMBuildPtrToInt(this.builder, right.Value(), LLVMInt64TypeInContext(this.context), "");
-                ret QualifiedValue(LLVMBuildSub(this.builder, left_int, right_int, ""), this.type_manager.Primitive(LLVMInt64TypeInContext(this.context), false, false));
+                ret QualifiedValue(LLVMBuildSub(this.builder, left_int, right_int, ""), this.type_manager.Primitive(LLVMInt64TypeInContext(this.context), false));
             } else if binary_op->operator == TokenType::EQUAL {
-                ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntEQ, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false, false));
+                ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntEQ, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
             } else if binary_op->operator == TokenType::NOT_EQUAL {
-                ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntNE, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false, false));
+                ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntNE, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
             } else if binary_op->operator == TokenType::GREATER {
-                ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntUGT, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false, false));
+                ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntUGT, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
             } else if binary_op->operator == TokenType::GREATER_EQUAL {
-                ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntUGE, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false, false));
+                ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntUGE, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
             } else if binary_op->operator == TokenType::LESS {
-                ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntULT, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false, false));
+                ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntULT, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
             } else if binary_op->operator == TokenType::LESS_EQUAL {
-                ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntULE, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false, false));
+                ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntULE, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
             } else {
                 this.Error((String("Invalid pointer binary operation '") + TokenTypeToString(binary_op->operator) + "' for type '" + LLVMTypeToString(left.Type().Value()) + "'.").Data());
                 ret QualifiedValue(null, null);
@@ -1082,17 +1223,17 @@ class Compiler {
                     ret QualifiedValue(LLVMBuildURem(this.builder, left.Value(), right.Value(), ""), left.Type());
                 }
             } else if binary_op->operator == TokenType::EQUAL {
-                ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntEQ, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false, false));
+                ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntEQ, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
             } else if binary_op->operator == TokenType::NOT_EQUAL {
-                ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntNE, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false, false));
+                ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntNE, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
             } else if binary_op->operator == TokenType::GREATER {
-                ret QualifiedValue(LLVMBuildICmp(this.builder, left.Type().IsSigned() ? LLVMIntPredicate::LLVMIntSGT : LLVMIntPredicate::LLVMIntUGT, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false, false));
+                ret QualifiedValue(LLVMBuildICmp(this.builder, left.Type().IsSigned() ? LLVMIntPredicate::LLVMIntSGT : LLVMIntPredicate::LLVMIntUGT, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
             } else if binary_op->operator == TokenType::GREATER_EQUAL {
-                ret QualifiedValue(LLVMBuildICmp(this.builder, left.Type().IsSigned() ? LLVMIntPredicate::LLVMIntSGE : LLVMIntPredicate::LLVMIntUGE, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false, false));
+                ret QualifiedValue(LLVMBuildICmp(this.builder, left.Type().IsSigned() ? LLVMIntPredicate::LLVMIntSGE : LLVMIntPredicate::LLVMIntUGE, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
             } else if binary_op->operator == TokenType::LESS {
-                ret QualifiedValue(LLVMBuildICmp(this.builder, left.Type().IsSigned() ? LLVMIntPredicate::LLVMIntSLT : LLVMIntPredicate::LLVMIntULT, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false, false));
+                ret QualifiedValue(LLVMBuildICmp(this.builder, left.Type().IsSigned() ? LLVMIntPredicate::LLVMIntSLT : LLVMIntPredicate::LLVMIntULT, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
             } else if binary_op->operator == TokenType::LESS_EQUAL {
-                ret QualifiedValue(LLVMBuildICmp(this.builder, left.Type().IsSigned() ? LLVMIntPredicate::LLVMIntSLE : LLVMIntPredicate::LLVMIntULE, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false, false));
+                ret QualifiedValue(LLVMBuildICmp(this.builder, left.Type().IsSigned() ? LLVMIntPredicate::LLVMIntSLE : LLVMIntPredicate::LLVMIntULE, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
             } else if binary_op->operator == TokenType::AND || binary_op->operator == TokenType::BITWISE_AND {
                 if LLVMGetIntTypeWidth(left.Type().Value()) != 1u32 && binary_op->operator == TokenType::AND {
                     this.Error((String("Invalid type '") + LLVMTypeToString(left.Type().Value()) + "' for binary operation '" + TokenTypeToString(binary_op->operator) + "'.").Data());
@@ -1138,17 +1279,17 @@ class Compiler {
             } else if binary_op->operator == TokenType::MOD {
                 ret QualifiedValue(LLVMBuildFRem(this.builder, left.Value(), right.Value(), ""), left.Type());
             } else if binary_op->operator == TokenType::EQUAL {
-                ret QualifiedValue(LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOEQ, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false, false));
+                ret QualifiedValue(LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOEQ, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
             } else if binary_op->operator == TokenType::NOT_EQUAL {
-                ret QualifiedValue(LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealONE, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false, false));
+                ret QualifiedValue(LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealONE, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
             } else if binary_op->operator == TokenType::GREATER {
-                ret QualifiedValue(LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOGT, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false, false));
+                ret QualifiedValue(LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOGT, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
             } else if binary_op->operator == TokenType::GREATER_EQUAL {
-                ret QualifiedValue(LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOGE, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false, false));
+                ret QualifiedValue(LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOGE, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
             } else if binary_op->operator == TokenType::LESS {
-                ret QualifiedValue(LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOLT, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false, false));
+                ret QualifiedValue(LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOLT, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
             } else if binary_op->operator == TokenType::LESS_EQUAL {
-                ret QualifiedValue(LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOLE, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false, false));
+                ret QualifiedValue(LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOLE, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
             } else {
                 this.Error((String("Invalid binary operation '") + TokenTypeToString(binary_op->operator) + "' for type '" + LLVMTypeToString(left.Type().Value()) + "'.").Data());
                 ret QualifiedValue(null, null);
@@ -1164,24 +1305,39 @@ class Compiler {
             let primitive_type: PrimitiveTypeNode* = type_node as PrimitiveTypeNode*;
 
             if primitive_type->type_name == "i8" || primitive_type->type_name == "u8" {
-                ret this.type_manager.Primitive(LLVMInt8TypeInContext(this.context), primitive_type->mutable, primitive_type->type_name[0u64] != 'u' ? true : false);
+                ret this.type_manager.Primitive(LLVMInt8TypeInContext(this.context), primitive_type->type_name[0u64] != 'u' ? true : false);
             } else if primitive_type->type_name == "i16" || primitive_type->type_name == "u16" {
-                ret this.type_manager.Primitive(LLVMInt16TypeInContext(this.context), primitive_type->mutable, primitive_type->type_name[0u64] != 'u' ? true : false);
+                ret this.type_manager.Primitive(LLVMInt16TypeInContext(this.context), primitive_type->type_name[0u64] != 'u' ? true : false);
             } else if primitive_type->type_name == "i32" || primitive_type->type_name == "u32" || primitive_type->type_name == "char" {
-                ret this.type_manager.Primitive(LLVMInt32TypeInContext(this.context), primitive_type->mutable, primitive_type->type_name[0u64] != 'u' ? true : false);
+                ret this.type_manager.Primitive(LLVMInt32TypeInContext(this.context), primitive_type->type_name[0u64] != 'u' ? true : false);
             } else if primitive_type->type_name == "i64" || primitive_type->type_name == "u64" {
-                ret this.type_manager.Primitive(LLVMInt64TypeInContext(this.context), primitive_type->mutable, primitive_type->type_name[0u64] != 'u' ? true : false);
+                ret this.type_manager.Primitive(LLVMInt64TypeInContext(this.context), primitive_type->type_name[0u64] != 'u' ? true : false);
             } else if primitive_type->type_name == "i128" || primitive_type->type_name == "u128" {
-                ret this.type_manager.Primitive(LLVMInt128TypeInContext(this.context), primitive_type->mutable, primitive_type->type_name[0u64] != 'u' ? true : false);
+                ret this.type_manager.Primitive(LLVMInt128TypeInContext(this.context), primitive_type->type_name[0u64] != 'u' ? true : false);
             } else if primitive_type->type_name == "f32" {
-                ret this.type_manager.Primitive(LLVMFloatTypeInContext(this.context), primitive_type->mutable, false);
+                ret this.type_manager.Primitive(LLVMFloatTypeInContext(this.context), false);
             } else if primitive_type->type_name == "f64" {
-                ret this.type_manager.Primitive(LLVMDoubleTypeInContext(this.context), primitive_type->mutable, false);
+                ret this.type_manager.Primitive(LLVMDoubleTypeInContext(this.context), false);
             } else if primitive_type->type_name == "void" {
-                ret this.type_manager.Primitive(LLVMVoidTypeInContext(this.context), primitive_type->mutable, false);
+                ret this.type_manager.Primitive(LLVMVoidTypeInContext(this.context), false);
             } else {
-                this.Error("Unknown primitive type.");
-                ret null;
+                if !this.scope_manager.Has(primitive_type->type_name) {
+                    this.Error((String("Symbol '") + primitive_type->type_name + "' not found.").Data());
+                    ret null;
+                }
+
+                let symbol: Symbol* = this.scope_manager.Get(primitive_type->type_name);
+
+                if symbol->kind == SymbolKind::Type {
+                    let _type: QualifiedType& = symbol->value.Type();
+
+                    if _type.IsPrimitive() { ret _type; } else {
+                        ret this.type_manager.Copy(_type, primitive_type->mutable);
+                    }
+                } else {
+                    this.Error((String("Invalid symbol kind '") + SymbolKindToString(symbol->kind) + "'.").Data());
+                    ret null;
+                }
             }
         } else if type_node->node_type == ASTNodeType::POINTER_TYPE {
             let pointer_type: PointerTypeNode* = type_node as PointerTypeNode*;

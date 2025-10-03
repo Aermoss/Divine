@@ -1,4 +1,4 @@
-include "divio", "divstr", "divvec", "divmap", "divpair", "divptr", "divllvm", "lexer.div", "parser.div" : *;
+include "divio", "divstr", "divvec", "divmap", "divpair", "divptr", "divwin", "divfile", "divllvm", "lexer.div", "parser.div" : *;
 
 func LLVMPositionBuilderAtStart(builder: LLVMBuilderRef, block: LLVMBasicBlockRef) {
     let first_instr: LLVMValueRef = LLVMGetFirstInstruction(block);
@@ -180,14 +180,14 @@ class QualifiedType {
         ret this.fields;
     }
 
-    pub Index(this: QualifiedType&, name: String) -> i32 {
+    pub Index(this: QualifiedType&, name: String) -> i64 {
         let mut i: u64 = 0u64;
 
         while i < this.fields.Size() {
             if this.fields.Data()[i].left == name {
-                ret i as i32;
+                ret i as i64;
             } i += 1u64;
-        } ret -1i32;
+        } ret -1i64;
     }
 
     pub op==(this: QualifiedType&, other: QualifiedType&) -> bool {
@@ -459,6 +459,8 @@ class ScopeManager {
 class Compiler {
     priv type_manager: TypeManager,
     priv scope_manager: ScopeManager,
+    priv include_paths: Vector<String>,
+    priv included_paths: Vector<String>,
     priv blocks: Vector<Pair<LLVMBasicBlockRef, LLVMBasicBlockRef>>,
     priv forwards: Vector<Pair<FunctionDeclNode*, LLVMValueRef>>,
     priv context: LLVMContextRef = null,
@@ -467,6 +469,8 @@ class Compiler {
 } impl {
     Compiler(mut this: Compiler&) {
         this.context = LLVMContextCreate();
+        this.include_paths.PushBack(String("."));
+        this.include_paths.PushBack(String("include"));
     }
 
     ~Compiler(mut this: Compiler&) {
@@ -559,7 +563,9 @@ class Compiler {
     }
 
     priv CompileDeclaration(mut this: Compiler&, decl: ASTNode*) {
-        if decl->node_type == ASTNodeType::FUNCTION_DECL {
+        if decl->node_type == ASTNodeType::INCLUDE_STMT {
+            this.CompileInclude(decl as IncludeStmtNode*);
+        } else if decl->node_type == ASTNodeType::FUNCTION_DECL {
             this.CompileFunction(decl as FunctionDeclNode*);
         } else if decl->node_type == ASTNodeType::CLASS_DECL {
             this.CompileClass(decl as ClassDeclNode*);
@@ -570,6 +576,60 @@ class Compiler {
             this.scope_manager.Set(type_decl->name, SymbolKind::Type, QualifiedValue(null, this.CompileType(type_decl->_type)));
         } else {
             this.Error((String("Unknown declaration '") + ASTNodeTypeToString(decl->node_type) + "'.").Data());
+        }
+    }
+
+    priv CompileInclude(mut this: Compiler&, include_stmt: IncludeStmtNode*) {
+        let mut i: u64 = 0u64;
+
+        while i < include_stmt->modules.Size() {
+            let (mut found: bool, mut j: u64) = (false, 0u64);
+            let module: String = include_stmt->modules[i];
+
+            while j < this.include_paths.Size() {
+                let mut path: String = this.include_paths[j] + "\\" + include_stmt->modules[i];
+                let attr: DWORD = GetFileAttributesA(path.Data());
+                j += 1u64;
+
+                if attr == INVALID_FILE_ATTRIBUTES {
+                    continue;
+                }
+
+                if this.included_paths.Index(path) != -1i64 {
+                    found = true;
+                    break;
+                }
+
+                if (attr & FILE_ATTRIBUTE_DIRECTORY) != 0u32{
+                    path += "\\Entry.div";
+
+                    if GetFileAttributesA(path.Data()) == INVALID_FILE_ATTRIBUTES {
+                        this.Error("Module entry point not found.");
+                        ret;
+                    }
+                }
+
+                let (mut lexer: Lexer, mut parser: Parser);
+                let ast: RootNode* = parser.Parse(lexer.Lex(ReadFile(path.Data())));
+                let mut k: u64 = 0u64;
+
+                while k < ast->declarations.Size() {
+                    let decl: ASTNode* = ast->declarations[k];
+                    this.CompileDeclaration(decl);
+                    k += 1u64;
+                }
+
+                found = true;
+                this.included_paths.PushBack(path);
+                break;
+            }
+
+            if !found {
+                this.Error("Module not found.");
+                ret;
+            } else {
+                i += 1u64;
+            }
         }
     }
 
@@ -860,8 +920,6 @@ class Compiler {
                 this.Error((String("Invalid symbol kind '") + SymbolKindToString(symbol->kind) + "'.").Data());
                 ret QualifiedValue(null, null);
             }
-        } else if expr->node_type == ASTNodeType::MEMBER_ACCESS {
-            ret this.CompileMemberAccess(expr as MemberAccessNode*, pointer);
         } else if expr->node_type == ASTNodeType::CAST {
             if !pointer {
                 ret this.CompileCast(expr as CastNode*);
@@ -869,6 +927,8 @@ class Compiler {
                 this.Error("Invalid pointer expression.");
                 ret QualifiedValue(null, null);
             }
+        } else if expr->node_type == ASTNodeType::MEMBER_ACCESS {
+            ret this.CompileMemberAccess(expr as MemberAccessNode*, pointer);
         } else if expr->node_type == ASTNodeType::UNARY_OP {
             ret this.CompileUnaryOperation(expr as UnaryOpNode*, pointer);
         } else if expr->node_type == ASTNodeType::BINARY_OP {
@@ -994,9 +1054,9 @@ class Compiler {
             ret QualifiedValue(null, null);
         }
 
-        let index: i32 = object.Type().Pointee().Index(member_access->member);
+        let index: i64 = object.Type().Pointee().Index(member_access->member);
 
-        if index == -1i32 {
+        if index == -1i64 {
             this.Error((String("Class does not have member '") + member_access->member + "'.").Data());
             ret QualifiedValue(null, null);
         }
@@ -1304,7 +1364,9 @@ class Compiler {
         if type_node->node_type == ASTNodeType::PRIMITIVE_TYPE {
             let primitive_type: PrimitiveTypeNode* = type_node as PrimitiveTypeNode*;
 
-            if primitive_type->type_name == "i8" || primitive_type->type_name == "u8" {
+            if primitive_type->type_name == "bool" {
+                ret this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false);
+            } else if primitive_type->type_name == "i8" || primitive_type->type_name == "u8" {
                 ret this.type_manager.Primitive(LLVMInt8TypeInContext(this.context), primitive_type->type_name[0u64] != 'u' ? true : false);
             } else if primitive_type->type_name == "i16" || primitive_type->type_name == "u16" {
                 ret this.type_manager.Primitive(LLVMInt16TypeInContext(this.context), primitive_type->type_name[0u64] != 'u' ? true : false);

@@ -73,7 +73,7 @@ class Scope:
     def InvokeDestructors(self, _except = None, clear = False):
         for value in self._instances:
             if value is not _except:
-                self._compiler.VisitDestructor(self._compiler.scopeManager.Get(value.type.pointee.name, types = [Class]), value)
+                self._compiler.VisitDestructor(value.type.pointee._class, value)
 
         if clear:
             self._instances = []
@@ -290,7 +290,7 @@ class Class:
     def __init__(self, compiler, name, realName):
         self.__compiler, self.__name, self.__realName = compiler, name, realName
         self.type, self.parents, self.constructed = ir.global_context.get_identified_type(name, True), {}, []
-        self.type._alignment, self.__elements, self.__functions = 8, {}, {}
+        self.type._class, self.type._alignment, self.__elements, self.__functions = self, 8, {}, {}
 
     @property
     def Name(self):
@@ -342,7 +342,7 @@ class Class:
 
         self.__elements = elements.copy()
         self.type.set_body(*[i["type"] for i in self.__elements.values()])
-        self.type._class, self.type._alignment = self, alignment
+        self.type._alignment = alignment
         return self
 
     def RegisterParent(self, _class):
@@ -1341,8 +1341,7 @@ class Compiler:
             return self.Builder.ptrtoint(value, target)
 
         elif value.type.is_pointer and isinstance(value.type.pointee, ir.BaseStructType) and target.is_pointer and isinstance(target.pointee, ir.BaseStructType):
-            valueClass = self.scopeManager.Get(value.type.pointee.name, types = [Class])
-            targetClass = self.scopeManager.Get(target.pointee.name, types = [Class])
+            valueClass, targetClass = value.type.pointee._class, target.pointee._class
 
             assert (left := targetClass.RealName in valueClass._Class__elements) or valueClass.RealName in targetClass._Class__elements, \
                 f"Class '{value.type.pointee.name}' is not related to '{target.pointee.name}'."
@@ -1498,8 +1497,7 @@ class Compiler:
             value, index = self.VisitValue(node["value"]), self.VisitValue(node["index"])
 
             if isinstance(value.type, ir.BaseStructType):
-                _class = self.scopeManager.Get(value.type.name, types = [Class])
-                function = _class.Get("op[]", arguments = [index], pointer = self.addressof(value))
+                function = value.type._class.Get("op[]", arguments = [index], pointer = self.addressof(value))
                 return self.VisitCall({"value": function, "params": [index]})
 
             if getattr(value, "_dereferenced", False):
@@ -1516,8 +1514,7 @@ class Compiler:
                 value = self.addressof(value)
 
             assert value.type.is_pointer and not value.type.is_opaque and isinstance(value.type.pointee, ir.BaseStructType), f"Expected a class, got '{value.type}'."
-            _class = self.scopeManager.Get(value.type.pointee.name, types = [Class])
-            return _class.Get(node["element"], pointer = value)
+            return value.type.pointee._class.Get(node["element"], pointer = value)
 
         elif node["type"] in ["list initialization"]:
             _class = self.scopeManager.Get(node["name"], types = [Class])
@@ -1580,7 +1577,7 @@ class Compiler:
                 _value = self.Builder.load(self.Builder.gep(params[0], [ir.Constant(self.primitiveTypes["i32"], 0), ir.Constant(self.primitiveTypes["i32"], _class.Index(name))]))
 
             if isinstance(value["type"], ir.BaseStructType):
-                self.VisitConstructor(self.scopeManager.Get(value["type"].name, types = [Class]), self.Builder.gep(ptr, [ir.Constant(self.primitiveTypes["i32"], 0), ir.Constant(self.primitiveTypes["i32"], _class.Index(name))]), (_value if isinstance(_value, list) else [_value]) if _value else [])
+                self.VisitConstructor(value["type"]._class, self.Builder.gep(ptr, [ir.Constant(self.primitiveTypes["i32"], 0), ir.Constant(self.primitiveTypes["i32"], _class.Index(name))]), (_value if isinstance(_value, list) else [_value]) if _value else [])
                 continue
 
             if _value is not None:
@@ -1602,7 +1599,7 @@ class Compiler:
 
         for name, value in _class.Elements.items():
             if isinstance(value["type"], ir.BaseStructType):
-                self.VisitDestructor(self.scopeManager.Get(value["type"].name, types = [Class]), self.Builder.gep(ptr, [ir.Constant(self.primitiveTypes["i32"], 0), ir.Constant(self.primitiveTypes["i32"], _class.Index(name))]))
+                self.VisitDestructor(value["type"]._class, self.Builder.gep(ptr, [ir.Constant(self.primitiveTypes["i32"], 0), ir.Constant(self.primitiveTypes["i32"], _class.Index(name))]))
 
     @Timer
     def VisitConstant(self, node):
@@ -1651,7 +1648,7 @@ class Compiler:
             ptr.type._name = node["name"]
 
             if isinstance(dataType, ir.BaseStructType):
-                self.VisitConstructor(self.scopeManager.Get(dataType.name, types = [Class]), ptr, (value if isinstance(value, list) else [value]) if node["value"] else [])
+                self.VisitConstructor(dataType._class, ptr, (value if isinstance(value, list) else [value]) if node["value"] else [])
                 self.scopeManager.Scope.RegisterInstance(ptr)
                 return
 
@@ -1697,7 +1694,7 @@ class Compiler:
             assert ptr.type.is_pointer, "Left side of an assignment must be a pointer."
 
             if isinstance(ptr.type.pointee, ir.BaseStructType):
-                _class = self.scopeManager.Get(ptr.type.pointee.name, types = [Class])
+                _class = ptr.type.pointee._class
 
                 if isinstance(node["right"], dict) and node["right"]["type"] in ["expression"] and node["left"] in [node["right"]["left"], node["right"]["right"]]:
                     value = self.TryPass(self.VisitValue(node["right"]["left" if node["left"] != node["right"]["left"] else "right"]))
@@ -1759,7 +1756,7 @@ class Compiler:
                 self.Builder.cbranch(self.Builder.icmp_signed("<", index, count), loop, end)
 
                 self.Builder.position_at_end(loop)
-                self.VisitConstructor(self.scopeManager.Get(type.name, types = [Class]), self.Builder.gep(ptr, [index]), [])
+                self.VisitConstructor(type._class, self.Builder.gep(ptr, [index]), [])
                 self.Builder.store(self.Builder.add(index, ir.Constant(self.primitiveTypes["u64"], 1)), value)
                 self.Builder.branch(compare)
                 self.Builder.position_at_end(end)
@@ -1769,7 +1766,7 @@ class Compiler:
             ptr = self.Builder.bitcast(self.Builder.call(self.malloc, [self.sizeof(type)]), type.as_pointer())
 
             if isinstance(type, ir.BaseStructType):
-                self.VisitConstructor(self.scopeManager.Get(type.name, types = [Class]), ptr, params)
+                self.VisitConstructor(type._class, ptr, params)
 
             else:
                 assert not params, "Cannot initialize non-class types with parameters."
@@ -1802,14 +1799,14 @@ class Compiler:
                 self.Builder.cbranch(self.Builder.icmp_signed("<", index, count), loop, end)
 
                 self.Builder.position_at_end(loop)
-                self.VisitDestructor(self.scopeManager.Get(ptr.type.pointee.name, types = [Class]), self.Builder.gep(ptr, [index]))
+                self.VisitDestructor(ptr.type.pointee._class, self.Builder.gep(ptr, [index]))
                 self.Builder.store(self.Builder.add(index, ir.Constant(self.primitiveTypes["u64"], 1)), value)
                 self.Builder.branch(compare)
                 self.Builder.position_at_end(end)
 
         else:
             if isinstance(ptr.type.pointee, ir.BaseStructType):
-                self.VisitDestructor(self.scopeManager.Get(ptr.type.pointee.name, types = [Class]), ptr)
+                self.VisitDestructor(ptr.type.pointee._class, ptr)
 
         self.Builder.call(self.free, [_ptr])
 
@@ -1933,10 +1930,9 @@ class Compiler:
                     value = self.addressof(value)
                     current = self.Builder.block
                     self.Builder.position_at_start(self.Builder.function.entry_basic_block)
-                    _class = self.scopeManager.Get(value.type.pointee.name, types = [Class])
                     ptr = self.Builder.alloca(value.type.pointee)
                     self.Builder.position_at_end(current)
-                    self.VisitConstructor(_class, ptr, [self.Builder.load(value)])
+                    self.VisitConstructor(value.type.pointee._class, ptr, [self.Builder.load(value)])
                     value = ptr
 
                     if not isinstance(argument, ir.PointerType):
@@ -2024,8 +2020,7 @@ class Compiler:
 
                 else:
                     assert isinstance(self.Builder.function.return_value.type, ir.VoidType), "Expected void return type."
-                    _class = self.scopeManager.Get(value.type.pointee.name, types = [Class])
-                    self.VisitConstructor(_class, self.Builder.function.args[0], [self.Builder.load(value)])
+                    self.VisitConstructor(value.type.pointee._class, self.Builder.function.args[0], [self.Builder.load(value)])
                     self.InvokeDestructors(_except = value)
                     self.Builder.ret_void()
 
@@ -2052,19 +2047,12 @@ class Compiler:
         else:
             left, right = self.VisitValue(node["left"]), self.VisitValue(node["right"])
 
-            if left.type != right.type:
-                if getattr(left, "_dereferenced", False):
-                    left = self.addressof(left)
-
-                if getattr(right, "_dereferenced", False):
-                    right = self.addressof(right)
-
             if isinstance(left, ir.Constant) and isinstance(right, ir.Constant):
                 return self.VisitConstExpr({"type": "expression", "operator": node["operator"], "left": left, "right": right})
 
             if isinstance(left.type, ir.BaseStructType) or isinstance(right.type, ir.BaseStructType):
                 ptr, value = (left, right) if isinstance(left.type, ir.BaseStructType) else (right, left)
-                _class = self.scopeManager.Get(ptr.type.name, types = [Class])
+                _class = ptr.type._class
 
                 if _class.Has(f"op{node['operator']}", arguments = [value.type]):
                     ptr, value = self.addressof(ptr), self.TryPass(value)
@@ -2083,6 +2071,13 @@ class Compiler:
                             _result = result
 
                     return _result if node["operator"] in ["=="] else self.Builder.not_(_result)
+
+            if left.type != right.type:
+                if getattr(left, "_dereferenced", False):
+                    left = self.addressof(left)
+
+                if getattr(right, "_dereferenced", False):
+                    right = self.addressof(right)
 
             if left.type.is_pointer and right.type.is_pointer:
                 if node["operator"] == "-":

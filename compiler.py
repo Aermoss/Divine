@@ -1415,6 +1415,9 @@ class Compiler:
             if value.type.is_pointer and not value.type.is_opaque and not isinstance(value.type.pointee, ir.ArrayType) and not isinstance(value.type.pointee, ir.FunctionType):
                 value = self.Builder.load(value)
 
+                if node["type"] in ["get"]:
+                    value._dereferenced = True
+
             return value
 
         elif node["type"] in ["not", "bitwise not"]:
@@ -1503,9 +1506,7 @@ class Compiler:
             if getattr(value, "_dereferenced", False):
                 value = self.addressof(value)
 
-            value = self.Builder.gep(value, [index])
-            value._dereferenced = True
-            return value
+            return self.Builder.gep(value, [index])
 
         elif node["type"] in ["get element", "get element pointer"]:
             value = {"get element pointer": self.VisitValue, "get element": self.VisitPointer}[node["type"]](node["value"])

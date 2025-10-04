@@ -1,4 +1,4 @@
-include "divio", "divstr", "divvec", "lexer.div" : *;
+include "divio", "divstr", "divvec", "divmap", "lexer.div" : *;
 
 enum ASTNodeType {
     LITERAL, IDENTIFIER, BINARY_OP, UNARY_OP, CALL, MEMBER_ACCESS, INDEX_ACCESS, CAST,
@@ -316,7 +316,8 @@ class ClassDeclNode : ASTNode {
 
 class EnumDeclNode : ASTNode {
     pub name: String,
-    pub values: Vector<String>
+    pub values: Map<String, ASTNode*>,
+    pub underlying_type: ASTNode*
 } impl {
     EnumDeclNode(mut this: EnumDeclNode&, name: String, line: u64, col: u64) : ASTNode(ASTNodeType::ENUM_DECL, line, col) {
         this.name = name;
@@ -1035,7 +1036,6 @@ class Parser {
             this.has_error = true;
         } else {
             this.Expect(TokenType::SEMICOLON);
-            func_decl->body = null;
         } ret func_decl as ASTNode*;
     }
 
@@ -1120,16 +1120,32 @@ class Parser {
         let enum_token: Token = this.Expect(TokenType::ENUM);
         let name_token: Token = this.Expect(TokenType::NAME);
         let mut enum_decl: EnumDeclNode* = new EnumDeclNode(name_token.value, enum_token.lineno, enum_token.column);
+
+        if this.Match(TokenType::COLON) {
+            let _type: ASTNode* = this.ParseType();
+            enum_decl->underlying_type = _type;
+        } else {
+            enum_decl->underlying_type = new PrimitiveTypeNode({ "i32" } as String, false, enum_token.lineno, enum_token.column) as ASTNode*;
+        }
+
         this.Expect(TokenType::LBRACE);
 
         if this.CurrentToken()._type != TokenType::RBRACE {
-            let mut value_token: Token = this.Expect(TokenType::NAME);
-            enum_decl->values.PushBack(value_token.value);
+            let mut name_token: Token = this.Expect(TokenType::NAME);
+
+            if this.Match(TokenType::ASSIGN) {
+                enum_decl->values[name_token.value] = this.ParseExpression();
+            } else {
+                enum_decl->values[name_token.value] = null;
+            }
 
             while !this.has_error && this.Match(TokenType::COMMA) {
-                if this.CurrentToken()._type == TokenType::NAME {
-                    value_token = this.Expect(TokenType::NAME);
-                    enum_decl->values.PushBack(value_token.value);
+                name_token = this.Expect(TokenType::NAME);
+
+                if this.Match(TokenType::ASSIGN) {
+                    enum_decl->values[name_token.value] = this.ParseExpression();
+                } else {
+                    enum_decl->values[name_token.value] = null;
                 }
             }
         }

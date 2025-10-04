@@ -44,7 +44,9 @@ func ASTNodeTypeToString(_type: ASTNodeType) -> String {
     else if _type == ASTNodeType::FIELD { ret { "FIELD" } as String; }
     else if _type == ASTNodeType::PRIMITIVE_TYPE { ret { "PRIMITIVE_TYPE" } as String; }
     else if _type == ASTNodeType::POINTER_TYPE { ret { "POINTER_TYPE" } as String; }
+    else if _type == ASTNodeType::REFERENCE_TYPE { ret { "REFERENCE_TYPE" } as String; }
     else if _type == ASTNodeType::ARRAY_TYPE { ret { "ARRAY_TYPE" } as String; }
+    else if _type == ASTNodeType::FUNCTION_TYPE { ret { "FUNCTION_TYPE" } as String; }
     else if _type == ASTNodeType::ROOT { ret { "ROOT" } as String; }
     else { ret { "UNKNOWN" } as String; }
 }
@@ -93,6 +95,24 @@ class ArrayTypeNode : ASTNode {
     ArrayTypeNode(mut this: ArrayTypeNode&, element_type: ASTNode*, size: ASTNode*, line: u64, col: u64) : ASTNode(ASTNodeType::ARRAY_TYPE, line, col) {
         (this.element_type, this.size) = (element_type, size);
     }
+};
+
+class ParameterNode : ASTNode {
+    pub name: String,
+    pub param_type: ASTNode*,
+    pub is_mutable: bool
+} impl {
+    ParameterNode(mut this: ParameterNode&, name: String, param_type: ASTNode*, is_mutable: bool, line: u64, col: u64) : ASTNode(ASTNodeType::PARAMETER, line, col) {
+        (this.name, this.param_type, this.is_mutable) = (name, param_type, is_mutable);
+    }
+};
+
+class FunctionTypeNode : ASTNode {
+    pub parameters: Vector<ParameterNode*>,
+    pub return_type: ASTNode*,
+    pub var_arg: bool = false
+} impl {
+    FunctionTypeNode(mut this: FunctionTypeNode&, line: u64, col: u64) : ASTNode(ASTNodeType::FUNCTION_TYPE, line, col) {}
 };
 
 class LiteralNode : ASTNode {
@@ -251,28 +271,15 @@ class BlockStmtNode : ASTNode {
     BlockStmtNode(mut this: BlockStmtNode&, line: u64, col: u64) : ASTNode(ASTNodeType::BLOCK_STMT, line, col) {}
 };
 
-class ParameterNode : ASTNode {
-    pub name: String,
-    pub param_type: ASTNode*,
-    pub is_mutable: bool
-} impl {
-    ParameterNode(mut this: ParameterNode&, name: String, param_type: ASTNode*, is_mutable: bool, line: u64, col: u64) : ASTNode(ASTNodeType::PARAMETER, line, col) {
-        (this.name, this.param_type, this.is_mutable) = (name, param_type, is_mutable);
-    }
-};
-
 class FunctionDeclNode : ASTNode {
     pub name: String,
-    pub parameters: Vector<ParameterNode*>,
-    pub return_type: ASTNode*,
-    pub body: BlockStmtNode*,
+    pub _type: FunctionTypeNode*,
+    pub body: BlockStmtNode* = null,
     pub visibility: TokenType,
-    pub is_extern: bool,
-    pub var_arg: bool
+    pub is_extern: bool
 } impl {
-    FunctionDeclNode(mut this: FunctionDeclNode&, name: String, return_type: ASTNode*, body: BlockStmtNode*, visibility: TokenType, is_extern: bool, var_arg: bool, line: u64, col: u64) : ASTNode(ASTNodeType::FUNCTION_DECL, line, col) {
-        (this.name, this.return_type, this.body) = (name, return_type, body);
-        (this.visibility, this.is_extern, this.var_arg) = (visibility, is_extern, var_arg);
+    FunctionDeclNode(mut this: FunctionDeclNode&, name: String, _type: FunctionTypeNode*, visibility: TokenType, is_extern: bool, line: u64, col: u64) : ASTNode(ASTNodeType::FUNCTION_DECL, line, col) {
+        (this.name, this._type, this.visibility, this.is_extern) = (name, _type, visibility, is_extern);
     }
 };
 
@@ -432,15 +439,15 @@ func PrintAST(node: ASTNode*, depth: i32) {
     } else if node->node_type == ASTNodeType::FUNCTION_DECL {
         let func_decl: FunctionDeclNode* = node as FunctionDeclNode*;
         printf("(name: %s, extern: %s, return: ", func_decl->name.Data(), func_decl->is_extern ? "true" : "false");
-        PrintAST(func_decl->return_type, 0i32);
+        PrintAST(func_decl->_type->return_type, 0i32);
         printf(", parameters: [");
         let mut i: u64 = 0u64;
 
-        while i < func_decl->parameters.Size() {
-            PrintAST(func_decl->parameters[i] as ASTNode*, 0i32);
+        while i < func_decl->_type->parameters.Size() {
+            PrintAST(func_decl->_type->parameters[i] as ASTNode*, 0i32);
             i += 1u64;
 
-            if i < func_decl->parameters.Size() {
+            if i < func_decl->_type->parameters.Size() {
                 printf(", ");
             }
         }
@@ -726,16 +733,39 @@ class Parser {
     pub ParseType(mut this: Parser&) -> ASTNode* {
         let mutable: bool = this.Match(TokenType::MUT);
         let token: Token = this.CurrentToken();
+        let mut ast_node: ASTNode* = null;
 
-        if token._type != TokenType::NAME {
-            printf("Parser error: Expected type name at line %d, column %d.\n", token.lineno, token.column);
-            this.has_error = true;
-            ret null;
+        if this.Match(TokenType::FUNC) {
+            this.Expect(TokenType::LPAREN);
+            let mut func_type: FunctionTypeNode* = new FunctionTypeNode(token.lineno, token.column);
+
+            if this.CurrentToken()._type != TokenType::RPAREN {
+                let mut param: ParameterNode* = this.ParseParameter(func_type);
+                if param != null { func_type->parameters.PushBack(param); }
+
+                while !this.has_error && this.Match(TokenType::COMMA) {
+                    param = this.ParseParameter(func_type);
+                    if param != null { func_type->parameters.PushBack(param); }
+                }
+            }
+
+            this.Expect(TokenType::RPAREN);
+
+            if this.Match(TokenType::ARROW) {
+                func_type->return_type = this.ParseType();
+            } else {
+                func_type->return_type = new PrimitiveTypeNode({ "void" } as String, false, token.lineno, token.column) as ASTNode*;
+            } ast_node = func_type as ASTNode*;
+        } else {
+            if token._type != TokenType::NAME {
+                printf("Parser error: Expected type name at line %d, column %d.\n", token.lineno, token.column);
+                this.has_error = true;
+                ret null;
+            }
+
+            this.Advance();
+            ast_node = new PrimitiveTypeNode(token.value, mutable, token.lineno, token.column) as ASTNode*;
         }
-
-        this.Advance();
-        let type_node: PrimitiveTypeNode* = new PrimitiveTypeNode(token.value, mutable, token.lineno, token.column);
-        let mut ast_node: ASTNode* = type_node as ASTNode*;
 
         while !this.has_error && this.Match(TokenType::MUL) {
             let pointer_type: PointerTypeNode* = new PointerTypeNode(ast_node, mutable, token.lineno, token.column);
@@ -976,25 +1006,26 @@ class Parser {
         let func_token: Token = this.Expect(TokenType::FUNC);
         let name_token: Token = this.Expect(TokenType::NAME);
 
-        let mut func_decl: FunctionDeclNode* = new FunctionDeclNode(name_token.value, null, null, visibility, is_extern, false, func_token.lineno, func_token.column);
+        let mut func_type: FunctionTypeNode* = new FunctionTypeNode(func_token.lineno, func_token.column);
+        let mut func_decl: FunctionDeclNode* = new FunctionDeclNode(name_token.value, func_type, visibility, is_extern, func_token.lineno, func_token.column);
         this.Expect(TokenType::LPAREN);
 
         if this.CurrentToken()._type != TokenType::RPAREN {
-            let mut param: ParameterNode* = this.ParseParameter(func_decl);
-            if param != null { func_decl->parameters.PushBack(param); }
+            let mut param: ParameterNode* = this.ParseParameter(func_type);
+            if param != null { func_type->parameters.PushBack(param); }
 
             while !this.has_error && this.Match(TokenType::COMMA) {
-                param = this.ParseParameter(func_decl);
-                if param != null { func_decl->parameters.PushBack(param); }
+                param = this.ParseParameter(func_type);
+                if param != null { func_type->parameters.PushBack(param); }
             }
         }
 
         this.Expect(TokenType::RPAREN);
 
         if this.Match(TokenType::ARROW) {
-            func_decl->return_type = this.ParseType();
+            func_type->return_type = this.ParseType();
         } else {
-            func_decl->return_type = new PrimitiveTypeNode({ "void" } as String, false, func_token.lineno, func_token.column) as ASTNode*;
+            func_type->return_type = new PrimitiveTypeNode({ "void" } as String, false, func_token.lineno, func_token.column) as ASTNode*;
         }
 
         if this.CurrentToken()._type == TokenType::LBRACE && !is_extern {
@@ -1004,12 +1035,13 @@ class Parser {
             this.has_error = true;
         } else {
             this.Expect(TokenType::SEMICOLON);
+            func_decl->body = null;
         } ret func_decl as ASTNode*;
     }
 
-    priv ParseParameter(mut this: Parser&, mut func_decl: FunctionDeclNode*) -> ParameterNode* {
-        func_decl->var_arg = this.Match(TokenType::THREE_DOT);
-        if func_decl->var_arg { ret null; }
+    priv ParseParameter(mut this: Parser&, mut func_type: FunctionTypeNode*) -> ParameterNode* {
+        func_type->var_arg = this.Match(TokenType::THREE_DOT);
+        if func_type->var_arg { ret null; }
 
         let is_mutable: bool = this.Match(TokenType::MUT);
         let name_token: Token = this.Expect(TokenType::NAME);

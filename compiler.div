@@ -529,8 +529,8 @@ class Compiler {
             let mut param_types: Vector<QualifiedType*>;
             let mut j: u64 = 0u64;
 
-            while j < func_decl->parameters.Size() {
-                let param: ParameterNode* = func_decl->parameters[j];
+            while j < func_decl->_type->parameters.Size() {
+                let param: ParameterNode* = func_decl->_type->parameters[j];
                 param_types.PushBack(this.CompileType(param->param_type));
                 j += 1u64;
             }
@@ -540,8 +540,8 @@ class Compiler {
             LLVMPositionBuilderAtEnd(this.builder, entry);
             let mut k: u64 = 0u64;
 
-            while k < func_decl->parameters.Size() {
-                let param: ParameterNode* = func_decl->parameters[k];
+            while k < func_decl->_type->parameters.Size() {
+                let param: ParameterNode* = func_decl->_type->parameters[k];
 
                 if param->is_mutable {
                     let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
@@ -638,14 +638,14 @@ class Compiler {
         let mut param_types: Vector<LLVMTypeRef>;
         let mut i: u64 = 0u64;
 
-        while i < func_decl->parameters.Size() {
-            let param: ParameterNode* = func_decl->parameters[i];
+        while i < func_decl->_type->parameters.Size() {
+            let param: ParameterNode* = func_decl->_type->parameters[i];
             param_types.PushBack(this.CompileType(param->param_type).Value());
             i += 1u64;
         }
 
-        let return_type: LLVMTypeRef = this.CompileType(func_decl->return_type).Value();
-        let func_type: LLVMTypeRef = LLVMFunctionType(return_type, param_types.Data(), param_types.Size() as u32, func_decl->var_arg ? 1i32 : 0i32);
+        let return_type: LLVMTypeRef = this.CompileType(func_decl->_type->return_type).Value();
+        let func_type: LLVMTypeRef = LLVMFunctionType(return_type, param_types.Data(), param_types.Size() as u32, func_decl->_type->var_arg ? 1i32 : 0i32);
         let function: LLVMValueRef = LLVMAddFunction(this.module, func_name, func_type);
         this.scope_manager.Set(func_decl->name, SymbolKind::Function, QualifiedValue(function, this.type_manager.Primitive(func_type, false)));
 
@@ -1407,8 +1407,21 @@ class Compiler {
         } else if type_node->node_type == ASTNodeType::REFERENCE_TYPE {
             let reference_type: ReferenceTypeNode* = type_node as ReferenceTypeNode*;
             ret this.type_manager.Reference(this.CompileType(reference_type->base_type), reference_type->mutable);
+        } else if type_node->node_type == ASTNodeType::FUNCTION_TYPE {
+            let function_type: FunctionTypeNode* = type_node as FunctionTypeNode*;
+            let mut param_types: Vector<LLVMTypeRef>;
+            let mut j: u64 = 0u64;
+
+            while j < function_type->parameters.Size() {
+                let param: ParameterNode* = function_type->parameters[j];
+                param_types.PushBack(this.CompileType(param->param_type).Value());
+                j += 1u64;
+            }
+
+            let return_type: LLVMTypeRef = this.CompileType(function_type->return_type).Value();
+            ret this.type_manager.Pointer(this.type_manager.Primitive(LLVMFunctionType(return_type, param_types.Data(), param_types.Size() as u32, function_type->var_arg ? 1i32 : 0i32), false), false);
         } else {
-            this.Error("Unknown type.");
+            this.Error((String("Unknown type '") + ASTNodeTypeToString(type_node->node_type) + "'.").Data());
             ret null;
         }
     }

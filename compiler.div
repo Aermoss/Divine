@@ -451,6 +451,66 @@ class ScopeManager {
         } ret null;
     }
 
+    pub ResolveChild(this: ScopeManager&, scope: Scope*, identifier: IdentifierNode*) -> Scope* {
+        let mut i: u64 = 0u64;
+
+        while i < scope->children.Size() {
+            if scope->children[i]->name == identifier->name {
+                ret scope->children[i];
+            } else {
+                i += 1u64;
+            }
+        }
+
+        this.Error((String("Scope '") + identifier->name + "' not found.").Data());
+        ret null;
+    }
+
+    pub ResolveScopeHalf(this: ScopeManager&, resolution: ScopeResolutionNode*) -> Scope* {
+        let mut scope: Scope* = this.current;
+
+        while !scope->global {
+            scope = scope->parent;
+        }
+
+        if resolution->scope != null {
+            if resolution->scope->node_type == ASTNodeType::SCOPE_RESOLUTION {
+                scope = this.ResolveScopeFull(resolution->scope as ScopeResolutionNode*);
+            } else {
+                scope = this.ResolveChild(scope, resolution->scope as IdentifierNode*);
+            }
+        } else {
+            while scope->parent != null {
+                scope = scope->parent;
+            }
+        } ret scope;
+    }
+
+    pub ResolveScopeFull(this: ScopeManager&, resolution: ScopeResolutionNode*) -> Scope* {
+        ret this.ResolveChild(this.ResolveScopeHalf(resolution), resolution->name as IdentifierNode*);
+    }
+
+    pub Resolve(this: ScopeManager&, resolution: ScopeResolutionNode*) -> Symbol* {
+        let identifier: IdentifierNode* = resolution->name as IdentifierNode*;
+        let scope: Scope* = this.ResolveScopeHalf(resolution);
+
+        if scope->Has(identifier->name) {
+            ret scope->Get(identifier->name);
+        } else {
+            this.Error((String("Symbol '") + identifier->name + "' not found.").Data());
+            ret null;
+        }
+    }
+
+    pub Resolve(this: ScopeManager&, identifier: IdentifierNode*) -> Symbol* {
+        if this.Has(identifier->name) {
+            ret this.Get(identifier->name);
+        } else {
+            this.Error((String("Symbol '") + identifier->name + "' not found.").Data());
+            ret null;
+        }
+    }
+
     priv Error(this: ScopeManager&, string: i8*) {
         printf("Scope manager error: %s\n", string);
         exit(1i32);
@@ -684,7 +744,7 @@ class Compiler {
 
         this.scope_manager.Set(enum_decl->name, SymbolKind::Type, QualifiedValue(null, underlying_type));
         let mut value: LLVMValueRef = LLVMConstInt(underlying_type.Value(), 0u64, underlying_type.IsSigned() ? 1i32 : 0i32);
-        // this.scope_manager.PushScope(enum_decl->name, true);
+        this.scope_manager.PushScope(enum_decl->name, true);
         let mut i: u64 = 0u64;
 
         while i < enum_decl->values.Size() {
@@ -705,7 +765,7 @@ class Compiler {
             i += 1u64;
         }
 
-        // this.scope_manager.PopScope();
+        this.scope_manager.PopScope();
     }
 
     priv CompileExtern(mut this: Compiler&, extern_block: ExternBlockNode*) {
@@ -923,15 +983,14 @@ class Compiler {
     priv CompileConstantExpression(mut this: Compiler&, expr: ASTNode*) -> QualifiedValue {
         if expr->node_type == ASTNodeType::LITERAL {
             ret this.CompileLiteral(expr as LiteralNode*);
-        } else if expr->node_type == ASTNodeType::IDENTIFIER {
-            let identifier: IdentifierNode* = expr as IdentifierNode*;
+        } else if expr->node_type == ASTNodeType::IDENTIFIER || expr->node_type == ASTNodeType::SCOPE_RESOLUTION {
+            let mut symbol: Symbol* = null;
 
-            if !this.scope_manager.Has(identifier->name) {
-                this.Error((String("Symbol '") + identifier->name + "' not found.").Data());
-                ret QualifiedValue(null, null);
+            if expr->node_type == ASTNodeType::SCOPE_RESOLUTION {
+                symbol = this.scope_manager.Resolve(expr as ScopeResolutionNode*);
+            } else {
+                symbol = this.scope_manager.Resolve(expr as IdentifierNode*);
             }
-
-            let symbol: Symbol* = this.scope_manager.Get(identifier->name);
 
             if symbol->kind == SymbolKind::Constant {
                 ret symbol->value;
@@ -1049,15 +1108,14 @@ class Compiler {
                 this.Error("Invalid pointer expression.");
                 ret QualifiedValue(null, null);
             }
-        } else if expr->node_type == ASTNodeType::IDENTIFIER {
-            let identifier: IdentifierNode* = expr as IdentifierNode*;
+        } else if expr->node_type == ASTNodeType::IDENTIFIER || expr->node_type == ASTNodeType::SCOPE_RESOLUTION {
+            let mut symbol: Symbol* = null;
 
-            if !this.scope_manager.Has(identifier->name) {
-                this.Error((String("Symbol '") + identifier->name + "' not found.").Data());
-                ret QualifiedValue(null, null);
+            if expr->node_type == ASTNodeType::SCOPE_RESOLUTION {
+                symbol = this.scope_manager.Resolve(expr as ScopeResolutionNode*);
+            } else {
+                symbol = this.scope_manager.Resolve(expr as IdentifierNode*);
             }
-
-            let symbol: Symbol* = this.scope_manager.Get(identifier->name);
 
             if (symbol->kind == SymbolKind::Variable || symbol->kind == SymbolKind::Constant || symbol->kind == SymbolKind::Parameter) && !pointer {
                 if symbol->kind == SymbolKind::Constant || (symbol->kind == SymbolKind::Parameter && !symbol->value.Type().IsMutable()) {
@@ -1090,6 +1148,7 @@ class Compiler {
                 ret QualifiedValue(null, null);
             }
         } else {
+            printf("%d\n", expr->node_type);
             this.Error((String("Unknown expression '") + ASTNodeTypeToString(expr->node_type) + "'.").Data());
             ret QualifiedValue(null, null);
         }

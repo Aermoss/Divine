@@ -1,7 +1,8 @@
 include "divio", "divstr", "divvec", "divmap", "lexer.div" : *;
 
 enum ASTNodeType {
-    LITERAL, IDENTIFIER, BINARY_OP, UNARY_OP, CALL, MEMBER_ACCESS, INDEX_ACCESS, CAST,
+    LITERAL, IDENTIFIER, SCOPE_RESOLUTION, BINARY_OP, UNARY_OP, CALL,
+    MEMBER_ACCESS, INDEX_ACCESS, CAST,
 
     EXPRESSION_STMT, VARIABLE_DECL, ASSIGNMENT, IF_STMT, WHILE_STMT, FOR_STMT, 
     RETURN_STMT, BREAK_STMT, CONTINUE_STMT, BLOCK_STMT,
@@ -17,6 +18,7 @@ enum ASTNodeType {
 func ASTNodeTypeToString(_type: ASTNodeType) -> String {
     if _type == ASTNodeType::LITERAL { ret { "LITERAL" } as String; }
     else if _type == ASTNodeType::IDENTIFIER { ret { "IDENTIFIER" } as String; }
+    else if _type == ASTNodeType::SCOPE_RESOLUTION { ret { "SCOPE_RESOLUTION" } as String; }
     else if _type == ASTNodeType::BINARY_OP { ret { "BINARY_OP" } as String; }
     else if _type == ASTNodeType::UNARY_OP { ret { "UNARY_OP" } as String; }
     else if _type == ASTNodeType::CALL { ret { "CALL" } as String; }
@@ -129,6 +131,15 @@ class IdentifierNode : ASTNode {
 } impl {
     IdentifierNode(mut this: IdentifierNode&, name: String, line: u64, col: u64) : ASTNode(ASTNodeType::IDENTIFIER, line, col) {
         this.name = name;
+    }
+};
+
+class ScopeResolutionNode : ASTNode {
+    pub scope: ASTNode*,
+    pub name: ASTNode*
+} impl {
+    ScopeResolutionNode(mut this: ScopeResolutionNode&, scope: ASTNode*, name: ASTNode*, line: u64, col: u64) : ASTNode(ASTNodeType::SCOPE_RESOLUTION, line, col) {
+        (this.scope, this.name) = (scope, name);
     }
 };
 
@@ -623,10 +634,19 @@ class Parser {
             ret literal as ASTNode*;
         }
 
-        if token._type == TokenType::NAME {
-            this.Advance();
-            let identifier: IdentifierNode* = new IdentifierNode(token.value, token.lineno, token.column);
-            ret identifier as ASTNode*;
+        if token._type == TokenType::NAME || token._type == TokenType::DOUBLE_COLON {
+            let mut node: ASTNode* = null;
+
+            if token._type == TokenType::NAME {
+                node = new IdentifierNode(token.value, token.lineno, token.column) as ASTNode*;
+                this.Advance();
+            }
+
+            while !this.has_error && this.Match(TokenType::DOUBLE_COLON) {
+                let name_token: Token = this.Expect(TokenType::NAME);
+                let identifier: ASTNode* = new IdentifierNode(name_token.value, token.lineno, token.column) as ASTNode*;
+                node = new ScopeResolutionNode(node, identifier, token.lineno, token.column) as ASTNode*;
+            } ret node;
         }
 
         if token._type == TokenType::LPAREN {

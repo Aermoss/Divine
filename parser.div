@@ -285,12 +285,10 @@ class BlockStmtNode : ASTNode {
 class FunctionDeclNode : ASTNode {
     pub name: String,
     pub _type: FunctionTypeNode*,
-    pub body: BlockStmtNode* = null,
-    pub visibility: TokenType,
-    pub is_extern: bool
+    pub body: BlockStmtNode*
 } impl {
-    FunctionDeclNode(mut this: FunctionDeclNode&, name: String, _type: FunctionTypeNode*, visibility: TokenType, is_extern: bool, line: u64, col: u64) : ASTNode(ASTNodeType::FUNCTION_DECL, line, col) {
-        (this.name, this._type, this.visibility, this.is_extern) = (name, _type, visibility, is_extern);
+    FunctionDeclNode(mut this: FunctionDeclNode&, name: String, _type: FunctionTypeNode*, body: BlockStmtNode*, line: u64, col: u64) : ASTNode(ASTNodeType::FUNCTION_DECL, line, col) {
+        (this.name, this._type, this.body) = (name, _type, body);
     }
 };
 
@@ -450,7 +448,7 @@ func PrintAST(node: ASTNode*, depth: i32) {
         printf(")");
     } else if node->node_type == ASTNodeType::FUNCTION_DECL {
         let func_decl: FunctionDeclNode* = node as FunctionDeclNode*;
-        printf("(name: %s, extern: %s, return: ", func_decl->name.Data(), func_decl->is_extern ? "true" : "false");
+        printf("(name: %s, return: ", func_decl->name.Data());
         PrintAST(func_decl->_type->return_type, 0i32);
         printf(", parameters: [");
         let mut i: u64 = 0u64;
@@ -816,10 +814,6 @@ class Parser {
             ret this.ParseWhileStatement();
         }
 
-        if token._type == TokenType::FOR {
-            ret this.ParseForStatement();
-        }
-
         if token._type == TokenType::RETURN {
             ret this.ParseReturnStatement();
         }
@@ -908,36 +902,6 @@ class Parser {
         ret while_stmt as ASTNode*;
     }
 
-    priv ParseForStatement(mut this: Parser&) -> ASTNode* {
-        let for_token: Token = this.Expect(TokenType::FOR);
-        this.Expect(TokenType::LPAREN);
-        let mut init: ASTNode* = null;
-    
-        if this.CurrentToken()._type != TokenType::SEMICOLON {
-            init = this.ParseStatement();
-        } else {
-            this.Advance();
-        }
-
-        let mut condition: ASTNode* = null;
-
-        if this.CurrentToken()._type != TokenType::SEMICOLON {
-            condition = this.ParseExpression();
-        }
-
-        this.Expect(TokenType::SEMICOLON);
-        let mut update: ASTNode* = null;
-
-        if this.CurrentToken()._type != TokenType::RPAREN {
-            update = this.ParseExpression();
-        }
-
-        this.Expect(TokenType::RPAREN);
-        let body: ASTNode* = this.ParseStatement();
-        let for_stmt: ForStmtNode* = new ForStmtNode(init, condition, update, body, for_token.lineno, for_token.column);
-        ret for_stmt as ASTNode*;
-    }
-
     priv ParseReturnStatement(mut this: Parser&) -> ASTNode* {
         let ret_token: Token = this.Expect(TokenType::RETURN);
         let mut value: ASTNode* = null;
@@ -969,16 +933,9 @@ class Parser {
 
     pub ParseDeclaration(mut this: Parser&) -> ASTNode* {
         let mut token: Token = this.CurrentToken();
-        let mut visibility: TokenType = TokenType::NAME;
-
-        if token._type == TokenType::PUBLIC || token._type == TokenType::PRIVATE {
-            visibility = token._type;
-            this.Advance();
-            token = this.CurrentToken();
-        }
 
         if token._type == TokenType::FUNC {
-            ret this.ParseFunctionDeclaration(visibility, false);
+            ret this.ParseFunctionDeclaration();
         }
 
         if token._type == TokenType::CLASS {
@@ -995,10 +952,6 @@ class Parser {
 
         if token._type == TokenType::INCLUDE {
             ret this.ParseIncludeStatement();
-        }
-
-        if token._type == TokenType::IMPL {
-            ret this.ParseImplBlock();
         }
 
         if token._type == TokenType::CONST {
@@ -1023,12 +976,12 @@ class Parser {
         ret type_decl as ASTNode*;
     }
 
-    priv ParseFunctionDeclaration(mut this: Parser&, visibility: TokenType, is_extern: bool) -> ASTNode* {
+    priv ParseFunctionDeclaration(mut this: Parser&) -> ASTNode* {
         let func_token: Token = this.Expect(TokenType::FUNC);
         let name_token: Token = this.Expect(TokenType::NAME);
 
         let mut func_type: FunctionTypeNode* = new FunctionTypeNode(func_token.lineno, func_token.column);
-        let mut func_decl: FunctionDeclNode* = new FunctionDeclNode(name_token.value, func_type, visibility, is_extern, func_token.lineno, func_token.column);
+        let mut func_decl: FunctionDeclNode* = new FunctionDeclNode(name_token.value, func_type, null, func_token.lineno, func_token.column);
         this.Expect(TokenType::LPAREN);
 
         if this.CurrentToken()._type != TokenType::RPAREN {
@@ -1049,11 +1002,8 @@ class Parser {
             func_type->return_type = new PrimitiveTypeNode({ "void" } as String, false, func_token.lineno, func_token.column) as ASTNode*;
         }
 
-        if this.CurrentToken()._type == TokenType::LBRACE && !is_extern {
+        if this.CurrentToken()._type == TokenType::LBRACE {
             func_decl->body = this.ParseBlockStatement() as BlockStmtNode*;
-        } else if !is_extern {
-            printf("Parser error: Expected function body at line %d, column %d.\n", this.CurrentToken().lineno, this.CurrentToken().column);
-            this.has_error = true;
         } else {
             this.Expect(TokenType::SEMICOLON);
         } ret func_decl as ASTNode*;
@@ -1183,8 +1133,7 @@ class Parser {
 
         while !this.has_error && this.CurrentToken()._type != TokenType::RBRACE && this.CurrentToken()._type != TokenType::EOF {
             if this.CurrentToken()._type == TokenType::FUNC {
-                let func_decl: ASTNode* = this.ParseFunctionDeclaration(TokenType::PUBLIC, true);
-                extern_block->declarations.PushBack(func_decl);
+                extern_block->declarations.PushBack(this.ParseFunctionDeclaration());
             } else {
                 printf("Parser error: Only function declarations allowed in extern block at line %d, column %d.\n", this.CurrentToken().lineno, this.CurrentToken().column);
                 this.has_error = true;
@@ -1211,38 +1160,6 @@ class Parser {
         this.Expect(TokenType::MUL);
         this.Expect(TokenType::SEMICOLON);
         ret include_stmt as ASTNode*;
-    }
-
-    priv ParseImplBlock(mut this: Parser&) -> ASTNode* {
-        let impl_token: Token = this.Expect(TokenType::IMPL);
-        let mut impl_block: ImplBlockNode* = new ImplBlockNode({ "" } as String, impl_token.lineno, impl_token.column);
-        this.Expect(TokenType::LBRACE);
-
-        while !this.has_error && this.CurrentToken()._type != TokenType::RBRACE && this.CurrentToken()._type != TokenType::EOF {
-            let mut visibility: TokenType;
-            let visibility_token: Token = this.CurrentToken();
-
-            if visibility_token._type == TokenType::PUBLIC || visibility_token._type == TokenType::PRIVATE {
-                visibility = visibility_token._type;
-                this.Advance();
-            } else {
-                printf("Parser error: Expected visibility modifier in impl block at line %d, column %d.\n", visibility_token.lineno, visibility_token.column);
-                this.has_error = true;
-                break;
-            }
-
-            if this.CurrentToken()._type == TokenType::FUNC {
-                let method: FunctionDeclNode* = this.ParseFunctionDeclaration(visibility, false) as FunctionDeclNode*;
-                impl_block->methods.PushBack(method);
-            } else {
-                printf("Parser error: Expected method declaration in impl block at line %d, column %d.\n", this.CurrentToken().lineno, this.CurrentToken().column);
-                this.has_error = true;
-                break;
-            }
-        }
-
-        this.Expect(TokenType::RBRACE);
-        ret impl_block as ASTNode*;
     }
 
     pub Parse(mut this: Parser&, tokens: Vector<Token>) -> RootNode* {

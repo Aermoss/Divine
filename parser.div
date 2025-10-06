@@ -551,9 +551,9 @@ class Parser {
     priv CurrentToken(this: Parser&) -> Token {
         if this.current >= this.tokens.Size() {
             ret { TokenType::EOF, "", 0u64, 0u64 } as Token;
+        } else {
+            ret this.tokens.Data()[this.current];
         }
-
-        ret this.tokens.Data()[this.current];
     }
 
     priv PeekToken(this: Parser&, offset: u64) -> Token {
@@ -561,9 +561,9 @@ class Parser {
 
         if pos >= this.tokens.Size() {
             ret { TokenType::EOF, "", 0u64, 0u64 } as Token;
+        } else {
+            ret this.tokens.Data()[pos];
         }
-
-        ret this.tokens.Data()[pos];
     }
 
     priv Advance(mut this: Parser&) -> Token {
@@ -628,8 +628,7 @@ class Parser {
 
         if token._type == TokenType::INTEGER || token._type == TokenType::FLOAT || token._type == TokenType::STRING || token._type == TokenType::CHAR || token._type == TokenType::TRUE || token._type == TokenType::FALSE || token._type == TokenType::NULL {
             this.Advance();
-            let literal: LiteralNode* = new LiteralNode(token.value, token._type, token.lineno, token.column);
-            ret literal as ASTNode*;
+            ret new LiteralNode(token.value, token._type, token.lineno, token.column) as ASTNode*;
         }
 
         if token._type == TokenType::NAME || token._type == TokenType::DOUBLE_COLON {
@@ -641,8 +640,7 @@ class Parser {
             }
 
             while !this.has_error && this.Match(TokenType::DOUBLE_COLON) {
-                let name_token: Token = this.Expect(TokenType::NAME);
-                let identifier: ASTNode* = new IdentifierNode(name_token.value, token.lineno, token.column) as ASTNode*;
+                let identifier: ASTNode* = new IdentifierNode(this.Expect(TokenType::NAME).value, token.lineno, token.column) as ASTNode*;
                 node = new ScopeResolutionNode(node, identifier, token.lineno, token.column) as ASTNode*;
             } ret node;
         }
@@ -652,16 +650,6 @@ class Parser {
             let expr: ASTNode* = this.ParseExpression();
             this.Expect(TokenType::RPAREN);
             ret expr;
-        }
-
-        if token._type == TokenType::NEW {
-            this.Advance();
-            let _type: ASTNode* = this.ParseType();
-            this.Expect(TokenType::LPAREN);
-            this.Expect(TokenType::RPAREN);
-            let new_call: IdentifierNode* = new IdentifierNode({ "new" } as String, token.lineno, token.column);
-            let call: CallNode* = new CallNode(new_call as ASTNode*, token.lineno, token.column);
-            ret call as ASTNode*;
         }
 
         printf("Parser error: Unexpected token %s at line %d, column %d.\n", TokenTypeToString(token._type).Data(), token.lineno, token.column);
@@ -684,29 +672,21 @@ class Parser {
                     
                     while !this.has_error && this.Match(TokenType::COMMA) {
                         call->arguments.PushBack(this.ParseExpression());
-                    }
-
-                    this.Expect(TokenType::RPAREN);
-                }
-                
-                expr = call as ASTNode*;
+                    } this.Expect(TokenType::RPAREN);
+                } expr = call as ASTNode*;
             } else if token._type == TokenType::DOT || token._type == TokenType::ARROW {
                 this.Advance();
                 let member_token: Token = this.Expect(TokenType::NAME);
-                let member: MemberAccessNode* = new MemberAccessNode(expr, member_token.value, token._type == TokenType::ARROW, token.lineno, token.column);
-                expr = member as ASTNode*;
+                expr = new MemberAccessNode(expr, member_token.value, token._type == TokenType::ARROW, token.lineno, token.column) as ASTNode*;
             } else if token._type == TokenType::LBRACKET {
                 this.Advance();
-                let index: ASTNode* = this.ParseExpression();
+                let index_access: IndexAccessNode* = new IndexAccessNode(expr, this.ParseExpression(), token.lineno, token.column);
                 this.Expect(TokenType::RBRACKET);
-                let access: IndexAccessNode* = new IndexAccessNode(expr, index, token.lineno, token.column);
-                expr = access as ASTNode*;
+                expr = index_access as ASTNode*;
             } else {
                 break;
             }
-        }
-
-        ret expr;
+        } ret expr;
     }
 
     priv ParseUnary(mut this: Parser&) -> ASTNode* {
@@ -714,9 +694,7 @@ class Parser {
 
         if this.IsUnaryOperator(token._type) {
             this.Advance();
-            let operand: ASTNode* = this.ParseUnary();
-            let unary: UnaryOpNode* = new UnaryOpNode(operand, token._type, token.lineno, token.column);
-            ret unary as ASTNode*;
+            ret new UnaryOpNode(this.ParseUnary(), token._type, token.lineno, token.column) as ASTNode*;
         } else {
             ret this.ParsePostfix();
         }
@@ -732,17 +710,11 @@ class Parser {
             this.Advance();
 
             if token._type == TokenType::AS {
-                let target_type: ASTNode* = this.ParseType();
-                let cast: CastNode* = new CastNode(left, target_type, token.lineno, token.column);
-                left = cast as ASTNode*;
+                left = new CastNode(left, this.ParseType(), token.lineno, token.column) as ASTNode*;
             } else {
-                let right: ASTNode* = this.ParseBinaryExpression(precedence + 1i32);
-                let binary: BinaryOpNode* = new BinaryOpNode(left, right, token._type, token.lineno, token.column);
-                left = binary as ASTNode*;
+                left = new BinaryOpNode(left, this.ParseBinaryExpression(precedence + 1i32), token._type, token.lineno, token.column) as ASTNode*;
             }
-        }
-
-        ret left;
+        } ret left;
     }
 
     pub ParseExpression(mut this: Parser&) -> ASTNode* {
@@ -752,7 +724,7 @@ class Parser {
     pub ParseType(mut this: Parser&) -> ASTNode* {
         let mutable: bool = this.Match(TokenType::MUT);
         let token: Token = this.CurrentToken();
-        let mut ast_node: ASTNode* = null;
+        let mut node: ASTNode* = null;
 
         if this.Match(TokenType::FUNC) {
             this.Expect(TokenType::LPAREN);
@@ -774,7 +746,7 @@ class Parser {
                 func_type->return_type = this.ParseType();
             } else {
                 func_type->return_type = new PrimitiveTypeNode({ "void" } as String, false, token.lineno, token.column) as ASTNode*;
-            } ast_node = func_type as ASTNode*;
+            } node = func_type as ASTNode*;
         } else {
             if token._type != TokenType::NAME {
                 printf("Parser error: Expected type name at line %d, column %d.\n", token.lineno, token.column);
@@ -783,20 +755,16 @@ class Parser {
             }
 
             this.Advance();
-            ast_node = new PrimitiveTypeNode(token.value, mutable, token.lineno, token.column) as ASTNode*;
+            node = new PrimitiveTypeNode(token.value, mutable, token.lineno, token.column) as ASTNode*;
         }
 
         while !this.has_error && this.Match(TokenType::MUL) {
-            let pointer_type: PointerTypeNode* = new PointerTypeNode(ast_node, mutable, token.lineno, token.column);
-            ast_node = pointer_type as ASTNode*;
+            node = new PointerTypeNode(node, mutable, token.lineno, token.column) as ASTNode*;
         }
 
         if this.Match(TokenType::BITWISE_AND) {
-            let reference_type: ReferenceTypeNode* = new ReferenceTypeNode(ast_node, mutable, token.lineno, token.column);
-            ast_node = reference_type as ASTNode*;
-        }
-
-        ret ast_node;
+            node = new ReferenceTypeNode(node, mutable, token.lineno, token.column) as ASTNode*;
+        } ret node;
     }
 
     pub ParseStatement(mut this: Parser&) -> ASTNode* {
@@ -804,55 +772,39 @@ class Parser {
 
         if token._type == TokenType::LET {
             ret this.ParseVariableDeclaration();
-        }
-
-        if token._type == TokenType::IF {
+        } else if token._type == TokenType::IF {
             ret this.ParseIfStatement();
-        }
-
-        if token._type == TokenType::WHILE {
+        } else if token._type == TokenType::WHILE {
             ret this.ParseWhileStatement();
-        }
-
-        if token._type == TokenType::RETURN {
+        } else if token._type == TokenType::RETURN {
             ret this.ParseReturnStatement();
-        }
-
-        if token._type == TokenType::BREAK {
+        } else if token._type == TokenType::BREAK {
             this.Advance();
             this.Expect(TokenType::SEMICOLON);
-            let break_stmt: BreakStmtNode* = new BreakStmtNode(token.lineno, token.column);
-            ret break_stmt as ASTNode*;
-        }
-
-        if token._type == TokenType::CONTINUE {
+            ret new BreakStmtNode(token.lineno, token.column) as ASTNode*;
+        } else if token._type == TokenType::CONTINUE {
             this.Advance();
             this.Expect(TokenType::SEMICOLON);
-            let continue_stmt: ContinueStmtNode* = new ContinueStmtNode(token.lineno, token.column);
-            ret continue_stmt as ASTNode*;
-        }
-
-        if token._type == TokenType::LBRACE {
+            ret new ContinueStmtNode(token.lineno, token.column) as ASTNode*;
+        } else if token._type == TokenType::LBRACE {
             ret this.ParseBlockStatement();
-        }
-
-        let expr: ASTNode* = this.ParseExpression();
-
-        if this.IsAssignmentOperator(this.CurrentToken()._type) {
-            let op_token: Token = this.Advance();
-            let right: ASTNode* = this.ParseExpression();
-            this.Expect(TokenType::SEMICOLON);
-            let assignment: AssignmentNode* = new AssignmentNode(expr, right, op_token._type, op_token.lineno, op_token.column);
-            ret assignment as ASTNode*;
         } else {
-            this.Expect(TokenType::SEMICOLON);
-            let expr_stmt: ExpressionStmtNode* = new ExpressionStmtNode(expr, token.lineno, token.column);
-            ret expr_stmt as ASTNode*;
+            let expr: ASTNode* = this.ParseExpression();
+
+            if this.IsAssignmentOperator(this.CurrentToken()._type) {
+                let token: Token = this.Advance();
+                let assignment: AssignmentNode* = new AssignmentNode(expr, this.ParseExpression(), token._type, token.lineno, token.column);
+                this.Expect(TokenType::SEMICOLON);
+                ret assignment as ASTNode*;
+            } else {
+                this.Expect(TokenType::SEMICOLON);
+                ret new ExpressionStmtNode(expr, token.lineno, token.column) as ASTNode*;
+            }
         }
     }
 
     priv ParseVariableDeclaration(mut this: Parser&) -> ASTNode* {
-        let start_token: Token = this.CurrentToken();
+        let token: Token = this.CurrentToken();
         let is_const: bool = this.Match(TokenType::CONST);
         let mut is_mutable: bool = false;
         let visibility: TokenType = TokenType::NAME;
@@ -875,12 +827,11 @@ class Parser {
         }
 
         this.Expect(TokenType::SEMICOLON);
-        let var_decl: VariableDeclNode* = new VariableDeclNode(name_token.value, var_type, initializer, is_mutable, is_const, visibility, start_token.lineno, start_token.column);
-        ret var_decl as ASTNode*;
+        ret new VariableDeclNode(name_token.value, var_type, initializer, is_mutable, is_const, visibility, token.lineno, token.column) as ASTNode*;
     }
 
     priv ParseIfStatement(mut this: Parser&) -> ASTNode* {
-        let if_token: Token = this.Expect(TokenType::IF);
+        let token: Token = this.Expect(TokenType::IF);
         let condition: ASTNode* = this.ParseExpression();
         let then_stmt: ASTNode* = this.ParseStatement();
         let mut else_stmt: ASTNode* = null;
@@ -889,21 +840,16 @@ class Parser {
             else_stmt = this.ParseStatement();
         }
 
-        let if_stmt: IfStmtNode* = new IfStmtNode(condition, then_stmt, else_stmt, if_token.lineno, if_token.column);
-        ret if_stmt as ASTNode*;
+        ret new IfStmtNode(condition, then_stmt, else_stmt, token.lineno, token.column) as ASTNode*;
     }
 
     priv ParseWhileStatement(mut this: Parser&) -> ASTNode* {
-        let while_token: Token = this.Expect(TokenType::WHILE);
-        let condition: ASTNode* = this.ParseExpression();
-        let body: ASTNode* = this.ParseStatement();
-
-        let while_stmt: WhileStmtNode* = new WhileStmtNode(condition, body, while_token.lineno, while_token.column);
-        ret while_stmt as ASTNode*;
+        let token: Token = this.Expect(TokenType::WHILE);
+        ret new WhileStmtNode(this.ParseExpression(), this.ParseStatement(), token.lineno, token.column) as ASTNode*;
     }
 
     priv ParseReturnStatement(mut this: Parser&) -> ASTNode* {
-        let ret_token: Token = this.Expect(TokenType::RETURN);
+        let token: Token = this.Expect(TokenType::RETURN);
         let mut value: ASTNode* = null;
 
         if this.CurrentToken()._type != TokenType::SEMICOLON {
@@ -911,13 +857,12 @@ class Parser {
         }
 
         this.Expect(TokenType::SEMICOLON);
-        let ret_stmt: ReturnStmtNode* = new ReturnStmtNode(value, ret_token.lineno, ret_token.column);
-        ret ret_stmt as ASTNode*;
+        ret new ReturnStmtNode(value, token.lineno, token.column) as ASTNode*;
     }
 
     priv ParseBlockStatement(mut this: Parser&) -> ASTNode* {
-        let brace_token: Token = this.Expect(TokenType::LBRACE);
-        let mut block: BlockStmtNode* = new BlockStmtNode(brace_token.lineno, brace_token.column);
+        let token: Token = this.Expect(TokenType::LBRACE);
+        let mut block: BlockStmtNode* = new BlockStmtNode(token.lineno, token.column);
 
         while this.CurrentToken()._type != TokenType::RBRACE && this.CurrentToken()._type != TokenType::EOF {
             let stmt: ASTNode* = this.ParseStatement();
@@ -936,35 +881,23 @@ class Parser {
 
         if token._type == TokenType::FUNC {
             ret this.ParseFunctionDeclaration();
-        }
-
-        if token._type == TokenType::CLASS {
+        } else if token._type == TokenType::CLASS {
             ret this.ParseClassDeclaration();
-        }
-
-        if token._type == TokenType::ENUM {
+        } else if token._type == TokenType::ENUM {
             ret this.ParseEnumDeclaration();
-        }
-
-        if token._type == TokenType::EXTERN {
+        } else if token._type == TokenType::EXTERN {
             ret this.ParseExternBlock();
-        }
-
-        if token._type == TokenType::INCLUDE {
+        } else if token._type == TokenType::INCLUDE {
             ret this.ParseIncludeStatement();
-        }
-
-        if token._type == TokenType::CONST {
+        } else if token._type == TokenType::CONST {
             ret this.ParseVariableDeclaration();
-        }
-
-        if token._type == TokenType::TYPE {
+        } else if token._type == TokenType::TYPE {
             ret this.ParseTypeDeclaration();
+        } else {
+            printf("Parser error: Expected declaration at line %d, column %d.\n", token.lineno, token.column);
+            this.has_error = true;
+            ret null;
         }
-
-        printf("Parser error: Expected declaration at line %d, column %d.\n", token.lineno, token.column);
-        this.has_error = true;
-        ret null;
     }
 
     priv ParseTypeDeclaration(mut this: Parser&) -> ASTNode* {
@@ -1014,11 +947,9 @@ class Parser {
         if func_type->var_arg { ret null; }
 
         let is_mutable: bool = this.Match(TokenType::MUT);
-        let name_token: Token = this.Expect(TokenType::NAME);
+        let token: Token = this.Expect(TokenType::NAME);
         this.Expect(TokenType::COLON);
-        let param_type: ASTNode* = this.ParseType();
-
-        ret new ParameterNode(name_token.value, param_type, is_mutable, name_token.lineno, name_token.column);
+        ret new ParameterNode(token.value, this.ParseType(), is_mutable, token.lineno, token.column);
     }
 
     priv ParseClassDeclaration(mut this: Parser&) -> ASTNode* {
@@ -1068,7 +999,7 @@ class Parser {
     }
 
     priv ParseField(mut this: Parser&, visibility: TokenType) -> FieldNode* {
-        let name_token: Token = this.Expect(TokenType::NAME);
+        let token: Token = this.Expect(TokenType::NAME);
         this.Expect(TokenType::COLON);
         let field_type: ASTNode* = this.ParseType();
         let mut initializer: ASTNode* = null;
@@ -1083,7 +1014,7 @@ class Parser {
             this.Advance();
         }
 
-        ret new FieldNode(name_token.value, field_type, initializer, visibility, name_token.lineno, name_token.column);
+        ret new FieldNode(token.value, field_type, initializer, visibility, token.lineno, token.column);
     }
 
     priv ParseEnumDeclaration(mut this: Parser&) -> ASTNode* {
@@ -1177,8 +1108,6 @@ class Parser {
                 exit(1i32);
                 break;
             }
-        }
-
-        ret root;
+        } ret root;
     }
 };

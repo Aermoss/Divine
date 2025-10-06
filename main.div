@@ -79,33 +79,22 @@ func main(argc: i32, argv[]: i8*) -> i32 {
     PrintAST(ast as ASTNode*, 0i32);
 
     let mut compiler: Compiler;
-    let module: LLVMModuleRef = compiler.Compile(ast);
+    compiler.include_paths.PushBack(String("."));
+    compiler.include_paths.PushBack(String("include"));
+    let module: LLVMModuleRef = compiler.Compile(ast, String(argv[1u64]));
 
     printf("\n");
     LLVMDumpModule(module);
     let str: i8* = LLVMPrintModuleToString(module);
     WriteFile("out.ll", str);
     LLVMDisposeMessage(str);
-    let err: i8* = null;
-
-    if LLVMVerifyModule(module, LLVMVerifierFailureAction::LLVMAbortProcessAction, &err) != 0i32 {
-        printf("Module verification failed: %s.\n", err);
-        LLVMDisposeMessage(err);
-        ret 1i32;
-    }
-
-    LLVMDisposeMessage(err);
-    LLVMInitializeNativeTarget();
-    LLVMInitializeNativeAsmPrinter();
-    // LLVMInitializeNativeAsmParser();
-    // LLVMInitializeNativeDisassembler();
 
     if false {
+        let err: i8* = null;
         let engine: LLVMExecutionEngineRef;
         let mut options: LLVMMCJITCompilerOptions;
         LLVMInitializeMCJITCompilerOptions(&options, sizeof(options));
         options.OptLevel = 0u32;
-        let err: i8* = null;
 
         if LLVMCreateMCJITCompilerForModule(&engine, module, &options, sizeof(options), &err) != 0i32 {
             printf("Failed to create execution engine: %s.\n", err);
@@ -126,15 +115,9 @@ func main(argc: i32, argv[]: i8*) -> i32 {
         LLVMDisposeExecutionEngine(engine);
         compiler.Forget();
     } else {
-        let target: LLVMTargetRef;
-        let triple: i8* = LLVMGetDefaultTargetTriple();
-        LLVMGetTargetFromTriple(triple, &target, null);
-        let target_machine: LLVMTargetMachineRef = LLVMCreateTargetMachine(target, triple, "generic", "", LLVMCodeGenOptLevel::LLVMCodeGenLevelDefault, LLVMRelocMode::LLVMRelocDefault, LLVMCodeModel::LLVMCodeModelDefault);
-
         let err: i8* = null;
-        LLVMSetTarget(module, triple);
 
-        if LLVMTargetMachineEmitToFile(target_machine, module, "out.obj", LLVMCodeGenFileType::LLVMObjectFile, &err) != 0i32 {
+        if LLVMTargetMachineEmitToFile(compiler.target_machine, module, "out.obj", LLVMCodeGenFileType::LLVMObjectFile, &err) != 0i32 {
             printf("Failed to emit object to file: %s.\n", err);
             LLVMDisposeMessage(err);
             ret 1i32;
@@ -142,7 +125,6 @@ func main(argc: i32, argv[]: i8*) -> i32 {
 
         LLVMDisposeMessage(err);
         printf("\nProgram compiled in %f seconds.\n", timer.Get() - start);
-        LLVMDisposeTargetMachine(target_machine);
 
         let sdk_path: String = "C:\\Program Files (x86)\\Windows Kits\\10\\Lib\\10.0.26100.0";
         let vs_path: String = "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207";

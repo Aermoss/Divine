@@ -520,18 +520,36 @@ class ScopeManager {
 class Compiler {
     priv type_manager: TypeManager,
     priv scope_manager: ScopeManager,
-    priv include_paths: Vector<String>,
+    pub include_paths: Vector<String>,
     priv included_paths: Vector<String>,
     priv blocks: Vector<Pair<LLVMBasicBlockRef, LLVMBasicBlockRef>>,
     priv forwards: Vector<Pair<FunctionDeclNode*, LLVMValueRef>>,
+    pub target_machine: LLVMTargetMachineRef = null,
+    priv layout: LLVMTargetDataRef = null,
     priv context: LLVMContextRef = null,
     priv module: LLVMModuleRef = null,
-    priv builder: LLVMBuilderRef = null
+    priv builder: LLVMBuilderRef = null,
+    priv target: LLVMTargetRef = null,
+    priv triple: i8* = null
 } impl {
     Compiler(mut this: Compiler&) {
+        LLVMInitializeNativeTarget();
+        LLVMInitializeNativeAsmPrinter();
+        // LLVMInitializeNativeAsmParser();
+        // LLVMInitializeNativeDisassembler();
+        this.triple = LLVMGetDefaultTargetTriple();
         this.context = LLVMContextCreate();
-        this.include_paths.PushBack(String("."));
-        this.include_paths.PushBack(String("include"));
+        let err: i8* = null;
+
+        if LLVMGetTargetFromTriple(this.triple, &this.target, &err) != 0i32 {
+            printf("Failed to get target from triple: %s.\n", err);
+            LLVMDisposeMessage(err);
+            ret;
+        }
+
+        LLVMDisposeMessage(err);
+        this.target_machine = LLVMCreateTargetMachine(this.target, this.triple, "generic", "", LLVMCodeGenOptLevel::LLVMCodeGenLevelDefault, LLVMRelocMode::LLVMRelocDefault, LLVMCodeModel::LLVMCodeModelDefault);
+        this.layout = LLVMCreateTargetDataLayout(this.target_machine);
     }
 
     ~Compiler(mut this: Compiler&) {
@@ -545,17 +563,15 @@ class Compiler {
             this.module = null;
         }
 
-        if this.context != null {
-            LLVMContextDispose(this.context);
-            this.context = null;
-        }
+        LLVMDisposeTargetMachine(this.target_machine);
+        LLVMContextDispose(this.context);
     }
 
     pub Forget(mut this: Compiler&) {
         this.module = null;
     }
 
-    pub Compile(mut this: Compiler&, ast: RootNode*) -> LLVMModuleRef {
+    pub Compile(mut this: Compiler&, ast: RootNode*, file_name: String&) -> LLVMModuleRef {
         if this.builder != null {
             LLVMDisposeBuilder(this.builder);
             this.builder = null;
@@ -567,9 +583,12 @@ class Compiler {
         }
 
         this.module = LLVMModuleCreateWithNameInContext("divine", this.context);
-        LLVMSetSourceFileName(this.module, "hello.div", 9u64);
-        LLVMSetTarget(this.module, LLVMGetDefaultTargetTriple());
         this.builder = LLVMCreateBuilderInContext(this.context);
+        LLVMSetSourceFileName(this.module, file_name.Data(), file_name.Size() - 1u64);
+        LLVMSetTarget(this.module, this.triple);
+        let layout: i8* = LLVMCopyStringRepOfTargetData(this.layout);
+        LLVMSetDataLayout(this.module, layout);
+        LLVMDisposeMessage(layout);
         let mut i: u64 = 0u64;
 
         while i < ast->declarations.Size() {
@@ -579,6 +598,15 @@ class Compiler {
         }
 
         this.CompileForwardDeclarations();
+        let err: i8* = null;
+
+        if LLVMVerifyModule(this.module, LLVMVerifierFailureAction::LLVMAbortProcessAction, &err) != 0i32 {
+            printf("Module verification failed: %s.\n", err);
+            LLVMDisposeMessage(err);
+            ret null;
+        }
+
+        LLVMDisposeMessage(err);
         ret this.module;
     }
 

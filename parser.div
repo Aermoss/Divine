@@ -4,7 +4,7 @@ enum ASTNodeType {
     LITERAL, IDENTIFIER, SCOPE_RESOLUTION, BINARY_OP, UNARY_OP, TERNARY,
     CALL, MEMBER_ACCESS, INDEX_ACCESS, CAST,
 
-    EXPRESSION_STMT, VARIABLE_DECL, ASSIGNMENT, IF_STMT, WHILE_STMT, FOR_STMT, 
+    EXPRESSION_STMT, VARIABLE_DECL, CONSTANT_DECL, ASSIGNMENT, IF_STMT, WHILE_STMT, 
     RETURN_STMT, BREAK_STMT, CONTINUE_STMT, BLOCK_STMT,
 
     FUNCTION_DECL, CLASS_DECL, ENUM_DECL, EXTERN_BLOCK, INCLUDE_STMT, TYPE_DECL,
@@ -28,10 +28,10 @@ func ASTNodeTypeToString(_type: ASTNodeType) -> String {
     else if _type == ASTNodeType::CAST { ret { "CAST" } as String; }
     else if _type == ASTNodeType::EXPRESSION_STMT { ret { "EXPRESSION_STMT" } as String; }
     else if _type == ASTNodeType::VARIABLE_DECL { ret { "VARIABLE_DECL" } as String; }
+    else if _type == ASTNodeType::CONSTANT_DECL { ret { "CONSTANT_DECL" } as String; }
     else if _type == ASTNodeType::ASSIGNMENT { ret { "ASSIGNMENT" } as String; }
     else if _type == ASTNodeType::IF_STMT { ret { "IF_STMT" } as String; }
     else if _type == ASTNodeType::WHILE_STMT { ret { "WHILE_STMT" } as String; }
-    else if _type == ASTNodeType::FOR_STMT { ret { "FOR_STMT" } as String; }
     else if _type == ASTNodeType::RETURN_STMT { ret { "RETURN_STMT" } as String; }
     else if _type == ASTNodeType::BREAK_STMT { ret { "BREAK_STMT" } as String; }
     else if _type == ASTNodeType::CONTINUE_STMT { ret { "CONTINUE_STMT" } as String; }
@@ -222,12 +222,20 @@ class VariableDeclNode : ASTNode {
     pub name: String,
     pub var_type: ASTNode*,
     pub initializer: ASTNode*,
-    pub is_mutable: bool,
-    pub is_const: bool,
-    pub visibility: TokenType
+    pub is_mutable: bool
 } impl {
-    VariableDeclNode(mut this: VariableDeclNode&, name: String, var_type: ASTNode*, initializer: ASTNode*, is_mutable: bool, is_const: bool, visibility: TokenType, line: u64, col: u64) : ASTNode(ASTNodeType::VARIABLE_DECL, line, col) {
-        (this.name, this.var_type, this.initializer, this.is_mutable, this.is_const, this.visibility) = (name, var_type, initializer, is_mutable, is_const, visibility);
+    VariableDeclNode(mut this: VariableDeclNode&, name: String, var_type: ASTNode*, initializer: ASTNode*, is_mutable: bool, line: u64, col: u64) : ASTNode(ASTNodeType::VARIABLE_DECL, line, col) {
+        (this.name, this.var_type, this.initializer, this.is_mutable) = (name, var_type, initializer, is_mutable);
+    }
+};
+
+class ConstantDeclNode : ASTNode {
+    pub name: String,
+    pub var_type: ASTNode*,
+    pub initializer: ASTNode*
+} impl {
+    ConstantDeclNode(mut this: ConstantDeclNode&, name: String, var_type: ASTNode*, initializer: ASTNode*, line: u64, col: u64) : ASTNode(ASTNodeType::CONSTANT_DECL, line, col) {
+        (this.name, this.var_type, this.initializer) = (name, var_type, initializer);
     }
 };
 
@@ -257,17 +265,6 @@ class WhileStmtNode : ASTNode {
 } impl {
     WhileStmtNode(mut this: WhileStmtNode&, condition: ASTNode*, body: ASTNode*, line: u64, col: u64) : ASTNode(ASTNodeType::WHILE_STMT, line, col) {
         (this.condition, this.body) = (condition, body);
-    }
-};
-
-class ForStmtNode : ASTNode {
-    pub init: ASTNode*,
-    pub condition: ASTNode*,
-    pub update: ASTNode*,
-    pub body: ASTNode*
-} impl {
-    ForStmtNode(mut this: ForStmtNode&, init: ASTNode*, condition: ASTNode*, update: ASTNode*, body: ASTNode*, line: u64, col: u64) : ASTNode(ASTNodeType::FOR_STMT, line, col) {
-        (this.init, this.condition, this.update, this.body) = (init, condition, update, body);
     }
 };
 
@@ -418,7 +415,7 @@ func PrintAST(node: ASTNode*, depth: i32) {
         printf(")");
     } else if node->node_type == ASTNodeType::VARIABLE_DECL {
         let var_decl: VariableDeclNode* = node as VariableDeclNode*;
-        printf("(name: %s, mutable: %s, const: %s, value: ", var_decl->name.Data(), var_decl->is_mutable ? "true" : "false", var_decl->is_const ? "true" : "false");
+        printf("(name: %s, mutable: %s, value: ", var_decl->name.Data(), var_decl->is_mutable ? "true" : "false");
         PrintAST(var_decl->initializer, 0i32);
         printf(")");
     } else if node->node_type == ASTNodeType::RETURN_STMT {
@@ -823,20 +820,20 @@ class Parser {
         }
     }
 
+    priv ParseConstantDeclaration(mut this: Parser&) -> ASTNode* {
+        let token: Token = this.Expect(TokenType::CONST);
+        let name_token: Token = this.Expect(TokenType::NAME);
+        this.Expect(TokenType::COLON);
+        let var_type: ASTNode* = this.ParseType();
+        this.Expect(TokenType::ASSIGN);
+        let initializer: ASTNode* = this.ParseExpression();
+        this.Expect(TokenType::SEMICOLON);
+        ret new ConstantDeclNode(name_token.value, var_type, initializer, token.lineno, token.column) as ASTNode*;
+    }
+
     priv ParseVariableDeclaration(mut this: Parser&) -> ASTNode* {
-        let token: Token = this.CurrentToken();
-        let is_const: bool = this.Match(TokenType::CONST);
-        let mut is_mutable: bool = false;
-        let visibility: TokenType = TokenType::NAME;
-
-        if !is_const {
-            this.Match(TokenType::LET);
-
-            if this.Match(TokenType::MUT) {
-                is_mutable = true;
-            }
-        }
-
+        let token: Token = this.Expect(TokenType::LET);
+        let is_mutable: bool = this.Match(TokenType::MUT);
         let name_token: Token = this.Expect(TokenType::NAME);
         this.Expect(TokenType::COLON);
         let var_type: ASTNode* = this.ParseType();
@@ -847,7 +844,7 @@ class Parser {
         }
 
         this.Expect(TokenType::SEMICOLON);
-        ret new VariableDeclNode(name_token.value, var_type, initializer, is_mutable, is_const, visibility, token.lineno, token.column) as ASTNode*;
+        ret new VariableDeclNode(name_token.value, var_type, initializer, is_mutable, token.lineno, token.column) as ASTNode*;
     }
 
     priv ParseIfStatement(mut this: Parser&) -> ASTNode* {
@@ -910,7 +907,7 @@ class Parser {
         } else if token._type == TokenType::INCLUDE {
             ret this.ParseIncludeStatement();
         } else if token._type == TokenType::CONST {
-            ret this.ParseVariableDeclaration();
+            ret this.ParseConstantDeclaration();
         } else if token._type == TokenType::TYPE {
             ret this.ParseTypeDeclaration();
         } else {

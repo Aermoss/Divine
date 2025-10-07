@@ -694,6 +694,8 @@ class Compiler {
     priv CompileDeclaration(mut this: Compiler&, decl: ASTNode*) {
         if decl->node_type == ASTNodeType::INCLUDE_STMT {
             this.CompileInclude(decl as IncludeStmtNode*);
+        } else if decl->node_type == ASTNodeType::CONSTANT_DECL {
+            this.CompileConstant(decl as ConstantDeclNode*);
         } else if decl->node_type == ASTNodeType::FUNCTION_DECL {
             this.CompileFunction(decl as FunctionDeclNode*);
         } else if decl->node_type == ASTNodeType::CLASS_DECL {
@@ -762,6 +764,20 @@ class Compiler {
                 i += 1u64;
             }
         }
+    }
+
+    priv CompileConstant(mut this: Compiler&, constant_decl: ConstantDeclNode*) {
+        let _type: QualifiedType& = this.CompileType(constant_decl->var_type);
+        let initializer: QualifiedValue = this.CompileConstantExpression(constant_decl->initializer);
+
+        if initializer.Type() != _type {
+            this.Error((String("Incompatible types. ('") + LLVMTypeToString(_type.Value()) + "' != '" + LLVMTypeToString(initializer.Type().Value()) + "').").Data());
+            ret;
+        }
+
+        let global: LLVMValueRef = LLVMAddGlobal(this.module, _type.Value(), constant_decl->name.Data());
+        this.scope_manager.Set(constant_decl->name, SymbolKind::Variable, QualifiedValue(global, this.type_manager.Pointer(_type, false)));
+        LLVMSetInitializer(global, initializer.Value());
     }
 
     priv ProcessType(mut this: Compiler&, _type: QualifiedType*) -> QualifiedType* {

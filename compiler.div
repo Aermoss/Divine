@@ -1225,6 +1225,8 @@ class Compiler {
                 this.Error("Invalid pointer expression.");
                 ret QualifiedValue(null, null);
             }
+        } else if expr->node_type == ASTNodeType::TERNARY {
+            ret this.CompileTernary(expr as TernaryNode*, pointer);
         } else if expr->node_type == ASTNodeType::IDENTIFIER || expr->node_type == ASTNodeType::SCOPE_RESOLUTION {
             let symbol: Symbol* = this.scope_manager.Resolve(expr);
 
@@ -1341,9 +1343,15 @@ class Compiler {
             }
 
             ret QualifiedValue(LLVMConstReal(_type, value.ToFloat()), this.type_manager.Primitive(_type, false));
+        } else if literal->literal_type == TokenType::TRUE || literal->literal_type == TokenType::FALSE {
+            let _type: QualifiedType& = this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false);
+            ret QualifiedValue(LLVMConstInt(_type.Value(), literal->literal_type == TokenType::TRUE ? 1u64 : 0u64, 0i32), _type);
         } else if literal->literal_type == TokenType::STRING {
-            let value: LLVMValueRef = LLVMBuildGlobalStringPtr(this.builder, literal->value.Data(), "fmt");
+            let value: LLVMValueRef = LLVMBuildGlobalStringPtr(this.builder, literal->value.Data(), "str");
             ret QualifiedValue(value, this.type_manager.Primitive(LLVMTypeOf(value), false));
+        } else if literal->literal_type == TokenType::NULL {
+            let _type: QualifiedType& = this.type_manager.Pointer(this.type_manager.Primitive(LLVMVoidTypeInContext(this.context), false), false);
+            ret QualifiedValue(LLVMConstNull(_type.Value()), _type);
         } else {
             this.Error((String("Unknown literal type '") + TokenTypeToString(literal->literal_type) + "'.").Data());
             ret QualifiedValue(null, null);
@@ -1384,6 +1392,38 @@ class Compiler {
 
         let value: LLVMValueRef = LLVMBuildCall2(this.builder, _func.Type().Pointee().Value(), _func.Value(), args.Data(), args.Size() as u32, "");
         ret QualifiedValue(value, this.type_manager.Primitive(LLVMGetReturnType(_func.Type().Pointee().Value()), false));
+    }
+
+    priv CompileTernary(mut this: Compiler&, ternary: TernaryNode*, pointer: bool) -> QualifiedValue {
+        let function: LLVMValueRef = LLVMGetBasicBlockParent(LLVMGetInsertBlock(this.builder));
+        let then_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "");
+        let else_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "");
+        let merge_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "");
+
+        let condition: QualifiedValue = this.CompileExpression(ternary->condition, false);
+        LLVMBuildCondBr(this.builder, condition.Value(), then_block, else_block);
+
+        LLVMPositionBuilderAtEnd(this.builder, then_block);
+        let then_value: QualifiedValue = this.CompileExpression(ternary->then_expr, pointer);
+        LLVMBuildBr(this.builder, merge_block);
+
+        LLVMPositionBuilderAtEnd(this.builder, else_block);
+        let else_value: QualifiedValue = this.CompileExpression(ternary->else_expr, pointer);
+        LLVMBuildBr(this.builder, merge_block);
+
+        if then_value.Type() != else_value.Type() {
+            this.Error((String("Incompatible types. ('") + LLVMTypeToString(then_value.Type().Value()) + "' != '" + LLVMTypeToString(else_value.Type().Value()) + "').").Data());
+            ret QualifiedValue(null, null);
+        }
+
+        LLVMPositionBuilderAtEnd(this.builder, merge_block);
+        let value: LLVMValueRef = LLVMBuildPhi(this.builder, then_value.Type().Value(), "");
+
+        let blocks[]: LLVMBasicBlockRef = { then_block, else_block };
+        let values[]: LLVMValueRef = { then_value.Value(), else_value.Value() };
+        LLVMAddIncoming(value, values, blocks, 2u32);
+
+        ret QualifiedValue(value, then_value.Type());
     }
 
     priv CompileMemberAccess(mut this: Compiler&, member_access: MemberAccessNode*, pointer: bool) -> QualifiedValue {

@@ -1,8 +1,8 @@
 include "divio", "divstr", "divvec", "divmap", "lexer.div" : *;
 
 enum ASTNodeType {
-    LITERAL, IDENTIFIER, SCOPE_RESOLUTION, BINARY_OP, UNARY_OP, CALL,
-    MEMBER_ACCESS, INDEX_ACCESS, CAST,
+    LITERAL, IDENTIFIER, SCOPE_RESOLUTION, BINARY_OP, UNARY_OP, TERNARY,
+    CALL, MEMBER_ACCESS, INDEX_ACCESS, CAST,
 
     EXPRESSION_STMT, VARIABLE_DECL, ASSIGNMENT, IF_STMT, WHILE_STMT, FOR_STMT, 
     RETURN_STMT, BREAK_STMT, CONTINUE_STMT, BLOCK_STMT,
@@ -21,6 +21,7 @@ func ASTNodeTypeToString(_type: ASTNodeType) -> String {
     else if _type == ASTNodeType::SCOPE_RESOLUTION { ret { "SCOPE_RESOLUTION" } as String; }
     else if _type == ASTNodeType::BINARY_OP { ret { "BINARY_OP" } as String; }
     else if _type == ASTNodeType::UNARY_OP { ret { "UNARY_OP" } as String; }
+    else if _type == ASTNodeType::TERNARY { ret { "TERNARY" } as String; }
     else if _type == ASTNodeType::CALL { ret { "CALL" } as String; }
     else if _type == ASTNodeType::MEMBER_ACCESS { ret { "MEMBER_ACCESS" } as String; }
     else if _type == ASTNodeType::INDEX_ACCESS { ret { "INDEX_ACCESS" } as String; }
@@ -159,6 +160,16 @@ class UnaryOpNode : ASTNode {
 } impl {
     UnaryOpNode(mut this: UnaryOpNode&, operand: ASTNode*, operator: TokenType, line: u64, col: u64) : ASTNode(ASTNodeType::UNARY_OP, line, col) {
         (this.operand, this.operator) = (operand, operator);
+    }
+};
+
+class TernaryNode : ASTNode {
+    pub condition: ASTNode*,
+    pub then_expr: ASTNode*,
+    pub else_expr: ASTNode*
+} impl {
+    TernaryNode(mut this: TernaryNode&, condition: ASTNode*, then_expr: ASTNode*, else_expr: ASTNode*, line: u64, col: u64) : ASTNode(ASTNodeType::TERNARY, line, col) {
+        (this.condition, this.then_expr, this.else_expr) = (condition, then_expr, else_expr);
     }
 };
 
@@ -718,7 +729,16 @@ class Parser {
     }
 
     pub ParseExpression(mut this: Parser&) -> ASTNode* {
-        ret this.ParseBinaryExpression(0i32);
+        let mut condition: ASTNode* = this.ParseBinaryExpression(0i32);
+        let token: Token = this.CurrentToken();
+
+        if token._type == TokenType::QUESTION_MARK {
+            this.Advance();
+            let then_expr: ASTNode* = this.ParseExpression();
+            this.Expect(TokenType::COLON);
+            let else_expr: ASTNode* = this.ParseExpression();
+            condition = new TernaryNode(condition, then_expr, else_expr, token.lineno, token.column) as ASTNode*;
+        } ret condition;
     }
 
     pub ParseType(mut this: Parser&) -> ASTNode* {

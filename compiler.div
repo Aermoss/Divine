@@ -128,10 +128,17 @@ func LLVMAddressOf(value: LLVMValueRef) -> LLVMValueRef {
 class QualifiedType {
     priv pointee: QualifiedType* = null, priv reference: bool = false,
     priv value: LLVMTypeRef, priv mutable: bool = false, priv signed: bool = false,
-    priv fields: Map<String, QualifiedType*>, priv _class: bool = false
+    priv fields: Map<String, QualifiedType*>, priv _class: bool = false,
+    pub sret: QualifiedType* = null, pub byref: QualifiedType* = null,
+    priv return: QualifiedType* = null, priv _function: bool = false,
+    pub params: Vector<QualifiedType*>
 } impl {
     QualifiedType(mut this: QualifiedType&, value: LLVMTypeRef, signed: bool) {
         (this.value, this.signed) = (value, signed);
+    }
+
+    QualifiedType(mut this: QualifiedType&, value: LLVMTypeRef, params: Vector<QualifiedType*>, return: QualifiedType*) {
+        (this.value, this.params, this.return, this._function) = (value, params, return, true);
     }
 
     QualifiedType(mut this: QualifiedType&, value: LLVMTypeRef, mutable: bool, fields: Map<String, QualifiedType*>) {
@@ -149,6 +156,7 @@ class QualifiedType {
     pub IsPointer(this: QualifiedType&) -> bool { ret this.pointee != null; }
     pub IsReference(this: QualifiedType&) -> bool { ret this.reference; }
     pub IsPrimitive(this: QualifiedType&) -> bool { ret !this.IsPointer() && !this.IsClass(); }
+    pub IsFunction(this: QualifiedType&) -> bool { ret this._function; }
     pub IsClass(this: QualifiedType&) -> bool { ret this._class; }
 
     pub Value(this: QualifiedType&) -> LLVMTypeRef {
@@ -171,13 +179,28 @@ class QualifiedType {
         }
     }
 
+    pub Parameters(this: QualifiedType&) -> Vector<QualifiedType*> {
+        if !this._function {
+            printf("Not a function!\n");
+            exit(1i32);
+        } ret this.params;
+    }
+
+    pub Return(this: QualifiedType&) -> QualifiedType* {
+        if this._function {
+            ret this.return;
+        } else {
+            printf("Not a function!\n");
+            exit(1i32);
+            ret null;
+        }
+    }
+
     pub Fields(this: QualifiedType&) -> Map<String, QualifiedType*> {
         if !this._class {
             printf("Not a class!\n");
             exit(1i32);
-        }
-
-        ret this.fields;
+        } ret this.fields;
     }
 
     pub Index(this: QualifiedType&, name: String) -> i64 {
@@ -231,6 +254,12 @@ class TypeManager {
         ret _type;
     }
 
+    pub Function(mut this: TypeManager&, value: LLVMTypeRef, params: Vector<QualifiedType*>, return: QualifiedType*) -> QualifiedType* {
+        let _type: QualifiedType* = new QualifiedType(value, params, return);
+        this.types.PushBack(_type);
+        ret _type;
+    }
+
     pub Class(mut this: TypeManager&, value: LLVMTypeRef, fields: Map<String, QualifiedType*>) -> QualifiedType* {
         let _type: QualifiedType* = new QualifiedType(value, false, fields);
         this.types.PushBack(_type);
@@ -258,7 +287,7 @@ class TypeManager {
             } else if _type->IsPointer() {
                 copy = new QualifiedType(_type->Value(), mutable, _type->IsReference(), _type->Pointee());
             } else {
-                this.Error("Cannot copy primitive type.");
+                this.Error("Cannot copy primitive or function type.");
             }
 
             this.types.PushBack(copy);
@@ -631,7 +660,7 @@ class Compiler {
 
             while j < func_decl->_type->parameters.Size() {
                 let param: ParameterNode* = func_decl->_type->parameters[j];
-                param_types.PushBack(this.CompileType(param->param_type));
+                param_types.PushBack(this.ProcessType(this.CompileType(param->param_type)));
                 j += 1u64;
             }
 
@@ -735,21 +764,76 @@ class Compiler {
         }
     }
 
+    priv ProcessType(mut this: Compiler&, _type: QualifiedType*) -> QualifiedType* {
+        if LLVMGetTypeKind(_type->Value()) != LLVMTypeKind::LLVMStructTypeKind {
+            ret _type;
+        } else {
+            let size: u64 = LLVMABISizeOfType(this.layout, _type->Value());
+
+            if size > 8u64 {
+                ret this.type_manager.Pointer(_type, _type->IsMutable());
+            } else {
+                if size > 4u64 {
+                    ret this.type_manager.Primitive(LLVMInt64TypeInContext(this.context), true);
+                } else if size > 2u64 {
+                    ret this.type_manager.Primitive(LLVMInt32TypeInContext(this.context), true);
+                } else if size > 1u64 {
+                    ret this.type_manager.Primitive(LLVMInt16TypeInContext(this.context), true);
+                } else {
+                    ret this.type_manager.Primitive(LLVMInt8TypeInContext(this.context), true);
+                }
+            }
+        }
+    }
+
     priv CompileFunction(mut this: Compiler&, func_decl: FunctionDeclNode*) {
-        let func_name: i8* = func_decl->name.Data();
-        let mut param_types: Vector<LLVMTypeRef>;
+        let (mut params: Vector<QualifiedType*>, mut param_types: Vector<LLVMTypeRef>);
+        let mut return_type: QualifiedType* = this.CompileType(func_decl->_type->return_type);
+        let mut attributes: Vector<LLVMTypeRef>;
+        let mut sret: bool = false;
+
+        if LLVMGetTypeKind(return_type->Value()) == LLVMTypeKind::LLVMStructTypeKind {
+            let mut processed_type: QualifiedType& = this.ProcessType(return_type);
+
+            if LLVMGetTypeKind(processed_type.Value()) != LLVMTypeKind::LLVMPointerTypeKind {
+                return_type = processed_type;
+            } else {
+                params.PushBack(processed_type);
+                param_types.PushBack(processed_type.Value());
+                attributes.PushBack(return_type->Value());
+                return_type = this.type_manager.Primitive(LLVMVoidTypeInContext(this.context), false);
+                (processed_type.sret, sret) = (return_type, true);
+            }
+        }
+
         let mut i: u64 = 0u64;
 
         while i < func_decl->_type->parameters.Size() {
             let param: ParameterNode* = func_decl->_type->parameters[i];
-            param_types.PushBack(this.CompileType(param->param_type).Value());
-            i += 1u64;
+            let real_type: QualifiedType& = this.CompileType(param->param_type);
+            let mut processed_type: QualifiedType& = this.ProcessType(real_type);
+            param_types.PushBack(processed_type.Value());
+            params.PushBack(processed_type);
+
+            if real_type != processed_type {
+                attributes.PushBack(LLVMGetTypeKind(processed_type.Value()) == LLVMTypeKind::LLVMPointerTypeKind ? real_type.Value() : null);
+                processed_type.byref = real_type;
+            } else {
+                attributes.PushBack(null);
+            } i += 1u64;
         }
 
-        let return_type: LLVMTypeRef = this.CompileType(func_decl->_type->return_type).Value();
-        let func_type: LLVMTypeRef = LLVMFunctionType(return_type, param_types.Data(), param_types.Size() as u32, func_decl->_type->var_arg ? 1i32 : 0i32);
-        let function: LLVMValueRef = LLVMAddFunction(this.module, func_name, func_type);
-        this.scope_manager.Set(func_decl->name, SymbolKind::Function, QualifiedValue(function, this.type_manager.Primitive(func_type, false)));
+        let func_type: LLVMTypeRef = LLVMFunctionType(return_type->Value(), param_types.Data(), param_types.Size() as u32, func_decl->_type->var_arg ? 1i32 : 0i32);
+        let function: LLVMValueRef = LLVMAddFunction(this.module, func_decl->name.Data(), func_type);
+        this.scope_manager.Set(func_decl->name, SymbolKind::Function, QualifiedValue(function, this.type_manager.Pointer(this.type_manager.Function(func_type, params, return_type), false)));
+        let mut j: u64 = 0u64;
+
+        while j < attributes.Size() {
+            if attributes[j] != null {
+                let attribute_kind: u32 = sret && j == 0u64 ? LLVMGetEnumAttributeKindForName("sret", 4u64) : LLVMGetEnumAttributeKindForName("byref", 5u64);
+                LLVMAddAttributeAtIndex(function, (j + 1u64) as u32, LLVMCreateTypeAttribute(this.context, attribute_kind, attributes[j]));
+            } j += 1u64;
+        }
 
         if func_decl->body != null {
             this.forwards.PushBack(Pair<FunctionDeclNode*, LLVMValueRef>(func_decl, function));
@@ -1267,18 +1351,39 @@ class Compiler {
     }
 
     priv CompileCall(mut this: Compiler&, call: CallNode*) -> QualifiedValue {
+        let _func: QualifiedValue = this.CompileExpression(call->function, true);
+        let params: Vector<QualifiedType*> = _func.Type().Pointee().Parameters();
         let mut args: Vector<LLVMValueRef>;
         let mut i: u64 = 0u64;
 
         while i < call->arguments.Size() {
             let arg: ASTNode* = call->arguments[i];
-            args.PushBack(this.CompileExpression(arg, false).Value());
-            i += 1u64;
+
+            if i < params.Size() {
+                if params[i]->byref != null {
+                    let mut value: QualifiedValue = this.CompileExpression(arg, true);
+                    let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
+                    LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
+                    let pointer: LLVMValueRef = LLVMBuildAlloca(this.builder, value.Type().Pointee().Value(), "");
+                    LLVMPositionBuilderAtEnd(this.builder, current);
+                    LLVMBuildStore(this.builder, LLVMBuildLoad2(this.builder, value.Type().Value(), value.Value(), ""), pointer);
+                    value = QualifiedValue(pointer, value.Type());
+
+                    if LLVMGetTypeKind(params[i]->Value()) != LLVMTypeKind::LLVMPointerTypeKind {
+                        args.PushBack(LLVMBuildLoad2(this.builder, params[i]->Value(), value.Value(), ""));
+                    } else {
+                        args.PushBack(value.Value());
+                    }
+                } else {
+                    args.PushBack(this.CompileExpression(arg, false).Value());
+                }
+            } else {
+                args.PushBack(this.CompileExpression(arg, false).Value());
+            } i += 1u64;
         }
 
-        let _func: QualifiedValue = this.CompileExpression(call->function, true);
-        let value: LLVMValueRef = LLVMBuildCall2(this.builder, _func.Type().Value(), _func.Value(), args.Data(), args.Size() as u32, "");
-        ret QualifiedValue(value, this.type_manager.Primitive(LLVMGetReturnType(_func.Type().Value()), false));
+        let value: LLVMValueRef = LLVMBuildCall2(this.builder, _func.Type().Pointee().Value(), _func.Value(), args.Data(), args.Size() as u32, "");
+        ret QualifiedValue(value, this.type_manager.Primitive(LLVMGetReturnType(_func.Type().Pointee().Value()), false));
     }
 
     priv CompileMemberAccess(mut this: Compiler&, member_access: MemberAccessNode*, pointer: bool) -> QualifiedValue {
@@ -1396,7 +1501,7 @@ class Compiler {
             if !pointer {
                 ret this.CompileExpression(unary_op->operand, true);
             } else {
-                this.Error("Invalid pointer expression.");
+                this.Error("Invalid pointer unary operation.");
                 ret QualifiedValue(null, null);
             }
         } else {
@@ -1420,7 +1525,7 @@ class Compiler {
                         if !pointer {
                             ret QualifiedValue(LLVMBuildNeg(this.builder, value.Value(), ""), value.Type());
                         } else {
-                            this.Error("Invalid pointer expression.");
+                            this.Error("Invalid pointer unary operation.");
                             ret QualifiedValue(null, null);
                         }
                     } else {
@@ -1431,7 +1536,7 @@ class Compiler {
                     if !pointer {
                         ret QualifiedValue(LLVMBuildFNeg(this.builder, value.Value(), ""), value.Type());
                     } else {
-                        this.Error("Invalid pointer expression.");
+                        this.Error("Invalid pointer unary operation.");
                         ret QualifiedValue(null, null);
                     }
                 } else {
@@ -1443,7 +1548,7 @@ class Compiler {
                     if !pointer {
                         ret QualifiedValue(LLVMBuildNot(this.builder, value.Value(), ""), value.Type());
                     } else {
-                        this.Error("Invalid pointer expression.");
+                        this.Error("Invalid pointer unary operation.");
                         ret QualifiedValue(null, null);
                     }
                 } else {

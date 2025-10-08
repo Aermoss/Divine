@@ -482,12 +482,21 @@ class ScopeManager {
 
     pub Namespaces(this: ScopeManager&) -> Vector<String> {
         let mut scope: Scope* = this.current;
+        let mut inverse: Vector<String>;
+
+        while scope->parent != null {
+            if scope->global {
+                inverse.PushBack(scope->name);
+            } scope = scope->parent;
+        }
+
+        if inverse.Size() == 0u64 { ret inverse; }
+        let mut i: u64 = inverse.Size() - 1u64;
         let mut result: Vector<String>;
 
-        while scope != null {
-            if scope->global {
-                result.PushBack(scope->name);
-            } scope = scope->parent;
+        while i >= 0u64 {
+            result.PushBack(inverse[i]);
+            i -= 1u64;
         } ret result;
     }
 
@@ -570,7 +579,7 @@ class ScopeManager {
 
 class Mangler {
     pub prefix: i8* = "$d",
-    pub scope_manager: ScopeManager*
+    pub scope_manager: ScopeManager* = null
 } impl {
     Mangler(mut this: Mangler&) {}
     ~Mangler(mut this: Mangler&) {}
@@ -592,6 +601,8 @@ class Mangler {
                 result += this.MangleType(params[i]);
                 i += 1u64;
             } ret result;
+        } else if kind == LLVMTypeKind::LLVMStructTypeKind {
+            ret String(LLVMGetStructName(_type->Value()));
         } else if kind == LLVMTypeKind::LLVMIntegerTypeKind {
             let width: u32 = LLVMGetIntTypeWidth(_type->Value());
             ret String(width == 1u32 ? "b" : (width == 8u32 ? "c" : (width == 16u32 ? "s" : (width == 32u32 ? "i" : "l"))));
@@ -600,21 +611,45 @@ class Mangler {
         } else if kind == LLVMTypeKind::LLVMFloatTypeKind {
             ret String("f");
         } else {
-            this.Error("Unknown type kind.");
+            this.Error((String("Unknown type '") + LLVMTypeToString(_type->Value()) + "'.").Data());
             ret String("");
         }
     }
 
-    priv MangleFunction(mut this: Mangler&, name: String, _type: QualifiedType*) -> String {
+    pub MangleFunction(mut this: Mangler&, name: String, _type: QualifiedType*) -> String {
+        if this.scope_manager == null {
+            this.Error("Scope manager not set!");
+            ret String("");
+        }
+
         let mut result: String = this.prefix;
-        let names: Vector<String> = this.scope_manager->Namespaces();
+        let mut names: Vector<String> = this.scope_manager->Namespaces();
         names.PushBack(name);
-        let params: Vector<QualifiedType*> = _type->Parameters();
+
+        if names.Size() > 1u64 {
+            result += "N";
+        }
+
         let mut i: u64 = 0u64;
 
-        while i < params.Size() {
-            result += this.MangleType(params[i]);
+        while i < names.Size() {
+            let length[32]: i8;
+            sprintf(length, "%llu", names[i].Size());
+            result += length;
+            result += names[i];
             i += 1u64;
+        }
+
+        if names.Size() > 1u64 {
+            result += "E";
+        }
+
+        let params: Vector<QualifiedType*> = _type->Parameters();
+        let mut j: u64 = 0u64;
+
+        while j < params.Size() {
+            result += this.MangleType(params[j]);
+            j += 1u64;
         } ret result;
     }
 
@@ -626,6 +661,7 @@ class Mangler {
 
 class Compiler {
     priv mangler: Mangler,
+    priv mangling: bool = true,
     priv type_manager: TypeManager,
     priv scope_manager: ScopeManager,
     pub include_paths: Vector<String>,
@@ -658,7 +694,7 @@ class Compiler {
         LLVMDisposeMessage(err);
         this.target_machine = LLVMCreateTargetMachine(this.target, this.triple, "generic", "", LLVMCodeGenOptLevel::LLVMCodeGenLevelDefault, LLVMRelocMode::LLVMRelocDefault, LLVMCodeModel::LLVMCodeModelDefault);
         this.layout = LLVMCreateTargetDataLayout(this.target_machine);
-        mangler.scope_manager = &this.scope_manager;
+        this.mangler.scope_manager = &this.scope_manager;
     }
 
     ~Compiler(mut this: Compiler&) {
@@ -925,9 +961,16 @@ class Compiler {
             } i += 1u64;
         }
 
-        let func_type: LLVMTypeRef = LLVMFunctionType(return_type->Value(), param_types.Data(), param_types.Size() as u32, func_decl->_type->var_arg ? 1i32 : 0i32);
-        let function: LLVMValueRef = LLVMAddFunction(this.module, func_decl->name.Data(), func_type);
-        this.scope_manager.Set(func_decl->name, SymbolKind::Function, QualifiedValue(function, this.type_manager.Pointer(this.type_manager.Function(func_type, params, return_type), false)), false);
+        let mut name: String = func_decl->name;
+        let _type: QualifiedType& = this.type_manager.Function(LLVMFunctionType(return_type->Value(), param_types.Data(), param_types.Size() as u32, func_decl->_type->var_arg ? 1i32 : 0i32), params, return_type);
+        let mangling: bool = this.mangling && name != "main";
+
+        if mangling {
+            name = this.mangler.MangleFunction(func_decl->name, _type);
+        }
+
+        let function: LLVMValueRef = LLVMAddFunction(this.module, name.Data(), _type->Value());
+        this.scope_manager.Set(func_decl->name, SymbolKind::Function, QualifiedValue(function, this.type_manager.Pointer(_type, false)), mangling);
         let mut j: u64 = 0u64;
 
         while j < attributes.Size() {
@@ -994,6 +1037,17 @@ class Compiler {
     }
 
     priv CompileExtern(mut this: Compiler&, extern_block: ExternBlockNode*) {
+        if !this.mangling {
+            this.Error("Already in a extern block.");
+            ret;
+        }
+
+        if extern_block->linkage != "C" {
+            this.Error((String("Unknown linkage '") + extern_block->linkage + "'.").Data());
+            ret;
+        }
+
+        this.mangling = false;
         let mut i: u64 = 0u64;
 
         while i < extern_block->declarations.Size() {
@@ -1001,6 +1055,8 @@ class Compiler {
             this.CompileDeclaration(decl);
             i += 1u64;
         }
+
+        this.mangling = true;
     }
 
     priv CompileBlock(mut this: Compiler&, block: BlockStmtNode*) {
@@ -2002,17 +2058,37 @@ class Compiler {
             ret this.type_manager.Pointer(this.CompileType(array_type->element_type), true);
         } else if type_node->node_type == ASTNodeType::FUNCTION_TYPE {
             let function_type: FunctionTypeNode* = type_node as FunctionTypeNode*;
-            let mut param_types: Vector<LLVMTypeRef>;
-            let mut j: u64 = 0u64;
+            let (mut params: Vector<QualifiedType*>, mut param_types: Vector<LLVMTypeRef>);
+            let mut return_type: QualifiedType* = this.CompileType(function_type->return_type);
 
-            while j < function_type->parameters.Size() {
-                let param: ParameterNode* = function_type->parameters[j];
-                param_types.PushBack(this.CompileType(param->param_type).Value());
-                j += 1u64;
+            if LLVMGetTypeKind(return_type->Value()) == LLVMTypeKind::LLVMStructTypeKind {
+                let mut processed_type: QualifiedType& = this.ProcessType(return_type);
+
+                if LLVMGetTypeKind(processed_type.Value()) != LLVMTypeKind::LLVMPointerTypeKind {
+                    return_type = processed_type;
+                } else {
+                    params.PushBack(processed_type);
+                    param_types.PushBack(processed_type.Value());
+                    return_type = this.type_manager.Primitive(LLVMVoidTypeInContext(this.context), false);
+                    processed_type.sret = return_type;
+                }
             }
 
-            let return_type: LLVMTypeRef = this.CompileType(function_type->return_type).Value();
-            ret this.type_manager.Pointer(this.type_manager.Primitive(LLVMFunctionType(return_type, param_types.Data(), param_types.Size() as u32, function_type->var_arg ? 1i32 : 0i32), false), false);
+            let mut i: u64 = 0u64;
+
+            while i < function_type->parameters.Size() {
+                let param: ParameterNode* = function_type->parameters[i];
+                let real_type: QualifiedType& = this.CompileType(param->param_type);
+                let mut processed_type: QualifiedType& = this.ProcessType(real_type);
+                param_types.PushBack(processed_type.Value());
+                params.PushBack(processed_type);
+
+                if real_type != processed_type {
+                    processed_type.byref = real_type;
+                } i += 1u64;
+            }
+
+            ret this.type_manager.Pointer(this.type_manager.Function(LLVMFunctionType(return_type->Value(), param_types.Data(), param_types.Size() as u32, function_type->var_arg ? 1i32 : 0i32), params, return_type), false);
         } else {
             this.Error((String("Unknown type '") + ASTNodeTypeToString(type_node->node_type) + "'.").Data());
             ret null;

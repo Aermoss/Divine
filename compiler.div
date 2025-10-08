@@ -386,8 +386,8 @@ class Scope {
         } ret false;
     }
 
-    pub Set(mut this: Scope&, name: String, kind: SymbolKind, value: QualifiedValue) {
-        if this.Has(name) {
+    pub Set(mut this: Scope&, name: String, kind: SymbolKind, value: QualifiedValue, overload: bool) {
+        if this.Has(name) && !overload {
             this.Error((String("Symbol '") + name + "' already exists.").Data());
         } else {
             let symbol: Symbol* = new Symbol(name, kind, value);
@@ -467,8 +467,8 @@ class ScopeManager {
         } ret false;
     }
 
-    pub Set(mut this: ScopeManager&, name: String, kind: SymbolKind, value: QualifiedValue) {
-        this.current->Set(name, kind, value);
+    pub Set(mut this: ScopeManager&, name: String, kind: SymbolKind, value: QualifiedValue, overload: bool) {
+        this.current->Set(name, kind, value, overload);
     }
 
     pub Get(this: ScopeManager&, name: String) -> Symbol* {
@@ -478,6 +478,17 @@ class ScopeManager {
             if scope->Has(name) { ret scope->Get(name); }
             scope = scope->parent;
         } ret null;
+    }
+
+    pub Namespaces(this: ScopeManager&) -> Vector<String> {
+        let mut scope: Scope* = this.current;
+        let mut result: Vector<String>;
+
+        while scope != null {
+            if scope->global {
+                result.PushBack(scope->name);
+            } scope = scope->parent;
+        } ret result;
     }
 
     pub ResolveChild(this: ScopeManager&, scope: Scope*, identifier: IdentifierNode*) -> Scope* {
@@ -557,7 +568,64 @@ class ScopeManager {
     }
 };
 
+class Mangler {
+    pub prefix: i8* = "$d",
+    pub scope_manager: ScopeManager*
+} impl {
+    Mangler(mut this: Mangler&) {}
+    ~Mangler(mut this: Mangler&) {}
+
+    pub MangleType(mut this: Mangler&, _type: QualifiedType*) -> String {
+        let kind: LLVMTypeKind = LLVMGetTypeKind(_type->Value());
+
+        if kind == LLVMTypeKind::LLVMVoidTypeKind {
+            ret String("v");
+        } else if kind == LLVMTypeKind::LLVMPointerTypeKind {
+            ret String("P") + this.MangleType(_type->Pointee());
+        } else if kind == LLVMTypeKind::LLVMFunctionTypeKind {
+            let mut result: String = "F";
+            result += this.MangleType(_type->Return());
+            let params: Vector<QualifiedType*> = _type->Parameters();
+            let mut i: u64 = 0u64;
+
+            while i < params.Size() {
+                result += this.MangleType(params[i]);
+                i += 1u64;
+            } ret result;
+        } else if kind == LLVMTypeKind::LLVMIntegerTypeKind {
+            let width: u32 = LLVMGetIntTypeWidth(_type->Value());
+            ret String(width == 1u32 ? "b" : (width == 8u32 ? "c" : (width == 16u32 ? "s" : (width == 32u32 ? "i" : "l"))));
+        } else if kind == LLVMTypeKind::LLVMDoubleTypeKind {
+            ret String("d");
+        } else if kind == LLVMTypeKind::LLVMFloatTypeKind {
+            ret String("f");
+        } else {
+            this.Error("Unknown type kind.");
+            ret String("");
+        }
+    }
+
+    priv MangleFunction(mut this: Mangler&, name: String, _type: QualifiedType*) -> String {
+        let mut result: String = this.prefix;
+        let names: Vector<String> = this.scope_manager->Namespaces();
+        names.PushBack(name);
+        let params: Vector<QualifiedType*> = _type->Parameters();
+        let mut i: u64 = 0u64;
+
+        while i < params.Size() {
+            result += this.MangleType(params[i]);
+            i += 1u64;
+        } ret result;
+    }
+
+    priv Error(this: Mangler&, string: i8*) {
+        printf("Mangler error: %s\n", string);
+        exit(1i32);
+    }
+};
+
 class Compiler {
+    priv mangler: Mangler,
     priv type_manager: TypeManager,
     priv scope_manager: ScopeManager,
     pub include_paths: Vector<String>,
@@ -590,6 +658,7 @@ class Compiler {
         LLVMDisposeMessage(err);
         this.target_machine = LLVMCreateTargetMachine(this.target, this.triple, "generic", "", LLVMCodeGenOptLevel::LLVMCodeGenLevelDefault, LLVMRelocMode::LLVMRelocDefault, LLVMCodeModel::LLVMCodeModelDefault);
         this.layout = LLVMCreateTargetDataLayout(this.target_machine);
+        mangler.scope_manager = &this.scope_manager;
     }
 
     ~Compiler(mut this: Compiler&) {
@@ -678,10 +747,10 @@ class Compiler {
                     let pointer: LLVMValueRef = LLVMBuildAlloca(this.builder, param_types[k]->Value(), "");
 
                     LLVMPositionBuilderAtEnd(this.builder, current);
-                    this.scope_manager.Set(param->name, SymbolKind::Parameter, QualifiedValue(pointer, this.type_manager.Pointer(param_types[k], param->is_mutable)));
+                    this.scope_manager.Set(param->name, SymbolKind::Parameter, QualifiedValue(pointer, this.type_manager.Pointer(param_types[k], param->is_mutable)), false);
                     LLVMBuildStore(this.builder, LLVMGetParam(this.forwards[i].right, k as u32), pointer);
                 } else {
-                    this.scope_manager.Set(param->name, SymbolKind::Parameter, QualifiedValue(LLVMGetParam(this.forwards[i].right, k as u32), param_types[k]));
+                    this.scope_manager.Set(param->name, SymbolKind::Parameter, QualifiedValue(LLVMGetParam(this.forwards[i].right, k as u32), param_types[k]), false);
                 } k += 1u64;
             }
 
@@ -706,7 +775,7 @@ class Compiler {
             this.CompileExtern(decl as ExternBlockNode*);
         } else if decl->node_type == ASTNodeType::TYPE_DECL {
             let type_decl: TypeDeclNode* = decl as TypeDeclNode*;
-            this.scope_manager.Set(type_decl->name, SymbolKind::Type, QualifiedValue(null, this.CompileType(type_decl->_type)));
+            this.scope_manager.Set(type_decl->name, SymbolKind::Type, QualifiedValue(null, this.CompileType(type_decl->_type)), false);
         } else {
             this.Error((String("Unknown declaration '") + ASTNodeTypeToString(decl->node_type) + "'.").Data());
         }
@@ -791,7 +860,7 @@ class Compiler {
         }
 
         let global: LLVMValueRef = LLVMAddGlobal(this.module, _type.Value(), constant_decl->name.Data());
-        this.scope_manager.Set(constant_decl->name, SymbolKind::Variable, QualifiedValue(global, this.type_manager.Pointer(_type, false)));
+        this.scope_manager.Set(constant_decl->name, SymbolKind::Variable, QualifiedValue(global, this.type_manager.Pointer(_type, false)), false);
         LLVMSetLinkage(global, LLVMLinkage::LLVMPrivateLinkage);
         LLVMSetInitializer(global, initializer.Value());
         LLVMSetGlobalConstant(global, 1i32);
@@ -858,7 +927,7 @@ class Compiler {
 
         let func_type: LLVMTypeRef = LLVMFunctionType(return_type->Value(), param_types.Data(), param_types.Size() as u32, func_decl->_type->var_arg ? 1i32 : 0i32);
         let function: LLVMValueRef = LLVMAddFunction(this.module, func_decl->name.Data(), func_type);
-        this.scope_manager.Set(func_decl->name, SymbolKind::Function, QualifiedValue(function, this.type_manager.Pointer(this.type_manager.Function(func_type, params, return_type), false)));
+        this.scope_manager.Set(func_decl->name, SymbolKind::Function, QualifiedValue(function, this.type_manager.Pointer(this.type_manager.Function(func_type, params, return_type), false)), false);
         let mut j: u64 = 0u64;
 
         while j < attributes.Size() {
@@ -886,7 +955,7 @@ class Compiler {
         }
 
         let struct_type: LLVMTypeRef = LLVMStructCreateNamed(this.context, class_decl->name.Data());
-        this.scope_manager.Set(class_decl->name, SymbolKind::Type, QualifiedValue(null, this.type_manager.Class(struct_type, fields)));
+        this.scope_manager.Set(class_decl->name, SymbolKind::Type, QualifiedValue(null, this.type_manager.Class(struct_type, fields)), false);
         LLVMStructSetBody(struct_type, field_types.Data(), field_types.Size() as u32, 0i32);
     }
 
@@ -898,7 +967,7 @@ class Compiler {
             ret;
         }
 
-        this.scope_manager.Set(enum_decl->name, SymbolKind::Type, QualifiedValue(null, underlying_type));
+        this.scope_manager.Set(enum_decl->name, SymbolKind::Type, QualifiedValue(null, underlying_type), false);
         let mut value: LLVMValueRef = LLVMConstInt(underlying_type.Value(), 0u64, underlying_type.IsSigned() ? 1i32 : 0i32);
         this.scope_manager.PushScope(enum_decl->name, true);
         let mut i: u64 = 0u64;
@@ -917,7 +986,7 @@ class Compiler {
                 value = LLVMConstAdd(value, LLVMConstInt(underlying_type.Value(), 1u64, underlying_type.IsSigned() ? 1i32 : 0i32));
             }
 
-            this.scope_manager.Set(enum_decl->values[i].left, SymbolKind::Constant, QualifiedValue(value, underlying_type));
+            this.scope_manager.Set(enum_decl->values[i].left, SymbolKind::Constant, QualifiedValue(value, underlying_type), false);
             i += 1u64;
         }
 
@@ -1099,7 +1168,7 @@ class Compiler {
         let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
         LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
         let pointer: LLVMValueRef = LLVMBuildAlloca(this.builder, _type.Value(), "");
-        this.scope_manager.Set(variable->name, SymbolKind::Variable, QualifiedValue(pointer, this.type_manager.Pointer(_type, variable->is_mutable)));
+        this.scope_manager.Set(variable->name, SymbolKind::Variable, QualifiedValue(pointer, this.type_manager.Pointer(_type, variable->is_mutable)), false);
         LLVMPositionBuilderAtEnd(this.builder, current);
 
         if variable->initializer != null {

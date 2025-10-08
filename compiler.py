@@ -411,7 +411,7 @@ class Class:
             _arguments = [self.__compiler.ProcessType(i) for i in arguments]
 
         if name in self.__elements and arguments is None:
-            assert self.__elements[name]["access"] == "public" or self.__compiler.scopeManager.Class == self, \
+            assert self.__elements[name]["access"] == "public" or self.__compiler.scopeManager.Class == self or pointer is not None, \
                 f"Variable '{name}' is not accessible."
 
             if pointer is not None:
@@ -422,7 +422,8 @@ class Class:
 
         if name in self.__functions and arguments is None:
             function = self.__functions[name].copy()
-            assert function["access"] == "public" or self.__compiler.scopeManager.Class == self, \
+
+            assert function["access"] == "public" or self.__compiler.scopeManager.Class == self or pointer is not None, \
                 f"Function '{name}' is not accessible."
 
             if pointer is not None:

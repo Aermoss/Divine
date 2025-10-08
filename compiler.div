@@ -126,12 +126,16 @@ func LLVMAddressOf(value: LLVMValueRef) -> LLVMValueRef {
 }
 
 class QualifiedType {
-    priv pointee: QualifiedType* = null, priv reference: bool = false,
-    priv value: LLVMTypeRef, priv mutable: bool = false, priv signed: bool = false,
-    priv fields: Map<String, QualifiedType*>, priv _class: bool = false,
+    priv value: LLVMTypeRef, priv pointee: QualifiedType* = null,
+    priv reference: bool = false, priv mutable: bool = false, priv signed: bool = false,
+
+    pub fields: Map<String, Pair<TokenType, QualifiedType*>>,
+    pub methods: Map<String, Pair<TokenType, Pair<LLVMValueRef, QualifiedType*>>>,
+    priv _class: bool = false,
+
     pub sret: QualifiedType* = null, pub byref: QualifiedType* = null,
-    priv return: QualifiedType* = null, priv _function: bool = false,
-    pub params: Vector<QualifiedType*>
+    priv params: Vector<QualifiedType*>, priv return: QualifiedType* = null,
+    priv _function: bool = false
 } impl {
     QualifiedType(mut this: QualifiedType&, value: LLVMTypeRef, signed: bool) {
         (this.value, this.signed) = (value, signed);
@@ -141,8 +145,8 @@ class QualifiedType {
         (this.value, this.params, this.return, this._function) = (value, params, return, true);
     }
 
-    QualifiedType(mut this: QualifiedType&, value: LLVMTypeRef, mutable: bool, fields: Map<String, QualifiedType*>) {
-        (this.value, this.mutable, this.fields, this._class) = (value, mutable, fields, true);
+    QualifiedType(mut this: QualifiedType&, value: LLVMTypeRef, mutable: bool, dummy: bool) {
+        (this.value, this.mutable, this._class) = (value, mutable, true);
     }
 
     QualifiedType(mut this: QualifiedType&, value: LLVMTypeRef, mutable: bool, reference: bool, pointee: QualifiedType*) {
@@ -196,11 +200,18 @@ class QualifiedType {
         }
     }
 
-    pub Fields(this: QualifiedType&) -> Map<String, QualifiedType*> {
+    pub Fields(this: QualifiedType&) -> Map<String, Pair<TokenType, QualifiedType*>>& {
         if !this._class {
             printf("Not a class!\n");
             exit(1i32);
         } ret this.fields;
+    }
+
+    pub Methods(this: QualifiedType&) -> Map<String, Pair<TokenType, Pair<LLVMValueRef, QualifiedType*>>>& {
+        if !this._class {
+            printf("Not a class!\n");
+            exit(1i32);
+        } ret this.methods;
     }
 
     pub Index(this: QualifiedType&, name: String) -> i64 {
@@ -260,8 +271,8 @@ class TypeManager {
         ret _type;
     }
 
-    pub Class(mut this: TypeManager&, value: LLVMTypeRef, fields: Map<String, QualifiedType*>) -> QualifiedType* {
-        let _type: QualifiedType* = new QualifiedType(value, false, fields);
+    pub Class(mut this: TypeManager&, value: LLVMTypeRef) -> QualifiedType* {
+        let _type: QualifiedType* = new QualifiedType(value, false, false);
         this.types.PushBack(_type);
         ret _type;
     }
@@ -283,7 +294,8 @@ class TypeManager {
             let mut copy: QualifiedType* = null;
 
             if _type->IsClass() {
-                copy = new QualifiedType(_type->Value(), mutable, _type->Fields());
+                copy = new QualifiedType(_type->Value(), mutable, false);
+                (copy->fields, copy->methods) = (_type->fields, _type->methods);
             } else if _type->IsPointer() {
                 copy = new QualifiedType(_type->Value(), mutable, _type->IsReference(), _type->Pointee());
             } else {
@@ -305,10 +317,15 @@ class TypeManager {
 
 class QualifiedValue {
     priv value: LLVMValueRef,
-    priv _type: QualifiedType*
+    priv _type: QualifiedType*,
+    pub instance: LLVMValueRef = null
 } impl {
     QualifiedValue(mut this: QualifiedValue&, value: LLVMValueRef, _type: QualifiedType*) {
         (this.value, this._type) = (value, _type);
+    }
+
+    QualifiedValue(mut this: QualifiedValue&, value: LLVMValueRef, _type: QualifiedType*, instance: LLVMValueRef) {
+        (this.value, this._type, this.instance) = (value, _type, instance);
     }
 
     ~QualifiedValue(this: QualifiedValue&) {}
@@ -385,6 +402,16 @@ class Scope {
             } i += 1u64;
         } ret false;
     }
+    
+    pub Has(this: Scope&, name: String, kind: SymbolKind) -> bool {
+        let mut i: u64 = 0u64;
+
+        while i < this.symbols.Size() {
+            if this.symbols[i]->name == name && this.symbols[i]->kind == kind {
+                ret true;
+            } i += 1u64;
+        } ret false;
+    }
 
     pub Set(mut this: Scope&, name: String, kind: SymbolKind, value: QualifiedValue, overload: bool) {
         if this.Has(name) && !overload {
@@ -400,6 +427,16 @@ class Scope {
 
         while i < this.symbols.Size() {
             if this.symbols[i]->name == name {
+                ret this.symbols[i];
+            } i += 1u64;
+        } ret null;
+    }
+
+    pub Get(this: Scope&, name: String, kind: SymbolKind) -> Symbol* {
+        let mut i: u64 = 0u64;
+
+        while i < this.symbols.Size() {
+            if this.symbols[i]->name == name && this.symbols[i]->kind == kind {
                 ret this.symbols[i];
             } i += 1u64;
         } ret null;
@@ -462,8 +499,23 @@ class ScopeManager {
         let mut scope: Scope* = this.current;
 
         while scope != null {
-            if scope->Has(name) { ret true; }
-            scope = scope->parent;
+            if scope->Has(name) {
+                ret true;
+            } else {
+                scope = scope->parent;
+            }
+        } ret false;
+    }
+
+    pub Has(this: ScopeManager&, name: String, kind: SymbolKind) -> bool {
+        let mut scope: Scope* = this.current;
+
+        while scope != null {
+            if scope->Has(name, kind) {
+                ret true;
+            } else {
+                scope = scope->parent;
+            }
         } ret false;
     }
 
@@ -475,8 +527,23 @@ class ScopeManager {
         let mut scope: Scope* = this.current;
 
         while scope != null {
-            if scope->Has(name) { ret scope->Get(name); }
-            scope = scope->parent;
+            if scope->Has(name) {
+                ret scope->Get(name);
+            } else {
+                scope = scope->parent;
+            }
+        } ret null;
+    }
+
+    pub Get(this: ScopeManager&, name: String, kind: SymbolKind) -> Symbol* {
+        let mut scope: Scope* = this.current;
+
+        while scope != null {
+            if scope->Has(name, kind) {
+                ret scope->Get(name, kind);
+            } else {
+                scope = scope->parent;
+            }
         } ret null;
     }
 
@@ -490,12 +557,11 @@ class ScopeManager {
             } scope = scope->parent;
         }
 
-        if inverse.Size() == 0u64 { ret inverse; }
-        let mut i: u64 = inverse.Size() - 1u64;
         let mut result: Vector<String>;
+        let mut i: u64 = inverse.Size();
 
-        while i >= 0u64 {
-            result.PushBack(inverse[i]);
+        while i > 0u64 {
+            result.PushBack(inverse[i - 1u64]);
             i -= 1u64;
         } ret result;
     }
@@ -663,6 +729,7 @@ class Compiler {
     priv mangler: Mangler,
     priv mangling: bool = true,
     priv type_manager: TypeManager,
+    priv _class: QualifiedType* = null,
     priv scope_manager: ScopeManager,
     pub include_paths: Vector<String>,
     priv included_paths: Vector<String>,
@@ -924,7 +991,7 @@ class Compiler {
         }
     }
 
-    priv CompileFunction(mut this: Compiler&, func_decl: FunctionDeclNode*) {
+    priv CompileFunction(mut this: Compiler&, func_decl: FunctionDeclNode*) -> QualifiedValue {
         let (mut params: Vector<QualifiedType*>, mut param_types: Vector<LLVMTypeRef>);
         let mut return_type: QualifiedType* = this.CompileType(func_decl->_type->return_type);
         let mut attributes: Vector<LLVMTypeRef>;
@@ -970,7 +1037,8 @@ class Compiler {
         }
 
         let function: LLVMValueRef = LLVMAddFunction(this.module, name.Data(), _type->Value());
-        this.scope_manager.Set(func_decl->name, SymbolKind::Function, QualifiedValue(function, this.type_manager.Pointer(_type, false)), mangling);
+        let value: QualifiedValue = QualifiedValue(function, this.type_manager.Pointer(_type, false));
+        this.scope_manager.Set(func_decl->name, SymbolKind::Function, value, mangling);
         let mut j: u64 = 0u64;
 
         while j < attributes.Size() {
@@ -982,24 +1050,47 @@ class Compiler {
 
         if func_decl->body != null {
             this.forwards.PushBack(Pair<FunctionDeclNode*, LLVMValueRef>(func_decl, function));
-        }
+        } ret value;
     }
 
     priv CompileClass(mut this: Compiler&, class_decl: ClassDeclNode*) {
+        let mut _class: QualifiedType& = this.type_manager.Class(LLVMStructCreateNamed(this.context, class_decl->name.Data()));
+        this.scope_manager.Set(class_decl->name, SymbolKind::Type, QualifiedValue(null, _class), false);
         let mut field_types: Vector<LLVMTypeRef>;
-        let mut fields: Map<String, QualifiedType*>;
         let mut i: u64 = 0u64;
 
         while i < class_decl->fields.Size() {
-            let field: FieldNode* = class_decl->fields[i];
-            fields[field->name] = this.CompileType(field->field_type);
-            field_types.PushBack(fields[field->name]->Value());
+            let field: Pair<TokenType, FieldNode*>& = class_decl->fields[i];
+            let field_type: QualifiedType& = this.CompileType(field.right->field_type);
+            _class.fields[field.right->name] = Pair<TokenType, QualifiedType*>(field.left, field_type);
+            field_types.PushBack(field_type.Value());
             i += 1u64;
         }
 
-        let struct_type: LLVMTypeRef = LLVMStructCreateNamed(this.context, class_decl->name.Data());
-        this.scope_manager.Set(class_decl->name, SymbolKind::Type, QualifiedValue(null, this.type_manager.Class(struct_type, fields)), false);
-        LLVMStructSetBody(struct_type, field_types.Data(), field_types.Size() as u32, 0i32);
+        this._class = _class;
+        LLVMStructSetBody(_class.Value(), field_types.Data(), field_types.Size() as u32, 0i32);
+        this.scope_manager.PushScope(class_decl->name, true);
+        let (mut j: u64, mut k: u64) = (0u64, 0u64);
+
+        while j < class_decl->constructors.Size() {
+            let method: QualifiedValue = this.CompileFunction(class_decl->constructors[j]);
+            _class.methods[class_decl->constructors[j]->name] = Pair<TokenType, Pair<LLVMValueRef, QualifiedType*>>(TokenType::PUBLIC, Pair<LLVMValueRef, QualifiedType*>(method.Value(), method.Type()));
+            j += 1u64;
+        }
+
+        if class_decl->destructor != null {
+            let method: QualifiedValue = this.CompileFunction(class_decl->destructor);
+            _class.methods[class_decl->destructor->name] = Pair<TokenType, Pair<LLVMValueRef, QualifiedType*>>(TokenType::PUBLIC, Pair<LLVMValueRef, QualifiedType*>(method.Value(), method.Type()));
+        }
+
+        while k < class_decl->methods.Size() {
+            let method: QualifiedValue = this.CompileFunction(class_decl->methods[k].right);
+            _class.methods[class_decl->methods[k].right->name] = Pair<TokenType, Pair<LLVMValueRef, QualifiedType*>>(class_decl->methods[k].left, Pair<LLVMValueRef, QualifiedType*>(method.Value(), method.Type()));
+            k += 1u64;
+        }
+
+        this.scope_manager.PopScope();
+        this._class = null;
     }
 
     priv CompileEnum(mut this: Compiler&, enum_decl: EnumDeclNode*) {
@@ -1071,8 +1162,7 @@ class Compiler {
 
     priv CompileStatement(mut this: Compiler&, stmt: ASTNode*) {
         if stmt->node_type == ASTNodeType::RETURN_STMT {
-            let ret_stmt: ReturnStmtNode* = stmt as ReturnStmtNode*;
-            LLVMBuildRet(this.builder, this.CompileExpression(ret_stmt->value, false).Value());
+            this.CompileReturn(stmt as ReturnStmtNode*);
         } else if stmt->node_type == ASTNodeType::EXPRESSION_STMT {
             let expr_stmt: ExpressionStmtNode* = stmt as ExpressionStmtNode*;
             this.CompileExpression(expr_stmt->expression, false);
@@ -1090,6 +1180,14 @@ class Compiler {
             this.CompileAssignment(stmt as AssignmentNode*);
         } else {
             this.Error((String("Unknown statement '") + ASTNodeTypeToString(stmt->node_type) + "'.").Data());
+        }
+    }
+
+    priv CompileReturn(mut this: Compiler&, ret_stmt: ReturnStmtNode*) {
+        if ret_stmt->value != null {
+            LLVMBuildRet(this.builder, this.CompileExpression(ret_stmt->value, false).Value());
+        } else {
+            LLVMBuildRetVoid(this.builder);
         }
     }
 
@@ -1622,6 +1720,10 @@ class Compiler {
         let mut args: Vector<LLVMValueRef>;
         let mut i: u64 = 0u64;
 
+        if _func.instance != null {
+            args.PushBack(_func.instance);
+        }
+
         while i < call->arguments.Size() {
             let arg: ASTNode* = call->arguments[i];
 
@@ -1685,36 +1787,60 @@ class Compiler {
     }
 
     priv CompileMemberAccess(mut this: Compiler&, member_access: MemberAccessNode*, pointer: bool) -> QualifiedValue {
-        let mut object: QualifiedValue = this.CompileExpression(member_access->object, true);
+        let mut instance: QualifiedValue = this.CompileExpression(member_access->instance, true);
 
         if member_access->arrow {
-            object = QualifiedValue(LLVMBuildLoad2(this.builder, object.Type().Pointee().Value(), object.Value(), ""), object.Type().Pointee());
+            instance = QualifiedValue(LLVMBuildLoad2(this.builder, instance.Type().Pointee().Value(), instance.Value(), ""), instance.Type().Pointee());
 
-            if !object.Type().IsPointer() {
+            if !instance.Type().IsPointer() {
                 this.Error("Expected a pointer.");
                 ret QualifiedValue(null, null);
             }
         }
 
-        if !object.Type().Pointee().IsClass() {
+        if !instance.Type().Pointee().IsClass() {
             this.Error("Cannot access member of non-class type.");
             ret QualifiedValue(null, null);
         }
 
-        let index: i64 = object.Type().Pointee().Index(member_access->member);
+        let mut state: bool = true;
+        let index: i64 = instance.Type().Pointee().Index(member_access->member);
+        if this._class != null { state = (*this._class) != instance.Type().Pointee(); }
 
         if index == -1i64 {
-            this.Error((String("Class does not have member '") + member_access->member + "'.").Data());
+            if instance.Type().Pointee().Methods().Has(member_access->member) {
+                let value: Pair<TokenType, Pair<LLVMValueRef, QualifiedType*>>& = instance.Type().Pointee().Methods()[member_access->member];
+
+                if value.left != TokenType::PUBLIC && state {
+                    this.Error((String("Method '") + member_access->member + "' is private.").Data());
+                    ret QualifiedValue(null, null);
+                } else {
+                    if pointer {
+                        ret QualifiedValue(value.right.left, value.right.right, instance.Value());
+                    } else {
+                        this.Error("Invalid pointer member access.");
+                        ret QualifiedValue(null, null);
+                    }
+                }
+            } else {
+                this.Error((String("Class does not have member '") + member_access->member + "'.").Data());
+                ret QualifiedValue(null, null);
+            }
+        }
+
+        let field: Pair<TokenType, QualifiedType*>& = instance.Type().Pointee().Fields()[member_access->member];
+
+        if field.left != TokenType::PUBLIC && state {
+            this.Error((String("Field '") + member_access->member + "' is private.").Data());
             ret QualifiedValue(null, null);
         }
 
-        let member_pointer: LLVMValueRef = LLVMBuildStructGEP2(this.builder, object.Type().Pointee().Value(), object.Value(), index as u32, "");
-        let member_type: QualifiedType& = object.Type().Pointee().Fields()[member_access->member];
+        let field_pointer: LLVMValueRef = LLVMBuildStructGEP2(this.builder, instance.Type().Pointee().Value(), instance.Value(), index as u32, "");
 
         if !pointer {
-            ret QualifiedValue(LLVMBuildLoad2(this.builder, member_type.Value(), member_pointer, ""), member_type);
+            ret QualifiedValue(LLVMBuildLoad2(this.builder, field.right->Value(), field_pointer, ""), field.right);
         } else {
-            ret QualifiedValue(member_pointer, this.type_manager.Pointer(member_type, object.Type().Pointee().IsMutable()));
+            ret QualifiedValue(field_pointer, this.type_manager.Pointer(field.right, instance.Type().Pointee().IsMutable()));
         }
     }
 
@@ -2029,21 +2155,14 @@ class Compiler {
             } else if primitive_type->type_name == "void" {
                 ret this.type_manager.Primitive(LLVMVoidTypeInContext(this.context), false);
             } else {
-                if !this.scope_manager.Has(primitive_type->type_name) {
-                    this.Error((String("Symbol '") + primitive_type->type_name + "' not found.").Data());
-                    ret null;
-                }
+                if this.scope_manager.Has(primitive_type->type_name, SymbolKind::Type) {
+                    let _type: QualifiedType& = this.scope_manager.Get(primitive_type->type_name, SymbolKind::Type)->value.Type();
 
-                let symbol: Symbol* = this.scope_manager.Get(primitive_type->type_name);
-
-                if symbol->kind == SymbolKind::Type {
-                    let _type: QualifiedType& = symbol->value.Type();
-
-                    if _type.IsPrimitive() { ret _type; } else {
+                    if _type.IsPrimitive() || _type.IsFunction() { ret _type; } else {
                         ret this.type_manager.Copy(_type, primitive_type->mutable);
                     }
                 } else {
-                    this.Error((String("Invalid symbol kind '") + SymbolKindToString(symbol->kind) + "'.").Data());
+                    this.Error((String("Type '") + primitive_type->type_name + "' not found.").Data());
                     ret null;
                 }
             }

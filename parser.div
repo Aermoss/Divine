@@ -190,21 +190,21 @@ class CallNode : ASTNode {
 };
 
 class MemberAccessNode : ASTNode {
-    pub object: ASTNode*,
+    pub instance: ASTNode*,
     pub member: String,
     pub arrow: bool
 } impl {
-    MemberAccessNode(mut this: MemberAccessNode&, object: ASTNode*, member: String, arrow: bool, line: u64, col: u64) : ASTNode(ASTNodeType::MEMBER_ACCESS, line, col) {
-        (this.object, this.member, this.arrow) = (object, member, arrow);
+    MemberAccessNode(mut this: MemberAccessNode&, instance: ASTNode*, member: String, arrow: bool, line: u64, col: u64) : ASTNode(ASTNodeType::MEMBER_ACCESS, line, col) {
+        (this.instance, this.member, this.arrow) = (instance, member, arrow);
     }
 };
 
 class IndexAccessNode : ASTNode {
-    pub object: ASTNode*,
+    pub instance: ASTNode*,
     pub index: ASTNode*
 } impl {
-    IndexAccessNode(mut this: IndexAccessNode&, object: ASTNode*, index: ASTNode*, line: u64, col: u64) : ASTNode(ASTNodeType::INDEX_ACCESS, line, col) {
-        (this.object, this.index) = (object, index);
+    IndexAccessNode(mut this: IndexAccessNode&, instance: ASTNode*, index: ASTNode*, line: u64, col: u64) : ASTNode(ASTNodeType::INDEX_ACCESS, line, col) {
+        (this.instance, this.index) = (instance, index);
     }
 };
 
@@ -319,22 +319,23 @@ class TypeDeclNode : ASTNode {
 class FieldNode : ASTNode {
     pub name: String,
     pub field_type: ASTNode*,
-    pub initializer: ASTNode*,
-    pub visibility: TokenType
+    pub initializer: ASTNode*
 } impl {
-    FieldNode(mut this: FieldNode&, name: String, field_type: ASTNode*, initializer: ASTNode*, visibility: TokenType, line: u64, col: u64) : ASTNode(ASTNodeType::FIELD, line, col) {
-        (this.name, this.field_type, this.initializer, this.visibility) = (name, field_type, initializer, visibility);
+    FieldNode(mut this: FieldNode&, name: String, field_type: ASTNode*, initializer: ASTNode*, line: u64, col: u64) : ASTNode(ASTNodeType::FIELD, line, col) {
+        (this.name, this.field_type, this.initializer) = (name, field_type, initializer);
     }
 };
 
 class ClassDeclNode : ASTNode {
     pub name: String,
-    pub fields: Vector<FieldNode*>,
-    pub methods: Vector<FunctionDeclNode*>,
-    pub base_class: String
+    pub fields: Vector<Pair<TokenType, FieldNode*>>,
+    pub methods: Vector<Pair<TokenType, FunctionDeclNode*>>,
+    pub constructors: Vector<FunctionDeclNode*>,
+    pub destructor: FunctionDeclNode* = null,
+    pub parents: Vector<String>
 } impl {
-    ClassDeclNode(mut this: ClassDeclNode&, name: String, base_class: String, line: u64, col: u64) : ASTNode(ASTNodeType::CLASS_DECL, line, col) {
-        (this.name, this.base_class) = (name, base_class);
+    ClassDeclNode(mut this: ClassDeclNode&, name: String, line: u64, col: u64) : ASTNode(ASTNodeType::CLASS_DECL, line, col) {
+        this.name = name;
     }
 };
 
@@ -361,15 +362,6 @@ class IncludeStmtNode : ASTNode {
     pub modules: Vector<String>
 } impl {
     IncludeStmtNode(mut this: IncludeStmtNode&, line: u64, col: u64) : ASTNode(ASTNodeType::INCLUDE_STMT, line, col) {}
-};
-
-class ImplBlockNode : ASTNode {
-    pub class_name: String,
-    pub methods: Vector<FunctionDeclNode*>
-} impl {
-    ImplBlockNode(mut this: ImplBlockNode&, class_name: String, line: u64, col: u64) : ASTNode(ASTNodeType::IMPL_BLOCK, line, col) {
-        this.class_name = class_name;
-    }
 };
 
 class RootNode : ASTNode {
@@ -968,11 +960,21 @@ class Parser {
     }
 
     priv ParseFunctionDeclaration(mut this: Parser&) -> ASTNode* {
-        let func_token: Token = this.Expect(TokenType::FUNC);
-        let name_token: Token = this.Expect(TokenType::NAME);
+        let token: Token = this.CurrentToken();
+        let mut name: String;
 
-        let mut func_type: FunctionTypeNode* = new FunctionTypeNode(func_token.lineno, func_token.column);
-        let mut func_decl: FunctionDeclNode* = new FunctionDeclNode(name_token.value, func_type, null, func_token.lineno, func_token.column);
+        if token._type == TokenType::TILDE || token._type == TokenType::FUNC || token._type == TokenType::PUBLIC || token._type == TokenType::PRIVATE {
+            this.Advance();
+
+            if token._type == TokenType::TILDE {
+                name += token.value;
+            }
+        }
+
+        name += this.Expect(TokenType::NAME).value;
+
+        let mut func_type: FunctionTypeNode* = new FunctionTypeNode(token.lineno, token.column);
+        let mut func_decl: FunctionDeclNode* = new FunctionDeclNode(name, func_type, null, token.lineno, token.column);
         this.Expect(TokenType::LPAREN);
 
         if this.CurrentToken()._type != TokenType::RPAREN {
@@ -990,7 +992,7 @@ class Parser {
         if this.Match(TokenType::ARROW) {
             func_type->return_type = this.ParseType();
         } else {
-            func_type->return_type = new PrimitiveTypeNode({ "void" } as String, false, func_token.lineno, func_token.column) as ASTNode*;
+            func_type->return_type = new PrimitiveTypeNode({ "void" } as String, false, token.lineno, token.column) as ASTNode*;
         }
 
         if this.CurrentToken()._type == TokenType::LBRACE {
@@ -1028,11 +1030,14 @@ class Parser {
     priv ParseClassDeclaration(mut this: Parser&) -> ASTNode* {
         let class_token: Token = this.Expect(TokenType::CLASS);
         let name_token: Token = this.Expect(TokenType::NAME);
-        let mut class_decl: ClassDeclNode* = new ClassDeclNode(name_token.value, String(""), class_token.lineno, class_token.column);
+        let mut class_decl: ClassDeclNode* = new ClassDeclNode(name_token.value, class_token.lineno, class_token.column);
 
         if this.Match(TokenType::COLON) {
-            let base_token: Token = this.Expect(TokenType::NAME);
-            class_decl->base_class = base_token.value;
+            class_decl->parents.PushBack(this.Expect(TokenType::NAME).value);
+
+            while !this.has_error && this.Match(TokenType::COMMA) {
+                class_decl->parents.PushBack(this.Expect(TokenType::NAME).value);
+            }
         }
 
         this.Expect(TokenType::LBRACE);
@@ -1053,8 +1058,7 @@ class Parser {
             let member_token: Token = this.CurrentToken();
 
             if member_token._type == TokenType::NAME {
-                let field: FieldNode* = this.ParseField(visibility);
-                class_decl->fields.PushBack(field);
+                class_decl->fields.PushBack(Pair<TokenType, FieldNode*>(visibility, this.ParseField()));
             } else {
                 printf("Parser error: Expected field declaration at line %d, column %d.\n", member_token.lineno, member_token.column);
                 this.has_error = true;
@@ -1064,14 +1068,38 @@ class Parser {
 
         this.Expect(TokenType::RBRACE);
 
-        if this.Match(TokenType::IMPL) {} else {
-            this.Expect(TokenType::SEMICOLON);
+        if this.Match(TokenType::IMPL) {
+            this.Expect(TokenType::LBRACE);
+
+            while !this.has_error && this.CurrentToken()._type != TokenType::RBRACE && this.CurrentToken()._type != TokenType::EOF {
+                let mut visibility: TokenType;
+                let visibility_token: Token = this.CurrentToken();
+
+                if visibility_token._type == TokenType::PUBLIC || visibility_token._type == TokenType::PRIVATE {
+                    class_decl->methods.PushBack(Pair<TokenType, FunctionDeclNode*>(visibility_token._type, this.ParseFunctionDeclaration() as FunctionDeclNode*));
+                } else {
+                    if this.CurrentToken()._type == TokenType::TILDE {
+                        if class_decl->destructor != null {
+                            printf("Parser error: Multiple destructor declarations at line %d, column %d.\n", visibility_token.lineno, visibility_token.column);
+                            this.has_error = true;
+                            break;
+                        }
+
+                        class_decl->destructor = this.ParseFunctionDeclaration() as FunctionDeclNode*;
+                    } else {
+                        class_decl->constructors.PushBack(this.ParseFunctionDeclaration() as FunctionDeclNode*);
+                    }
+                }
+            }
+
+            this.Expect(TokenType::RBRACE);
         }
 
+        this.Expect(TokenType::SEMICOLON);
         ret class_decl as ASTNode*;
     }
 
-    priv ParseField(mut this: Parser&, visibility: TokenType) -> FieldNode* {
+    priv ParseField(mut this: Parser&) -> FieldNode* {
         let token: Token = this.Expect(TokenType::NAME);
         let mut sizes: Vector<ASTNode*>;
 
@@ -1100,7 +1128,7 @@ class Parser {
             this.Advance();
         }
 
-        ret new FieldNode(token.value, field_type, initializer, visibility, token.lineno, token.column);
+        ret new FieldNode(token.value, field_type, initializer, token.lineno, token.column);
     }
 
     priv ParseEnumDeclaration(mut this: Parser&) -> ASTNode* {

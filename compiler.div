@@ -768,7 +768,22 @@ class Compiler {
 
     priv CompileConstant(mut this: Compiler&, constant_decl: ConstantDeclNode*) {
         let _type: QualifiedType& = this.CompileType(constant_decl->var_type);
-        let initializer: QualifiedValue = this.CompileConstantExpression(constant_decl->initializer);
+        let mut initializer: QualifiedValue;
+
+        if constant_decl->initializer->node_type != ASTNodeType::INITIALIZER_LIST {
+            initializer = this.CompileConstantExpression(constant_decl->initializer);
+        } else {
+            let mut values: Vector<LLVMValueRef>;
+            let initializer_list: InitializerListNode* = constant_decl->initializer as InitializerListNode*;
+            let mut i: u64 = 0u64;
+
+            while i < initializer_list->expressions.Size() {
+                values.PushBack(this.CompileConstantExpression(initializer_list->expressions[i]).Value());
+                i += 1u64;
+            }
+
+            initializer = QualifiedValue(LLVMConstNamedStruct(_type.Value(), values.Data(), values.Size() as u32), _type);
+        }
 
         if initializer.Type() != _type {
             this.Error((String("Incompatible types. ('") + LLVMTypeToString(_type.Value()) + "' != '" + LLVMTypeToString(initializer.Type().Value()) + "').").Data());
@@ -777,7 +792,9 @@ class Compiler {
 
         let global: LLVMValueRef = LLVMAddGlobal(this.module, _type.Value(), constant_decl->name.Data());
         this.scope_manager.Set(constant_decl->name, SymbolKind::Variable, QualifiedValue(global, this.type_manager.Pointer(_type, false)));
+        LLVMSetLinkage(global, LLVMLinkage::LLVMPrivateLinkage);
         LLVMSetInitializer(global, initializer.Value());
+        LLVMSetGlobalConstant(global, 1i32);
     }
 
     priv ProcessType(mut this: Compiler&, _type: QualifiedType*) -> QualifiedType* {

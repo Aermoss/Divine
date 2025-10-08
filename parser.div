@@ -2,7 +2,7 @@ include "divio", "divstr", "divvec", "divmap", "lexer.div" : *;
 
 enum ASTNodeType {
     LITERAL, IDENTIFIER, SCOPE_RESOLUTION, BINARY_OP, UNARY_OP, TERNARY,
-    CALL, MEMBER_ACCESS, INDEX_ACCESS, CAST,
+    CALL, MEMBER_ACCESS, INDEX_ACCESS, CAST, INITIALIZER_LIST,
 
     EXPRESSION_STMT, VARIABLE_DECL, CONSTANT_DECL, ASSIGNMENT, IF_STMT, WHILE_STMT, 
     RETURN_STMT, BREAK_STMT, CONTINUE_STMT, BLOCK_STMT,
@@ -26,6 +26,7 @@ func ASTNodeTypeToString(_type: ASTNodeType) -> String {
     else if _type == ASTNodeType::MEMBER_ACCESS { ret { "MEMBER_ACCESS" } as String; }
     else if _type == ASTNodeType::INDEX_ACCESS { ret { "INDEX_ACCESS" } as String; }
     else if _type == ASTNodeType::CAST { ret { "CAST" } as String; }
+    else if _type == ASTNodeType::INITIALIZER_LIST { ret { "INITIALIZER_LIST" } as String; }
     else if _type == ASTNodeType::EXPRESSION_STMT { ret { "EXPRESSION_STMT" } as String; }
     else if _type == ASTNodeType::VARIABLE_DECL { ret { "VARIABLE_DECL" } as String; }
     else if _type == ASTNodeType::CONSTANT_DECL { ret { "CONSTANT_DECL" } as String; }
@@ -125,6 +126,12 @@ class LiteralNode : ASTNode {
     LiteralNode(mut this: LiteralNode&, value: String, literal_type: TokenType, line: u64, col: u64) : ASTNode(ASTNodeType::LITERAL, line, col) {
         (this.value, this.literal_type) = (value, literal_type);
     }
+};
+
+class InitializerListNode : ASTNode {
+    pub expressions: Vector<ASTNode*>
+} impl {
+    InitializerListNode(mut this: InitializerListNode&, line: u64, col: u64) : ASTNode(ASTNodeType::INITIALIZER_LIST, line, col) {}
 };
 
 class IdentifierNode : ASTNode {
@@ -637,9 +644,7 @@ class Parser {
         if token._type == TokenType::INTEGER || token._type == TokenType::FLOAT || token._type == TokenType::STRING || token._type == TokenType::CHAR || token._type == TokenType::TRUE || token._type == TokenType::FALSE || token._type == TokenType::NULL {
             this.Advance();
             ret new LiteralNode(token.value, token._type, token.lineno, token.column) as ASTNode*;
-        }
-
-        if token._type == TokenType::NAME || token._type == TokenType::DOUBLE_COLON {
+        } else if token._type == TokenType::NAME || token._type == TokenType::DOUBLE_COLON {
             let mut node: ASTNode* = null;
 
             if token._type == TokenType::NAME {
@@ -651,18 +656,27 @@ class Parser {
                 let identifier: ASTNode* = new IdentifierNode(this.Expect(TokenType::NAME).value, token.lineno, token.column) as ASTNode*;
                 node = new ScopeResolutionNode(node, identifier, token.lineno, token.column) as ASTNode*;
             } ret node;
-        }
+        } else if token._type == TokenType::LBRACE {
+            this.Advance();
+            let mut initializer_list: InitializerListNode* = new InitializerListNode(token.lineno, token.column);
 
-        if token._type == TokenType::LPAREN {
+            if !this.Match(TokenType::RBRACE) {
+                initializer_list->expressions.PushBack(this.ParseExpression());
+
+                while this.Match(TokenType::COMMA) {
+                    initializer_list->expressions.PushBack(this.ParseExpression());
+                } this.Expect(TokenType::RBRACE);
+            } ret initializer_list as ASTNode*;
+        } else if token._type == TokenType::LPAREN {
             this.Advance();
             let expr: ASTNode* = this.ParseExpression();
             this.Expect(TokenType::RPAREN);
             ret expr;
+        } else {
+            printf("Parser error: Unexpected token %s at line %d, column %d.\n", TokenTypeToString(token._type).Data(), token.lineno, token.column);
+            this.has_error = true;
+            ret null;
         }
-
-        printf("Parser error: Unexpected token %s at line %d, column %d.\n", TokenTypeToString(token._type).Data(), token.lineno, token.column);
-        this.has_error = true;
-        ret null;
     }
 
     priv ParsePostfix(mut this: Parser&) -> ASTNode* {

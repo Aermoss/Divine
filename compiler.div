@@ -1038,7 +1038,7 @@ class Compiler {
         }
 
         this.CompileForwardDeclarations();
-        /* let err: i8* = null;
+        let err: i8* = null;
 
         if LLVMVerifyModule(this.module, LLVMVerifierFailureAction::LLVMAbortProcessAction, &err) != 0i32 {
             printf("Module verification failed: %s.\n", err);
@@ -1046,7 +1046,7 @@ class Compiler {
             ret null;
         }
 
-        LLVMDisposeMessage(err); */
+        LLVMDisposeMessage(err);
         this.scope_manager.builder = null;
         ret this.module;
     }
@@ -1970,7 +1970,7 @@ class Compiler {
             if !pointer {
                 ret this.CompileLiteral(expr as LiteralNode*);
             } else {
-                this.Error("Invalid pointer expression.");
+                this.Error("Invalid pointer literal expression.");
                 ret QualifiedValue(null, null);
             }
         } else if expr->node_type == ASTNodeType::CALL {
@@ -1979,7 +1979,7 @@ class Compiler {
             if !pointer || (pointer && value.Type().IsPointer()) {
                 ret value;
             } else {
-                this.Error("Invalid pointer expression.");
+                this.Error("Invalid pointer call expression.");
                 ret QualifiedValue(null, null);
             }
         } else if expr->node_type == ASTNodeType::TERNARY {
@@ -2000,10 +2000,12 @@ class Compiler {
                 ret QualifiedValue(null, null);
             }
         } else if expr->node_type == ASTNodeType::CAST {
-            if !pointer {
-                ret this.CompileCast(expr as CastNode*);
+            let value: QualifiedValue = this.CompileCast(expr as CastNode*, pointer);
+
+            if !pointer || (pointer && value.Type().IsPointer()) {
+                ret value;
             } else {
-                this.Error("Invalid pointer expression.");
+                this.Error("Invalid pointer cast expression.");
                 ret QualifiedValue(null, null);
             }
         } else if expr->node_type == ASTNodeType::MEMBER_ACCESS {
@@ -2014,7 +2016,7 @@ class Compiler {
             if !pointer {
                 ret this.CompileBinaryOperation(expr as BinaryOpNode*);
             } else {
-                this.Error("Invalid pointer expression.");
+                this.Error("Invalid pointer binary expression.");
                 ret QualifiedValue(null, null);
             }
         } else {
@@ -2187,7 +2189,7 @@ class Compiler {
             let _pointer: LLVMValueRef = LLVMBuildAlloca(this.builder, ret_type.sret->Value(), "");
             return = QualifiedValue(_pointer, this.type_manager.Pointer(ret_type.sret, true), true);
             LLVMPositionBuilderAtEnd(this.builder, current);
-            LLVMBuildStore(this.builder, value, LLVMBuildBitCast(this.builder, _pointer, ret_type.Value(), ""));
+            LLVMBuildStore(this.builder, value, LLVMBuildBitCast(this.builder, _pointer, LLVMPointerType(ret_type.Value(), 0u32), ""));
             this.scope_manager.RegisterInstance(return);
         }
 
@@ -2292,11 +2294,42 @@ class Compiler {
         }
     }
 
-    priv CompileCast(mut this: Compiler&, cast: CastNode*) -> QualifiedValue {
-        let value: QualifiedValue = this.CompileExpression(cast->expression, false);
-        let value_kind: LLVMTypeKind = LLVMGetTypeKind(value.Type().Value());
+    priv CompileCast(mut this: Compiler&, cast: CastNode*, pointer: bool) -> QualifiedValue {
         let target: QualifiedType& = this.CompileType(cast->target_type);
         let target_kind: LLVMTypeKind = LLVMGetTypeKind(target.Value());
+
+        if cast->expression->node_type == ASTNodeType::INITIALIZER_LIST {
+            if !target.IsClass() {
+                this.Error("Expected a class.");
+                ret QualifiedValue(null, null);
+            }
+
+            let mut params: Vector<QualifiedValue>;
+            let initializer_list: InitializerListNode* = cast->expression as InitializerListNode*;
+            let mut i: u64 = 0u64;
+
+            while i < initializer_list->expressions.Size() {
+                params.PushBack(this.CompileExpression(initializer_list->expressions[i], false));
+                i += 1u64;
+            }
+
+            let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
+            LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
+            let _pointer: LLVMValueRef = LLVMBuildAlloca(this.builder, target.Value(), "");
+            LLVMPositionBuilderAtEnd(this.builder, current);
+            let instance: QualifiedValue = QualifiedValue(_pointer, this.type_manager.Pointer(target, false));
+            this.CompileConstructor(target, instance, params);
+            this.scope_manager.RegisterInstance(instance);
+
+            if !pointer {
+                ret QualifiedValue(LLVMBuildLoad2(this.builder, target.Value(), instance.Value(), ""), target);
+            } else {
+                ret instance;
+            }
+        }
+
+        let value: QualifiedValue = this.CompileExpression(cast->expression, false);
+        let value_kind: LLVMTypeKind = LLVMGetTypeKind(value.Type().Value());
 
         if value.Type() == target {
             this.Error((String("Redundant cast. ('") + LLVMTypeToString(value.Type().Value()) + "' to '" + LLVMTypeToString(target.Value()) + "')").Data());

@@ -229,7 +229,8 @@ class VariableDeclNode : ASTNode {
     pub name: String,
     pub var_type: ASTNode*,
     pub initializer: ASTNode*,
-    pub is_mutable: bool
+    pub is_mutable: bool,
+    pub next: VariableDeclNode* = null
 } impl {
     VariableDeclNode(mut this: VariableDeclNode&, name: String, var_type: ASTNode*, initializer: ASTNode*, is_mutable: bool, line: u64, col: u64) : ASTNode(ASTNodeType::VARIABLE_DECL, line, col) {
         (this.name, this.var_type, this.initializer, this.is_mutable) = (name, var_type, initializer, is_mutable);
@@ -249,7 +250,8 @@ class ConstantDeclNode : ASTNode {
 class AssignmentNode : ASTNode {
     pub left: ASTNode*,
     pub right: ASTNode*,
-    pub operator: TokenType
+    pub operator: TokenType,
+    pub next: AssignmentNode* = null
 } impl {
     AssignmentNode(mut this: AssignmentNode&, left: ASTNode*, right: ASTNode*, operator: TokenType, line: u64, col: u64) : ASTNode(ASTNodeType::ASSIGNMENT, line, col) {
         (this.left, this.right, this.operator) = (left, right, operator);
@@ -812,16 +814,50 @@ class Parser {
         } else if token._type == TokenType::LBRACE {
             ret this.ParseBlockStatement();
         } else {
-            let expr: ASTNode* = this.ParseExpression();
+            let token: Token = this.CurrentToken();
 
-            if this.IsAssignmentOperator(this.CurrentToken()._type) {
-                let token: Token = this.Advance();
-                let assignment: AssignmentNode* = new AssignmentNode(expr, this.ParseExpression(), token._type, token.lineno, token.column);
+            if this.Match(TokenType::LPAREN) {
+                let mut current: AssignmentNode* = null;
+                let mut root: AssignmentNode* = null;
+
+                while root == null || this.Match(TokenType::COMMA) {
+                    let assignment: AssignmentNode* = new AssignmentNode(this.ParseExpression(), null, TokenType::ASSIGN, token.lineno, token.column);
+
+                    if root != null {
+                        current->next = assignment;
+                    } else {
+                        root = assignment;
+                    } current = assignment;
+                }
+
+                this.Expect(TokenType::RPAREN);
+                this.Expect(TokenType::ASSIGN);
+                this.Expect(TokenType::LPAREN);
+                current = root;
+
+                while current != null {
+                    current->right = this.ParseExpression();
+
+                    if current->next != null {
+                        this.Expect(TokenType::COMMA);
+                    } current = current->next;
+                }
+
+                this.Expect(TokenType::RPAREN);
                 this.Expect(TokenType::SEMICOLON);
-                ret assignment as ASTNode*;
+                ret root as ASTNode*;
             } else {
-                this.Expect(TokenType::SEMICOLON);
-                ret new ExpressionStmtNode(expr, token.lineno, token.column) as ASTNode*;
+                let expr: ASTNode* = this.ParseExpression();
+
+                if this.IsAssignmentOperator(this.CurrentToken()._type) {
+                    let token: Token = this.Advance();
+                    let assignment: AssignmentNode* = new AssignmentNode(expr, this.ParseExpression(), token._type, token.lineno, token.column);
+                    this.Expect(TokenType::SEMICOLON);
+                    ret assignment as ASTNode*;
+                } else {
+                    this.Expect(TokenType::SEMICOLON);
+                    ret new ExpressionStmtNode(expr, token.lineno, token.column) as ASTNode*;
+                }
             }
         }
     }
@@ -857,35 +893,67 @@ class Parser {
 
     priv ParseVariableDeclaration(mut this: Parser&) -> ASTNode* {
         let token: Token = this.Expect(TokenType::LET);
-        let is_mutable: bool = this.Match(TokenType::MUT);
-        let name_token: Token = this.Expect(TokenType::NAME);
-        let mut sizes: Vector<ASTNode*>;
+        let multiple: bool = this.Match(TokenType::LPAREN);
+        let mut current: VariableDeclNode* = null;
+        let mut root: VariableDeclNode* = null;
 
-        while !this.has_error && this.Match(TokenType::LBRACKET) {
-            if this.Match(TokenType::RBRACKET) {
-                sizes.PushBack(null);
-            } else {
-                sizes.PushBack(this.ParseExpression());
-                this.Expect(TokenType::RBRACKET);
+        while root == null || (multiple && root != null && this.Match(TokenType::COMMA)) {
+            let is_mutable: bool = this.Match(TokenType::MUT);
+            let name_token: Token = this.Expect(TokenType::NAME);
+            let mut sizes: Vector<ASTNode*>;
+
+            while !this.has_error && this.Match(TokenType::LBRACKET) {
+                if this.Match(TokenType::RBRACKET) {
+                    sizes.PushBack(null);
+                } else {
+                    sizes.PushBack(this.ParseExpression());
+                    this.Expect(TokenType::RBRACKET);
+                }
             }
+
+            this.Expect(TokenType::COLON);
+            let mut var_type: ASTNode* = this.ParseType();
+            let mut initializer: ASTNode* = null;
+            let mut i: u64 = 0u64;
+
+            while i < sizes.Size() {
+                var_type = new ArrayTypeNode(var_type, sizes[i], token.lineno, token.column) as ASTNode*;
+                i += 1u64;
+            }
+
+            let decl: VariableDeclNode* = new VariableDeclNode(name_token.value, var_type, null, is_mutable, token.lineno, token.column);
+
+            if root != null {
+                current->next = decl;
+            } else {
+                root = decl;
+            } current = decl;
         }
 
-        this.Expect(TokenType::COLON);
-        let mut var_type: ASTNode* = this.ParseType();
-        let mut initializer: ASTNode* = null;
-        let mut i: u64 = 0u64;
-
-        while i < sizes.Size() {
-            var_type = new ArrayTypeNode(var_type, sizes[i], token.lineno, token.column) as ASTNode*;
-            i += 1u64;
+        if multiple {
+            this.Expect(TokenType::RPAREN);
         }
 
         if this.Match(TokenType::ASSIGN) {
-            initializer = this.ParseExpression();
+            if multiple {
+                this.Expect(TokenType::LPAREN);
+            } current = root;
+
+            while current != null {
+                current->initializer = this.ParseExpression();
+
+                if current->next != null {
+                    this.Expect(TokenType::COMMA);
+                } current = current->next;
+            }
+
+            if multiple {
+                this.Expect(TokenType::RPAREN);
+            }
         }
 
         this.Expect(TokenType::SEMICOLON);
-        ret new VariableDeclNode(name_token.value, var_type, initializer, is_mutable, token.lineno, token.column) as ASTNode*;
+        ret root as ASTNode*;
     }
 
     priv ParseIfStatement(mut this: Parser&) -> ASTNode* {

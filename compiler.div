@@ -303,8 +303,6 @@ class QualifiedType {
         let (mut state: u64, mut i: u64) = (0u64, 0u64);
 
         while i < this.methods.Size() {
-            // printf("comparing %s with %s, %s\n", this.methods[i].left.name.Data(), name.Data(), this.methods[i].left.name == name ? "true" : "false");
-
             if this.methods[i].left.name == name {
                 if this.methods[i].left.visibility != TokenType::PUBLIC { // && this.compiler.class != this
                     if state < 1u64 { state = 1u64; }
@@ -312,7 +310,6 @@ class QualifiedType {
                     let (mut match: bool, mut j: u64) = (true, 0u64);
                     let _params: Vector<QualifiedType*>& = this.methods[i].right->Pointee().Parameters();
                     let offset: u64 = _params[0u64]->sret != null ? 2u64 : 1u64;
-                    // printf("%llu %llu\n", params.Size(), _params.Size() - offset);
 
                     if params.Size() != _params.Size() - offset {
                         i += 1u64;
@@ -321,7 +318,6 @@ class QualifiedType {
 
                     while params.Size() > j {
                         let mut _type: QualifiedType* = _params[j + offset];
-                        // printf("  param %llu: %s vs %s\n", j, LLVMTypeToString(params[j]->Value()).Data(), LLVMTypeToString(_type->Value()).Data());
 
                         if _type->byval != null {
                             _type = _type->byval;
@@ -338,8 +334,6 @@ class QualifiedType {
                             j += 1u64;
                         }
                     }
-
-                    // printf("  match = %s\n", match ? "true" : "false");
 
                     if !match {
                         state = 2u64;
@@ -1321,7 +1315,9 @@ class Compiler {
         let mut need_copy: bool = false;
 
         if params.Size() == 1u64 {
-            need_copy = params[0u64].Type().Pointee() == _class;
+            if params[0u64].Type().IsPointer() {
+                need_copy = params[0u64].Type().Pointee() == _class;
+            }
         }
 
         let param_types: Vector<QualifiedType*> = this.ValueToType(params);
@@ -1350,7 +1346,11 @@ class Compiler {
                 if !value.Null() { _params.PushBack(value); }
                 this.CompileConstructor(field.right.right, QualifiedValue(LLVMBuildStructGEP2(this.builder, ptr.Type().Pointee().Value(), ptr.Value(), _class.Index(field.left) as u32, ""), this.type_manager.Pointer(field.right.right, true)), _params);
             } else if !value.Null() {
-                LLVMBuildStore(this.builder, LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), LLVMBuildStructGEP2(this.builder, ptr.Type().Pointee().Value(), ptr.Value(), _class.Index(field.left) as u32, ""));
+                if value.Type().IsPointer() {
+                    value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
+                }
+
+                LLVMBuildStore(this.builder, value.Value(), LLVMBuildStructGEP2(this.builder, ptr.Type().Pointee().Value(), ptr.Value(), _class.Index(field.left) as u32, ""));
             } i += 1u64;
         }
 
@@ -1358,7 +1358,6 @@ class Compiler {
             let param_types: Vector<QualifiedType*> = this.ValueToType(params);
 
             if _class.Has(_class.name, param_types) {
-                printf("has_constructor: %s, is_constructed: %s, need_copy: %s\n", has_constructor ? "true" : "false", is_constructed ? "true" : "false", need_copy ? "true" : "false");
                 let method: Pair<Method, QualifiedType*>& = _class.Get(_class.name, param_types);
                 this.CompileCall2(QualifiedValue(method.left.value, method.right, ptr.Value()), params, false);
             } else {
@@ -1410,7 +1409,7 @@ class Compiler {
         }
 
         this._class = _class;
-        LLVMStructSetBody(_class.Value(), field_types.Data(), field_types.Size() as u32, 1i32);
+        LLVMStructSetBody(_class.Value(), field_types.Data(), field_types.Size() as u32, 0i32);
         this.scope_manager.PushScope(class_decl->name, true);
         let (mut j: u64, mut k: u64) = (0u64, 0u64);
 
@@ -1696,14 +1695,26 @@ class Compiler {
         LLVMPositionBuilderAtEnd(this.builder, current);
 
         if _type.IsClass() {
-            let params: Vector<QualifiedValue>;
+            let mut params: Vector<QualifiedValue>;
+
+            if variable->initializer != null {
+                if variable->initializer->node_type != ASTNodeType::INITIALIZER_LIST {
+                    params.PushBack(this.CompileExpression(variable->initializer, true));
+                } else {
+                    let initializer_list: InitializerListNode* = variable->initializer as InitializerListNode*;
+                    let mut i: u64 = 0u64;
+
+                    while i < initializer_list->expressions.Size() {
+                        params.PushBack(this.CompileExpression(initializer_list->expressions[i], false));
+                        i += 1u64;
+                    }
+                }
+            }
+
             let instance: QualifiedValue = QualifiedValue(pointer, this.type_manager.Pointer(_type, false));
             this.CompileConstructor(_type, instance, params);
             this.scope_manager.RegisterInstance(instance);
-            ret;
-        }
-
-        if variable->initializer != null {
+        } else if variable->initializer != null {
             let initializer: QualifiedValue = this.CompileExpression(variable->initializer, _type.IsReference());
 
             if initializer.Type() != _type {
@@ -1712,6 +1723,10 @@ class Compiler {
             }
 
             LLVMBuildStore(this.builder, initializer.Value(), pointer);
+        }
+
+        if variable->next != null {
+            this.CompileVariable(variable->next);
         }
     }
 
@@ -1834,7 +1849,13 @@ class Compiler {
         }
 
         LLVMBuildStore(this.builder, value.Value(), pointer.Value());
-        ret value;
+
+        if assignment->next != null {
+            this.CompileAssignment(assignment->next);
+            ret QualifiedValue(null, null);
+        } else {
+            ret value;
+        }
     }
 
     priv CompileConstantExpression(mut this: Compiler&, expr: ASTNode*) -> QualifiedValue {

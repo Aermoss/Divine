@@ -1555,12 +1555,12 @@ class Compiler:
 
     @Timer
     def VisitContinue(self, node):
-        self.InvokeDestructors()
+        # self.InvokeDestructors()
         self.Builder.branch(self.CompareBlock)
 
     @Timer
     def VisitBreak(self, node):
-        self.InvokeDestructors()
+        # self.InvokeDestructors()
         self.Builder.branch(self.EndBlock)
 
     @Timer

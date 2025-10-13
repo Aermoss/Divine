@@ -441,12 +441,24 @@ class TypeManager {
             let mut copy: QualifiedType* = null;
 
             if _type->IsClass() {
+                let mut i: u64 = 0u64;
                 copy = new QualifiedType(_type->Value(), mutable, _type->name);
-                (copy->fields, copy->methods) = (_type->fields, _type->methods);
+                copy->methods = _type->methods;
+
+                while _type->fields.Size() > i {
+                    let field: Pair<String, Pair<TokenType, QualifiedType*>>& = _type->fields[i];
+
+                    if field.right.right->IsClass() || field.right.right->IsPointer() {
+                        copy->fields[field.left] = Pair<TokenType, QualifiedType*>(field.right.left, this.Copy(field.right.right, mutable));
+                    } else {
+                        copy->fields[field.left] = field.right;
+                    } i += 1u64;
+                }
             } else if _type->IsPointer() {
                 copy = new QualifiedType(_type->Value(), mutable, _type->IsReference(), _type->Pointee());
             } else {
                 this.Error("Cannot copy primitive or function type.");
+                ret null;
             }
 
             this.types.PushBack(copy);
@@ -1330,17 +1342,15 @@ class Compiler {
             }
 
             if need_copy && !(has_constructor && !is_constructed) {
-                value = QualifiedValue(LLVMBuildLoad2(this.builder, field.right.right->Value(), LLVMBuildStructGEP2(this.builder, params[0u64].Type().Pointee().Value(), params[0u64].Value(), _class.Index(field.left) as u32, ""), ""), field.right.right);
+                value = QualifiedValue(LLVMBuildStructGEP2(this.builder, params[0u64].Type().Pointee().Value(), params[0u64].Value(), _class.Index(field.left) as u32, ""), this.type_manager.Pointer(field.right.right, true));
             }
 
             if field.right.right->IsClass() {
-                let _params: Vector<QualifiedValue>; // field initializer
-                this.CompileConstructor(field.right.right, QualifiedValue(LLVMBuildStructGEP2(this.builder, ptr.Type().Pointee().Value(), ptr.Value(), _class.Index(field.left) as u32, ""), this.type_manager.Pointer(field.right.right, true)), params);
-                continue;
-            }
-
-            if !value.Null() {
-                LLVMBuildStore(this.builder, value.Value(), LLVMBuildStructGEP2(this.builder, ptr.Type().Pointee().Value(), ptr.Value(), _class.Index(field.left) as u32, ""));
+                let mut _params: Vector<QualifiedValue>;
+                if !value.Null() { _params.PushBack(value); }
+                this.CompileConstructor(field.right.right, QualifiedValue(LLVMBuildStructGEP2(this.builder, ptr.Type().Pointee().Value(), ptr.Value(), _class.Index(field.left) as u32, ""), this.type_manager.Pointer(field.right.right, true)), _params);
+            } else if !value.Null() {
+                LLVMBuildStore(this.builder, LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), LLVMBuildStructGEP2(this.builder, ptr.Type().Pointee().Value(), ptr.Value(), _class.Index(field.left) as u32, ""));
             } i += 1u64;
         }
 
@@ -1400,7 +1410,7 @@ class Compiler {
         }
 
         this._class = _class;
-        LLVMStructSetBody(_class.Value(), field_types.Data(), field_types.Size() as u32, 0i32);
+        LLVMStructSetBody(_class.Value(), field_types.Data(), field_types.Size() as u32, 1i32);
         this.scope_manager.PushScope(class_decl->name, true);
         let (mut j: u64, mut k: u64) = (0u64, 0u64);
 
@@ -2161,7 +2171,7 @@ class Compiler {
         }
 
         if return.Null() {
-            ret QualifiedValue(value, this.type_manager.Primitive(ret_type.Value(), false));
+            ret QualifiedValue(value, ret_type);
         } else {
             if !pointer {
                 ret QualifiedValue(LLVMBuildLoad2(this.builder, return.Type().Pointee().Value(), return.Value(), ""), return.Type().Pointee());

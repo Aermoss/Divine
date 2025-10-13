@@ -1008,15 +1008,15 @@ class Compiler:
         value = ir.Constant(type, 0)
 
         for i in node["body"]:
-            if i["value"]:
+            if i["value"] is not None:
                 value = self.VisitConstExpr(i["value"])
                 assert isinstance(value.type, ir.IntType), f"Expected an {type._to_string2()}, got {value.type}."
                 assert value.type == type, f"Expected an {type._to_string2()}, got {value.type._to_string2()}."
 
-            else:
-                value = ir.Constant(type, value.constant + 1)
-
             self.scopeManager.Set(i["name"], value)
+
+            if i["value"] is None:
+                value = ir.Constant(type, value.constant + 1)
 
         self.scopeManager.PopScope()
 

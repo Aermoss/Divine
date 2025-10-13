@@ -125,6 +125,17 @@ func LLVMAddressOf(value: LLVMValueRef) -> LLVMValueRef {
     }
 }
 
+class Field {
+    pub initializer: ASTNode*,
+    pub visibility: TokenType
+} impl {
+    Field(mut this: Field&, initializer: ASTNode*, visibility: TokenType) {
+        (this.initializer, this.visibility) = (initializer, visibility);
+    }
+
+    ~Field(this: Field&) {}
+};
+
 class Method {
     pub name: String,
     pub value: LLVMValueRef,
@@ -141,7 +152,7 @@ class QualifiedType {
     priv value: LLVMTypeRef, priv pointee: QualifiedType* = null,
     priv reference: bool = false, priv mutable: bool = false, priv signed: bool = false,
 
-    pub fields: Map<String, Pair<TokenType, QualifiedType*>>,
+    pub fields: Map<String, Pair<Field, QualifiedType*>>,
     pub methods: Vector<Pair<Method, QualifiedType*>>,
     pub name: String, priv _class: bool = false,
 
@@ -212,7 +223,7 @@ class QualifiedType {
         }
     }
 
-    pub Fields(this: QualifiedType&) -> Map<String, Pair<TokenType, QualifiedType*>>& {
+    pub Fields(this: QualifiedType&) -> Map<String, Pair<Field, QualifiedType*>>& {
         if !this._class {
             printf("Not a class!\n");
             exit(1i32);
@@ -440,10 +451,10 @@ class TypeManager {
                 copy->methods = _type->methods;
 
                 while _type->fields.Size() > i {
-                    let field: Pair<String, Pair<TokenType, QualifiedType*>>& = _type->fields[i];
+                    let field: Pair<String, Pair<Field, QualifiedType*>>& = _type->fields[i];
 
                     if field.right.right->IsClass() || field.right.right->IsPointer() {
-                        copy->fields[field.left] = Pair<TokenType, QualifiedType*>(field.right.left, this.Copy(field.right.right, mutable));
+                        copy->fields[field.left] = Pair<Field, QualifiedType*>(field.right.left, this.Copy(field.right.right, mutable));
                     } else {
                         copy->fields[field.left] = field.right;
                     } i += 1u64;
@@ -1194,11 +1205,20 @@ class Compiler {
         } else {
             let mut values: Vector<LLVMValueRef>;
             let initializer_list: InitializerListNode* = constant_decl->initializer as InitializerListNode*;
+            let fields: Map<String, Pair<Field, QualifiedType*>> = _type.Fields();
             let mut i: u64 = 0u64;
 
-            while i < initializer_list->expressions.Size() {
-                values.PushBack(this.CompileConstantExpression(initializer_list->expressions[i]).Value());
-                i += 1u64;
+            while i < fields.Size() {
+                if i < initializer_list->expressions.Size() {
+                    values.PushBack(this.CompileConstantExpression(initializer_list->expressions[i]).Value());
+                } else {
+                    if fields[i].right.left.initializer != null {
+                        values.PushBack(this.CompileConstantExpression(fields[i].right.left.initializer).Value());
+                    } else {
+                        this.Error((String("Missing initializer for field '") + fields[i].left + "'.").Data());
+                        ret;
+                    }
+                } i += 1u64;
             }
 
             initializer = QualifiedValue(LLVMConstNamedStruct(_type.Value(), values.Data(), values.Size() as u32), _type);
@@ -1325,16 +1345,20 @@ class Compiler {
         let has_constructor: bool = _class.Has(_class.name, param_types);
 
         let mut i: u64 = 0u64;
-        let fields: Map<String, Pair<TokenType, QualifiedType*>>& = _class.Fields();
+        let fields: Map<String, Pair<Field, QualifiedType*>>& = _class.Fields();
 
         while i < fields.Size() {
-            let field: Pair<String, Pair<TokenType, QualifiedType*>>& = fields[i];
+            let field: Pair<String, Pair<Field, QualifiedType*>>& = fields[i];
             let mut value: QualifiedValue;
 
             if !(has_constructor && !is_constructed) && i < params.Size() {
                 value = params[i];
             } else {
-                value = QualifiedValue(null, null); // field initializer
+                if field.right.left.initializer != null {
+                    value = this.CompileExpression(field.right.left.initializer, false);
+                } else {
+                    value = QualifiedValue(null, field.right.right);
+                }
             }
 
             if need_copy && !(has_constructor && !is_constructed) {
@@ -1378,11 +1402,11 @@ class Compiler {
             this.CompileCall2(QualifiedValue(method.left.value, method.right, ptr.Value()), params, false);
         }
 
-        let fields: Map<String, Pair<TokenType, QualifiedType*>>& = _class.Fields();
+        let fields: Map<String, Pair<Field, QualifiedType*>>& = _class.Fields();
         let mut i: u64 = 0u64;
 
         while i < fields.Size() {
-            let field: Pair<String, Pair<TokenType, QualifiedType*>>& = fields[i];
+            let field: Pair<String, Pair<Field, QualifiedType*>>& = fields[i];
 
             if field.right.right->IsClass() {
                 this.CompileDestructor(field.right.right, QualifiedValue(LLVMBuildStructGEP2(this.builder, ptr.Type().Pointee().Value(), ptr.Value(), _class.Index(field.left) as u32, ""), this.type_manager.Pointer(field.right.right, true)));
@@ -1403,7 +1427,7 @@ class Compiler {
         while i < class_decl->fields.Size() {
             let field: Pair<TokenType, FieldNode*>& = class_decl->fields[i];
             let field_type: QualifiedType& = this.CompileType(field.right->field_type);
-            _class.fields[field.right->name] = Pair<TokenType, QualifiedType*>(field.left, field_type);
+            _class.fields[field.right->name] = Pair<Field, QualifiedType*>(Field(field.right->initializer, field.left), field_type);
             field_types.PushBack(field_type.Value());
             i += 1u64;
         }
@@ -2278,9 +2302,9 @@ class Compiler {
             }
         }
 
-        let field: Pair<TokenType, QualifiedType*>& = instance.Type().Pointee().Fields()[member_access->member];
+        let field: Pair<Field, QualifiedType*>& = instance.Type().Pointee().Fields()[member_access->member];
 
-        if field.left != TokenType::PUBLIC && state {
+        if field.left.visibility != TokenType::PUBLIC && state {
             this.Error((String("Field '") + member_access->member + "' is private.").Data());
             ret QualifiedValue(null, null);
         }

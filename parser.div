@@ -67,7 +67,9 @@ class ASTNode {
 
 class PrimitiveTypeNode : ASTNode {
     pub type_name: String,
-    pub mutable: bool
+    pub mutable: bool = false,
+    pub generic: bool = false,
+    pub types: Vector<ASTNode*>
 } impl {
     PrimitiveTypeNode(mut this: PrimitiveTypeNode&, type_name: String, mutable: bool, line: u64, col: u64) : ASTNode(ASTNodeType::PRIMITIVE_TYPE, line, col) {
         (this.type_name, this.mutable) = (type_name, mutable);
@@ -76,7 +78,7 @@ class PrimitiveTypeNode : ASTNode {
 
 class PointerTypeNode : ASTNode {
     pub base_type: ASTNode*,
-    pub mutable: bool
+    pub mutable: bool = false
 } impl {
     PointerTypeNode(mut this: PointerTypeNode&, base_type: ASTNode*, mutable: bool, line: u64, col: u64) : ASTNode(ASTNodeType::POINTER_TYPE, line, col) {
         (this.base_type, this.mutable) = (base_type, mutable);
@@ -85,7 +87,7 @@ class PointerTypeNode : ASTNode {
 
 class ReferenceTypeNode : ASTNode {
     pub base_type: ASTNode*,
-    pub mutable: bool
+    pub mutable: bool = false
 } impl {
     ReferenceTypeNode(mut this: ReferenceTypeNode&, base_type: ASTNode*, mutable: bool, line: u64, col: u64) : ASTNode(ASTNodeType::REFERENCE_TYPE, line, col) {
         (this.base_type, this.mutable) = (base_type, mutable);
@@ -303,7 +305,7 @@ class FunctionDeclNode : ASTNode {
     pub name: String,
     pub _type: FunctionTypeNode*,
     pub body: BlockStmtNode*,
-    pub is_generic: bool = false,
+    pub generic: bool = false,
     pub types: Vector<String>
 } impl {
     FunctionDeclNode(mut this: FunctionDeclNode&, name: String, _type: FunctionTypeNode*, body: BlockStmtNode*, line: u64, col: u64) : ASTNode(ASTNodeType::FUNCTION_DECL, line, col) {
@@ -337,7 +339,7 @@ class ClassDeclNode : ASTNode {
     pub constructors: Vector<FunctionDeclNode*>,
     pub destructor: FunctionDeclNode* = null,
     pub parents: Vector<String>,
-    pub is_generic: bool = false,
+    pub generic: bool = false,
     pub types: Vector<String>
 } impl {
     ClassDeclNode(mut this: ClassDeclNode&, name: String, line: u64, col: u64) : ASTNode(ASTNodeType::CLASS_DECL, line, col) {
@@ -783,8 +785,19 @@ class Parser {
                 ret null;
             }
 
+            let mut primitive: PrimitiveTypeNode* = new PrimitiveTypeNode(token.value, mutable, token.lineno, token.column);
             this.Advance();
-            node = new PrimitiveTypeNode(token.value, mutable, token.lineno, token.column) as ASTNode*;
+
+            if this.Match(TokenType::LESS) {
+                primitive->types.PushBack(this.ParseType());
+
+                while !this.has_error && this.Match(TokenType::COMMA) {
+                    primitive->types.PushBack(this.ParseType());
+                }
+
+                this.Expect(TokenType::GREATER);
+                primitive->generic = true;
+            } node = primitive as ASTNode*;
         }
 
         while !this.has_error && this.Match(TokenType::MUL) {
@@ -1064,7 +1077,7 @@ class Parser {
             }
 
             this.Expect(TokenType::GREATER);
-            func_decl->is_generic = true;
+            func_decl->generic = true;
         }
 
         this.Expect(TokenType::LPAREN);
@@ -1136,7 +1149,7 @@ class Parser {
             }
 
             this.Expect(TokenType::GREATER);
-            class_decl->is_generic = true;
+            class_decl->generic = true;
         }
 
         if this.Match(TokenType::COLON) {

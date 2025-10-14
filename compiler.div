@@ -528,7 +528,7 @@ class QualifiedValue {
 };
 
 enum SymbolKind {
-    Variable, Constant, Function, Parameter, Type
+    Variable, Constant, Function, Parameter, Generic, Class, Type
 };
 
 func SymbolKindToString(kind: SymbolKind) -> String {
@@ -536,6 +536,8 @@ func SymbolKindToString(kind: SymbolKind) -> String {
     else if kind == SymbolKind::Constant { ret { "Constant" } as String; }
     else if kind == SymbolKind::Function { ret { "Function" } as String; }
     else if kind == SymbolKind::Parameter { ret { "Parameter" } as String; }
+    else if kind == SymbolKind::Generic { ret { "Generic" } as String; }
+    else if kind == SymbolKind::Class { ret { "Class" } as String; }
     else if kind == SymbolKind::Type { ret { "Type" } as String; }
     else { ret { "Unknown" } as String; }
 }
@@ -543,7 +545,18 @@ func SymbolKindToString(kind: SymbolKind) -> String {
 class Symbol {
     pub name: String,
     pub kind: SymbolKind,
-    pub value: QualifiedValue
+    pub value: QualifiedValue,
+    pub pointer: void* = null
+} impl {
+    Symbol(mut this: Symbol&, name: String, kind: SymbolKind, value: QualifiedValue) {
+        (this.name, this.kind, this.value) = (name, kind, value);
+    }
+
+    Symbol(mut this: Symbol&, name: String, kind: SymbolKind, pointer: void*) {
+        (this.name, this.kind, this.pointer) = (name, kind, pointer);
+    }
+
+    ~Symbol(this: Symbol&) {}
 };
 
 class Scope {
@@ -592,6 +605,15 @@ class Scope {
             this.Error((String("Symbol '") + name + "' already exists.").Data());
         } else {
             let symbol: Symbol* = new Symbol(name, kind, value);
+            this.symbols.PushBack(symbol);
+        }
+    }
+
+    pub Set(mut this: Scope&, name: String, kind: SymbolKind, pointer: void*, overload: bool) {
+        if this.Has(name) && !overload {
+            this.Error((String("Symbol '") + name + "' already exists.").Data());
+        } else {
+            let symbol: Symbol* = new Symbol(name, kind, pointer);
             this.symbols.PushBack(symbol);
         }
     }
@@ -750,6 +772,10 @@ class ScopeManager {
         this.current->Set(name, kind, value, overload);
     }
 
+    pub Set(mut this: ScopeManager&, name: String, kind: SymbolKind, pointer: void*, overload: bool) {
+        this.current->Set(name, kind, pointer, overload);
+    }
+
     pub Get(this: ScopeManager&, name: String) -> Symbol* {
         let mut scope: Scope* = this.current;
 
@@ -877,7 +903,7 @@ class Mangler {
     Mangler(mut this: Mangler&) {}
     ~Mangler(mut this: Mangler&) {}
 
-    pub MangleType(mut this: Mangler&, _type: QualifiedType*) -> String {
+    priv MangleType(this: Mangler&, _type: QualifiedType*) -> String {
         let kind: LLVMTypeKind = LLVMGetTypeKind(_type->Value());
 
         if kind == LLVMTypeKind::LLVMVoidTypeKind {
@@ -909,7 +935,7 @@ class Mangler {
         }
     }
 
-    pub MangleFunction(mut this: Mangler&, name: String, _type: QualifiedType*) -> String {
+    priv MangleName(this: Mangler&, name: String) -> String {
         if this.scope_manager == null {
             this.Error("Scope manager not set!");
             ret String("");
@@ -935,8 +961,11 @@ class Mangler {
 
         if names.Size() > 1u64 {
             result += "E";
-        }
+        } ret result;
+    }
 
+    pub MangleFunction(this: Mangler&, name: String, _type: QualifiedType*) -> String {
+        let mut result: String = this.MangleName(name);
         let params: Vector<QualifiedType*> = _type->Parameters();
         let mut j: u64 = 0u64;
 
@@ -946,8 +975,60 @@ class Mangler {
         } ret result;
     }
 
+    pub MangleClass(this: Mangler&, name: String) -> String {
+        ret this.MangleName(name);
+    }
+
+    pub MangleClass(this: Mangler&, name: String, types: Vector<QualifiedType*>) -> String {
+        let mut result: String = this.MangleName(name);
+
+        if types.Size() > 0u64 {
+            result += "I";
+        }
+
+        let mut j: u64 = 0u64;
+
+        while j < types.Size() {
+            result += this.MangleType(types[j]);
+            j += 1u64;
+        }
+
+        if types.Size() > 0u64 {
+            result += "E";
+        } ret result;
+    }
+
     priv Error(this: Mangler&, string: i8*) {
         printf("Mangler error: %s\n", string);
+        exit(1i32);
+    }
+};
+
+class Generic {
+    priv mangler: Mangler*,
+    priv ast: ClassDeclNode* = null,
+    priv types: Vector<String>
+} impl {
+    Generic(mut this: Generic&, mut ast: ClassDeclNode*, mangler: Mangler*) {
+        (this.mangler, this.ast, this.types, ast->generic) = (mangler, ast, ast->types, false);
+    }
+
+    ~Generic(this: Generic&) {}
+
+    pub Get(this: Generic&, types: Vector<QualifiedType*>) -> QualifiedType& {
+        if this.ast == null {
+            this.Error("Generic abstract syntax tree is null!");
+            ret null;
+        }
+
+        let name: String = this.mangler->MangleClass(this.ast->name, types);
+        printf("Looking for generic instance: %s\n", name.Data());
+        this.Error("Generic types not implemented yet.");
+        ret null;
+    }
+
+    priv Error(this: Generic&, string: i8*) {
+        printf("Generic error: %s\n", string);
         exit(1i32);
     }
 };
@@ -955,6 +1036,7 @@ class Mangler {
 class Compiler {
     priv mangler: Mangler,
     priv mangling: bool = true,
+    priv generics: Vector<Generic*>,
     priv type_manager: TypeManager,
     priv _class: QualifiedType* = null,
     priv function: QualifiedType* = null,
@@ -991,7 +1073,7 @@ class Compiler {
         this.target_machine = LLVMCreateTargetMachine(this.target, this.triple, "generic", "", LLVMCodeGenOptLevel::LLVMCodeGenLevelDefault, LLVMRelocMode::LLVMRelocDefault, LLVMCodeModel::LLVMCodeModelDefault);
         this.layout = LLVMCreateTargetDataLayout(this.target_machine);
 
-        this.scope_manager.compiler = this as void*; // shouldn't be the stack address of this
+        this.scope_manager.compiler = this as void*;
         this.scope_manager.CompileDestructor = Compiler::CompileDestructor as func(void*, QualifiedType*, QualifiedValue);
         this.scope_manager.CompileDestructor2 = Compiler::CompileDestructor2 as func(void*, LLVMValueRef, QualifiedType*);
         this.mangler.scope_manager = &this.scope_manager;
@@ -1049,6 +1131,16 @@ class Compiler {
         }
 
         this.CompileForwardDeclarations();
+        let mut j: u64 = 0u64;
+
+        while j < this.generics.Size() {
+            del this.generics[j];
+            j += 1u64;
+        }
+
+        this.generics.Clear();
+        this.included_paths.Clear();
+        this.forwards.Clear();
         let err: i8* = null;
 
         if LLVMVerifyModule(this.module, LLVMVerifierFailureAction::LLVMAbortProcessAction, &err) != 0i32 {
@@ -1259,7 +1351,7 @@ class Compiler {
     }
 
     priv CompileFunction(mut this: Compiler&, func_decl: FunctionDeclNode*) -> QualifiedValue {
-        if func_decl->is_generic {
+        if func_decl->generic {
             this.Error("Generic functions are not supported yet.");
             ret QualifiedValue(null, null);
         }
@@ -1424,13 +1516,15 @@ class Compiler {
     }
 
     priv CompileClass(mut this: Compiler&, class_decl: ClassDeclNode*) {
-        if class_decl->is_generic {
-            this.Error("Generic classes are not supported yet.");
+        if class_decl->generic {
+            let mut generic: Generic* = new Generic(class_decl, &this.mangler);
+            this.scope_manager.Set(class_decl->name, SymbolKind::Generic, generic as void*, false);
+            this.generics.PushBack(generic);
             ret;
         }
 
         let mut _class: QualifiedType& = this.type_manager.Class(LLVMStructCreateNamed(this.context, class_decl->name.Data()), class_decl->name);
-        this.scope_manager.Set(class_decl->name, SymbolKind::Type, QualifiedValue(null, _class), false);
+        this.scope_manager.Set(class_decl->name, SymbolKind::Class, QualifiedValue(null, _class), false);
         let mut field_types: Vector<LLVMTypeRef>;
         let mut i: u64 = 0u64;
 
@@ -2671,15 +2765,36 @@ class Compiler {
             } else if primitive_type->type_name == "void" {
                 ret this.type_manager.Primitive(LLVMVoidTypeInContext(this.context), false);
             } else {
-                if this.scope_manager.Has(primitive_type->type_name, SymbolKind::Type) {
-                    let _type: QualifiedType& = this.scope_manager.Get(primitive_type->type_name, SymbolKind::Type)->value.Type();
+                let mut _type: QualifiedType* = null;
 
-                    if _type.IsPrimitive() || _type.IsFunction() { ret _type; } else {
-                        ret this.type_manager.Copy(_type, primitive_type->mutable);
+                if this.scope_manager.Has(primitive_type->type_name, SymbolKind::Type) {
+                    _type = this.scope_manager.Get(primitive_type->type_name, SymbolKind::Type)->value.Type();
+                } else if this.scope_manager.Has(primitive_type->type_name, SymbolKind::Class) {
+                    _type = this.scope_manager.Get(primitive_type->type_name, SymbolKind::Class)->value.Type();
+                } else if this.scope_manager.Has(primitive_type->type_name, SymbolKind::Generic) {
+                    if primitive_type->generic {
+                        let mut types: Vector<QualifiedType*>;
+                        let mut i: u64 = 0u64;
+
+                        while i < primitive_type->types.Size() {
+                            types.PushBack(this.CompileType(primitive_type->types[i]));
+                            i += 1u64;
+                        }
+
+                        _type = (this.scope_manager.Get(primitive_type->type_name, SymbolKind::Generic)->pointer as Generic*)->Get(types);
+                    } else {
+                        this.Error((String("Generic type '") + primitive_type->type_name + "' requires parameters.").Data());
+                        ret null;
                     }
                 } else {
                     this.Error((String("Type '") + primitive_type->type_name + "' not found.").Data());
                     ret null;
+                }
+
+                if _type->IsClass() || _type->IsPointer() {
+                    ret this.type_manager.Copy(_type, primitive_type->mutable);
+                } else {
+                    ret _type;
                 }
             }
         } else if type_node->node_type == ASTNodeType::POINTER_TYPE {

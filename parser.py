@@ -348,6 +348,10 @@ class Parser(sly.Parser):
     @_("DataType LESS TypeList GREATER")
     def DataType(self, p):
         return {"type": "template", "value": p.DataType, "params": p.TypeList}
+    
+    @_("LPAREN DataType RPAREN")
+    def DataType(self, p):
+        return p.DataType
 
     @_("FUNC LPAREN FuncParams RPAREN ARROW DataType")
     def DataType(self, p):

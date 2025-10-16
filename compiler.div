@@ -567,7 +567,7 @@ class Scope {
     pub instances: Vector<QualifiedValue>,
     pub name: String
 } impl {
-    Scope(mut this: Scope&, parent: Scope*, name: String, global: bool) {
+    Scope(mut this: Scope&, parent: Scope*, name: String&, global: bool) {
         (this.parent, this.name, this.global) = (parent, name, global);
     }
 
@@ -580,7 +580,7 @@ class Scope {
         }
     }
 
-    pub Has(this: Scope&, name: String) -> bool {
+    pub Has(this: Scope&, name: String&) -> bool {
         let mut i: u64 = 0u64;
 
         while i < this.symbols.Size() {
@@ -590,7 +590,7 @@ class Scope {
         } ret false;
     }
     
-    pub Has(this: Scope&, name: String, kind: SymbolKind) -> bool {
+    pub Has(this: Scope&, name: String&, kind: SymbolKind) -> bool {
         let mut i: u64 = 0u64;
 
         while i < this.symbols.Size() {
@@ -600,25 +600,29 @@ class Scope {
         } ret false;
     }
 
-    pub Set(mut this: Scope&, name: String, kind: SymbolKind, value: QualifiedValue, overload: bool) {
+    pub Set(mut this: Scope&, name: String&, kind: SymbolKind, value: QualifiedValue&, overload: bool) -> Symbol* {
         if this.Has(name) && !overload {
             this.Error((String("Symbol '") + name + "' already exists.").Data());
+            ret null;
         } else {
             let symbol: Symbol* = new Symbol(name, kind, value);
             this.symbols.PushBack(symbol);
+            ret symbol;
         }
     }
 
-    pub Set(mut this: Scope&, name: String, kind: SymbolKind, pointer: void*, overload: bool) {
+    pub Set(mut this: Scope&, name: String&, kind: SymbolKind, pointer: void*, overload: bool) -> Symbol* {
         if this.Has(name) && !overload {
             this.Error((String("Symbol '") + name + "' already exists.").Data());
+            ret null;
         } else {
             let symbol: Symbol* = new Symbol(name, kind, pointer);
             this.symbols.PushBack(symbol);
+            ret symbol;
         }
     }
 
-    pub Get(this: Scope&, name: String) -> Symbol* {
+    pub Get(this: Scope&, name: String&) -> Symbol* {
         let mut i: u64 = 0u64;
 
         while i < this.symbols.Size() {
@@ -628,7 +632,7 @@ class Scope {
         } ret null;
     }
 
-    pub Get(this: Scope&, name: String, kind: SymbolKind) -> Symbol* {
+    pub Get(this: Scope&, name: String&, kind: SymbolKind) -> Symbol* {
         let mut i: u64 = 0u64;
 
         while i < this.symbols.Size() {
@@ -768,12 +772,12 @@ class ScopeManager {
         } ret false;
     }
 
-    pub Set(mut this: ScopeManager&, name: String, kind: SymbolKind, value: QualifiedValue, overload: bool) {
-        this.current->Set(name, kind, value, overload);
+    pub Set(mut this: ScopeManager&, name: String, kind: SymbolKind, value: QualifiedValue, overload: bool) -> Symbol* {
+        ret this.current->Set(name, kind, value, overload);
     }
 
-    pub Set(mut this: ScopeManager&, name: String, kind: SymbolKind, pointer: void*, overload: bool) {
-        this.current->Set(name, kind, pointer, overload);
+    pub Set(mut this: ScopeManager&, name: String, kind: SymbolKind, pointer: void*, overload: bool) -> Symbol* {
+        ret this.current->Set(name, kind, pointer, overload);
     }
 
     pub Get(this: ScopeManager&, name: String) -> Symbol* {
@@ -1005,26 +1009,79 @@ class Mangler {
 };
 
 class Generic {
-    priv mangler: Mangler*,
+    priv compiler: void* = null,
+    priv CompileClass: func(void*, ClassDeclNode*, Generic*) -> (QualifiedType*),
+    priv mangler: Mangler* = null,
+    priv scope_manager: ScopeManager* = null,
+    priv cache: Map<String, QualifiedType*>,
+    priv name: String, pub current: String,
     priv ast: ClassDeclNode* = null,
-    priv types: Vector<String>
+    priv scope: Scope* = null
 } impl {
-    Generic(mut this: Generic&, mut ast: ClassDeclNode*, mangler: Mangler*) {
-        (this.mangler, this.ast, this.types, ast->generic) = (mangler, ast, ast->types, false);
+    Generic(mut this: Generic&, compiler: void*, mut ast: ClassDeclNode*, mangler: Mangler*, scope_manager: ScopeManager*) {
+        (this.compiler, this.mangler, this.scope_manager) = (compiler, mangler, scope_manager);
+        (this.ast, this.name, ast->generic) = (ast, ast->name, false);
+        this.scope = this.scope_manager->current;
     }
 
     ~Generic(this: Generic&) {}
 
-    pub Get(this: Generic&, types: Vector<QualifiedType*>) -> QualifiedType& {
-        if this.ast == null {
-            this.Error("Generic abstract syntax tree is null!");
+    pub Set(mut this: Generic&, _class: QualifiedType*) {
+        if this.current != "" {
+            this.cache[this.current] = _class;
+            this.current = "";
+        } else {
+            this.Error("Not in a generic compilation.");
+            ret;
+        }
+    }
+
+    pub Get(mut this: Generic&, types: Vector<QualifiedType*>) -> QualifiedType& {
+        let scope: Scope* = this.scope_manager->current;
+        this.scope_manager->current = this.scope;
+
+        if this.current != "" {
+            this.Error("Nested generics are not supported.");
             ret null;
         }
 
-        let name: String = this.mangler->MangleClass(this.ast->name, types);
-        printf("Looking for generic instance: %s\n", name.Data());
-        this.Error("Generic types not implemented yet.");
-        ret null;
+        if types.Size() != this.ast->types.Size() {
+            this.Error("Generic type parameter count mismatch.");
+            ret null;
+        }
+
+        let name: String = this.mangler->MangleClass(this.name, types);
+
+        if this.cache.Has(name) {
+            this.scope_manager->current = scope;
+            ret this.cache[name];
+        } else {
+            this.current = name;
+        }
+
+        let mut i: u64 = 0u64;
+        let mut symbols: Vector<Symbol*>;
+
+        while i < this.ast->types.Size() {
+            symbols.PushBack(this.scope->Set(this.ast->types[i], SymbolKind::Type, QualifiedValue(null, types[i]), false));
+            i += 1u64;
+        }
+
+        let mut temp: Generic* = this;
+        let _class: QualifiedType* = (*this.CompileClass)(this.compiler, this.ast, temp);
+        let mut j: u64 = 0u64;
+
+        while j < symbols.Size() {
+            let index: i64 = this.scope->symbols.Index(symbols[j]);
+
+            if index != -1i64 {
+                this.scope->symbols.Pop(index as u64);
+                del symbols[j];
+            } j += 1u64;
+        }
+
+        this.scope_manager->current = scope;
+        ret _class;
     }
 
     priv Error(this: Generic&, string: i8*) {
@@ -1221,7 +1278,7 @@ class Compiler {
         } else if decl->node_type == ASTNodeType::FUNCTION_DECL {
             this.CompileFunction(decl as FunctionDeclNode*);
         } else if decl->node_type == ASTNodeType::CLASS_DECL {
-            this.CompileClass(decl as ClassDeclNode*);
+            this.CompileClass(decl as ClassDeclNode*, null);
         } else if decl->node_type == ASTNodeType::ENUM_DECL {
             this.CompileEnum(decl as EnumDeclNode*);
         } else if decl->node_type == ASTNodeType::EXTERN_BLOCK {
@@ -1468,7 +1525,11 @@ class Compiler {
                 this.CompileConstructor(field.right.right, QualifiedValue(LLVMBuildStructGEP2(this.builder, ptr.Type().Pointee().Value(), ptr.Value(), _class.Index(field.left) as u32, ""), this.type_manager.Pointer(field.right.right, true)), _params);
             } else if !value.Null() {
                 if value.Type().IsPointer() {
-                    value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
+                    let pointee: QualifiedType& = value.Type().Pointee();
+
+                    if pointee == field.right.right {
+                        value = QualifiedValue(LLVMBuildLoad2(this.builder, pointee.Value(), value.Value(), ""), pointee);
+                    }
                 }
 
                 LLVMBuildStore(this.builder, value.Value(), LLVMBuildStructGEP2(this.builder, ptr.Type().Pointee().Value(), ptr.Value(), _class.Index(field.left) as u32, ""));
@@ -1515,18 +1576,30 @@ class Compiler {
         this.CompileDestructor(_type->Pointee(), QualifiedValue(value, _type));
     }
 
-    priv CompileClass(mut this: Compiler&, class_decl: ClassDeclNode*) {
+    priv CompileClass(mut this: Compiler&, class_decl: ClassDeclNode*, mut generic: Generic*) -> QualifiedType* {
         if class_decl->generic {
-            let mut generic: Generic* = new Generic(class_decl, &this.mangler);
-            this.scope_manager.Set(class_decl->name, SymbolKind::Generic, generic as void*, false);
-            this.generics.PushBack(generic);
-            ret;
+            if generic != null {
+                this.Error("Nested generics are not supported.");
+                ret null;
+            }
+
+            let mut _generic: Generic* = new Generic(this as void*, class_decl, &this.mangler, &this.scope_manager);
+            _generic->CompileClass = Compiler::CompileClass as func(void*, ClassDeclNode*, Generic*) -> (QualifiedType*);
+            this.scope_manager.Set(class_decl->name, SymbolKind::Generic, _generic as void*, false);
+            this.generics.PushBack(_generic);
+            ret null;
         }
 
-        let mut _class: QualifiedType& = this.type_manager.Class(LLVMStructCreateNamed(this.context, class_decl->name.Data()), class_decl->name);
-        this.scope_manager.Set(class_decl->name, SymbolKind::Class, QualifiedValue(null, _class), false);
-        let mut field_types: Vector<LLVMTypeRef>;
+        let mut struct_name: i8* = class_decl->name.Data();
+        if generic != null { struct_name = generic->current.Data(); }
+        let mut _class: QualifiedType& = this.type_manager.Class(LLVMStructCreateNamed(this.context, struct_name), class_decl->name);
+
+        if generic != null { generic->Set(_class); } else {
+            this.scope_manager.Set(class_decl->name, SymbolKind::Class, QualifiedValue(null, _class), false);
+        }
+
         let mut i: u64 = 0u64;
+        let mut field_types: Vector<LLVMTypeRef>;
 
         while i < class_decl->fields.Size() {
             let field: Pair<TokenType, FieldNode*>& = class_decl->fields[i];
@@ -1560,6 +1633,7 @@ class Compiler {
 
         this.scope_manager.PopScope();
         this._class = null;
+        ret _class;
     }
 
     priv CompileEnum(mut this: Compiler&, enum_decl: EnumDeclNode*) {

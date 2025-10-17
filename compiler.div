@@ -1532,7 +1532,7 @@ class Compiler {
                     }
                 }
 
-                LLVMBuildStore(this.builder, value.Value(), LLVMBuildStructGEP2(this.builder, ptr.Type().Pointee().Value(), ptr.Value(), _class.Index(field.left) as u32, ""));
+                this.CompileAssignment2(value, QualifiedValue(LLVMBuildStructGEP2(this.builder, ptr.Type().Pointee().Value(), ptr.Value(), _class.Index(field.left) as u32, ""), this.type_manager.Pointer(field.right.right, true)), TokenType::ASSIGN, true);
             } i += 1u64;
         }
 
@@ -1934,124 +1934,9 @@ class Compiler {
     }
 
     priv CompileAssignment(mut this: Compiler&, assignment: AssignmentNode*) -> QualifiedValue {
-        let mut pointer: QualifiedValue = this.CompileExpression(assignment->left, true);
+        let pointer: QualifiedValue = this.CompileExpression(assignment->left, true);
         let mut value: QualifiedValue = this.CompileExpression(assignment->right, false);
-
-        if pointer.Type().Pointee().IsReference() {
-            pointer = QualifiedValue(LLVMBuildLoad2(this.builder, pointer.Type().Pointee().Value(), pointer.Value(), ""), pointer.Type().Pointee());
-        }
-
-        if !pointer.Type().IsMutable() {
-            this.Error("Cannot assign to immutable variable.");
-            ret QualifiedValue(null, null);
-        }
-
-        if assignment->operator != TokenType::ASSIGN {
-            let other: QualifiedValue = QualifiedValue(LLVMBuildLoad2(this.builder, pointer.Type().Pointee().Value(), pointer.Value(), ""), pointer.Type().Pointee());
-            let (value_kind: LLVMTypeKind, other_kind: LLVMTypeKind) = (LLVMGetTypeKind(pointer.Type().Pointee().Value()), LLVMGetTypeKind(value.Type().Value()));
-
-            if value.Type().IsPointer() && other.Type().IsPointer() {
-                if assignment->operator == TokenType::MINUS_ASSIGN {
-                    let _type: QualifiedType& = this.type_manager.Primitive(LLVMInt64TypeInContext(this.context), false);
-                    value = QualifiedValue(LLVMBuildSub(this.builder, LLVMBuildPtrToInt(this.builder, other.Value(), _type.Value(), ""), LLVMBuildPtrToInt(this.builder, value.Value(), _type.Value(), ""), ""), _type);
-                } else {
-                    this.Error((String("Invalid pointer assignment operation '") + TokenTypeToString(assignment->operator) + "' for type '" + LLVMTypeToString(value.Type().Value()) + "'.").Data());
-                    ret QualifiedValue(null, null);
-                }
-            } else if (value.Type().IsPointer() && other_kind == LLVMTypeKind::LLVMIntegerTypeKind) || (value_kind == LLVMTypeKind::LLVMIntegerTypeKind && other.Type().IsPointer()) {
-                let ptr: QualifiedValue = value.Type().IsPointer() ? value : other;
-                let index: QualifiedValue = value.Type().IsPointer() ? other : value;
-                let width: u32 = LLVMGetIntTypeWidth(index.Value());
-
-                if width == 64u32 {
-                    if assignment->operator == TokenType::PLUS_ASSIGN {
-                        let indices[]: LLVMValueRef = { index.Value() };
-                        value = QualifiedValue(LLVMBuildGEP2(this.builder, ptr.Type().Value(), ptr.Value(), indices, 1u32, ""), ptr.Type());
-                    } else if assignment->operator == TokenType::MINUS_ASSIGN {
-                        let indices[]: LLVMValueRef = { LLVMBuildNeg(this.builder, index.Value(), "") };
-                        value = QualifiedValue(LLVMBuildGEP2(this.builder, ptr.Type().Value(), ptr.Value(), indices, 1u32, ""), ptr.Type());
-                    } else {
-                        this.Error((String("Invalid pointer assignment operation '") + TokenTypeToString(assignment->operator) + "' for type '" + LLVMTypeToString(ptr.Type().Value()) + "'.").Data());
-                        ret QualifiedValue(null, null);
-                    }
-                } else {
-                    this.Error((String("Invalid index type '") + LLVMTypeToString(index.Type().Value()) + "'.").Data());
-                    ret QualifiedValue(null, null);
-                }
-            } else if value_kind == LLVMTypeKind::LLVMIntegerTypeKind && other_kind == LLVMTypeKind::LLVMIntegerTypeKind {
-                if value.Type() != other.Type() {
-                    this.Error((String("Incompatible types. ('") + LLVMTypeToString(value.Type().Value()) + "' != '" + LLVMTypeToString(other.Type().Value()) + "').").Data());
-                    ret QualifiedValue(null, null);
-                }
-
-                if assignment->operator == TokenType::PLUS_ASSIGN {
-                    value = QualifiedValue(LLVMBuildAdd(this.builder, other.Value(), value.Value(), ""), value.Type());
-                } else if assignment->operator == TokenType::MINUS_ASSIGN {
-                    value = QualifiedValue(LLVMBuildSub(this.builder, other.Value(), value.Value(), ""), value.Type());
-                } else if assignment->operator == TokenType::MUL_ASSIGN {
-                    value = QualifiedValue(LLVMBuildMul(this.builder, other.Value(), value.Value(), ""), value.Type());
-                } else if assignment->operator == TokenType::DIV_ASSIGN {
-                    if value.Type().IsSigned() {
-                        value = QualifiedValue(LLVMBuildSDiv(this.builder, other.Value(), value.Value(), ""), value.Type());
-                    } else {
-                        value = QualifiedValue(LLVMBuildUDiv(this.builder, other.Value(), value.Value(), ""), value.Type());
-                    }
-                } else if assignment->operator == TokenType::MOD_ASSIGN {
-                    if value.Type().IsSigned() {
-                        value = QualifiedValue(LLVMBuildSRem(this.builder, other.Value(), value.Value(), ""), value.Type());
-                    } else {
-                        value = QualifiedValue(LLVMBuildURem(this.builder, other.Value(), value.Value(), ""), value.Type());
-                    }
-                } else if assignment->operator == TokenType::AND_ASSIGN {
-                    value = QualifiedValue(LLVMBuildAnd(this.builder, other.Value(), value.Value(), ""), value.Type());
-                } else if assignment->operator == TokenType::OR_ASSIGN {
-                    value = QualifiedValue(LLVMBuildOr(this.builder, other.Value(), value.Value(), ""), value.Type());
-                } else if assignment->operator == TokenType::XOR_ASSIGN {
-                    value = QualifiedValue(LLVMBuildXor(this.builder, other.Value(), value.Value(), ""), value.Type());
-                } else if assignment->operator == TokenType::LSHIFT_ASSIGN {
-                    value = QualifiedValue(LLVMBuildShl(this.builder, other.Value(), value.Value(), ""), value.Type());
-                } else if assignment->operator == TokenType::RSHIFT_ASSIGN {
-                    if value.Type().IsSigned() {
-                        value = QualifiedValue(LLVMBuildAShr(this.builder, other.Value(), value.Value(), ""), value.Type());
-                    } else {
-                        value = QualifiedValue(LLVMBuildLShr(this.builder, other.Value(), value.Value(), ""), value.Type());
-                    }
-                } else {
-                    this.Error((String("Invalid assignment operation '") + TokenTypeToString(assignment->operator) + "' for type '" + LLVMTypeToString(value.Type().Value()) + "'.").Data());
-                    ret QualifiedValue(null, null);
-                }
-            } else if (value_kind == LLVMTypeKind::LLVMFloatTypeKind || value_kind == LLVMTypeKind::LLVMDoubleTypeKind) && (other_kind == LLVMTypeKind::LLVMFloatTypeKind || other_kind == LLVMTypeKind::LLVMDoubleTypeKind) {
-                if value.Type() != other.Type() {
-                    this.Error((String("Incompatible types. ('") + LLVMTypeToString(value.Type().Value()) + "' != '" + LLVMTypeToString(other.Type().Value()) + "').").Data());
-                    ret QualifiedValue(null, null);
-                }
-
-                if assignment->operator == TokenType::PLUS_ASSIGN {
-                    value = QualifiedValue(LLVMBuildFAdd(this.builder, other.Value(), value.Value(), ""), value.Type());
-                } else if assignment->operator == TokenType::MINUS_ASSIGN {
-                    value = QualifiedValue(LLVMBuildFSub(this.builder, other.Value(), value.Value(), ""), value.Type());
-                } else if assignment->operator == TokenType::MUL_ASSIGN {
-                    value = QualifiedValue(LLVMBuildFMul(this.builder, other.Value(), value.Value(), ""), value.Type());
-                } else if assignment->operator == TokenType::DIV_ASSIGN {
-                    value = QualifiedValue(LLVMBuildFDiv(this.builder, other.Value(), value.Value(), ""), value.Type());
-                } else if assignment->operator == TokenType::MOD_ASSIGN {
-                    value = QualifiedValue(LLVMBuildFRem(this.builder, other.Value(), value.Value(), ""), value.Type());
-                } else {
-                    this.Error((String("Invalid assignment operation '") + TokenTypeToString(assignment->operator) + "' for type '" + LLVMTypeToString(value.Type().Value()) + "'.").Data());
-                    ret QualifiedValue(null, null);
-                }
-            } else {
-                this.Error((String("Invalid type '") + LLVMTypeToString(value.Type().Value()) + "' for assignment operation '" + TokenTypeToString(assignment->operator) + "'.").Data());
-                ret QualifiedValue(null, null);
-            }
-        }
-
-        if value.Type() != pointer.Type().Pointee() {
-            this.Error((String("Incompatible types. ('") + LLVMTypeToString(pointer.Type().Pointee().Value()) + "' != '" + LLVMTypeToString(value.Type().Value()) + "').").Data());
-            ret QualifiedValue(null, null);
-        }
-
-        LLVMBuildStore(this.builder, value.Value(), pointer.Value());
+        value = this.CompileAssignment2(value, pointer, assignment->operator, false);
 
         if assignment->next != null {
             this.CompileAssignment(assignment->next);
@@ -2059,6 +1944,152 @@ class Compiler {
         } else {
             ret value;
         }
+    }
+
+    priv CompileAssignment2(mut this: Compiler&, mut value: QualifiedValue, mut pointer: QualifiedValue, operator: TokenType, ignore: bool) -> QualifiedValue {
+        if pointer.Type().Pointee().IsReference() {
+            pointer = QualifiedValue(LLVMBuildLoad2(this.builder, pointer.Type().Pointee().Value(), pointer.Value(), ""), pointer.Type().Pointee());
+        }
+
+        if !pointer.Type().IsMutable() && !ignore {
+            this.Error("Cannot assign to immutable variable.");
+            ret QualifiedValue(null, null);
+        }
+
+        if pointer.Type().Pointee().IsClass() {
+            let mut params: Vector<QualifiedValue>;
+            params.PushBack(value);
+
+            let _class: QualifiedType& = pointer.Type().Pointee();
+            let param_types: Vector<QualifiedType*> = this.ValueToType(params);
+
+            if _class.Has(String("op="), param_types) {
+                let method: Pair<Method, QualifiedType*>& = _class.Get(String("op="), param_types);
+                this.CompileCall2(QualifiedValue(method.left.value, method.right, pointer.Value()), params, false);
+            } else if value.Type() == _class {
+                let fields: Map<String, Pair<Field, QualifiedType*>>& = _class.Fields();
+                value = QualifiedValue(LLVMAddressOf(value.Value()), this.type_manager.Pointer(value.Type(), true));
+                let mut i: u64 = 0u64;
+
+                while i < fields.Size() {
+                    let field: Pair<String, Pair<Field, QualifiedType*>>& = fields[i];
+                    let _value: QualifiedValue = QualifiedValue(LLVMBuildLoad2(this.builder, field.right.right->Value(), LLVMBuildStructGEP2(this.builder, value.Type().Pointee().Value(), value.Value(), _class.Index(field.left) as u32, ""), ""), field.right.right);
+                    let _pointer: QualifiedValue = QualifiedValue(LLVMBuildStructGEP2(this.builder, pointer.Type().Pointee().Value(), pointer.Value(), _class.Index(field.left) as u32, ""), this.type_manager.Pointer(field.right.right, true));
+                    this.CompileAssignment2(_value, _pointer, operator, ignore);
+                    i += 1u64;
+                }
+            } else {
+                this.Error((String("Incompatible types. ('") + LLVMTypeToString(_class.Value()) + "' != '" + LLVMTypeToString(value.Type().Value()) + "').").Data());
+                ret QualifiedValue(null, null);
+            }
+        } else {
+            if operator != TokenType::ASSIGN {
+                let other: QualifiedValue = QualifiedValue(LLVMBuildLoad2(this.builder, pointer.Type().Pointee().Value(), pointer.Value(), ""), pointer.Type().Pointee());
+                let (value_kind: LLVMTypeKind, other_kind: LLVMTypeKind) = (LLVMGetTypeKind(pointer.Type().Pointee().Value()), LLVMGetTypeKind(value.Type().Value()));
+
+                if value.Type().IsPointer() && other.Type().IsPointer() {
+                    if operator == TokenType::MINUS_ASSIGN {
+                        let _type: QualifiedType& = this.type_manager.Primitive(LLVMInt64TypeInContext(this.context), false);
+                        value = QualifiedValue(LLVMBuildSub(this.builder, LLVMBuildPtrToInt(this.builder, other.Value(), _type.Value(), ""), LLVMBuildPtrToInt(this.builder, value.Value(), _type.Value(), ""), ""), _type);
+                    } else {
+                        this.Error((String("Invalid pointer assignment operation '") + TokenTypeToString(operator) + "' for type '" + LLVMTypeToString(value.Type().Value()) + "'.").Data());
+                        ret QualifiedValue(null, null);
+                    }
+                } else if (value.Type().IsPointer() && other_kind == LLVMTypeKind::LLVMIntegerTypeKind) || (value_kind == LLVMTypeKind::LLVMIntegerTypeKind && other.Type().IsPointer()) {
+                    let ptr: QualifiedValue = value.Type().IsPointer() ? value : other;
+                    let index: QualifiedValue = value.Type().IsPointer() ? other : value;
+                    let width: u32 = LLVMGetIntTypeWidth(index.Value());
+
+                    if width == 64u32 {
+                        if operator == TokenType::PLUS_ASSIGN {
+                            let indices[]: LLVMValueRef = { index.Value() };
+                            value = QualifiedValue(LLVMBuildGEP2(this.builder, ptr.Type().Value(), ptr.Value(), indices, 1u32, ""), ptr.Type());
+                        } else if operator == TokenType::MINUS_ASSIGN {
+                            let indices[]: LLVMValueRef = { LLVMBuildNeg(this.builder, index.Value(), "") };
+                            value = QualifiedValue(LLVMBuildGEP2(this.builder, ptr.Type().Value(), ptr.Value(), indices, 1u32, ""), ptr.Type());
+                        } else {
+                            this.Error((String("Invalid pointer assignment operation '") + TokenTypeToString(operator) + "' for type '" + LLVMTypeToString(ptr.Type().Value()) + "'.").Data());
+                            ret QualifiedValue(null, null);
+                        }
+                    } else {
+                        this.Error((String("Invalid index type '") + LLVMTypeToString(index.Type().Value()) + "'.").Data());
+                        ret QualifiedValue(null, null);
+                    }
+                } else if value_kind == LLVMTypeKind::LLVMIntegerTypeKind && other_kind == LLVMTypeKind::LLVMIntegerTypeKind {
+                    if value.Type() != other.Type() {
+                        this.Error((String("Incompatible types. ('") + LLVMTypeToString(value.Type().Value()) + "' != '" + LLVMTypeToString(other.Type().Value()) + "').").Data());
+                        ret QualifiedValue(null, null);
+                    }
+
+                    if operator == TokenType::PLUS_ASSIGN {
+                        value = QualifiedValue(LLVMBuildAdd(this.builder, other.Value(), value.Value(), ""), value.Type());
+                    } else if operator == TokenType::MINUS_ASSIGN {
+                        value = QualifiedValue(LLVMBuildSub(this.builder, other.Value(), value.Value(), ""), value.Type());
+                    } else if operator == TokenType::MUL_ASSIGN {
+                        value = QualifiedValue(LLVMBuildMul(this.builder, other.Value(), value.Value(), ""), value.Type());
+                    } else if operator == TokenType::DIV_ASSIGN {
+                        if value.Type().IsSigned() {
+                            value = QualifiedValue(LLVMBuildSDiv(this.builder, other.Value(), value.Value(), ""), value.Type());
+                        } else {
+                            value = QualifiedValue(LLVMBuildUDiv(this.builder, other.Value(), value.Value(), ""), value.Type());
+                        }
+                    } else if operator == TokenType::MOD_ASSIGN {
+                        if value.Type().IsSigned() {
+                            value = QualifiedValue(LLVMBuildSRem(this.builder, other.Value(), value.Value(), ""), value.Type());
+                        } else {
+                            value = QualifiedValue(LLVMBuildURem(this.builder, other.Value(), value.Value(), ""), value.Type());
+                        }
+                    } else if operator == TokenType::AND_ASSIGN {
+                        value = QualifiedValue(LLVMBuildAnd(this.builder, other.Value(), value.Value(), ""), value.Type());
+                    } else if operator == TokenType::OR_ASSIGN {
+                        value = QualifiedValue(LLVMBuildOr(this.builder, other.Value(), value.Value(), ""), value.Type());
+                    } else if operator == TokenType::XOR_ASSIGN {
+                        value = QualifiedValue(LLVMBuildXor(this.builder, other.Value(), value.Value(), ""), value.Type());
+                    } else if operator == TokenType::LSHIFT_ASSIGN {
+                        value = QualifiedValue(LLVMBuildShl(this.builder, other.Value(), value.Value(), ""), value.Type());
+                    } else if operator == TokenType::RSHIFT_ASSIGN {
+                        if value.Type().IsSigned() {
+                            value = QualifiedValue(LLVMBuildAShr(this.builder, other.Value(), value.Value(), ""), value.Type());
+                        } else {
+                            value = QualifiedValue(LLVMBuildLShr(this.builder, other.Value(), value.Value(), ""), value.Type());
+                        }
+                    } else {
+                        this.Error((String("Invalid assignment operation '") + TokenTypeToString(operator) + "' for type '" + LLVMTypeToString(value.Type().Value()) + "'.").Data());
+                        ret QualifiedValue(null, null);
+                    }
+                } else if (value_kind == LLVMTypeKind::LLVMFloatTypeKind || value_kind == LLVMTypeKind::LLVMDoubleTypeKind) && (other_kind == LLVMTypeKind::LLVMFloatTypeKind || other_kind == LLVMTypeKind::LLVMDoubleTypeKind) {
+                    if value.Type() != other.Type() {
+                        this.Error((String("Incompatible types. ('") + LLVMTypeToString(value.Type().Value()) + "' != '" + LLVMTypeToString(other.Type().Value()) + "').").Data());
+                        ret QualifiedValue(null, null);
+                    }
+
+                    if operator == TokenType::PLUS_ASSIGN {
+                        value = QualifiedValue(LLVMBuildFAdd(this.builder, other.Value(), value.Value(), ""), value.Type());
+                    } else if operator == TokenType::MINUS_ASSIGN {
+                        value = QualifiedValue(LLVMBuildFSub(this.builder, other.Value(), value.Value(), ""), value.Type());
+                    } else if operator == TokenType::MUL_ASSIGN {
+                        value = QualifiedValue(LLVMBuildFMul(this.builder, other.Value(), value.Value(), ""), value.Type());
+                    } else if operator == TokenType::DIV_ASSIGN {
+                        value = QualifiedValue(LLVMBuildFDiv(this.builder, other.Value(), value.Value(), ""), value.Type());
+                    } else if operator == TokenType::MOD_ASSIGN {
+                        value = QualifiedValue(LLVMBuildFRem(this.builder, other.Value(), value.Value(), ""), value.Type());
+                    } else {
+                        this.Error((String("Invalid assignment operation '") + TokenTypeToString(operator) + "' for type '" + LLVMTypeToString(value.Type().Value()) + "'.").Data());
+                        ret QualifiedValue(null, null);
+                    }
+                } else {
+                    this.Error((String("Invalid type '") + LLVMTypeToString(value.Type().Value()) + "' for assignment operation '" + TokenTypeToString(operator) + "'.").Data());
+                    ret QualifiedValue(null, null);
+                }
+            }
+
+            if value.Type() != pointer.Type().Pointee() && !(LLVMIsAConstantPointerNull(value.Value()) != null && pointer.Type().Pointee().IsPointer()) {
+                this.Error((String("Incompatible types. ('") + LLVMTypeToString(pointer.Type().Pointee().Value()) + "' != '" + LLVMTypeToString(value.Type().Value()) + "').").Data());
+                ret QualifiedValue(null, null);
+            }
+
+            LLVMBuildStore(this.builder, value.Value(), pointer.Value());
+        } ret pointer;
     }
 
     priv CompileConstantExpression(mut this: Compiler&, expr: ASTNode*) -> QualifiedValue {
@@ -2377,6 +2408,12 @@ class Compiler {
                         args.PushBack(value.Value());
                     }
                 } else {
+                    let param: QualifiedType& = params[index];
+
+                    if param.IsReference() && param != value.Type() {
+                        value = QualifiedValue(LLVMAddressOf(value.Value()), this.type_manager.Pointer(value.Type(), true));
+                    }
+
                     args.PushBack(value.Value());
                 }
             } else {

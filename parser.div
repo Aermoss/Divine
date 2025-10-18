@@ -2,7 +2,7 @@ include "divio", "divstr", "divvec", "divmap", "lexer.div" : *;
 
 enum ASTNodeType {
     LITERAL, IDENTIFIER, SCOPE_RESOLUTION, BINARY_OP, UNARY_OP, TERNARY,
-    CALL, MEMBER_ACCESS, INDEX_ACCESS, CAST, INITIALIZER_LIST,
+    CALL, MEMBER_ACCESS, INDEX_ACCESS, CAST, INITIALIZER_LIST, NEW, DELETE,
 
     EXPRESSION_STMT, VARIABLE_DECL, CONSTANT_DECL, ASSIGNMENT, IF_STMT, WHILE_STMT, 
     RETURN_STMT, BREAK_STMT, CONTINUE_STMT, BLOCK_STMT,
@@ -27,6 +27,8 @@ func ASTNodeTypeToString(_type: ASTNodeType) -> String {
     else if _type == ASTNodeType::INDEX_ACCESS { ret { "INDEX_ACCESS" } as String; }
     else if _type == ASTNodeType::CAST { ret { "CAST" } as String; }
     else if _type == ASTNodeType::INITIALIZER_LIST { ret { "INITIALIZER_LIST" } as String; }
+    else if _type == ASTNodeType::NEW { ret { "NEW" } as String; }
+    else if _type == ASTNodeType::DELETE { ret { "DELETE" } as String; }
     else if _type == ASTNodeType::EXPRESSION_STMT { ret { "EXPRESSION_STMT" } as String; }
     else if _type == ASTNodeType::VARIABLE_DECL { ret { "VARIABLE_DECL" } as String; }
     else if _type == ASTNodeType::CONSTANT_DECL { ret { "CONSTANT_DECL" } as String; }
@@ -130,12 +132,6 @@ class LiteralNode : ASTNode {
     }
 };
 
-class InitializerListNode : ASTNode {
-    pub expressions: Vector<ASTNode*>
-} impl {
-    InitializerListNode(mut this: InitializerListNode&, line: u64, col: u64) : ASTNode(ASTNodeType::INITIALIZER_LIST, line, col) {}
-};
-
 class IdentifierNode : ASTNode {
     pub name: String
 } impl {
@@ -217,6 +213,28 @@ class CastNode : ASTNode {
     CastNode(mut this: CastNode&, expression: ASTNode*, target_type: ASTNode*, line: u64, col: u64) : ASTNode(ASTNodeType::CAST, line, col) {
         (this.expression, this.target_type) = (expression, target_type);
     }
+};
+
+class InitializerListNode : ASTNode {
+    pub expressions: Vector<ASTNode*>
+} impl {
+    InitializerListNode(mut this: InitializerListNode&, line: u64, col: u64) : ASTNode(ASTNodeType::INITIALIZER_LIST, line, col) {}
+};
+
+class NewNode : ASTNode {
+    pub _type: ASTNode*,
+    pub size: ASTNode* = null
+} impl {
+    NewNode(mut this: NewNode&, _type: ASTNode*, line: u64, col: u64) : ASTNode(ASTNodeType::NEW, line, col) {
+        this._type = _type;
+    }
+};
+
+class DeleteNode : ASTNode {
+    pub expression: ASTNode*,
+    pub array: bool = false
+} impl {
+    DeleteNode(mut this: DeleteNode&, line: u64, col: u64) : ASTNode(ASTNodeType::DELETE, line, col) {}
 };
 
 class ExpressionStmtNode : ASTNode {
@@ -557,8 +575,7 @@ func PrintAST(node: ASTNode*, depth: i32) {
 
 class Parser {
     priv tokens: Vector<Token>,
-    priv current: u64 = 0u64,
-    priv has_error: bool = false
+    priv current: u64 = 0u64
 } impl {
     Parser(this: Parser&) {}
     ~Parser(this: Parser&) {}
@@ -602,8 +619,7 @@ class Parser {
         let token: Token = this.CurrentToken();
 
         if token._type != _type {
-            printf("Parser error: Expected %s but got %s at line %d, column %d.\n", TokenTypeToString(_type).Data(), TokenTypeToString(token._type).Data(), token.lineno, token.column);
-            this.has_error = true;
+            this.Error((String("Expected '") + TokenTypeToString(_type) + "' but got '" + TokenTypeToString(token._type) + "'").Data(), token.lineno, token.column);
         } else {
             this.Advance();
         } ret token;
@@ -652,7 +668,7 @@ class Parser {
                 this.Advance();
             }
 
-            while !this.has_error && this.Match(TokenType::DOUBLE_COLON) {
+            while this.Match(TokenType::DOUBLE_COLON) {
                 let identifier: ASTNode* = new IdentifierNode(this.Expect(TokenType::NAME).value, token.lineno, token.column) as ASTNode*;
                 node = new ScopeResolutionNode(node, identifier, token.lineno, token.column) as ASTNode*;
             } ret node;
@@ -673,8 +689,7 @@ class Parser {
             this.Expect(TokenType::RPAREN);
             ret expr;
         } else {
-            printf("Parser error: Unexpected token %s at line %d, column %d.\n", TokenTypeToString(token._type).Data(), token.lineno, token.column);
-            this.has_error = true;
+            this.Error((String("Unexpected token '") + token.value + "'").Data(), token.lineno, token.column);
             ret null;
         }
     }
@@ -682,7 +697,7 @@ class Parser {
     priv ParsePostfix(mut this: Parser&) -> ASTNode* {
         let mut expr: ASTNode* = this.ParsePrimary();
 
-        while !this.has_error {
+        while true {
             let token: Token = this.CurrentToken();
 
             if token._type == TokenType::LPAREN {
@@ -691,8 +706,8 @@ class Parser {
 
                 if !this.Match(TokenType::RPAREN) {
                     call->arguments.PushBack(this.ParseExpression());
-                    
-                    while !this.has_error && this.Match(TokenType::COMMA) {
+
+                    while this.Match(TokenType::COMMA) {
                         call->arguments.PushBack(this.ParseExpression());
                     } this.Expect(TokenType::RPAREN);
                 } expr = call as ASTNode*;
@@ -717,6 +732,25 @@ class Parser {
         if this.IsUnaryOperator(token._type) {
             this.Advance();
             ret new UnaryOpNode(this.ParseUnary(), token._type, token.lineno, token.column) as ASTNode*;
+        } else if token._type == TokenType::NEW {
+            this.Advance();
+            let mut node: NewNode* = new NewNode(this.ParseType(), token.lineno, token.column);
+
+            if this.Match(TokenType::LBRACKET) {
+                node->size = this.ParseExpression();
+                this.Expect(TokenType::RBRACKET);
+            } ret node as ASTNode*;
+        } else if token._type == TokenType::DELETE {
+            this.Advance();
+            let mut node: DeleteNode* = new DeleteNode(token.lineno, token.column);
+
+            if this.Match(TokenType::LBRACKET) {
+                node->array = true;
+                this.Expect(TokenType::RBRACKET);
+            }
+
+            node->expression = this.ParseExpression();
+            ret node as ASTNode*;
         } else {
             ret this.ParsePostfix();
         }
@@ -725,7 +759,7 @@ class Parser {
     priv ParseBinaryExpression(mut this: Parser&, min_precedence: i32) -> ASTNode* {
         let mut left: ASTNode* = this.ParseUnary();
 
-        while !this.has_error {
+        while true {
             let token: Token = this.CurrentToken();
             let precedence: i32 = this.GetBinaryOpPrecedence(token._type);
             if precedence < min_precedence { break; }
@@ -765,7 +799,7 @@ class Parser {
                 let mut param: ParameterNode* = this.ParseParameter(func_type);
                 if param != null { func_type->parameters.PushBack(param); }
 
-                while !this.has_error && this.Match(TokenType::COMMA) {
+                while this.Match(TokenType::COMMA) {
                     param = this.ParseParameter(func_type);
                     if param != null { func_type->parameters.PushBack(param); }
                 }
@@ -780,8 +814,7 @@ class Parser {
             } node = func_type as ASTNode*;
         } else {
             if token._type != TokenType::NAME {
-                printf("Parser error: Expected type name at line %d, column %d.\n", token.lineno, token.column);
-                this.has_error = true;
+                this.Error("Expected type name", token.lineno, token.column);
                 ret null;
             }
 
@@ -791,7 +824,7 @@ class Parser {
             if this.Match(TokenType::LESS) {
                 primitive->types.PushBack(this.ParseType());
 
-                while !this.has_error && this.Match(TokenType::COMMA) {
+                while this.Match(TokenType::COMMA) {
                     primitive->types.PushBack(this.ParseType());
                 }
 
@@ -800,7 +833,7 @@ class Parser {
             } node = primitive as ASTNode*;
         }
 
-        while !this.has_error && this.Match(TokenType::MUL) {
+        while this.Match(TokenType::MUL) {
             node = new PointerTypeNode(node, mutable, token.lineno, token.column) as ASTNode*;
         }
 
@@ -831,8 +864,6 @@ class Parser {
         } else if token._type == TokenType::LBRACE {
             ret this.ParseBlockStatement();
         } else {
-            let token: Token = this.CurrentToken();
-
             if this.Match(TokenType::LPAREN) {
                 let mut current: AssignmentNode* = null;
                 let mut root: AssignmentNode* = null;
@@ -884,7 +915,7 @@ class Parser {
         let name_token: Token = this.Expect(TokenType::NAME);
         let mut sizes: Vector<ASTNode*>;
 
-        while !this.has_error && this.Match(TokenType::LBRACKET) {
+        while this.Match(TokenType::LBRACKET) {
             if this.Match(TokenType::RBRACKET) {
                 sizes.PushBack(null);
             } else {
@@ -919,7 +950,7 @@ class Parser {
             let name_token: Token = this.Expect(TokenType::NAME);
             let mut sizes: Vector<ASTNode*>;
 
-            while !this.has_error && this.Match(TokenType::LBRACKET) {
+            while this.Match(TokenType::LBRACKET) {
                 if this.Match(TokenType::RBRACKET) {
                     sizes.PushBack(null);
                 } else {
@@ -1037,8 +1068,7 @@ class Parser {
         } else if token._type == TokenType::TYPE {
             ret this.ParseTypeDeclaration();
         } else {
-            printf("Parser error: Expected declaration at line %d, column %d.\n", token.lineno, token.column);
-            this.has_error = true;
+            this.Error("Expected declaration", token.lineno, token.column);
             ret null;
         }
     }
@@ -1078,7 +1108,7 @@ class Parser {
         if this.Match(TokenType::LESS) {
             func_decl->types.PushBack(this.Expect(TokenType::NAME).value);
 
-            while !this.has_error && this.Match(TokenType::COMMA) {
+            while this.Match(TokenType::COMMA) {
                 func_decl->types.PushBack(this.Expect(TokenType::NAME).value);
             }
 
@@ -1092,7 +1122,7 @@ class Parser {
             let mut param: ParameterNode* = this.ParseParameter(func_type);
             if param != null { func_type->parameters.PushBack(param); }
 
-            while !this.has_error && this.Match(TokenType::COMMA) {
+            while this.Match(TokenType::COMMA) {
                 param = this.ParseParameter(func_type);
                 if param != null { func_type->parameters.PushBack(param); }
             }
@@ -1121,7 +1151,7 @@ class Parser {
         let token: Token = this.Expect(TokenType::NAME);
         let mut sizes: Vector<ASTNode*>;
 
-        while !this.has_error && this.Match(TokenType::LBRACKET) {
+        while this.Match(TokenType::LBRACKET) {
             if this.Match(TokenType::RBRACKET) {
                 sizes.PushBack(null);
             } else {
@@ -1150,7 +1180,7 @@ class Parser {
         if this.Match(TokenType::LESS) {
             class_decl->types.PushBack(this.Expect(TokenType::NAME).value);
 
-            while !this.has_error && this.Match(TokenType::COMMA) {
+            while this.Match(TokenType::COMMA) {
                 class_decl->types.PushBack(this.Expect(TokenType::NAME).value);
             }
 
@@ -1161,14 +1191,14 @@ class Parser {
         if this.Match(TokenType::COLON) {
             class_decl->parents.PushBack(this.Expect(TokenType::NAME).value);
 
-            while !this.has_error && this.Match(TokenType::COMMA) {
+            while this.Match(TokenType::COMMA) {
                 class_decl->parents.PushBack(this.Expect(TokenType::NAME).value);
             }
         }
 
         this.Expect(TokenType::LBRACE);
 
-        while !this.has_error && this.CurrentToken()._type != TokenType::RBRACE && this.CurrentToken()._type != TokenType::EOF {
+        while this.CurrentToken()._type != TokenType::RBRACE && this.CurrentToken()._type != TokenType::EOF {
             let mut visibility: TokenType;
             let visibility_token: Token = this.CurrentToken();
 
@@ -1176,8 +1206,7 @@ class Parser {
                 visibility = visibility_token._type;
                 this.Advance();
             } else {
-                printf("Parser error: Expected visibility modifier at line %d, column %d.\n", visibility_token.lineno, visibility_token.column);
-                this.has_error = true;
+                this.Error("Expected visibility modifier", visibility_token.lineno, visibility_token.column);
                 break;
             }
 
@@ -1186,8 +1215,7 @@ class Parser {
             if member_token._type == TokenType::NAME {
                 class_decl->fields.PushBack(Pair<TokenType, FieldNode*>(visibility, this.ParseField()));
             } else {
-                printf("Parser error: Expected field declaration at line %d, column %d.\n", member_token.lineno, member_token.column);
-                this.has_error = true;
+                this.Error("Expected field declaration", member_token.lineno, member_token.column);
                 break;
             }
         }
@@ -1197,7 +1225,7 @@ class Parser {
         if this.Match(TokenType::IMPL) {
             this.Expect(TokenType::LBRACE);
 
-            while !this.has_error && this.CurrentToken()._type != TokenType::RBRACE && this.CurrentToken()._type != TokenType::EOF {
+            while this.CurrentToken()._type != TokenType::RBRACE && this.CurrentToken()._type != TokenType::EOF {
                 let mut visibility: TokenType;
                 let visibility_token: Token = this.CurrentToken();
 
@@ -1206,8 +1234,7 @@ class Parser {
                 } else {
                     if this.CurrentToken()._type == TokenType::TILDE {
                         if class_decl->destructor != null {
-                            printf("Parser error: Multiple destructor declarations at line %d, column %d.\n", visibility_token.lineno, visibility_token.column);
-                            this.has_error = true;
+                            this.Error("Multiple destructor declarations are not allowed", visibility_token.lineno, visibility_token.column);
                             break;
                         }
 
@@ -1229,7 +1256,7 @@ class Parser {
         let token: Token = this.Expect(TokenType::NAME);
         let mut sizes: Vector<ASTNode*>;
 
-        while !this.has_error && this.Match(TokenType::LBRACKET) {
+        while this.Match(TokenType::LBRACKET) {
             if this.Match(TokenType::RBRACKET) {
                 sizes.PushBack(null);
             } else {
@@ -1284,7 +1311,7 @@ class Parser {
                 enum_decl->values[name_token.value] = null;
             }
 
-            while !this.has_error && this.Match(TokenType::COMMA) {
+            while this.Match(TokenType::COMMA) {
                 name_token = this.Expect(TokenType::NAME);
 
                 if this.Match(TokenType::ASSIGN) {
@@ -1306,13 +1333,11 @@ class Parser {
         let mut extern_block: ExternBlockNode* = new ExternBlockNode(linkage_token.value, extern_token.lineno, extern_token.column);
         this.Expect(TokenType::LBRACE);
 
-        while !this.has_error && this.CurrentToken()._type != TokenType::RBRACE && this.CurrentToken()._type != TokenType::EOF {
+        while this.CurrentToken()._type != TokenType::RBRACE && this.CurrentToken()._type != TokenType::EOF {
             if this.CurrentToken()._type == TokenType::FUNC {
                 extern_block->declarations.PushBack(this.ParseFunctionDeclaration());
             } else {
-                printf("Parser error: Only function declarations allowed in extern block at line %d, column %d.\n", this.CurrentToken().lineno, this.CurrentToken().column);
-                this.has_error = true;
-                break;
+                this.Error("Only function declarations allowed in extern block", this.CurrentToken().lineno, this.CurrentToken().column);
             }
         }
 
@@ -1326,7 +1351,7 @@ class Parser {
         let mut module_token: Token = this.Expect(TokenType::STRING);
         include_stmt->modules.PushBack(module_token.value);
 
-        while !this.has_error && this.Match(TokenType::COMMA) {
+        while this.Match(TokenType::COMMA) {
             module_token = this.Expect(TokenType::STRING);
             include_stmt->modules.PushBack(module_token.value);
         }
@@ -1341,17 +1366,13 @@ class Parser {
         let mut root: RootNode* = new RootNode();
         this.tokens = tokens;
 
-        while !this.has_error && this.CurrentToken()._type != TokenType::EOF {
-            let decl: ASTNode* = this.ParseDeclaration();
-
-            if decl != null {
-                root->declarations.PushBack(decl);
-            }
-
-            if this.has_error {
-                exit(1i32);
-                break;
-            }
+        while this.CurrentToken()._type != TokenType::EOF {
+            root->declarations.PushBack(this.ParseDeclaration());
         } ret root;
+    }
+
+    priv Error(mut this: Parser&, message: i8*, line: u64, col: u64) {
+        printf("Parser error: %s at line %d, column %d.\n", message, line, col);
+        exit(1i32);
     }
 };

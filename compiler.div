@@ -152,6 +152,7 @@ class QualifiedType {
     pub current_class: QualifiedType** = null,
     priv value: LLVMTypeRef, priv pointee: QualifiedType* = null,
     priv reference: bool = false, priv mutable: bool = false, priv signed: bool = false,
+    pub copy: QualifiedType* = null, pub original: QualifiedType* = null,
 
     pub fields: Map<String, Pair<Field, QualifiedType*>>,
     pub methods: Vector<Pair<Method, QualifiedType*>>,
@@ -225,7 +226,11 @@ class QualifiedType {
 
     pub Fields(this: QualifiedType&) -> Map<String, Pair<Field, QualifiedType*>>& {
         if this._class {
-            ret this.fields;
+            if this.original != null {
+                ret this.original->fields;
+            } else {
+                ret this.fields;
+            }
         } else {
             this.Error("Not a class!");
             ret null;
@@ -234,7 +239,11 @@ class QualifiedType {
 
     pub Methods(this: QualifiedType&) -> Vector<Pair<Method, QualifiedType*>>& {
         if this._class {
-            ret this.methods;
+            if this.original != null {
+                ret this.original->methods;
+            } else {
+                ret this.methods;
+            }
         } else {
             this.Error("Not a class!");
             ret null;
@@ -242,54 +251,42 @@ class QualifiedType {
     }
 
     pub Index(this: QualifiedType&, name: String&) -> i64 {
+        let fields: Map<String, Pair<Field, QualifiedType*>>& = this.Fields();
         let mut i: u64 = 0u64;
 
-        if !this._class {
-            this.Error("Not a class!");
-            ret -1i64;
-        }
-
-        while i < this.fields.Size() {
-            if this.fields.Data()[i].left == name {
+        while i < fields.Size() {
+            if fields.Data()[i].left == name {
                 ret i as i64;
             } i += 1u64;
         } ret -1i64;
     }
 
     pub Has(this: QualifiedType&, name: String&) -> bool {
+        let methods: Vector<Pair<Method, QualifiedType*>>& = this.Methods();
         let mut i: u64 = 0u64;
 
-        if !this._class {
-            this.Error("Not a class!");
-            ret false;
-        }
-
-        while i < this.methods.Size() {
-            if this.methods[i].left.name == name {
+        while i < methods.Size() {
+            if methods[i].left.name == name {
                 ret true;
             } i += 1u64;
         } ret false;
     }
 
     pub Has(this: QualifiedType&, name: String&, params: Vector<QualifiedType*>&) -> bool {
+        let methods: Vector<Pair<Method, QualifiedType*>>& = this.Methods();
         let mut i: u64 = 0u64;
 
-        if !this._class {
-            this.Error("Not a class!");
-            ret false;
-        }
-
-        while i < this.methods.Size() {
-            if this.methods[i].left.name == name {
+        while i < methods.Size() {
+            if methods[i].left.name == name {
                 let mut state: bool = false;
 
                 if *this.current_class != null {
                     state = **this.current_class == this;
                 }
 
-                if this.methods[i].left.visibility == TokenType::PUBLIC || state {
+                if methods[i].left.visibility == TokenType::PUBLIC || state {
                     let (mut match: bool, mut j: u64) = (true, 0u64);
-                    let _params: Vector<QualifiedType*>& = this.methods[i].right->Pointee().Parameters();
+                    let _params: Vector<QualifiedType*>& = methods[i].right->Pointee().Parameters();
                     let offset: u64 = _params[0u64]->sret != null ? 2u64 : 1u64;
 
                     if params.Size() != _params.Size() - offset {
@@ -325,42 +322,34 @@ class QualifiedType {
     }
 
     pub Get(this: QualifiedType&, name: String&) -> Pair<Method, QualifiedType*>& {
+        let methods: Vector<Pair<Method, QualifiedType*>>& = this.Methods();
         let mut i: u64 = 0u64;
 
-        if !this._class {
-            this.Error("Not a class!");
-            ret null;
-        }
-
-        while i < this.methods.Size() {
-            if this.methods[i].left.name == name {
-                ret this.methods[i];
+        while i < methods.Size() {
+            if methods[i].left.name == name {
+                ret methods[i];
             } i += 1u64;
         } ret null;
     }
 
     pub Get(this: QualifiedType&, name: String&, params: Vector<QualifiedType*>&) -> Pair<Method, QualifiedType*>& {
         let mut matches: Vector<Pair<Method, QualifiedType*>>;
+        let methods: Vector<Pair<Method, QualifiedType*>>& = this.Methods();
         let (mut state: u64, mut i: u64) = (0u64, 0u64);
 
-        if !this._class {
-            this.Error("Not a class!");
-            ret null;
-        }
-
-        while i < this.methods.Size() {
-            if this.methods[i].left.name == name {
+        while i < methods.Size() {
+            if methods[i].left.name == name {
                 let mut _state: bool = false;
 
                 if *this.current_class != null {
                     _state = **this.current_class == this;
                 }
 
-                if this.methods[i].left.visibility != TokenType::PUBLIC && !_state {
+                if methods[i].left.visibility != TokenType::PUBLIC && !_state {
                     if state < 1u64 { state = 1u64; }
                 } else {
                     let (mut match: bool, mut j: u64) = (true, 0u64);
-                    let _params: Vector<QualifiedType*>& = this.methods[i].right->Pointee().Parameters();
+                    let _params: Vector<QualifiedType*>& = methods[i].right->Pointee().Parameters();
                     let offset: u64 = _params[0u64]->sret != null ? 2u64 : 1u64;
 
                     if params.Size() != _params.Size() - offset {
@@ -390,7 +379,7 @@ class QualifiedType {
                     if !match {
                         state = 2u64;
                     } else {
-                        matches.PushBack(this.methods[i]);
+                        matches.PushBack(methods[i]);
                     }
                 }
             } i += 1u64;
@@ -484,23 +473,16 @@ class TypeManager {
         ret _type;
     }
 
-    pub Copy(mut this: TypeManager&, _type: QualifiedType*, mutable: bool) -> QualifiedType* {
+    pub Copy(mut this: TypeManager&, mut _type: QualifiedType*, mutable: bool) -> QualifiedType* {
         if mutable != _type->IsMutable() {
             let mut copy: QualifiedType* = null;
 
             if _type->IsClass() {
-                let mut i: u64 = 0u64;
-                copy = new QualifiedType(_type->Value(), mutable, _type->name);
-                (copy->current_class, copy->methods) = (_type->current_class, _type->methods);
-
-                while _type->fields.Size() > i {
-                    let field: Pair<String, Pair<Field, QualifiedType*>>& = _type->fields[i];
-
-                    if field.right.right->IsClass() || field.right.right->IsPointer() {
-                        copy->fields[field.left] = Pair<Field, QualifiedType*>(field.right.left, this.Copy(field.right.right, mutable));
-                    } else {
-                        copy->fields[field.left] = field.right;
-                    } i += 1u64;
+                if _type->copy != null {
+                    ret _type->copy;
+                } else {
+                    _type->copy = new QualifiedType(_type->Value(), mutable, _type->name);
+                    (copy, copy->original, copy->current_class) = (_type->copy, _type, _type->current_class);
                 }
             } else if _type->IsPointer() {
                 copy = new QualifiedType(_type->Value(), mutable, _type->IsReference(), _type->Pointee());
@@ -2538,6 +2520,10 @@ class Compiler {
 
     priv CompileMemberAccess(mut this: Compiler&, member_access: MemberAccessNode*, pointer: bool) -> QualifiedValue {
         let mut instance: QualifiedValue = this.CompileExpression(member_access->instance, true);
+
+        if instance.Type().Pointee().IsReference() {
+            instance = QualifiedValue(LLVMBuildLoad2(this.builder, instance.Type().Pointee().Value(), instance.Value(), ""), instance.Type().Pointee());
+        }
 
         if member_access->arrow {
             instance = QualifiedValue(LLVMBuildLoad2(this.builder, instance.Type().Pointee().Value(), instance.Value(), ""), instance.Type().Pointee());

@@ -1014,9 +1014,7 @@ class Compiler:
                 assert value.type == type, f"Expected an {type._to_string2()}, got {value.type._to_string2()}."
 
             self.scopeManager.Set(i["name"], value)
-
-            if i["value"] is None:
-                value = ir.Constant(type, value.constant + 1)
+            value = ir.Constant(type, value.constant + 1)
 
         self.scopeManager.PopScope()
 

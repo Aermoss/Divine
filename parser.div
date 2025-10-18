@@ -142,10 +142,10 @@ class IdentifierNode : ASTNode {
 
 class ScopeResolutionNode : ASTNode {
     pub scope: ASTNode*,
-    pub name: ASTNode*
+    pub identifier: IdentifierNode*
 } impl {
-    ScopeResolutionNode(mut this: ScopeResolutionNode&, scope: ASTNode*, name: ASTNode*, line: u64, col: u64) : ASTNode(ASTNodeType::SCOPE_RESOLUTION, line, col) {
-        (this.scope, this.name) = (scope, name);
+    ScopeResolutionNode(mut this: ScopeResolutionNode&, scope: ASTNode*, identifier: IdentifierNode*, line: u64, col: u64) : ASTNode(ASTNodeType::SCOPE_RESOLUTION, line, col) {
+        (this.scope, this.identifier) = (scope, identifier);
     }
 };
 
@@ -188,21 +188,21 @@ class CallNode : ASTNode {
 };
 
 class MemberAccessNode : ASTNode {
-    pub instance: ASTNode*,
+    pub expression: ASTNode*,
     pub member: String,
     pub arrow: bool
 } impl {
-    MemberAccessNode(mut this: MemberAccessNode&, instance: ASTNode*, member: String, arrow: bool, line: u64, col: u64) : ASTNode(ASTNodeType::MEMBER_ACCESS, line, col) {
-        (this.instance, this.member, this.arrow) = (instance, member, arrow);
+    MemberAccessNode(mut this: MemberAccessNode&, expression: ASTNode*, arrow: bool, line: u64, col: u64) : ASTNode(ASTNodeType::MEMBER_ACCESS, line, col) {
+        (this.expression, this.arrow) = (expression, arrow);
     }
 };
 
 class IndexAccessNode : ASTNode {
-    pub instance: ASTNode*,
+    pub expression: ASTNode*,
     pub index: ASTNode*
 } impl {
-    IndexAccessNode(mut this: IndexAccessNode&, instance: ASTNode*, index: ASTNode*, line: u64, col: u64) : ASTNode(ASTNodeType::INDEX_ACCESS, line, col) {
-        (this.instance, this.index) = (instance, index);
+    IndexAccessNode(mut this: IndexAccessNode&, expression: ASTNode*, index: ASTNode*, line: u64, col: u64) : ASTNode(ASTNodeType::INDEX_ACCESS, line, col) {
+        (this.expression, this.index) = (expression, index);
     }
 };
 
@@ -660,17 +660,41 @@ class Parser {
         if token._type == TokenType::INTEGER || token._type == TokenType::FLOAT || token._type == TokenType::STRING || token._type == TokenType::CHAR || token._type == TokenType::TRUE || token._type == TokenType::FALSE || token._type == TokenType::NULL {
             this.Advance();
             ret new LiteralNode(token.value, token._type, token.lineno, token.column) as ASTNode*;
-        } else if token._type == TokenType::NAME || token._type == TokenType::DOUBLE_COLON {
+        } else if token._type == TokenType::NAME || token._type == TokenType::OPERATOR || token._type == TokenType::DOUBLE_COLON {
             let mut node: ASTNode* = null;
 
-            if token._type == TokenType::NAME {
-                node = new IdentifierNode(token.value, token.lineno, token.column) as ASTNode*;
-                this.Advance();
+            if token._type != TokenType::DOUBLE_COLON {
+                let mut identifier: String = "";
+
+                if this.Match(TokenType::OPERATOR) {
+                    identifier += "op";
+
+                    while this.CurrentToken()._type != TokenType::LPAREN && this.CurrentToken()._type != TokenType::LESS {
+                        identifier += this.CurrentToken().value;
+                        this.Advance();
+                    }
+                } else {
+                    identifier += this.Expect(TokenType::NAME).value;
+                }
+
+                node = new IdentifierNode(identifier, token.lineno, token.column) as ASTNode*;
             }
 
             while this.Match(TokenType::DOUBLE_COLON) {
-                let identifier: ASTNode* = new IdentifierNode(this.Expect(TokenType::NAME).value, token.lineno, token.column) as ASTNode*;
-                node = new ScopeResolutionNode(node, identifier, token.lineno, token.column) as ASTNode*;
+                let mut identifier: String = "";
+
+                if this.Match(TokenType::OPERATOR) {
+                    identifier += "op";
+
+                    while this.CurrentToken()._type != TokenType::LPAREN && this.CurrentToken()._type != TokenType::LESS {
+                        identifier += this.CurrentToken().value;
+                        this.Advance();
+                    }
+                } else {
+                    identifier += this.Expect(TokenType::NAME).value;
+                }
+
+                node = new ScopeResolutionNode(node, new IdentifierNode(identifier, token.lineno, token.column), token.lineno, token.column) as ASTNode*;
             } ret node;
         } else if token._type == TokenType::LBRACE {
             this.Advance();
@@ -713,8 +737,18 @@ class Parser {
                 } expr = call as ASTNode*;
             } else if token._type == TokenType::DOT || token._type == TokenType::ARROW {
                 this.Advance();
-                let member_token: Token = this.Expect(TokenType::NAME);
-                expr = new MemberAccessNode(expr, member_token.value, token._type == TokenType::ARROW, token.lineno, token.column) as ASTNode*;
+                let mut member_access: MemberAccessNode* = new MemberAccessNode(expr, token._type == TokenType::ARROW, token.lineno, token.column);
+
+                if this.Match(TokenType::OPERATOR) {
+                    member_access->member += "op";
+
+                    while this.CurrentToken()._type != TokenType::LPAREN && this.CurrentToken()._type != TokenType::LESS {
+                        member_access->member += this.CurrentToken().value;
+                        this.Advance();
+                    }
+                } else {
+                    member_access->member += this.Expect(TokenType::NAME).value;
+                } expr = member_access as ASTNode*;
             } else if token._type == TokenType::LBRACKET {
                 this.Advance();
                 let index_access: IndexAccessNode* = new IndexAccessNode(expr, this.ParseExpression(), token.lineno, token.column);
@@ -1096,8 +1130,11 @@ class Parser {
 
         if this.Match(TokenType::OPERATOR) {
             name += "op";
-            name += this.CurrentToken().value;
-            this.Advance();
+
+            while this.CurrentToken()._type != TokenType::LPAREN && this.CurrentToken()._type != TokenType::LESS {
+                name += this.CurrentToken().value;
+                this.Advance();
+            }
         } else {
             name += this.Expect(TokenType::NAME).value;
         }

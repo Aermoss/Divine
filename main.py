@@ -18,7 +18,7 @@ def main(argv):
     path = os.path.split(__file__)[0]
     lexer, parser, compiler = Lexer(), Parser(), Compiler()
     parser.parse(lexer.Lex(open(argv[1], "r", encoding = "utf-8").read()))
-    compiler.includePaths.append(os.path.join(path, "include"))
+    compiler.includePaths.append(os.path.join(path, "_include"))
     module = compiler.Compile(parser.ast["body"])
     module.name = os.path.splitext(os.path.basename(argv[1]))[0]
     module.triple = llvm.get_default_triple()

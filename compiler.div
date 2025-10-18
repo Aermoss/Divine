@@ -149,6 +149,7 @@ class Method {
 };
 
 class QualifiedType {
+    pub current_class: QualifiedType** = null,
     priv value: LLVMTypeRef, priv pointee: QualifiedType* = null,
     priv reference: bool = false, priv mutable: bool = false, priv signed: bool = false,
 
@@ -190,8 +191,7 @@ class QualifiedType {
         if this.value != null {
             ret this.value;
         } else {
-            printf("Null type!\n");
-            exit(1i32);
+            this.Error("Null type!");
             ret null;
         }
     }
@@ -200,45 +200,54 @@ class QualifiedType {
         if this.pointee != null {
             ret this.pointee;
         } else {
-            printf("Null pointee!\n");
-            exit(1i32);
+            this.Error("Null pointee!");
             ret null;
         }
     }
 
     pub Parameters(this: QualifiedType&) -> Vector<QualifiedType*>& {
-        if !this._function {
-            printf("Not a function!\n");
-            exit(1i32);
-        } ret this.params;
+        if this._function {
+            ret this.params;
+        } else {
+            this.Error("Not a function!");
+            ret null;
+        }
     }
 
     pub Return(this: QualifiedType&) -> QualifiedType* {
         if this._function {
             ret this.return;
         } else {
-            printf("Not a function!\n");
-            exit(1i32);
+            this.Error("Not a function!");
             ret null;
         }
     }
 
     pub Fields(this: QualifiedType&) -> Map<String, Pair<Field, QualifiedType*>>& {
-        if !this._class {
-            printf("Not a class!\n");
-            exit(1i32);
-        } ret this.fields;
+        if this._class {
+            ret this.fields;
+        } else {
+            this.Error("Not a class!");
+            ret null;
+        }
     }
 
     pub Methods(this: QualifiedType&) -> Vector<Pair<Method, QualifiedType*>>& {
-        if !this._class {
-            printf("Not a class!\n");
-            exit(1i32);
-        } ret this.methods;
+        if this._class {
+            ret this.methods;
+        } else {
+            this.Error("Not a class!");
+            ret null;
+        }
     }
 
     pub Index(this: QualifiedType&, name: String&) -> i64 {
         let mut i: u64 = 0u64;
+
+        if !this._class {
+            this.Error("Not a class!");
+            ret -1i64;
+        }
 
         while i < this.fields.Size() {
             if this.fields.Data()[i].left == name {
@@ -250,6 +259,11 @@ class QualifiedType {
     pub Has(this: QualifiedType&, name: String&) -> bool {
         let mut i: u64 = 0u64;
 
+        if !this._class {
+            this.Error("Not a class!");
+            ret false;
+        }
+
         while i < this.methods.Size() {
             if this.methods[i].left.name == name {
                 ret true;
@@ -260,9 +274,20 @@ class QualifiedType {
     pub Has(this: QualifiedType&, name: String&, params: Vector<QualifiedType*>&) -> bool {
         let mut i: u64 = 0u64;
 
+        if !this._class {
+            this.Error("Not a class!");
+            ret false;
+        }
+
         while i < this.methods.Size() {
             if this.methods[i].left.name == name {
-                if this.methods[i].left.visibility == TokenType::PUBLIC { // && this.compiler.class != this
+                let mut state: bool = false;
+
+                if *this.current_class != null {
+                    state = **this.current_class == this;
+                }
+
+                if this.methods[i].left.visibility == TokenType::PUBLIC || state {
                     let (mut match: bool, mut j: u64) = (true, 0u64);
                     let _params: Vector<QualifiedType*>& = this.methods[i].right->Pointee().Parameters();
                     let offset: u64 = _params[0u64]->sret != null ? 2u64 : 1u64;
@@ -302,6 +327,11 @@ class QualifiedType {
     pub Get(this: QualifiedType&, name: String&) -> Pair<Method, QualifiedType*>& {
         let mut i: u64 = 0u64;
 
+        if !this._class {
+            this.Error("Not a class!");
+            ret null;
+        }
+
         while i < this.methods.Size() {
             if this.methods[i].left.name == name {
                 ret this.methods[i];
@@ -313,9 +343,20 @@ class QualifiedType {
         let mut matches: Vector<Pair<Method, QualifiedType*>>;
         let (mut state: u64, mut i: u64) = (0u64, 0u64);
 
+        if !this._class {
+            this.Error("Not a class!");
+            ret null;
+        }
+
         while i < this.methods.Size() {
             if this.methods[i].left.name == name {
-                if this.methods[i].left.visibility != TokenType::PUBLIC { // && this.compiler.class != this
+                let mut _state: bool = false;
+
+                if *this.current_class != null {
+                    _state = **this.current_class == this;
+                }
+
+                if this.methods[i].left.visibility != TokenType::PUBLIC && !_state {
                     if state < 1u64 { state = 1u64; }
                 } else {
                     let (mut match: bool, mut j: u64) = (true, 0u64);
@@ -395,6 +436,7 @@ class QualifiedType {
 };
 
 class TypeManager {
+    priv current_class: QualifiedType** = null,
     priv types: Vector<QualifiedType*>
 } impl {
     TypeManager(this: TypeManager&) {}
@@ -424,7 +466,8 @@ class TypeManager {
     }
 
     pub Class(mut this: TypeManager&, value: LLVMTypeRef, name: String) -> QualifiedType* {
-        let _type: QualifiedType* = new QualifiedType(value, false, name);
+        let mut _type: QualifiedType* = new QualifiedType(value, false, name);
+        _type->current_class = this.current_class;
         this.types.PushBack(_type);
         ret _type;
     }
@@ -448,7 +491,7 @@ class TypeManager {
             if _type->IsClass() {
                 let mut i: u64 = 0u64;
                 copy = new QualifiedType(_type->Value(), mutable, _type->name);
-                copy->methods = _type->methods;
+                (copy->current_class, copy->methods) = (_type->current_class, _type->methods);
 
                 while _type->fields.Size() > i {
                     let field: Pair<String, Pair<Field, QualifiedType*>>& = _type->fields[i];
@@ -1090,6 +1133,19 @@ class Generic {
     }
 };
 
+class Forward {
+    pub _class: QualifiedType*,
+    pub decl: FunctionDeclNode*,
+    pub _type: QualifiedType*,
+    pub value: LLVMValueRef
+} impl {
+    Forward(mut this: Forward&, decl: FunctionDeclNode*, _type: QualifiedType*, value: LLVMValueRef, _class: QualifiedType*) {
+        (this.decl, this._type, this.value, this._class) = (decl, _type, value, _class);
+    }
+
+    ~Forward(this: Forward&) {}
+};
+
 class Compiler {
     priv mangler: Mangler,
     priv mangling: bool = true,
@@ -1102,7 +1158,7 @@ class Compiler {
     pub include_paths: Vector<String>,
     priv included_paths: Vector<String>,
     priv blocks: Vector<Pair<LLVMBasicBlockRef, LLVMBasicBlockRef>>,
-    priv forwards: Vector<Pair<LLVMValueRef, Pair<FunctionDeclNode*, QualifiedType*>>>,
+    priv forwards: Vector<Forward>,
     pub target_machine: LLVMTargetMachineRef = null,
     priv layout: LLVMTargetDataRef = null,
     priv context: LLVMContextRef = null,
@@ -1134,10 +1190,12 @@ class Compiler {
         this.scope_manager.CompileDestructor = Compiler::CompileDestructor as func(void*, QualifiedType*, QualifiedValue);
         this.scope_manager.CompileDestructor2 = Compiler::CompileDestructor2 as func(void*, LLVMValueRef, QualifiedType*);
         this.mangler.scope_manager = &this.scope_manager;
+        this.type_manager.current_class = &this._class;
     }
 
     ~Compiler(mut this: Compiler&) {
         this.mangler.scope_manager = null;
+        this.type_manager.current_class = null;
         this.scope_manager.CompileDestructor2 = null;
         this.scope_manager.CompileDestructor = null;
         this.scope_manager.compiler = null;
@@ -1215,10 +1273,11 @@ class Compiler {
         let mut i: u64 = 0u64;
 
         while i < this.forwards.Size() {
-            this.function_ref = this.forwards[i].left;
-            this.function = this.forwards[i].right.right;
+            let forward: Forward& = this.forwards[i];
+            (this.function, this.function_ref) = (forward._type, forward.value);
             let params: Vector<QualifiedType*> = this.function->Parameters();
-            let func_decl: FunctionDeclNode* = this.forwards[i].right.left;
+            let func_decl: FunctionDeclNode* = forward.decl;
+            this._class = forward._class;
 
             this.scope_manager.PushScope(func_decl->name, false);
             let entry: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, this.function_ref, "");
@@ -1266,6 +1325,7 @@ class Compiler {
 
             this.function = null;
             this.function_ref = null;
+            this._class = null;
             i += 1u64;
         }
     }
@@ -1471,7 +1531,7 @@ class Compiler {
         }
 
         if func_decl->body != null {
-            this.forwards.PushBack(Pair<LLVMValueRef, Pair<FunctionDeclNode*, QualifiedType*>>(function, Pair<FunctionDeclNode*, QualifiedType*>(func_decl, _type)));
+            this.forwards.PushBack(Forward(func_decl, _type, function, this._class));
         } ret value;
     }
 
@@ -2489,7 +2549,7 @@ class Compiler {
         }
 
         if !instance.Type().Pointee().IsClass() {
-            this.Error("Cannot access member of non-class type.");
+            this.Error((String("Cannot access member '") + member_access->member + "' of non-class type.").Data());
             ret QualifiedValue(null, null);
         }
 

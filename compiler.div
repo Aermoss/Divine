@@ -113,13 +113,21 @@ func LLVMTypeToString(_type: LLVMTypeRef) -> String {
     ret result;
 }
 
+func LLVMValueToString(value: LLVMValueRef) -> String {
+    let mut result: String;
+    let string: i8* = LLVMPrintValueToString(value);
+    result += string;
+    LLVMDisposeMessage(string);
+    ret result;
+}
+
 func LLVMAddressOf(value: LLVMValueRef) -> LLVMValueRef {
     if LLVMIsAInstruction(value) != null && LLVMGetInstructionOpcode(value) == LLVMOpcode::LLVMLoad {
         let operand: LLVMValueRef = LLVMGetOperand(value, 0u32);
         LLVMInstructionEraseFromParent(value);
         ret operand;
     } else {
-        printf("Failed to get address of.\n");
+        printf("Failed to get address of '%s'.\n", LLVMValueToString(value).Data());
         exit(1i32);
         ret null;
     }
@@ -2049,10 +2057,40 @@ class Compiler {
             let _class: QualifiedType& = pointer.Type().Pointee();
             let param_types: Vector<QualifiedType*> = this.ValueToType(params);
 
-            if _class.Has(String("op="), param_types) {
+            if _class.Has(String("op="), param_types) && operator == TokenType::ASSIGN {
                 let method: Pair<Method, QualifiedType*>& = _class.Get(String("op="), param_types);
-                this.CompileCall2(QualifiedValue(method.left.value, method.right, pointer), params, false, false);
-            } else if value.Type() == _class {
+                ret this.CompileCall2(QualifiedValue(method.left.value, method.right, pointer), params, false, false);
+            } else if _class.Has(String("op+="), param_types) && operator == TokenType::PLUS_ASSIGN {
+                let method: Pair<Method, QualifiedType*>& = _class.Get(String("op+="), param_types);
+                ret this.CompileCall2(QualifiedValue(method.left.value, method.right, pointer), params, false, false);
+            } else if _class.Has(String("op-="), param_types) && operator == TokenType::MINUS_ASSIGN {
+                let method: Pair<Method, QualifiedType*>& = _class.Get(String("op-="), param_types);
+                ret this.CompileCall2(QualifiedValue(method.left.value, method.right, pointer), params, false, false);
+            } else if _class.Has(String("op*="), param_types) && operator == TokenType::MUL_ASSIGN {
+                let method: Pair<Method, QualifiedType*>& = _class.Get(String("op*="), param_types);
+                ret this.CompileCall2(QualifiedValue(method.left.value, method.right, pointer), params, false, false);
+            } else if _class.Has(String("op/="), param_types) && operator == TokenType::DIV_ASSIGN {
+                let method: Pair<Method, QualifiedType*>& = _class.Get(String("op/="), param_types);
+                ret this.CompileCall2(QualifiedValue(method.left.value, method.right, pointer), params, false, false);
+            } else if _class.Has(String("op%="), param_types) && operator == TokenType::MOD_ASSIGN {
+                let method: Pair<Method, QualifiedType*>& = _class.Get(String("op%="), param_types);
+                ret this.CompileCall2(QualifiedValue(method.left.value, method.right, pointer), params, false, false);
+            } else if _class.Has(String("op&="), param_types) && operator == TokenType::AND_ASSIGN {
+                let method: Pair<Method, QualifiedType*>& = _class.Get(String("op&="), param_types);
+                ret this.CompileCall2(QualifiedValue(method.left.value, method.right, pointer), params, false, false);
+            } else if _class.Has(String("op|="), param_types) && operator == TokenType::OR_ASSIGN {
+                let method: Pair<Method, QualifiedType*>& = _class.Get(String("op|="), param_types);
+                ret this.CompileCall2(QualifiedValue(method.left.value, method.right, pointer), params, false, false);
+            } else if _class.Has(String("op^="), param_types) && operator == TokenType::XOR_ASSIGN {
+                let method: Pair<Method, QualifiedType*>& = _class.Get(String("op^="), param_types);
+                ret this.CompileCall2(QualifiedValue(method.left.value, method.right, pointer), params, false, false);
+            } else if _class.Has(String("op<<"), param_types) && operator == TokenType::LSHIFT_ASSIGN {
+                let method: Pair<Method, QualifiedType*>& = _class.Get(String("op<<"), param_types);
+                ret this.CompileCall2(QualifiedValue(method.left.value, method.right, pointer), params, false, false);
+            } else if _class.Has(String("op>>"), param_types) && operator == TokenType::RSHIFT_ASSIGN {
+                let method: Pair<Method, QualifiedType*>& = _class.Get(String("op>>"), param_types);
+                ret this.CompileCall2(QualifiedValue(method.left.value, method.right, pointer), params, false, false);
+            } else if value.Type() == _class && operator == TokenType::ASSIGN {
                 let fields: Map<String, Pair<Field, QualifiedType*>>& = _class.Fields();
                 value = QualifiedValue(LLVMAddressOf(value.Value()), this.type_manager.Pointer(value.Type(), true));
                 let mut i: u64 = 0u64;
@@ -2084,7 +2122,7 @@ class Compiler {
                 } else if (value.Type().IsPointer() && other_kind == LLVMTypeKind::LLVMIntegerTypeKind) || (value_kind == LLVMTypeKind::LLVMIntegerTypeKind && other.Type().IsPointer()) {
                     let ptr: QualifiedValue = value.Type().IsPointer() ? value : other;
                     let index: QualifiedValue = value.Type().IsPointer() ? other : value;
-                    let width: u32 = LLVMGetIntTypeWidth(index.Value());
+                    let width: u32 = LLVMGetIntTypeWidth(index.Type().Value());
 
                     if width == 64u32 {
                         if operator == TokenType::PLUS_ASSIGN {
@@ -2247,7 +2285,7 @@ class Compiler {
         } else if (left.Type().IsPointer() && right_kind == LLVMTypeKind::LLVMIntegerTypeKind) || (left_kind == LLVMTypeKind::LLVMIntegerTypeKind && right.Type().IsPointer()) {
             let ptr: QualifiedValue = left.Type().IsPointer() ? left : right;
             let index: QualifiedValue = left.Type().IsPointer() ? right : left;
-            let width: u32 = LLVMGetIntTypeWidth(index.Value());
+            let width: u32 = LLVMGetIntTypeWidth(index.Type().Value());
 
             if width == 64u32 {
                 if binary_op->operator == TokenType::PLUS {
@@ -2432,8 +2470,8 @@ class Compiler {
             let _type: QualifiedType& = this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false);
             ret QualifiedValue(LLVMConstInt(_type.Value(), literal->literal_type == TokenType::TRUE ? 1u64 : 0u64, 0i32), _type);
         } else if literal->literal_type == TokenType::STRING {
-            let value: LLVMValueRef = LLVMBuildGlobalStringPtr(this.builder, literal->value.Data(), "str");
-            ret QualifiedValue(value, this.type_manager.Primitive(LLVMTypeOf(value), false));
+            let value: LLVMValueRef = LLVMBuildGlobalStringPtr(this.builder, literal->value.Data(), "");
+            ret QualifiedValue(value, this.type_manager.Pointer(this.type_manager.Primitive(LLVMInt8TypeInContext(this.context), true), false));
         } else if literal->literal_type == TokenType::CHAR {
             let _type: QualifiedType& = this.type_manager.Primitive(LLVMInt8TypeInContext(this.context), true);
             ret QualifiedValue(LLVMConstInt(_type.Value(), literal->value[0u64] as u64, 0i32), _type);
@@ -2977,7 +3015,7 @@ class Compiler {
         } else if (left.Type().IsPointer() && right_kind == LLVMTypeKind::LLVMIntegerTypeKind) || (left_kind == LLVMTypeKind::LLVMIntegerTypeKind && right.Type().IsPointer()) {
             let ptr: QualifiedValue = left.Type().IsPointer() ? left : right;
             let index: QualifiedValue = left.Type().IsPointer() ? right : left;
-            let width: u32 = LLVMGetIntTypeWidth(index.Value());
+            let width: u32 = LLVMGetIntTypeWidth(index.Type().Value());
 
             if width == 64u32 {
                 if binary_op->operator == TokenType::PLUS {

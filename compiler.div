@@ -1326,8 +1326,12 @@ class Compiler {
             if LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(this.builder)) == null {
                 let mut state: bool = true;
 
-                if LLVMGetTypeKind(this.function->Return().Value()) == LLVMTypeKind::LLVMVoidTypeKind && params.Size() > 0u64 {
-                    state = params[0u64].sret != null;
+                if LLVMGetTypeKind(this.function->Return().Value()) == LLVMTypeKind::LLVMVoidTypeKind {
+                    if params.Size() > 0u64 {
+                        state = params[0u64].sret != null;
+                    } else {
+                        state = false;
+                    }
                 }
 
                 if !state {
@@ -1440,7 +1444,7 @@ class Compiler {
         let mut initializer: QualifiedValue;
 
         if constant_decl->initializer->node_type != ASTNodeType::INITIALIZER_LIST {
-            initializer = this.CompileConstantExpression(constant_decl->initializer);
+            initializer = this.CompileExpression(constant_decl->initializer, false);
         } else {
             let mut values: Vector<LLVMValueRef>;
             let initializer_list: InitializerListNode* = constant_decl->initializer as InitializerListNode*;
@@ -1449,10 +1453,10 @@ class Compiler {
 
             while i < fields.Size() {
                 if i < initializer_list->expressions.Size() {
-                    values.PushBack(this.CompileConstantExpression(initializer_list->expressions[i]).Value());
+                    values.PushBack(this.CompileExpression(initializer_list->expressions[i], false).Value());
                 } else {
                     if fields[i].right.left.initializer != null {
-                        values.PushBack(this.CompileConstantExpression(fields[i].right.left.initializer).Value());
+                        values.PushBack(this.CompileExpression(fields[i].right.left.initializer, false).Value());
                     } else {
                         this.Error((String("Missing initializer for field '") + fields[i].left + "'.").Data());
                         ret;
@@ -1747,7 +1751,7 @@ class Compiler {
 
         while i < enum_decl->values.Size() {
             if enum_decl->values[i].right != null {
-                let _value: QualifiedValue = this.CompileConstantExpression(enum_decl->values[i].right);
+                let _value: QualifiedValue = this.CompileExpression(enum_decl->values[i].right, false);
 
                 if _value.Type() == underlying_type {
                     value = _value.Value();
@@ -2214,113 +2218,6 @@ class Compiler {
 
             LLVMBuildStore(this.builder, value.Value(), pointer.Value());
         } ret pointer;
-    }
-
-    priv CompileConstantExpression(mut this: Compiler&, expr: ASTNode*) -> QualifiedValue {
-        if expr->node_type == ASTNodeType::LITERAL {
-            ret this.CompileLiteral(expr as LiteralNode*);
-        } else if expr->node_type == ASTNodeType::IDENTIFIER || expr->node_type == ASTNodeType::SCOPE_RESOLUTION {
-            let symbol: Symbol* = this.scope_manager.Resolve(expr);
-
-            if symbol->kind == SymbolKind::Constant {
-                ret symbol->value;
-            } else {
-                this.Error((String("Invalid symbol kind '") + SymbolKindToString(symbol->kind) + "'.").Data());
-                ret QualifiedValue(null, null);
-            }
-        } else if expr->node_type == ASTNodeType::UNARY_OP {
-            ret this.CompileConstantUnaryOperation(expr as UnaryOpNode*);
-        } else if expr->node_type == ASTNodeType::BINARY_OP {
-            ret this.CompileConstantBinaryOperation(expr as BinaryOpNode*);
-        } else {
-            this.Error((String("Unknown constant expression '") + ASTNodeTypeToString(expr->node_type) + "'.").Data());
-            ret QualifiedValue(null, null);
-        }
-    }
-
-    priv CompileConstantUnaryOperation(mut this: Compiler&, unary_op: UnaryOpNode*) -> QualifiedValue {
-        let value: QualifiedValue = this.CompileConstantExpression(unary_op->operand);
-        let kind: LLVMTypeKind = LLVMGetTypeKind(value.Type().Value());
-
-        if unary_op->operator == TokenType::MINUS {
-            if kind == LLVMTypeKind::LLVMIntegerTypeKind {
-                if value.Type().IsSigned() {
-                    ret QualifiedValue(LLVMConstNeg(value.Value()), value.Type());
-                } else {
-                    this.Error((String("Cannot negate unsigned type '") + LLVMTypeToString(value.Type().Value()) + "'.").Data());
-                    ret QualifiedValue(null, null);
-                }
-            } else if kind == LLVMTypeKind::LLVMFloatTypeKind || kind == LLVMTypeKind::LLVMDoubleTypeKind {
-                ret QualifiedValue(LLVMConstNeg(value.Value()), value.Type());
-            } else {
-                this.Error((String("Cannot negate type '") + LLVMTypeToString(value.Type().Value()) + "'.").Data());
-                ret QualifiedValue(null, null);
-            }
-        } else if unary_op->operator == TokenType::NOT {
-            if kind == LLVMTypeKind::LLVMIntegerTypeKind {
-                ret QualifiedValue(LLVMConstNot(value.Value()), value.Type());
-            } else {
-                this.Error((String("Cannot invert type '") + LLVMTypeToString(value.Type().Value()) + "'.").Data());
-                ret QualifiedValue(null, null);
-            }
-        } else {
-            this.Error((String("Invalid constant unary operation '") + TokenTypeToString(unary_op->operator) + "'.").Data());
-            ret QualifiedValue(null, null);
-        }
-    }
-
-    priv CompileConstantBinaryOperation(mut this: Compiler&, binary_op: BinaryOpNode*) -> QualifiedValue {
-        let (left: QualifiedValue, right: QualifiedValue) = (this.CompileConstantExpression(binary_op->left), this.CompileConstantExpression(binary_op->right));
-        let (left_kind: LLVMTypeKind, right_kind: LLVMTypeKind) = (LLVMGetTypeKind(left.Type().Value()), LLVMGetTypeKind(right.Type().Value()));
-
-        if left.Type().IsPointer() && right.Type().IsPointer() {
-            if binary_op->operator == TokenType::MINUS {
-                let left_int: LLVMValueRef = LLVMConstPtrToInt(left.Value(), LLVMInt64TypeInContext(this.context));
-                let right_int: LLVMValueRef = LLVMConstPtrToInt(right.Value(), LLVMInt64TypeInContext(this.context));
-                ret QualifiedValue(LLVMConstSub(left_int, right_int), this.type_manager.Primitive(LLVMInt64TypeInContext(this.context), false));
-            } else {
-                this.Error((String("Invalid constant pointer binary operation '") + TokenTypeToString(binary_op->operator) + "' for type '" + LLVMTypeToString(left.Type().Value()) + "'.").Data());
-                ret QualifiedValue(null, null);
-            }
-        } else if (left.Type().IsPointer() && right_kind == LLVMTypeKind::LLVMIntegerTypeKind) || (left_kind == LLVMTypeKind::LLVMIntegerTypeKind && right.Type().IsPointer()) {
-            let ptr: QualifiedValue = left.Type().IsPointer() ? left : right;
-            let index: QualifiedValue = left.Type().IsPointer() ? right : left;
-            let width: u32 = LLVMGetIntTypeWidth(index.Type().Value());
-
-            if width == 64u32 {
-                if binary_op->operator == TokenType::PLUS {
-                    let indices[]: LLVMValueRef = { index.Value() };
-                    ret QualifiedValue(LLVMConstGEP2(ptr.Type().Value(), ptr.Value(), indices, 1u32), ptr.Type());
-                } else if binary_op->operator == TokenType::MINUS {
-                    let indices[]: LLVMValueRef = { LLVMConstNeg(index.Value()) };
-                    ret QualifiedValue(LLVMConstGEP2(ptr.Type().Value(), ptr.Value(), indices, 1u32), ptr.Type());
-                } else {
-                    this.Error((String("Invalid constant pointer binary operation '") + TokenTypeToString(binary_op->operator) + "' for type '" + LLVMTypeToString(left.Type().Value()) + "'.").Data());
-                    ret QualifiedValue(null, null);
-                }
-            } else {
-                this.Error((String("Invalid index type '") + LLVMTypeToString(index.Type().Value()) + "'.").Data());
-                ret QualifiedValue(null, null);
-            }
-        } else {
-            if left.Type() != right.Type() {
-                this.Error((String("Incompatible constant pointer binary types. ('") + LLVMTypeToString(left.Type().Value()) + "' != '" + LLVMTypeToString(right.Type().Value()) + "').").Data());
-                ret QualifiedValue(null, null);
-            }
-
-            if binary_op->operator == TokenType::PLUS {
-                ret QualifiedValue(LLVMConstAdd(left.Value(), right.Value()), left.Type());
-            } else if binary_op->operator == TokenType::MINUS {
-                ret QualifiedValue(LLVMConstSub(left.Value(), right.Value()), left.Type());
-            } else if binary_op->operator == TokenType::MUL {
-                ret QualifiedValue(LLVMConstMul(left.Value(), right.Value()), left.Type());
-            } else if binary_op->operator == TokenType::BITWISE_XOR {
-                ret QualifiedValue(LLVMConstXor(left.Value(), right.Value()), left.Type());
-            } else {
-                this.Error((String("Invalid constant binary operation '") + TokenTypeToString(binary_op->operator) + "'.").Data());
-                ret QualifiedValue(null, null);
-            }
-        }
     }
 
     priv CompileExpression(mut this: Compiler&, expr: ASTNode*, pointer: bool) -> QualifiedValue {

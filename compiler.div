@@ -122,7 +122,7 @@ func LLVMValueToString(value: LLVMValueRef) -> String {
 }
 
 func LLVMAddressOf(value: LLVMValueRef) -> LLVMValueRef {
-    if LLVMIsAInstruction(value) != null && LLVMGetInstructionOpcode(value) == LLVMOpcode::LLVMLoad {
+    if LLVMGetInstructionOpcode(value) == LLVMOpcode::LLVMLoad {
         let operand: LLVMValueRef = LLVMGetOperand(value, 0u32);
         LLVMInstructionEraseFromParent(value);
         ret operand;
@@ -223,7 +223,7 @@ class QualifiedType {
         }
     }
 
-    pub Return(this: QualifiedType&) -> QualifiedType* {
+    pub Return(this: QualifiedType&) -> QualifiedType& {
         if this._function {
             ret this.return;
         } else {
@@ -1827,6 +1827,7 @@ class Compiler {
 
     priv CompileReturn(mut this: Compiler&, ret_stmt: ReturnStmtNode*) {
         if ret_stmt->value != null {
+            let return: QualifiedType& = this.function->Return();
             let params: Vector<QualifiedType*> = this.function->Parameters();
             let mut state: bool = false;
 
@@ -1834,13 +1835,21 @@ class Compiler {
                 state = params[0u64].sret != null;
             }
 
-            if state || this.function->Return().sret != null {
-                let value: QualifiedValue = this.CompileExpression(ret_stmt->value, true);
-                let return: LLVMTypeRef = this.function->Return().Value();
+            if state || return.sret != null {
+                let mut value: QualifiedValue = this.CompileExpression(ret_stmt->value, true);
 
-                if LLVMGetTypeKind(return) == LLVMTypeKind::LLVMIntegerTypeKind {
+                if value.Type().IsReference() {
+                    value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
+                }
+
+                if return != value.Type() {
+                    this.Error((String("Incompatible return types. ('") + LLVMTypeToString(return.Value()) + "' != '" + LLVMTypeToString(value.Type().Value()) + "').").Data());
+                    ret;
+                }
+
+                if LLVMGetTypeKind(return.Value()) == LLVMTypeKind::LLVMIntegerTypeKind {
                     this.scope_manager.InvokeDestructors(value);
-                    LLVMBuildRet(this.builder, LLVMBuildLoad2(this.builder, return, value.Value(), ""));
+                    LLVMBuildRet(this.builder, LLVMBuildLoad2(this.builder, return.Value(), value.Value(), ""));
                 } else {
                     let mut _params: Vector<QualifiedValue>;
                     _params.PushBack(value);
@@ -1849,7 +1858,17 @@ class Compiler {
                     LLVMBuildRetVoid(this.builder);
                 }
             } else {
-                let value: QualifiedValue = this.CompileExpression(ret_stmt->value, this.function->Return().IsReference());
+                let mut value: QualifiedValue = this.CompileExpression(ret_stmt->value, return.IsReference());
+
+                if value.Type().IsReference() && return != value.Type() {
+                    value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
+                }
+
+                if return != value.Type() {
+                    this.Error((String("Incompatible return types. ('") + LLVMTypeToString(return.Value()) + "' != '" + LLVMTypeToString(value.Type().Value()) + "').").Data());
+                    ret;
+                }
+
                 this.scope_manager.InvokeDestructors();
                 LLVMBuildRet(this.builder, value.Value());
             }
@@ -2016,7 +2035,11 @@ class Compiler {
             this.CompileConstructor(_type, instance, params);
             this.scope_manager.RegisterInstance(instance);
         } else if variable->initializer != null {
-            let initializer: QualifiedValue = this.CompileExpression(variable->initializer, _type.IsReference());
+            let mut initializer: QualifiedValue = this.CompileExpression(variable->initializer, _type.IsReference());
+
+            if initializer.Type().IsReference() && initializer.Type() != _type {
+                initializer = QualifiedValue(LLVMBuildLoad2(this.builder, initializer.Type().Pointee().Value(), initializer.Value(), ""), initializer.Type().Pointee());
+            }
 
             if initializer.Type() != _type {
                 this.Error((String("Incompatible variable initialization types. ('") + LLVMTypeToString(_type.Value()) + "' != '" + LLVMTypeToString(initializer.Type().Value()) + "').").Data());
@@ -2209,6 +2232,10 @@ class Compiler {
                     this.Error((String("Invalid type '") + LLVMTypeToString(value.Type().Value()) + "' for assignment operation '" + TokenTypeToString(operator) + "'.").Data());
                     ret QualifiedValue(null, null);
                 }
+            }
+
+            if value.Type().IsReference() && value.Type() != pointer.Type().Pointee() {
+                value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
             }
 
             if value.Type() != pointer.Type().Pointee() && !(LLVMIsAConstantPointerNull(value.Value()) != null && pointer.Type().Pointee().IsPointer()) {
@@ -2436,7 +2463,18 @@ class Compiler {
             }
 
             if index < params.Size() {
-                if params[index]->byval != null {
+                let param: QualifiedType& = params[index];
+
+                if param->byval != null {
+                    if value.Type().IsReference() && *param->byval != value.Type() {
+                        value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
+                    }
+
+                    if *param->byval != value.Type() {
+                        this.Error((String("Incompatible function argument types. ('") + LLVMTypeToString(param->byval->Value()) + "' != '" + LLVMTypeToString(value.Type().Value()) + "').").Data());
+                        ret QualifiedValue(null, null);
+                    }
+
                     let mut _params: Vector<QualifiedValue>;
                     value = QualifiedValue(LLVMAddressOf(value.Value()), this.type_manager.Pointer(value.Type(), value.Type().IsMutable()));
                     _params.PushBack(value);
@@ -2447,22 +2485,31 @@ class Compiler {
                     value = QualifiedValue(pointer, value.Type());
                     this.CompileConstructor(value.Type().Pointee(), value, _params);
 
-                    if LLVMGetTypeKind(params[index]->Value()) != LLVMTypeKind::LLVMPointerTypeKind {
-                        args.PushBack(LLVMBuildLoad2(this.builder, params[index]->Value(), value.Value(), ""));
+                    if LLVMGetTypeKind(param->Value()) != LLVMTypeKind::LLVMPointerTypeKind {
+                        args.PushBack(LLVMBuildLoad2(this.builder, param->Value(), value.Value(), ""));
                     } else {
                         args.PushBack(value.Value());
                     }
                 } else {
-                    let param: QualifiedType& = params[index];
+                    if value.Type().IsReference() && param != value.Type() {
+                        value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
+                    }
 
-                    if param.IsReference() && param != value.Type() {
+                    if param.IsReference() && param != value.Type() && LLVMGetInstructionOpcode(value.Value()) == LLVMOpcode::LLVMLoad {
                         value = QualifiedValue(LLVMAddressOf(value.Value()), this.type_manager.Pointer(value.Type(), true));
+                    }
+
+                    if param != value.Type() {
+                        this.Error((String("Incompatible function argument types. ('") + LLVMTypeToString(param.Value()) + "' != '" + LLVMTypeToString(value.Type().Value()) + "').").Data());
+                        ret QualifiedValue(null, null);
                     }
 
                     args.PushBack(value.Value());
                 }
             } else {
-                args.PushBack(value.Value());
+                if value.Type().IsReference() {
+                    value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
+                } args.PushBack(value.Value());
             } i += 1u64;
         }
 
@@ -2541,12 +2588,7 @@ class Compiler {
 
         let indices[]: LLVMValueRef = { index.Value() };
         let target_pointer: LLVMValueRef = LLVMBuildGEP2(this.builder, value.Type().Pointee().Value(), value.Value(), indices, 1u32, "");
-
-        if !pointer {
-            ret QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), target_pointer, ""), value.Type().Pointee());
-        } else {
-            ret QualifiedValue(target_pointer, value.Type());
-        }
+        ret QualifiedValue(target_pointer, this.type_manager.Reference(value.Type().Pointee(), value.Type().IsMutable()));
     }
 
     priv CompileMemberAccess(mut this: Compiler&, member_access: MemberAccessNode*, pointer: bool) -> QualifiedValue {
@@ -2822,13 +2864,25 @@ class Compiler {
     priv CompileUnaryOperation(mut this: Compiler&, unary_op: UnaryOpNode*, pointer: bool) -> QualifiedValue {
         if unary_op->operator == TokenType::BITWISE_AND {
             if !pointer {
-                ret this.CompileExpression(unary_op->operand, true);
+                let _pointer: QualifiedValue = this.CompileExpression(unary_op->operand, true);
+
+                if _pointer.Type().Pointee().IsReference() {
+                    let _type: QualifiedType* = this.type_manager.Pointer(_pointer.Type().Pointee().Pointee(), _pointer.Type().Pointee().IsMutable());
+                    ret QualifiedValue(LLVMBuildLoad2(this.builder, _pointer.Type().Pointee().Value(), _pointer.Value(), ""), _type);
+                } else {
+                    ret _pointer;
+                }
             } else {
                 this.Error("Invalid pointer unary operation.");
                 ret QualifiedValue(null, null);
             }
         } else {
-            let value: QualifiedValue = this.CompileExpression(unary_op->operand, false);
+            let mut value: QualifiedValue = this.CompileExpression(unary_op->operand, false);
+
+            if value.Type().IsReference() {
+                value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
+            }
+
             let kind: LLVMTypeKind = LLVMGetTypeKind(value.Type().Value());
 
             if unary_op->operator == TokenType::MUL {
@@ -2886,7 +2940,16 @@ class Compiler {
     }
 
     priv CompileBinaryOperation(mut this: Compiler&, binary_op: BinaryOpNode*) -> QualifiedValue {
-        let (left: QualifiedValue, right: QualifiedValue) = (this.CompileExpression(binary_op->left, false), this.CompileExpression(binary_op->right, false));
+        let (mut left: QualifiedValue, mut right: QualifiedValue) = (this.CompileExpression(binary_op->left, false), this.CompileExpression(binary_op->right, false));
+        
+        if left.Type().IsReference() {
+            left = QualifiedValue(LLVMBuildLoad2(this.builder, left.Type().Pointee().Value(), left.Value(), ""), left.Type().Pointee());
+        }
+
+        if right.Type().IsReference() {
+            right = QualifiedValue(LLVMBuildLoad2(this.builder, right.Type().Pointee().Value(), right.Value(), ""), right.Type().Pointee());
+        }
+        
         let (left_kind: LLVMTypeKind, right_kind: LLVMTypeKind) = (LLVMGetTypeKind(left.Type().Value()), LLVMGetTypeKind(right.Type().Value()));
 
         if left.Type().IsPointer() && right.Type().IsPointer() {

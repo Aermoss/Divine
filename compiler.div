@@ -1835,22 +1835,27 @@ class Compiler {
                 state = params[0u64].sret != null;
             }
 
-            if state || return.sret != null {
+            if return.sret != null || state {
                 let mut value: QualifiedValue = this.CompileExpression(ret_stmt->value, true);
 
                 if value.Type().Pointee().IsReference() {
                     value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
                 }
 
-                if *return.sret != value.Type().Pointee() {
-                    this.Error((String("Incompatible return types. ('") + LLVMTypeToString(return.sret->Value()) + "' != '" + LLVMTypeToString(value.Type().Pointee().Value()) + "').").Data());
-                    ret;
-                }
-
                 if LLVMGetTypeKind(return.Value()) == LLVMTypeKind::LLVMIntegerTypeKind {
+                    if *return.sret != value.Type().Pointee() {
+                        this.Error((String("Incompatible return types. ('") + LLVMTypeToString(return.sret->Value()) + "' != '" + LLVMTypeToString(value.Type().Pointee().Value()) + "').").Data());
+                        ret;
+                    }
+
                     this.scope_manager.InvokeDestructors(value);
                     LLVMBuildRet(this.builder, LLVMBuildLoad2(this.builder, return.Value(), value.Value(), ""));
                 } else {
+                    if *params[0u64].sret != value.Type().Pointee() {
+                        this.Error((String("Incompatible return types. ('") + LLVMTypeToString(return.sret->Value()) + "' != '" + LLVMTypeToString(value.Type().Pointee().Value()) + "').").Data());
+                        ret;
+                    }
+
                     let mut _params: Vector<QualifiedValue>;
                     _params.PushBack(value);
                     this.CompileConstructor(value.Type().Pointee(), QualifiedValue(LLVMGetParam(this.function_ref, 0u32), params[0u64]), _params);
@@ -1864,7 +1869,7 @@ class Compiler {
                     value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
                 }
 
-                if return != value.Type() {
+                if return != value.Type() && !(LLVMIsAConstantPointerNull(value.Value()) != null && return.IsPointer()) {
                     this.Error((String("Incompatible return types. ('") + LLVMTypeToString(return.Value()) + "' != '" + LLVMTypeToString(value.Type().Value()) + "').").Data());
                     ret;
                 }
@@ -2081,41 +2086,13 @@ class Compiler {
             let mut params: Vector<QualifiedValue>;
             params.PushBack(value);
 
-            let _class: QualifiedType& = pointer.Type().Pointee();
+            let mut method_name: String = "op";
+            method_name += AssignmentOperatorToString(operator);
             let param_types: Vector<QualifiedType*> = this.ValueToType(params);
+            let _class: QualifiedType& = pointer.Type().Pointee();
 
-            if _class.Has(String("op="), param_types) && operator == TokenType::ASSIGN {
-                let method: Pair<Method, QualifiedType*>& = _class.Get(String("op="), param_types);
-                ret this.CompileCall2(QualifiedValue(method.left.value, method.right, pointer), params, false, false);
-            } else if _class.Has(String("op+="), param_types) && operator == TokenType::PLUS_ASSIGN {
-                let method: Pair<Method, QualifiedType*>& = _class.Get(String("op+="), param_types);
-                ret this.CompileCall2(QualifiedValue(method.left.value, method.right, pointer), params, false, false);
-            } else if _class.Has(String("op-="), param_types) && operator == TokenType::MINUS_ASSIGN {
-                let method: Pair<Method, QualifiedType*>& = _class.Get(String("op-="), param_types);
-                ret this.CompileCall2(QualifiedValue(method.left.value, method.right, pointer), params, false, false);
-            } else if _class.Has(String("op*="), param_types) && operator == TokenType::MUL_ASSIGN {
-                let method: Pair<Method, QualifiedType*>& = _class.Get(String("op*="), param_types);
-                ret this.CompileCall2(QualifiedValue(method.left.value, method.right, pointer), params, false, false);
-            } else if _class.Has(String("op/="), param_types) && operator == TokenType::DIV_ASSIGN {
-                let method: Pair<Method, QualifiedType*>& = _class.Get(String("op/="), param_types);
-                ret this.CompileCall2(QualifiedValue(method.left.value, method.right, pointer), params, false, false);
-            } else if _class.Has(String("op%="), param_types) && operator == TokenType::MOD_ASSIGN {
-                let method: Pair<Method, QualifiedType*>& = _class.Get(String("op%="), param_types);
-                ret this.CompileCall2(QualifiedValue(method.left.value, method.right, pointer), params, false, false);
-            } else if _class.Has(String("op&="), param_types) && operator == TokenType::AND_ASSIGN {
-                let method: Pair<Method, QualifiedType*>& = _class.Get(String("op&="), param_types);
-                ret this.CompileCall2(QualifiedValue(method.left.value, method.right, pointer), params, false, false);
-            } else if _class.Has(String("op|="), param_types) && operator == TokenType::OR_ASSIGN {
-                let method: Pair<Method, QualifiedType*>& = _class.Get(String("op|="), param_types);
-                ret this.CompileCall2(QualifiedValue(method.left.value, method.right, pointer), params, false, false);
-            } else if _class.Has(String("op^="), param_types) && operator == TokenType::XOR_ASSIGN {
-                let method: Pair<Method, QualifiedType*>& = _class.Get(String("op^="), param_types);
-                ret this.CompileCall2(QualifiedValue(method.left.value, method.right, pointer), params, false, false);
-            } else if _class.Has(String("op<<"), param_types) && operator == TokenType::LSHIFT_ASSIGN {
-                let method: Pair<Method, QualifiedType*>& = _class.Get(String("op<<"), param_types);
-                ret this.CompileCall2(QualifiedValue(method.left.value, method.right, pointer), params, false, false);
-            } else if _class.Has(String("op>>"), param_types) && operator == TokenType::RSHIFT_ASSIGN {
-                let method: Pair<Method, QualifiedType*>& = _class.Get(String("op>>"), param_types);
+            if _class.Has(method_name, param_types) {
+                let method: Pair<Method, QualifiedType*>& = _class.Get(method_name, param_types);
                 ret this.CompileCall2(QualifiedValue(method.left.value, method.right, pointer), params, false, false);
             } else if value.Type() == _class && operator == TokenType::ASSIGN {
                 let fields: Map<String, Pair<Field, QualifiedType*>>& = _class.Fields();
@@ -2499,7 +2476,7 @@ class Compiler {
                         value = QualifiedValue(LLVMAddressOf(value.Value()), this.type_manager.Pointer(value.Type(), true));
                     }
 
-                    if param != value.Type() {
+                    if param != value.Type() && !(LLVMIsAConstantPointerNull(value.Value()) != null && param.IsPointer()) {
                         this.Error((String("Incompatible function argument types. ('") + LLVMTypeToString(param.Value()) + "' != '" + LLVMTypeToString(value.Type().Value()) + "').").Data());
                         ret QualifiedValue(null, null);
                     }

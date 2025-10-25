@@ -2278,12 +2278,7 @@ class Compiler {
         } else if expr->node_type == ASTNodeType::UNARY_OP {
             ret this.CompileUnaryOperation(expr as UnaryOpNode*, pointer);
         } else if expr->node_type == ASTNodeType::BINARY_OP {
-            if !pointer {
-                ret this.CompileBinaryOperation(expr as BinaryOpNode*);
-            } else {
-                this.Error("Invalid pointer binary expression.");
-                ret QualifiedValue(null, null);
-            }
+            ret this.CompileBinaryOperation(expr as BinaryOpNode*, pointer);
         } else {
             this.Error((String("Unknown expression '") + ASTNodeTypeToString(expr->node_type) + "'.").Data());
             ret QualifiedValue(null, null);
@@ -2394,7 +2389,34 @@ class Compiler {
             i += 1u64;
         }
 
-        ret this.CompileCall2(this.CompileExpression(call->function, true), values, pointer, false);
+        if call->function->node_type == ASTNodeType::MEMBER_ACCESS {
+            let member_access: MemberAccessNode* = call->function as MemberAccessNode*;
+            let mut instance: QualifiedValue = this.CompileExpression(member_access->expression, true);
+
+            if instance.Type().Pointee().IsReference() {
+                instance = QualifiedValue(LLVMBuildLoad2(this.builder, instance.Type().Pointee().Value(), instance.Value(), ""), instance.Type().Pointee());
+            }
+
+            if member_access->arrow {
+                instance = QualifiedValue(LLVMBuildLoad2(this.builder, instance.Type().Pointee().Value(), instance.Value(), ""), instance.Type().Pointee());
+
+                if !instance.Type().IsPointer() {
+                    this.Error("Member access value must be a pointer.");
+                    ret QualifiedValue(null, null);
+                }
+            }
+
+            if !instance.Type().Pointee().IsClass() {
+                this.Error((String("Cannot access member '") + member_access->member + "' of non-class type.").Data());
+                ret QualifiedValue(null, null);
+            }
+
+            let _class: QualifiedType& = instance.Type().Pointee();
+            let method: Pair<Method, QualifiedType*>& = _class.Get(member_access->member, this.ValueToType(values));
+            ret this.CompileCall2(QualifiedValue(method.left.value, method.right, instance), values, pointer, false);
+        } else {
+            ret this.CompileCall2(this.CompileExpression(call->function, true), values, pointer, false);
+        }
     }
 
     priv CompileCall2(mut this: Compiler&, _func: QualifiedValue, values: Vector<QualifiedValue>&, pointer: bool, ignore: bool) -> QualifiedValue {
@@ -2916,7 +2938,7 @@ class Compiler {
         }
     }
 
-    priv CompileBinaryOperation(mut this: Compiler&, binary_op: BinaryOpNode*) -> QualifiedValue {
+    priv CompileBinaryOperation(mut this: Compiler&, binary_op: BinaryOpNode*, pointer: bool) -> QualifiedValue {
         let (mut left: QualifiedValue, mut right: QualifiedValue) = (this.CompileExpression(binary_op->left, false), this.CompileExpression(binary_op->right, false));
         
         if left.Type().IsReference() {
@@ -2926,7 +2948,25 @@ class Compiler {
         if right.Type().IsReference() {
             right = QualifiedValue(LLVMBuildLoad2(this.builder, right.Type().Pointee().Value(), right.Value(), ""), right.Type().Pointee());
         }
-        
+
+        if left.Type().IsClass() || right.Type().IsClass() {
+            let mut instance: QualifiedValue = left.Type().IsClass() ? left : right;
+            instance = QualifiedValue(LLVMAddressOf(instance.Value()), this.type_manager.Pointer(instance.Type(), instance.Type().IsMutable()));
+            let value: QualifiedValue = left.Type().IsClass() ? right : left;
+            let mut values: Vector<QualifiedValue>;
+            values.PushBack(value);
+
+            let mut method_name: String = "op";
+            method_name += BinaryOperatorToString(binary_op->operator);
+
+            let _class: QualifiedType& = instance.Type().Pointee();
+            let method: Pair<Method, QualifiedType*>& = _class.Get(method_name, this.ValueToType(values));
+            ret this.CompileCall2(QualifiedValue(method.left.value, method.right, instance), values, pointer, false);
+        } else if pointer {
+            this.Error("Invalid pointer binary operation.");
+            ret QualifiedValue(null, null);
+        }
+
         let (left_kind: LLVMTypeKind, right_kind: LLVMTypeKind) = (LLVMGetTypeKind(left.Type().Value()), LLVMGetTypeKind(right.Type().Value()));
 
         if left.Type().IsPointer() && right.Type().IsPointer() {

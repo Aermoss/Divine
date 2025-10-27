@@ -2024,7 +2024,7 @@ class Compiler {
 
             if variable->initializer != null {
                 if variable->initializer->node_type != ASTNodeType::INITIALIZER_LIST {
-                    params.PushBack(this.CompileExpression(variable->initializer, true));
+                    params.PushBack(this.CompileExpression(variable->initializer, _type.IsReference()));
                 } else {
                     let initializer_list: InitializerListNode* = variable->initializer as InitializerListNode*;
                     let mut i: u64 = 0u64;
@@ -2131,10 +2131,10 @@ class Compiler {
                     if width == 64u32 {
                         if operator == TokenType::PLUS_ASSIGN {
                             let indices[]: LLVMValueRef = { index.Value() };
-                            value = QualifiedValue(LLVMBuildGEP2(this.builder, ptr.Type().Value(), ptr.Value(), indices, 1u32, ""), ptr.Type());
+                            value = QualifiedValue(LLVMBuildGEP2(this.builder, ptr.Type().Pointee().Value(), ptr.Value(), indices, 1u32, ""), ptr.Type());
                         } else if operator == TokenType::MINUS_ASSIGN {
                             let indices[]: LLVMValueRef = { LLVMBuildNeg(this.builder, index.Value(), "") };
-                            value = QualifiedValue(LLVMBuildGEP2(this.builder, ptr.Type().Value(), ptr.Value(), indices, 1u32, ""), ptr.Type());
+                            value = QualifiedValue(LLVMBuildGEP2(this.builder, ptr.Type().Pointee().Value(), ptr.Value(), indices, 1u32, ""), ptr.Type());
                         } else {
                             this.Error((String("Invalid pointer assignment operation '") + TokenTypeToString(operator) + "' for type '" + LLVMTypeToString(ptr.Type().Value()) + "'.").Data());
                             ret QualifiedValue(null, null);
@@ -2369,8 +2369,14 @@ class Compiler {
             let value: LLVMValueRef = LLVMBuildGlobalStringPtr(this.builder, literal->value.Data(), "");
             ret QualifiedValue(value, this.type_manager.Pointer(this.type_manager.Primitive(LLVMInt8TypeInContext(this.context), true), false));
         } else if literal->literal_type == TokenType::CHAR {
-            let _type: QualifiedType& = this.type_manager.Primitive(LLVMInt8TypeInContext(this.context), true);
-            ret QualifiedValue(LLVMConstInt(_type.Value(), literal->value[0u64] as u64, 0i32), _type);
+            if (literal->value.Size() == 2u64 && literal->value[1u64] == '\0') || (literal->value.Size() == 1u64 && literal->value[0u64] == '\0') {
+                let character: i8 = literal->value[0u64];
+                let _type: QualifiedType& = this.type_manager.Primitive(LLVMInt8TypeInContext(this.context), true);
+                ret QualifiedValue(LLVMConstInt(_type.Value(), character as u64, 0i32), _type);
+            } else {
+                this.Error((String("Invalid character literal '") + literal->value + "'.").Data());
+                ret QualifiedValue(null, null);
+            }
         } else if literal->literal_type == TokenType::NULL {
             let _type: QualifiedType& = this.type_manager.Pointer(this.type_manager.Primitive(LLVMVoidTypeInContext(this.context), false), false);
             ret QualifiedValue(LLVMConstNull(_type.Value()), _type);
@@ -2426,6 +2432,18 @@ class Compiler {
         let mut return: QualifiedValue = QualifiedValue(null, null);
         let mut i: u64 = 0u64;
 
+        if params.Size() > 0u64 {
+            if params[0u64]->sret != null {
+                let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
+                LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
+                let _pointer: LLVMValueRef = LLVMBuildAlloca(this.builder, params[0u64]->sret->Value(), "");
+                return = QualifiedValue(_pointer, this.type_manager.Pointer(params[0u64]->sret, true), true);
+                LLVMPositionBuilderAtEnd(this.builder, current);
+                this.scope_manager.RegisterInstance(return);
+                args.PushBack(return.Value());
+            }
+        }
+
         if _func.instance != null {
             let mut param: QualifiedType* = params[0u64];
 
@@ -2438,18 +2456,6 @@ class Compiler {
                 ret QualifiedValue(null, null);
             } else {
                 args.PushBack(_func.instance);
-            }
-        }
-
-        if params.Size() > 0u64 {
-            if params[0u64]->sret != null {
-                let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
-                LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
-                let _pointer: LLVMValueRef = LLVMBuildAlloca(this.builder, params[0u64]->sret->Value(), "");
-                return = QualifiedValue(_pointer, this.type_manager.Pointer(params[0u64]->sret, true), true);
-                LLVMPositionBuilderAtEnd(this.builder, current);
-                this.scope_manager.RegisterInstance(return);
-                args.PushBack(return.Value());
             }
         }
 
@@ -2997,10 +3003,10 @@ class Compiler {
             if width == 64u32 {
                 if binary_op->operator == TokenType::PLUS {
                     let indices[]: LLVMValueRef = { index.Value() };
-                    ret QualifiedValue(LLVMBuildGEP2(this.builder, ptr.Type().Value(), ptr.Value(), indices, 1u32, ""), ptr.Type());
+                    ret QualifiedValue(LLVMBuildGEP2(this.builder, ptr.Type().Pointee().Value(), ptr.Value(), indices, 1u32, ""), ptr.Type());
                 } else if binary_op->operator == TokenType::MINUS {
                     let indices[]: LLVMValueRef = { LLVMBuildNeg(this.builder, index.Value(), "") };
-                    ret QualifiedValue(LLVMBuildGEP2(this.builder, ptr.Type().Value(), ptr.Value(), indices, 1u32, ""), ptr.Type());
+                    ret QualifiedValue(LLVMBuildGEP2(this.builder, ptr.Type().Pointee().Value(), ptr.Value(), indices, 1u32, ""), ptr.Type());
                 } else {
                     this.Error((String("Invalid pointer binary operation '") + TokenTypeToString(binary_op->operator) + "' for type '" + LLVMTypeToString(left.Type().Value()) + "'.").Data());
                     ret QualifiedValue(null, null);

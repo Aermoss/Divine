@@ -11,7 +11,10 @@ func LLVMPositionBuilderAtStart(builder: LLVMBuilderRef, block: LLVMBasicBlockRe
 }
 
 func LLVMIsTypeEqual(left: LLVMTypeRef, right: LLVMTypeRef) -> bool {
-    if left == right { ret true; }
+    if left == right {
+        ret true;
+    }
+
     let left_kind: LLVMTypeKind = LLVMGetTypeKind(left);
     let right_kind: LLVMTypeKind = LLVMGetTypeKind(right);
 
@@ -97,14 +100,6 @@ func LLVMIsTypeEqual(left: LLVMTypeRef, right: LLVMTypeRef) -> bool {
     }
 }
 
-func LLVMElementTypeOf(value: LLVMValueRef) -> LLVMTypeRef {
-    if LLVMGetInstructionOpcode(value) == LLVMOpcode::LLVMAlloca {
-        ret LLVMGetAllocatedType(value);
-    } else {
-        ret LLVMGetElementType(LLVMTypeOf(value));
-    }
-}
-
 func LLVMTypeToString(_type: LLVMTypeRef) -> String {
     let mut result: String;
     let string: i8* = LLVMPrintTypeToString(_type);
@@ -161,6 +156,7 @@ class QualifiedType {
     priv value: LLVMTypeRef, priv pointee: QualifiedType* = null,
     priv reference: bool = false, priv mutable: bool = false, priv signed: bool = false,
     pub copy: QualifiedType* = null, pub original: QualifiedType* = null,
+    priv array: bool = false, priv size: u64 = 0u64,
 
     pub fields: Map<String, Pair<Field, QualifiedType*>>,
     pub methods: Vector<Pair<Method, QualifiedType*>>,
@@ -186,12 +182,17 @@ class QualifiedType {
         (this.value, this.mutable, this.reference, this.pointee) = (value, mutable, reference, pointee);
     }
 
+    QualifiedType(mut this: QualifiedType&, value: LLVMTypeRef, mutable: bool, size: u64, pointee: QualifiedType*) {
+        (this.value, this.mutable, this.size, this.pointee, this.array) = (value, mutable, size, pointee, true);
+    }
+
     ~QualifiedType(this: QualifiedType&) {}
 
     pub IsMutable(this: QualifiedType&) -> bool { ret this.mutable; }
     pub IsSigned(this: QualifiedType&) -> bool { ret this.signed; }
-    pub IsPointer(this: QualifiedType&) -> bool { ret this.pointee != null; }
+    pub IsPointer(this: QualifiedType&) -> bool { ret this.pointee != null && !this.array; }
     pub IsReference(this: QualifiedType&) -> bool { ret this.reference; }
+    pub IsArray(this: QualifiedType&) -> bool { ret this.array; }
     pub IsPrimitive(this: QualifiedType&) -> bool { ret !this.IsPointer() && !this.IsClass(); }
     pub IsFunction(this: QualifiedType&) -> bool { ret this._function; }
     pub IsClass(this: QualifiedType&) -> bool { ret this._class; }
@@ -207,7 +208,35 @@ class QualifiedType {
 
     pub Pointee(this: QualifiedType&) -> QualifiedType& {
         if this.pointee != null {
-            ret this.pointee;
+            if !this.array {
+                ret this.pointee;
+            } else {
+                this.Error("Not a pointer!");
+                ret null;
+            }
+        } else {
+            this.Error("Null pointee!");
+            ret null;
+        }
+    }
+
+    pub Size(this: QualifiedType&) -> u64 {
+        if this.array {
+            ret this.size;
+        } else {
+            this.Error("Not an array!");
+            ret 0u64;
+        }
+    }
+
+    pub Element(this: QualifiedType&) -> QualifiedType& {
+        if this.pointee != null {
+            if this.array {
+                ret this.pointee;
+            } else {
+                this.Error("Not an array!");
+                ret null;
+            }
         } else {
             this.Error("Null pointee!");
             ret null;
@@ -313,12 +342,18 @@ class QualifiedType {
                             _type = _type->Pointee();
                         }
 
-                        if (*_type) != params[j] {
+                        let mut _state: bool = false;
+
+                        if params[j].IsReference() {
+                            if (*_type) == params[j].Pointee() {
+                                _state = true;
+                            }
+                        }
+
+                        if (*_type) != params[j] && !_state {
                             match = false;
                             break;
-                        } else {
-                            j += 1u64;
-                        }
+                        } j += 1u64;
                     }
 
                     if match {
@@ -341,7 +376,7 @@ class QualifiedType {
     }
 
     pub Get(this: QualifiedType&, name: String&, params: Vector<QualifiedType*>&) -> Pair<Method, QualifiedType*>& {
-        let mut matches: Vector<Pair<Method, QualifiedType*>>;
+        let (mut match: u64, mut best: u64) = (0u64, 0u64);
         let methods: Vector<Pair<Method, QualifiedType*>>& = this.Methods();
         let (mut state: u64, mut i: u64) = (0u64, 0u64);
 
@@ -356,7 +391,7 @@ class QualifiedType {
                 if methods[i].left.visibility != TokenType::PUBLIC && !_state {
                     if state < 1u64 { state = 1u64; }
                 } else {
-                    let (mut match: bool, mut j: u64) = (true, 0u64);
+                    let (mut _match: bool, mut score: u64, mut j: u64) = (true, 1u64, 0u64);
                     let _params: Vector<QualifiedType*>& = methods[i].right->Pointee().Parameters();
                     let offset: u64 = _params[0u64]->sret != null ? 2u64 : 1u64;
 
@@ -376,30 +411,33 @@ class QualifiedType {
                             _type = _type->Pointee();
                         }
 
-                        if (*_type) != params[j] {
-                            match = false;
-                            break;
-                        } else {
-                            j += 1u64;
+                        let mut _state: bool = false;
+
+                        if params[j].IsReference() {
+                            if (*_type) == params[j].Pointee() {
+                                _state = true;
+                            }
                         }
+
+                        if (*_type) == params[j] || _state {
+                            score += _state ? 2u64 : 1u64;
+                        } else {
+                            _match = false;
+                            break;
+                        } j += 1u64;
                     }
 
-                    if !match {
+                    if !_match {
                         state = 2u64;
-                    } else {
-                        matches.PushBack(methods[i]);
+                    } else if score > best {
+                        (match, best) = (i, score);
                     }
                 }
             } i += 1u64;
         }
 
-        if matches.Size() != 0u64 {
-            if matches.Size() > 1u64 {
-                this.Error("Overloading with references/pointers not supported yet.");
-                ret null;
-            } else {
-                ret matches[0u64];
-            }
+        if best != 0u64 {
+            ret methods[match];
         } else {
             if state == 0u64 {
                 this.Error((String("Class '") + this.name + "' doesn't contain any member named '" + name + "'.").Data());
@@ -477,6 +515,12 @@ class TypeManager {
 
     pub Reference(mut this: TypeManager&, pointee: QualifiedType*, mutable: bool) -> QualifiedType* {
         let _type: QualifiedType* = new QualifiedType(LLVMPointerType(pointee->Value(), 0u32), mutable, true, pointee);
+        this.types.PushBack(_type);
+        ret _type;
+    }
+
+    pub Array(mut this: TypeManager&, pointee: QualifiedType*, size: u64, mutable: bool) -> QualifiedType* {
+        let _type: QualifiedType* = new QualifiedType(LLVMArrayType2(pointee->Value(), size), mutable, size, pointee);
         this.types.PushBack(_type);
         ret _type;
     }
@@ -1709,7 +1753,9 @@ class Compiler {
             i += 1u64;
         }
 
+        let prev_class: QualifiedType* = this._class;
         this._class = _class;
+
         LLVMStructSetBody(_class.Value(), field_types.Data(), field_types.Size() as u32, 0i32);
         this.scope_manager.PushScope(class_decl->name, true);
         let (mut j: u64, mut k: u64) = (0u64, 0u64);
@@ -1732,7 +1778,7 @@ class Compiler {
         }
 
         this.scope_manager.PopScope();
-        this._class = null;
+        this._class = prev_class;
         ret _class;
     }
 
@@ -2012,25 +2058,25 @@ class Compiler {
     }
 
     priv CompileVariable(mut this: Compiler&, variable: VariableDeclNode*) {
-        let _type: QualifiedType& = this.CompileType(variable->var_type);
         let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
-        LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
-        let pointer: LLVMValueRef = LLVMBuildAlloca(this.builder, _type.Value(), "");
-        this.scope_manager.Set(variable->name, SymbolKind::Variable, QualifiedValue(pointer, this.type_manager.Pointer(_type, variable->is_mutable)), false);
-        LLVMPositionBuilderAtEnd(this.builder, current);
+        let _type: QualifiedType& = this.CompileType(variable->var_type);
 
         if _type.IsClass() {
             let mut params: Vector<QualifiedValue>;
+            let mut skip: bool = false;
 
             if variable->initializer != null {
                 if variable->initializer->node_type != ASTNodeType::INITIALIZER_LIST {
                     let mut value: QualifiedValue = this.CompileExpression(variable->initializer, false);
 
-                    if value.Type() == _type {
-                        value = QualifiedValue(LLVMAddressOf(value.Value()), this.type_manager.Pointer(value.Type(), true));
+                    if !value.return {
+                        if value.Type() == _type {
+                            value = QualifiedValue(LLVMAddressOf(value.Value()), this.type_manager.Pointer(value.Type(), true));
+                        } params.PushBack(value);
+                    } else {
+                        this.scope_manager.Set(variable->name, SymbolKind::Variable, QualifiedValue(LLVMAddressOf(value.Value()), this.type_manager.Pointer(value.Type(), variable->is_mutable)), false);
+                        skip = true;
                     }
-
-                    params.PushBack(value);
                 } else {
                     let initializer_list: InitializerListNode* = variable->initializer as InitializerListNode*;
                     let mut i: u64 = 0u64;
@@ -2042,22 +2088,36 @@ class Compiler {
                 }
             }
 
-            let instance: QualifiedValue = QualifiedValue(pointer, this.type_manager.Pointer(_type, false));
-            this.CompileConstructor(_type, instance, params);
-            this.scope_manager.RegisterInstance(instance);
-        } else if variable->initializer != null {
-            let mut initializer: QualifiedValue = this.CompileExpression(variable->initializer, _type.IsReference());
+            if !skip {
+                LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
+                let instance: QualifiedValue = QualifiedValue(LLVMBuildAlloca(this.builder, _type.Value(), ""), this.type_manager.Pointer(_type, variable->is_mutable));
+                LLVMPositionBuilderAtEnd(this.builder, current);
 
-            if initializer.Type().IsReference() && initializer.Type() != _type {
-                initializer = QualifiedValue(LLVMBuildLoad2(this.builder, initializer.Type().Pointee().Value(), initializer.Value(), ""), initializer.Type().Pointee());
+                this.CompileConstructor(_type, instance, params);
+                this.scope_manager.Set(variable->name, SymbolKind::Variable, instance, false);
+                this.scope_manager.RegisterInstance(instance);
+            }
+        } else {
+            LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
+            let pointer: QualifiedValue = QualifiedValue(LLVMBuildAlloca(this.builder, _type.Value(), ""), this.type_manager.Pointer(_type, variable->is_mutable));
+            LLVMPositionBuilderAtEnd(this.builder, current);
+
+            if variable->initializer != null {
+                let mut initializer: QualifiedValue = this.CompileExpression(variable->initializer, _type.IsReference());
+
+                if initializer.Type().IsReference() && initializer.Type() != _type {
+                    initializer = QualifiedValue(LLVMBuildLoad2(this.builder, initializer.Type().Pointee().Value(), initializer.Value(), ""), initializer.Type().Pointee());
+                }
+
+                if initializer.Type() != _type {
+                    this.Error((String("Incompatible variable initialization types. ('") + LLVMTypeToString(_type.Value()) + "' != '" + LLVMTypeToString(initializer.Type().Value()) + "').").Data());
+                    ret;
+                }
+
+                LLVMBuildStore(this.builder, initializer.Value(), pointer.Value());
             }
 
-            if initializer.Type() != _type {
-                this.Error((String("Incompatible variable initialization types. ('") + LLVMTypeToString(_type.Value()) + "' != '" + LLVMTypeToString(initializer.Type().Value()) + "').").Data());
-                ret;
-            }
-
-            LLVMBuildStore(this.builder, initializer.Value(), pointer);
+            this.scope_manager.Set(variable->name, SymbolKind::Variable, pointer, false);
         }
 
         if variable->next != null {
@@ -2083,11 +2143,6 @@ class Compiler {
             pointer = QualifiedValue(LLVMBuildLoad2(this.builder, pointer.Type().Pointee().Value(), pointer.Value(), ""), pointer.Type().Pointee());
         }
 
-        if !pointer.Type().IsMutable() && !ignore {
-            this.Error("Cannot assign to immutable variable.");
-            ret QualifiedValue(null, null);
-        }
-
         if pointer.Type().Pointee().IsClass() {
             let mut params: Vector<QualifiedValue>;
             params.PushBack(value);
@@ -2100,15 +2155,37 @@ class Compiler {
             if _class.Has(method_name, param_types) {
                 let method: Pair<Method, QualifiedType*>& = _class.Get(method_name, param_types);
                 ret this.CompileCall2(QualifiedValue(method.left.value, method.right, pointer), params, false, false);
-            } else if value.Type() == _class && operator == TokenType::ASSIGN {
+            }
+
+            if !pointer.Type().IsMutable() && !ignore {
+                this.Error("Cannot assign to immutable variable.");
+                ret QualifiedValue(null, null);
+            }
+
+            if value.Type().IsReference() && value.Type() != pointer.Type().Pointee() {
+                value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
+            }
+
+            if value.Type() == _class {
+                if operator != TokenType::ASSIGN {
+                    this.Error((String("Invalid class assignment operation '") + TokenTypeToString(operator) + "' for type '" + LLVMTypeToString(_class.Value()) + "'.").Data());
+                    ret QualifiedValue(null, null);
+                }
+
                 let fields: Map<String, Pair<Field, QualifiedType*>>& = _class.Fields();
                 value = QualifiedValue(LLVMAddressOf(value.Value()), this.type_manager.Pointer(value.Type(), true));
                 let mut i: u64 = 0u64;
 
                 while i < fields.Size() {
                     let field: Pair<String, Pair<Field, QualifiedType*>>& = fields[i];
-                    let _value: QualifiedValue = QualifiedValue(LLVMBuildLoad2(this.builder, field.right.right->Value(), LLVMBuildStructGEP2(this.builder, value.Type().Pointee().Value(), value.Value(), _class.Index(field.left) as u32, ""), ""), field.right.right);
-                    let _pointer: QualifiedValue = QualifiedValue(LLVMBuildStructGEP2(this.builder, pointer.Type().Pointee().Value(), pointer.Value(), _class.Index(field.left) as u32, ""), this.type_manager.Pointer(field.right.right, true));
+                    let mut _type: QualifiedType* = field.right.right;
+
+                    if !_type->IsMutable() && (_type->IsClass() || _type->IsPointer()) {
+                        _type = this.type_manager.Copy(_type, true);
+                    }
+
+                    let _value: QualifiedValue = QualifiedValue(LLVMBuildLoad2(this.builder, _type->Value(), LLVMBuildStructGEP2(this.builder, value.Type().Pointee().Value(), value.Value(), _class.Index(field.left) as u32, ""), ""), _type);
+                    let _pointer: QualifiedValue = QualifiedValue(LLVMBuildStructGEP2(this.builder, pointer.Type().Pointee().Value(), pointer.Value(), _class.Index(field.left) as u32, ""), this.type_manager.Pointer(_type, true));
                     this.CompileAssignment2(_value, _pointer, operator, ignore);
                     i += 1u64;
                 }
@@ -2217,6 +2294,11 @@ class Compiler {
                 }
             }
 
+            if !pointer.Type().IsMutable() && !ignore {
+                this.Error("Cannot assign to immutable variable.");
+                ret QualifiedValue(null, null);
+            }
+
             if value.Type().IsReference() && value.Type() != pointer.Type().Pointee() {
                 value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
             }
@@ -2253,7 +2335,14 @@ class Compiler {
             let symbol: Symbol* = this.scope_manager.Resolve(expr);
 
             if (symbol->kind == SymbolKind::Variable || symbol->kind == SymbolKind::Constant || symbol->kind == SymbolKind::Parameter) && !pointer {
-                if symbol->kind == SymbolKind::Constant || (symbol->kind == SymbolKind::Parameter && !symbol->value.Type().IsMutable()) {
+                if symbol->value.Type().IsPointer() {
+                    if symbol->value.Type().Pointee().IsArray() {
+                        let _type: QualifiedType& = this.type_manager.Pointer(symbol->value.Type().Pointee().Element(), symbol->value.Type().IsMutable());
+                        ret QualifiedValue(LLVMBuildBitCast(this.builder, symbol->value.Value(), _type.Value(), ""), _type);
+                    }
+                }
+
+                if symbol->kind == SymbolKind::Constant || (symbol->kind == SymbolKind::Parameter && !symbol->value.Type().IsMutable() && symbol->value.Type().byval == null) {
                     ret symbol->value;
                 } else {
                     ret QualifiedValue(LLVMBuildLoad2(this.builder, symbol->value.Type().Pointee().Value(), symbol->value.Value(), ""), symbol->value.Type().Pointee());
@@ -2333,6 +2422,7 @@ class Compiler {
             } else if width == 8u64 {
                 _type = LLVMInt8TypeInContext(this.context);
             } else {
+                printf("lineno: %u\n", (literal as ASTNode*)->lineno);
                 this.Error((String("Invalid integer size '") + size +  "'.").Data());
                 ret QualifiedValue(null, null);
             }
@@ -2482,7 +2572,7 @@ class Compiler {
                     }
 
                     if *param->byval != value.Type() {
-                        this.Error((String("Incompatible function argument types. ('") + LLVMTypeToString(param->byval->Value()) + "' != '" + LLVMTypeToString(value.Type().Value()) + "').").Data());
+                        this.Error((String("Incompatible argument types for function '") + _func.Type().Pointee().name + "'. ('" + LLVMTypeToString(param->byval->Value()) + "' != '" + LLVMTypeToString(value.Type().Value()) + "').").Data());
                         ret QualifiedValue(null, null);
                     }
 
@@ -2511,7 +2601,7 @@ class Compiler {
                     }
 
                     if param != value.Type() && !(LLVMIsAConstantPointerNull(value.Value()) != null && param.IsPointer()) {
-                        this.Error((String("Incompatible function argument types. ('") + LLVMTypeToString(param.Value()) + "' != '" + LLVMTypeToString(value.Type().Value()) + "').").Data());
+                        this.Error((String("Incompatible argument types for function '") + _func.Type().Pointee().name + "'. ('" + LLVMTypeToString(param.Value()) + "' != '" + LLVMTypeToString(value.Type().Value()) + "').").Data());
                         ret QualifiedValue(null, null);
                     }
 
@@ -2540,7 +2630,7 @@ class Compiler {
             ret QualifiedValue(value, ret_type);
         } else {
             if !pointer {
-                ret QualifiedValue(LLVMBuildLoad2(this.builder, return.Type().Pointee().Value(), return.Value(), ""), return.Type().Pointee());
+                ret QualifiedValue(LLVMBuildLoad2(this.builder, return.Type().Pointee().Value(), return.Value(), ""), return.Type().Pointee(), true);
             } else {
                 ret return;
             }
@@ -2672,7 +2762,7 @@ class Compiler {
             let size: QualifiedValue = this.CompileExpression(_new->size, false);
 
             if LLVMGetTypeKind(size.Type().Value()) != LLVMTypeKind::LLVMIntegerTypeKind || LLVMGetIntTypeWidth(size.Type().Value()) != 64u32 || size.Type().IsSigned() {
-                this.Error("Size must be an unsigned 64-bit integer.");
+                this.Error("Array size must be of type 'u64'.");
                 ret QualifiedValue(null, null);
             }
 
@@ -2951,8 +3041,10 @@ class Compiler {
     }
 
     priv CompileBinaryOperation(mut this: Compiler&, binary_op: BinaryOpNode*, pointer: bool) -> QualifiedValue {
-        let (mut left: QualifiedValue, mut right: QualifiedValue) = (this.CompileExpression(binary_op->left, false), this.CompileExpression(binary_op->right, false));
-        
+        ret this.CompileBinaryOperation2(this.CompileExpression(binary_op->left, false), this.CompileExpression(binary_op->right, false), binary_op->operator, pointer);
+    }
+
+    priv CompileBinaryOperation2(mut this: Compiler&, mut left: QualifiedValue, mut right: QualifiedValue, operator: TokenType, pointer: bool) -> QualifiedValue {
         if left.Type().IsReference() {
             left = QualifiedValue(LLVMBuildLoad2(this.builder, left.Type().Pointee().Value(), left.Value(), ""), left.Type().Pointee());
         }
@@ -2962,18 +3054,57 @@ class Compiler {
         }
 
         if left.Type().IsClass() || right.Type().IsClass() {
-            let mut instance: QualifiedValue = left.Type().IsClass() ? left : right;
-            instance = QualifiedValue(LLVMAddressOf(instance.Value()), this.type_manager.Pointer(instance.Type(), instance.Type().IsMutable()));
             let value: QualifiedValue = left.Type().IsClass() ? right : left;
+            let mut instance: QualifiedValue = left.Type().IsClass() ? left : right;
+
             let mut values: Vector<QualifiedValue>;
             values.PushBack(value);
 
             let mut method_name: String = "op";
-            method_name += BinaryOperatorToString(binary_op->operator);
+            method_name += BinaryOperatorToString(operator);
+            let param_types: Vector<QualifiedType*> = this.ValueToType(values);
+            let _class: QualifiedType& = instance.Type();
 
-            let _class: QualifiedType& = instance.Type().Pointee();
-            let method: Pair<Method, QualifiedType*>& = _class.Get(method_name, this.ValueToType(values));
-            ret this.CompileCall2(QualifiedValue(method.left.value, method.right, instance), values, pointer, false);
+            if _class.Has(method_name, param_types) {
+                let method: Pair<Method, QualifiedType*>& = _class.Get(method_name, param_types);
+                instance = QualifiedValue(LLVMAddressOf(instance.Value()), this.type_manager.Pointer(instance.Type(), instance.Type().IsMutable()));
+                ret this.CompileCall2(QualifiedValue(method.left.value, method.right, instance), values, pointer, false);
+            }
+
+            if left.Type() == right.Type() {
+                if operator != TokenType::EQUAL && operator != TokenType::NOT_EQUAL {
+                    this.Error((String("Invalid class binary operation '") + TokenTypeToString(operator) + "' for type '" + LLVMTypeToString(_class.Value()) + "'.").Data());
+                    ret QualifiedValue(null, null);
+                }
+
+                let fields: Map<String, Pair<Field, QualifiedType*>>& = _class.Fields();
+                left = QualifiedValue(LLVMAddressOf(left.Value()), this.type_manager.Pointer(left.Type(), true));
+                right = QualifiedValue(LLVMAddressOf(right.Value()), this.type_manager.Pointer(right.Type(), true));
+                let mut result: LLVMValueRef = null;
+                let mut i: u64 = 0u64;
+
+                while i < fields.Size() {
+                    let field: Pair<String, Pair<Field, QualifiedType*>>& = fields[i];
+                    let left: QualifiedValue = QualifiedValue(LLVMBuildLoad2(this.builder, field.right.right->Value(), LLVMBuildStructGEP2(this.builder, left.Type().Pointee().Value(), left.Value(), _class.Index(field.left) as u32, ""), ""), field.right.right);
+                    let right: QualifiedValue = QualifiedValue(LLVMBuildLoad2(this.builder, field.right.right->Value(), LLVMBuildStructGEP2(this.builder, right.Type().Pointee().Value(), right.Value(), _class.Index(field.left) as u32, ""), ""), field.right.right);
+                    let _result: LLVMValueRef = this.CompileBinaryOperation2(left, right, operator, pointer).Value();
+
+                    if result != null {
+                        result = LLVMBuildAnd(this.builder, result, _result, "");
+                    } else {
+                        result = _result;
+                    } i += 1u64;
+                }
+
+                if operator == TokenType::NOT_EQUAL {
+                    result = LLVMBuildNot(this.builder, result, "");
+                }
+
+                ret QualifiedValue(result, this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
+            } else {
+                this.Error((String("Incompatible class binary operation types. ('") + LLVMTypeToString(_class.Value()) + "' != '" + LLVMTypeToString(value.Type().Value()) + "').").Data());
+                ret QualifiedValue(null, null);
+            }
         } else if pointer {
             this.Error("Invalid pointer binary operation.");
             ret QualifiedValue(null, null);
@@ -2982,23 +3113,23 @@ class Compiler {
         let (left_kind: LLVMTypeKind, right_kind: LLVMTypeKind) = (LLVMGetTypeKind(left.Type().Value()), LLVMGetTypeKind(right.Type().Value()));
 
         if left.Type().IsPointer() && right.Type().IsPointer() {
-            if binary_op->operator == TokenType::MINUS {
+            if operator == TokenType::MINUS {
                 let _type: QualifiedType& = this.type_manager.Primitive(LLVMInt64TypeInContext(this.context), false);
                 ret QualifiedValue(LLVMBuildSub(this.builder, LLVMBuildPtrToInt(this.builder, left.Value(), _type.Value(), ""), LLVMBuildPtrToInt(this.builder, right.Value(), _type.Value(), ""), ""), _type);
-            } else if binary_op->operator == TokenType::EQUAL {
+            } else if operator == TokenType::EQUAL {
                 ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntEQ, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
-            } else if binary_op->operator == TokenType::NOT_EQUAL {
+            } else if operator == TokenType::NOT_EQUAL {
                 ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntNE, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
-            } else if binary_op->operator == TokenType::GREATER {
+            } else if operator == TokenType::GREATER {
                 ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntUGT, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
-            } else if binary_op->operator == TokenType::GREATER_EQUAL {
+            } else if operator == TokenType::GREATER_EQUAL {
                 ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntUGE, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
-            } else if binary_op->operator == TokenType::LESS {
+            } else if operator == TokenType::LESS {
                 ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntULT, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
-            } else if binary_op->operator == TokenType::LESS_EQUAL {
+            } else if operator == TokenType::LESS_EQUAL {
                 ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntULE, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
             } else {
-                this.Error((String("Invalid pointer binary operation '") + TokenTypeToString(binary_op->operator) + "' for type '" + LLVMTypeToString(left.Type().Value()) + "'.").Data());
+                this.Error((String("Invalid pointer binary operation '") + TokenTypeToString(operator) + "' for type '" + LLVMTypeToString(left.Type().Value()) + "'.").Data());
                 ret QualifiedValue(null, null);
             }
         } else if (left.Type().IsPointer() && right_kind == LLVMTypeKind::LLVMIntegerTypeKind) || (left_kind == LLVMTypeKind::LLVMIntegerTypeKind && right.Type().IsPointer()) {
@@ -3007,14 +3138,14 @@ class Compiler {
             let width: u32 = LLVMGetIntTypeWidth(index.Type().Value());
 
             if width == 64u32 {
-                if binary_op->operator == TokenType::PLUS {
+                if operator == TokenType::PLUS {
                     let indices[]: LLVMValueRef = { index.Value() };
                     ret QualifiedValue(LLVMBuildGEP2(this.builder, ptr.Type().Pointee().Value(), ptr.Value(), indices, 1u32, ""), ptr.Type());
-                } else if binary_op->operator == TokenType::MINUS {
+                } else if operator == TokenType::MINUS {
                     let indices[]: LLVMValueRef = { LLVMBuildNeg(this.builder, index.Value(), "") };
                     ret QualifiedValue(LLVMBuildGEP2(this.builder, ptr.Type().Pointee().Value(), ptr.Value(), indices, 1u32, ""), ptr.Type());
                 } else {
-                    this.Error((String("Invalid pointer binary operation '") + TokenTypeToString(binary_op->operator) + "' for type '" + LLVMTypeToString(left.Type().Value()) + "'.").Data());
+                    this.Error((String("Invalid pointer binary operation '") + TokenTypeToString(operator) + "' for type '" + LLVMTypeToString(left.Type().Value()) + "'.").Data());
                     ret QualifiedValue(null, null);
                 }
             } else {
@@ -3027,62 +3158,62 @@ class Compiler {
                 ret QualifiedValue(null, null);
             }
 
-            if binary_op->operator == TokenType::PLUS {
+            if operator == TokenType::PLUS {
                 ret QualifiedValue(LLVMBuildAdd(this.builder, left.Value(), right.Value(), ""), left.Type());
-            } else if binary_op->operator == TokenType::MINUS {
+            } else if operator == TokenType::MINUS {
                 ret QualifiedValue(LLVMBuildSub(this.builder, left.Value(), right.Value(), ""), left.Type());
-            } else if binary_op->operator == TokenType::MUL {
+            } else if operator == TokenType::MUL {
                 ret QualifiedValue(LLVMBuildMul(this.builder, left.Value(), right.Value(), ""), left.Type());
-            } else if binary_op->operator == TokenType::DIV {
+            } else if operator == TokenType::DIV {
                 if left.Type().IsSigned() {
                     ret QualifiedValue(LLVMBuildSDiv(this.builder, left.Value(), right.Value(), ""), left.Type());
                 } else {
                     ret QualifiedValue(LLVMBuildUDiv(this.builder, left.Value(), right.Value(), ""), left.Type());
                 }
-            } else if binary_op->operator == TokenType::MOD {
+            } else if operator == TokenType::MOD {
                 if left.Type().IsSigned() {
                     ret QualifiedValue(LLVMBuildSRem(this.builder, left.Value(), right.Value(), ""), left.Type());
                 } else {
                     ret QualifiedValue(LLVMBuildURem(this.builder, left.Value(), right.Value(), ""), left.Type());
                 }
-            } else if binary_op->operator == TokenType::EQUAL {
+            } else if operator == TokenType::EQUAL {
                 ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntEQ, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
-            } else if binary_op->operator == TokenType::NOT_EQUAL {
+            } else if operator == TokenType::NOT_EQUAL {
                 ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntNE, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
-            } else if binary_op->operator == TokenType::GREATER {
+            } else if operator == TokenType::GREATER {
                 ret QualifiedValue(LLVMBuildICmp(this.builder, left.Type().IsSigned() ? LLVMIntPredicate::LLVMIntSGT : LLVMIntPredicate::LLVMIntUGT, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
-            } else if binary_op->operator == TokenType::GREATER_EQUAL {
+            } else if operator == TokenType::GREATER_EQUAL {
                 ret QualifiedValue(LLVMBuildICmp(this.builder, left.Type().IsSigned() ? LLVMIntPredicate::LLVMIntSGE : LLVMIntPredicate::LLVMIntUGE, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
-            } else if binary_op->operator == TokenType::LESS {
+            } else if operator == TokenType::LESS {
                 ret QualifiedValue(LLVMBuildICmp(this.builder, left.Type().IsSigned() ? LLVMIntPredicate::LLVMIntSLT : LLVMIntPredicate::LLVMIntULT, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
-            } else if binary_op->operator == TokenType::LESS_EQUAL {
+            } else if operator == TokenType::LESS_EQUAL {
                 ret QualifiedValue(LLVMBuildICmp(this.builder, left.Type().IsSigned() ? LLVMIntPredicate::LLVMIntSLE : LLVMIntPredicate::LLVMIntULE, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
-            } else if binary_op->operator == TokenType::AND || binary_op->operator == TokenType::BITWISE_AND {
-                if LLVMGetIntTypeWidth(left.Type().Value()) != 1u32 && binary_op->operator == TokenType::AND {
-                    this.Error((String("Invalid type '") + LLVMTypeToString(left.Type().Value()) + "' for binary operation '" + TokenTypeToString(binary_op->operator) + "'.").Data());
+            } else if operator == TokenType::AND || operator == TokenType::BITWISE_AND {
+                if LLVMGetIntTypeWidth(left.Type().Value()) != 1u32 && operator == TokenType::AND {
+                    this.Error((String("Invalid type '") + LLVMTypeToString(left.Type().Value()) + "' for binary operation '" + TokenTypeToString(operator) + "'.").Data());
                     ret QualifiedValue(null, null);
                 } else {
                     ret QualifiedValue(LLVMBuildAnd(this.builder, left.Value(), right.Value(), ""), left.Type());
                 }
-            } else if binary_op->operator == TokenType::OR || binary_op->operator == TokenType::BITWISE_OR {
-                if LLVMGetIntTypeWidth(left.Type().Value()) != 1u32 && binary_op->operator == TokenType::OR {
-                    this.Error((String("Invalid type '") + LLVMTypeToString(left.Type().Value()) + "' for binary operation '" + TokenTypeToString(binary_op->operator) + "'.").Data());
+            } else if operator == TokenType::OR || operator == TokenType::BITWISE_OR {
+                if LLVMGetIntTypeWidth(left.Type().Value()) != 1u32 && operator == TokenType::OR {
+                    this.Error((String("Invalid type '") + LLVMTypeToString(left.Type().Value()) + "' for binary operation '" + TokenTypeToString(operator) + "'.").Data());
                     ret QualifiedValue(null, null);
                 } else {
                     ret QualifiedValue(LLVMBuildOr(this.builder, left.Value(), right.Value(), ""), left.Type());
                 }
-            } else if binary_op->operator == TokenType::BITWISE_XOR {
+            } else if operator == TokenType::BITWISE_XOR {
                 ret QualifiedValue(LLVMBuildXor(this.builder, left.Value(), right.Value(), ""), left.Type());
-            } else if binary_op->operator == TokenType::LSHIFT {
+            } else if operator == TokenType::LSHIFT {
                 ret QualifiedValue(LLVMBuildShl(this.builder, left.Value(), right.Value(), ""), left.Type());
-            } else if binary_op->operator == TokenType::RSHIFT {
+            } else if operator == TokenType::RSHIFT {
                 if left.Type().IsSigned() {
                     ret QualifiedValue(LLVMBuildAShr(this.builder, left.Value(), right.Value(), ""), left.Type());
                 } else {
                     ret QualifiedValue(LLVMBuildLShr(this.builder, left.Value(), right.Value(), ""), left.Type());
                 }
             } else {
-                this.Error((String("Invalid binary operation '") + TokenTypeToString(binary_op->operator) + "' for type '" + LLVMTypeToString(left.Type().Value()) + "'.").Data());
+                this.Error((String("Invalid binary operation '") + TokenTypeToString(operator) + "' for type '" + LLVMTypeToString(left.Type().Value()) + "'.").Data());
                 ret QualifiedValue(null, null);
             }
         } else if (left_kind == LLVMTypeKind::LLVMFloatTypeKind || left_kind == LLVMTypeKind::LLVMDoubleTypeKind) && (right_kind == LLVMTypeKind::LLVMFloatTypeKind || right_kind == LLVMTypeKind::LLVMDoubleTypeKind) {
@@ -3091,34 +3222,34 @@ class Compiler {
                 ret QualifiedValue(null, null);
             }
 
-            if binary_op->operator == TokenType::PLUS {
+            if operator == TokenType::PLUS {
                 ret QualifiedValue(LLVMBuildFAdd(this.builder, left.Value(), right.Value(), ""), left.Type());
-            } else if binary_op->operator == TokenType::MINUS {
+            } else if operator == TokenType::MINUS {
                 ret QualifiedValue(LLVMBuildFSub(this.builder, left.Value(), right.Value(), ""), left.Type());
-            } else if binary_op->operator == TokenType::MUL {
+            } else if operator == TokenType::MUL {
                 ret QualifiedValue(LLVMBuildFMul(this.builder, left.Value(), right.Value(), ""), left.Type());
-            } else if binary_op->operator == TokenType::DIV {
+            } else if operator == TokenType::DIV {
                 ret QualifiedValue(LLVMBuildFDiv(this.builder, left.Value(), right.Value(), ""), left.Type());
-            } else if binary_op->operator == TokenType::MOD {
+            } else if operator == TokenType::MOD {
                 ret QualifiedValue(LLVMBuildFRem(this.builder, left.Value(), right.Value(), ""), left.Type());
-            } else if binary_op->operator == TokenType::EQUAL {
+            } else if operator == TokenType::EQUAL {
                 ret QualifiedValue(LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOEQ, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
-            } else if binary_op->operator == TokenType::NOT_EQUAL {
+            } else if operator == TokenType::NOT_EQUAL {
                 ret QualifiedValue(LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealONE, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
-            } else if binary_op->operator == TokenType::GREATER {
+            } else if operator == TokenType::GREATER {
                 ret QualifiedValue(LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOGT, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
-            } else if binary_op->operator == TokenType::GREATER_EQUAL {
+            } else if operator == TokenType::GREATER_EQUAL {
                 ret QualifiedValue(LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOGE, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
-            } else if binary_op->operator == TokenType::LESS {
+            } else if operator == TokenType::LESS {
                 ret QualifiedValue(LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOLT, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
-            } else if binary_op->operator == TokenType::LESS_EQUAL {
+            } else if operator == TokenType::LESS_EQUAL {
                 ret QualifiedValue(LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOLE, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
             } else {
-                this.Error((String("Invalid binary operation '") + TokenTypeToString(binary_op->operator) + "' for type '" + LLVMTypeToString(left.Type().Value()) + "'.").Data());
+                this.Error((String("Invalid binary operation '") + TokenTypeToString(operator) + "' for type '" + LLVMTypeToString(left.Type().Value()) + "'.").Data());
                 ret QualifiedValue(null, null);
             }
         } else {
-            this.Error((String("Invalid type '") + LLVMTypeToString(left.Type().Value()) + "' for binary operation '" + TokenTypeToString(binary_op->operator) + "'.").Data());
+            this.Error((String("Invalid type '") + LLVMTypeToString(left.Type().Value()) + "' for binary operation '" + TokenTypeToString(operator) + "'.").Data());
             ret QualifiedValue(null, null);
         }
     }
@@ -3186,7 +3317,20 @@ class Compiler {
             ret this.type_manager.Reference(this.CompileType(reference_type->base_type), reference_type->mutable);
         } else if type_node->node_type == ASTNodeType::ARRAY_TYPE {
             let array_type: ArrayTypeNode* = type_node as ArrayTypeNode*;
-            ret this.type_manager.Pointer(this.CompileType(array_type->element_type), true);
+            let _type: QualifiedType* = this.CompileType(array_type->element_type);
+
+            if array_type->size == null {
+                ret this.type_manager.Pointer(_type, _type->IsMutable());
+            } else {
+                let size: QualifiedValue = this.CompileExpression(array_type->size, false);
+
+                if LLVMGetTypeKind(size.Type().Value()) != LLVMTypeKind::LLVMIntegerTypeKind || LLVMGetIntTypeWidth(size.Type().Value()) != 64u32 || size.Type().IsSigned() {
+                    this.Error("Array size must be of type 'u64'.");
+                    ret null;
+                }
+
+                ret this.type_manager.Array(_type, LLVMConstIntGetZExtValue(size.Value()), _type->IsMutable());
+            }
         } else if type_node->node_type == ASTNodeType::FUNCTION_TYPE {
             let function_type: FunctionTypeNode* = type_node as FunctionTypeNode*;
             let (mut params: Vector<QualifiedType*>, mut param_types: Vector<LLVMTypeRef>);

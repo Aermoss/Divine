@@ -1,4 +1,4 @@
-include "divio", "divstr", "divvec", "divmap", "lexer.div" : *;
+include "divio", "divstr", "divvec", "divmap", "divwin", "lexer.div" : *;
 
 enum ASTNodeType {
     LITERAL, IDENTIFIER, SCOPE_RESOLUTION, BINARY_OP, UNARY_OP, TERNARY,
@@ -7,7 +7,7 @@ enum ASTNodeType {
     EXPRESSION_STMT, VARIABLE_DECL, CONSTANT_DECL, ASSIGNMENT, IF_STMT, WHILE_STMT, 
     RETURN_STMT, BREAK_STMT, CONTINUE_STMT, BLOCK_STMT,
 
-    FUNCTION_DECL, CLASS_DECL, ENUM_DECL, EXTERN_BLOCK, INCLUDE_STMT, TYPE_DECL,
+    FUNCTION_DECL, CLASS_DECL, ENUM_DECL, EXTERN_BLOCK, TYPE_DECL,
     IMPL_BLOCK, PARAMETER, FIELD,
 
     PRIMITIVE_TYPE, POINTER_TYPE, REFERENCE_TYPE, ARRAY_TYPE, FUNCTION_TYPE,
@@ -43,7 +43,6 @@ func ASTNodeTypeToString(_type: ASTNodeType) -> String {
     else if _type == ASTNodeType::CLASS_DECL { ret { "CLASS_DECL" } as String; }
     else if _type == ASTNodeType::ENUM_DECL { ret { "ENUM_DECL" } as String; }
     else if _type == ASTNodeType::EXTERN_BLOCK { ret { "EXTERN_BLOCK" } as String; }
-    else if _type == ASTNodeType::INCLUDE_STMT { ret { "INCLUDE_STMT" } as String; }
     else if _type == ASTNodeType::TYPE_DECL { ret { "TYPE_DECL" } as String; }
     else if _type == ASTNodeType::IMPL_BLOCK { ret { "IMPL_BLOCK" } as String; }
     else if _type == ASTNodeType::PARAMETER { ret { "PARAMETER" } as String; }
@@ -386,12 +385,6 @@ class ExternBlockNode : ASTNode {
     }
 };
 
-class IncludeStmtNode : ASTNode {
-    pub modules: Vector<String>
-} impl {
-    IncludeStmtNode(mut this: IncludeStmtNode&, line: u64, col: u64) : ASTNode(ASTNodeType::INCLUDE_STMT, line, col) {}
-};
-
 class RootNode : ASTNode {
     pub declarations: Vector<ASTNode*>
 } impl {
@@ -547,21 +540,6 @@ func PrintAST(node: ASTNode*, depth: i32) {
         }
 
         printf("])");
-    } else if node->node_type == ASTNodeType::INCLUDE_STMT {
-        let include_stmt: IncludeStmtNode* = node as IncludeStmtNode*;
-        let mut i: u64 = 0u64;
-        printf("(modules: [");
-
-        while i < include_stmt->modules.Size() {
-            printf("%s", include_stmt->modules[i].Data());
-            i += 1u64;
-
-            if i < include_stmt->modules.Size() {
-                printf(", ");
-            }
-        }
-
-        printf("])");
     } else if node->node_type == ASTNodeType::BLOCK_STMT {
         let block: BlockStmtNode* = node as BlockStmtNode*;
         let mut i: u64 = 0u64;
@@ -598,8 +576,13 @@ func PrintAST(node: ASTNode*, depth: i32) {
 }
 
 class Parser {
+    priv root: RootNode* = null,
+    pub types: Vector<String>,
+    pub include_paths: Vector<String>,
+    priv included_paths: Vector<String>,
     priv tokens: Vector<Token>,
-    priv current: u64 = 0u64
+    priv current: u64 = 0u64,
+    priv file: String
 } impl {
     Parser(this: Parser&) {}
     ~Parser(this: Parser&) {}
@@ -688,37 +671,39 @@ class Parser {
             let mut node: ASTNode* = null;
 
             if token._type != TokenType::DOUBLE_COLON {
-                let mut identifier: String = "";
-
-                if this.Match(TokenType::OPERATOR) {
-                    identifier += "op";
-
-                    while this.CurrentToken()._type != TokenType::LPAREN && this.CurrentToken()._type != TokenType::LESS {
-                        identifier += this.CurrentToken().value;
-                        this.Advance();
-                    }
+                if this.types.Index(token.value) != -1i64 && this.PeekToken(1u64)._type != TokenType::DOUBLE_COLON {
+                    node = this.ParseType();
                 } else {
-                    identifier += this.Expect(TokenType::NAME).value;
-                }
+                    if this.Match(TokenType::OPERATOR) {
+                        let mut identifier: String = "op";
 
-                node = new IdentifierNode(identifier, token.lineno, token.column) as ASTNode*;
+                        while this.CurrentToken()._type != TokenType::LPAREN && this.CurrentToken()._type != TokenType::LESS {
+                            identifier += this.CurrentToken().value;
+                            this.Advance();
+                        }
+
+                        node = new IdentifierNode(identifier, token.lineno, token.column) as ASTNode*;
+                    } else {
+                        node = new IdentifierNode(this.Expect(TokenType::NAME).value, token.lineno, token.column) as ASTNode*;
+                    }
+                }
             }
 
             while this.Match(TokenType::DOUBLE_COLON) {
-                let mut identifier: String = "";
+                let mut id_node: IdentifierNode* = null;
 
                 if this.Match(TokenType::OPERATOR) {
-                    identifier += "op";
+                    let mut identifier: String = "op";
 
                     while this.CurrentToken()._type != TokenType::LPAREN && this.CurrentToken()._type != TokenType::LESS {
                         identifier += this.CurrentToken().value;
                         this.Advance();
                     }
-                } else {
-                    identifier += this.Expect(TokenType::NAME).value;
-                }
 
-                node = new ScopeResolutionNode(node, new IdentifierNode(identifier, token.lineno, token.column), token.lineno, token.column) as ASTNode*;
+                    id_node = new IdentifierNode(identifier, token.lineno, token.column);
+                } else {
+                    id_node = new IdentifierNode(this.Expect(TokenType::NAME).value, token.lineno, token.column);
+                } node = new ScopeResolutionNode(node, id_node, token.lineno, token.column) as ASTNode*;
             } ret node;
         } else if token._type == TokenType::LBRACE {
             this.Advance();
@@ -1155,6 +1140,13 @@ class Parser {
     priv ParseTypeDeclaration(mut this: Parser&) -> ASTNode* {
         let type_token: Token = this.Expect(TokenType::TYPE);
         let name_token: Token = this.Expect(TokenType::NAME);
+
+        if this.types.Index(name_token.value) != -1i64 {
+            this.Error((String("Type '") + name_token.value + "' is overloaded").Data(), type_token.lineno, type_token.column);
+        } else {
+            this.types.PushBack(name_token.value);
+        }
+
         this.Expect(TokenType::ASSIGN);
         let type_decl: TypeDeclNode* = new TypeDeclNode(name_token.value, this.ParseType(), type_token.lineno, type_token.column);
         this.Expect(TokenType::SEMICOLON);
@@ -1276,6 +1268,13 @@ class Parser {
     priv ParseClassDeclaration(mut this: Parser&) -> ASTNode* {
         let class_token: Token = this.Expect(TokenType::CLASS);
         let name_token: Token = this.Expect(TokenType::NAME);
+
+        if this.types.Index(name_token.value) != -1i64 {
+            this.Error((String("Type '") + name_token.value + "' is overloaded").Data(), class_token.lineno, class_token.column);
+        } else {
+            this.types.PushBack(name_token.value);
+        }
+
         let mut class_decl: ClassDeclNode* = new ClassDeclNode(name_token.value, class_token.lineno, class_token.column);
 
         if this.Match(TokenType::LESS) {
@@ -1392,6 +1391,13 @@ class Parser {
     priv ParseEnumDeclaration(mut this: Parser&) -> ASTNode* {
         let enum_token: Token = this.Expect(TokenType::ENUM);
         let name_token: Token = this.Expect(TokenType::NAME);
+
+        if this.types.Index(name_token.value) != -1i64 {
+            this.Error((String("Type '") + name_token.value + "' is overloaded").Data(), enum_token.lineno, enum_token.column);
+        } else {
+            this.types.PushBack(name_token.value);
+        }
+
         let mut enum_decl: EnumDeclNode* = new EnumDeclNode(name_token.value, enum_token.lineno, enum_token.column);
 
         if this.Match(TokenType::COLON) {
@@ -1447,33 +1453,86 @@ class Parser {
     }
 
     priv ParseIncludeStatement(mut this: Parser&) -> ASTNode* {
-        let include_token: Token = this.Expect(TokenType::INCLUDE);
-        let mut include_stmt: IncludeStmtNode* = new IncludeStmtNode(include_token.lineno, include_token.column);
-        let mut module_token: Token = this.Expect(TokenType::STRING);
-        include_stmt->modules.PushBack(module_token.value);
+        let token: Token = this.Expect(TokenType::INCLUDE);
+        let mut modules: Vector<String>;
 
-        while this.Match(TokenType::COMMA) {
-            module_token = this.Expect(TokenType::STRING);
-            include_stmt->modules.PushBack(module_token.value);
+        while this.Match(TokenType::COMMA) || modules.Size() == 0u64 {
+            modules.PushBack(this.Expect(TokenType::STRING).value);
         }
 
         this.Expect(TokenType::COLON);
         this.Expect(TokenType::MUL);
         this.Expect(TokenType::SEMICOLON);
-        ret include_stmt as ASTNode*;
+        let mut i: u64 = 0u64;
+
+        while i < modules.Size() {
+            let (mut found: bool, mut j: u64) = (false, 0u64);
+            let module: String = modules[i];
+
+            while j < this.include_paths.Size() {
+                let mut path: String = this.include_paths[j] + "\\" + modules[i];
+                let attr: DWORD = GetFileAttributesA(path.Data());
+                j += 1u64;
+
+                if attr == INVALID_FILE_ATTRIBUTES {
+                    continue;
+                }
+
+                if (attr & FILE_ATTRIBUTE_DIRECTORY) != 0u32{
+                    path += "\\Entry.div";
+
+                    if GetFileAttributesA(path.Data()) == INVALID_FILE_ATTRIBUTES {
+                        this.Error("Module entry point not found", token.lineno, token.column);
+                        ret null;
+                    }
+                }
+
+                if this.included_paths.Index(path) != -1i64 {
+                    found = true;
+                    break;
+                }
+
+                let mut lexer: Lexer;
+                let source: String = ReadFile(path.Data());
+                let (tokens: Vector<Token>, current: u64, file: String) = (this.tokens, this.current, this.file);
+                (this.tokens, this.current, this.file) = (lexer.Lex(source), 0u64, path);
+
+                while this.CurrentToken()._type != TokenType::EOF {
+                    let declaration: ASTNode* = this.ParseDeclaration();
+
+                    if declaration != null {
+                        this.root->declarations.PushBack(declaration);
+                    }
+                }
+
+                (this.tokens, this.current, this.file, found) = (tokens, current, file, true);
+                this.included_paths.PushBack(path);
+                break;
+            }
+
+            if found {
+                i += 1u64;
+            } else {
+                this.Error("Module not found", token.lineno, token.column);
+                ret null;
+            }
+        } ret null;
     }
 
-    pub Parse(mut this: Parser&, tokens: Vector<Token>) -> RootNode* {
-        let mut root: RootNode* = new RootNode();
-        this.tokens = tokens;
+    pub Parse(mut this: Parser&, tokens: Vector<Token>, file: String) -> RootNode* {
+        (this.tokens, this.file, this.root) = (tokens, file, new RootNode());
 
         while this.CurrentToken()._type != TokenType::EOF {
-            root->declarations.PushBack(this.ParseDeclaration());
-        } ret root;
+            let declaration: ASTNode* = this.ParseDeclaration();
+
+            if declaration != null {
+                this.root->declarations.PushBack(declaration);
+            }
+        } ret this.root;
     }
 
     priv Error(mut this: Parser&, message: i8*, line: u64, col: u64) {
-        printf("Parser error: %s at line %d, column %d.\n", message, line, col);
+        printf("Parser error: %s at line %d, column %d. (%s)\n", message, line, col, this.file.Data());
         exit(1i32);
     }
 };

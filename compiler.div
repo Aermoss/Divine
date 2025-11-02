@@ -1,4 +1,4 @@
-include "divio", "divstr", "divvec", "divmap", "divpair", "divptr", "divwin", "divfile", "divllvm", "lexer.div", "parser.div" : *;
+include "divio", "divstr", "divvec", "divmap", "divpair", "divptr", "divfile", "divllvm", "lexer.div", "parser.div" : *;
 
 func LLVMPositionBuilderAtStart(builder: LLVMBuilderRef, block: LLVMBasicBlockRef) {
     let first_instr: LLVMValueRef = LLVMGetFirstInstruction(block);
@@ -347,6 +347,16 @@ class QualifiedType {
                         if params[j].IsReference() {
                             if (*_type) == params[j].Pointee() {
                                 _state = true;
+                            } else if _type->IsPointer() && params[j].Pointee().IsPointer() {
+                                if LLVMGetTypeKind(_type->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || LLVMGetTypeKind(params[j].Pointee().Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind {
+                                    _state = true;
+                                }
+                            }
+                        }
+
+                        if _type->IsPointer() && params[j].IsPointer() {
+                            if LLVMGetTypeKind(_type->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || LLVMGetTypeKind(params[j].Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind {
+                                _state = true;
                             }
                         }
 
@@ -415,6 +425,16 @@ class QualifiedType {
 
                         if params[j].IsReference() {
                             if (*_type) == params[j].Pointee() {
+                                _state = true;
+                            } else if _type->IsPointer() && params[j].Pointee().IsPointer() {
+                                if LLVMGetTypeKind(_type->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || LLVMGetTypeKind(params[j].Pointee().Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind {
+                                    _state = true;
+                                }
+                            }
+                        }
+
+                        if _type->IsPointer() && params[j].IsPointer() {
+                            if LLVMGetTypeKind(_type->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || LLVMGetTypeKind(params[j].Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind {
                                 _state = true;
                             }
                         }
@@ -1202,8 +1222,6 @@ class Compiler {
     priv function: QualifiedType* = null,
     priv function_ref: LLVMValueRef = null,
     priv scope_manager: ScopeManager,
-    pub include_paths: Vector<String>,
-    priv included_paths: Vector<String>,
     priv blocks: Vector<Pair<LLVMBasicBlockRef, LLVMBasicBlockRef>>,
     priv forwards: Vector<Forward>,
     pub target_machine: LLVMTargetMachineRef = null,
@@ -1301,7 +1319,6 @@ class Compiler {
         }
 
         this.generics.Clear();
-        this.included_paths.Clear();
         this.forwards.Clear();
         let err: i8* = null;
 
@@ -1351,7 +1368,20 @@ class Compiler {
                     this.scope_manager.RegisterInstance(QualifiedValue(LLVMGetParam(this.function_ref, index as u32), this.type_manager.Pointer(params[index]->byval, param->is_mutable)));
                 }
 
-                if param->is_mutable {
+                let mut state: bool = params[index]->byval != null;
+                let mut _type: QualifiedType* = params[index];
+
+                while !state {
+                    if _type->IsPointer() {
+                        _type = _type->Pointee();
+                    } else {
+                        if _type->IsClass() {
+                            state = true;
+                        } break;
+                    }
+                }
+
+                if param->is_mutable || state {
                     let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
                     LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
                     let pointer: LLVMValueRef = LLVMBuildAlloca(this.builder, params[index]->Value(), "");
@@ -1409,9 +1439,7 @@ class Compiler {
     }
 
     priv CompileDeclaration(mut this: Compiler&, decl: ASTNode*) {
-        if decl->node_type == ASTNodeType::INCLUDE_STMT {
-            this.CompileInclude(decl as IncludeStmtNode*);
-        } else if decl->node_type == ASTNodeType::CONSTANT_DECL {
+        if decl->node_type == ASTNodeType::CONSTANT_DECL {
             this.CompileConstant(decl as ConstantDeclNode*);
         } else if decl->node_type == ASTNodeType::FUNCTION_DECL {
             this.CompileFunction(decl as FunctionDeclNode*);
@@ -1426,60 +1454,6 @@ class Compiler {
             this.scope_manager.Set(type_decl->name, SymbolKind::Type, QualifiedValue(null, this.CompileType(type_decl->_type)), false);
         } else {
             this.Error((String("Unknown declaration '") + ASTNodeTypeToString(decl->node_type) + "'.").Data());
-        }
-    }
-
-    priv CompileInclude(mut this: Compiler&, include_stmt: IncludeStmtNode*) {
-        let mut i: u64 = 0u64;
-
-        while i < include_stmt->modules.Size() {
-            let (mut found: bool, mut j: u64) = (false, 0u64);
-            let module: String = include_stmt->modules[i];
-
-            while j < this.include_paths.Size() {
-                let mut path: String = this.include_paths[j] + "\\" + include_stmt->modules[i];
-                let attr: DWORD = GetFileAttributesA(path.Data());
-                j += 1u64;
-
-                if attr == INVALID_FILE_ATTRIBUTES {
-                    continue;
-                }
-
-                if (attr & FILE_ATTRIBUTE_DIRECTORY) != 0u32{
-                    path += "\\Entry.div";
-
-                    if GetFileAttributesA(path.Data()) == INVALID_FILE_ATTRIBUTES {
-                        this.Error("Module entry point not found.");
-                        ret;
-                    }
-                }
-
-                if this.included_paths.Index(path) != -1i64 {
-                    found = true;
-                    break;
-                }
-
-                let (mut lexer: Lexer, mut parser: Parser);
-                let ast: RootNode* = parser.Parse(lexer.Lex(ReadFile(path.Data())));
-                let mut k: u64 = 0u64;
-
-                while k < ast->declarations.Size() {
-                    let decl: ASTNode* = ast->declarations[k];
-                    this.CompileDeclaration(decl);
-                    k += 1u64;
-                }
-
-                found = true;
-                this.included_paths.PushBack(path);
-                break;
-            }
-
-            if !found {
-                this.Error("Module not found.");
-                ret;
-            } else {
-                i += 1u64;
-            }
         }
     }
 
@@ -1909,13 +1883,29 @@ class Compiler {
                     LLVMBuildRetVoid(this.builder);
                 }
             } else {
-                let mut value: QualifiedValue = this.CompileExpression(ret_stmt->value, return.IsReference());
+                let mut value: QualifiedValue = this.CompileExpression(ret_stmt->value, false);
 
-                if value.Type().IsReference() && return != value.Type() {
-                    value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
+                if value.Type().IsReference() {
+                    if return == value.Type().Pointee() {
+                        value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
+                    }
                 }
 
-                if return != value.Type() && !(LLVMIsAConstantPointerNull(value.Value()) != null && return.IsPointer()) {
+                if return.IsReference() {
+                    if return.Pointee() == value.Type() {
+                        value = QualifiedValue(LLVMAddressOf(value.Value()), this.type_manager.Pointer(value.Type(), value.Type().IsMutable()));
+                    }
+                }
+
+                let mut state: bool = false;
+
+                if return.IsPointer() && value.Type().IsPointer() {
+                    if LLVMGetTypeKind(return.Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || LLVMGetTypeKind(value.Type().Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind {
+                        state = true;
+                    }
+                }
+
+                if return != value.Type() && !state {
                     this.Error((String("Incompatible return types. ('") + LLVMTypeToString(return.Value()) + "' != '" + LLVMTypeToString(value.Type().Value()) + "').").Data());
                     ret;
                 }
@@ -2074,8 +2064,13 @@ class Compiler {
                             value = QualifiedValue(LLVMAddressOf(value.Value()), this.type_manager.Pointer(value.Type(), true));
                         } params.PushBack(value);
                     } else {
-                        this.scope_manager.Set(variable->name, SymbolKind::Variable, QualifiedValue(LLVMAddressOf(value.Value()), this.type_manager.Pointer(value.Type(), variable->is_mutable)), false);
-                        skip = true;
+                        if _type == value.Type() {
+                            this.scope_manager.Set(variable->name, SymbolKind::Variable, QualifiedValue(LLVMAddressOf(value.Value()), this.type_manager.Pointer(_type, variable->is_mutable)), false);
+                            skip = true;
+                        } else {
+                            this.Error((String("Incompatible variable initialization types. ('") + LLVMTypeToString(_type.Value()) + "' != '" + LLVMTypeToString(value.Type().Value()) + "').").Data());
+                            ret;
+                        }
                     }
                 } else {
                     let initializer_list: InitializerListNode* = variable->initializer as InitializerListNode*;
@@ -2103,13 +2098,29 @@ class Compiler {
             LLVMPositionBuilderAtEnd(this.builder, current);
 
             if variable->initializer != null {
-                let mut initializer: QualifiedValue = this.CompileExpression(variable->initializer, _type.IsReference());
+                let mut initializer: QualifiedValue = this.CompileExpression(variable->initializer, false);
 
-                if initializer.Type().IsReference() && initializer.Type() != _type {
-                    initializer = QualifiedValue(LLVMBuildLoad2(this.builder, initializer.Type().Pointee().Value(), initializer.Value(), ""), initializer.Type().Pointee());
+                if initializer.Type().IsReference() {
+                    if _type == initializer.Type().Pointee() {
+                        initializer = QualifiedValue(LLVMBuildLoad2(this.builder, initializer.Type().Pointee().Value(), initializer.Value(), ""), initializer.Type().Pointee());
+                    }
                 }
 
-                if initializer.Type() != _type {
+                if _type.IsReference() {
+                    if _type.Pointee() == initializer.Type() {
+                        initializer = QualifiedValue(LLVMAddressOf(initializer.Value()), this.type_manager.Pointer(initializer.Type(), initializer.Type().IsMutable()));
+                    }
+                }
+
+                let mut state: bool = false;
+
+                if _type.IsPointer() && initializer.Type().IsPointer() {
+                    if LLVMGetTypeKind(_type.Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || LLVMGetTypeKind(initializer.Type().Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind {
+                        state = true;
+                    }
+                }
+
+                if _type != initializer.Type() && !state {
                     this.Error((String("Incompatible variable initialization types. ('") + LLVMTypeToString(_type.Value()) + "' != '" + LLVMTypeToString(initializer.Type().Value()) + "').").Data());
                     ret;
                 }
@@ -2162,8 +2173,10 @@ class Compiler {
                 ret QualifiedValue(null, null);
             }
 
-            if value.Type().IsReference() && value.Type() != pointer.Type().Pointee() {
-                value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
+            if value.Type().IsReference() {
+                if value.Type().Pointee() == _class {
+                    value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
+                }
             }
 
             if value.Type() == _class {
@@ -2299,11 +2312,21 @@ class Compiler {
                 ret QualifiedValue(null, null);
             }
 
-            if value.Type().IsReference() && value.Type() != pointer.Type().Pointee() {
-                value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
+            if value.Type().IsReference() {
+                if pointer.Type().Pointee() == value.Type().Pointee() {
+                    value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
+                }
             }
 
-            if value.Type() != pointer.Type().Pointee() && !(LLVMIsAConstantPointerNull(value.Value()) != null && pointer.Type().Pointee().IsPointer()) {
+            let mut state: bool = false;
+
+            if pointer.Type().Pointee().IsPointer() && value.Type().IsPointer() {
+                if LLVMGetTypeKind(pointer.Type().Pointee().Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || LLVMGetTypeKind(value.Type().Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind {
+                    state = true;
+                }
+            }
+
+            if value.Type() != pointer.Type().Pointee() && !state {
                 this.Error((String("Incompatible assignment types. ('") + LLVMTypeToString(pointer.Type().Pointee().Value()) + "' != '" + LLVMTypeToString(value.Type().Value()) + "').").Data());
                 ret QualifiedValue(null, null);
             }
@@ -2333,8 +2356,27 @@ class Compiler {
             ret this.CompileTernary(expr as TernaryNode*, pointer);
         } else if expr->node_type == ASTNodeType::IDENTIFIER || expr->node_type == ASTNodeType::SCOPE_RESOLUTION {
             let symbol: Symbol* = this.scope_manager.Resolve(expr);
+            let (mut value: QualifiedValue, mut state: bool) = (symbol->value, false);
+
+            if value.Type().IsPointer() {
+                if value.Type().Pointee().byval != null {
+                    (value, state) = (QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee()), true);
+                }
+            }
 
             if (symbol->kind == SymbolKind::Variable || symbol->kind == SymbolKind::Constant || symbol->kind == SymbolKind::Parameter) && !pointer {
+                let mut _type: QualifiedType* = value.Type();
+
+                while !state {
+                    if _type->IsPointer() {
+                        _type = _type->Pointee();
+                    } else {
+                        if _type->IsClass() {
+                            state = true;
+                        } break;
+                    }
+                }
+
                 if symbol->value.Type().IsPointer() {
                     if symbol->value.Type().Pointee().IsArray() {
                         let _type: QualifiedType& = this.type_manager.Pointer(symbol->value.Type().Pointee().Element(), symbol->value.Type().IsMutable());
@@ -2342,13 +2384,13 @@ class Compiler {
                     }
                 }
 
-                if symbol->kind == SymbolKind::Constant || (symbol->kind == SymbolKind::Parameter && !symbol->value.Type().IsMutable() && symbol->value.Type().byval == null) {
-                    ret symbol->value;
+                if symbol->kind == SymbolKind::Constant || (symbol->kind == SymbolKind::Parameter && !value.Type().IsMutable() && !state) {
+                    ret value;
                 } else {
-                    ret QualifiedValue(LLVMBuildLoad2(this.builder, symbol->value.Type().Pointee().Value(), symbol->value.Value(), ""), symbol->value.Type().Pointee());
+                    ret QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
                 }
             } else if symbol->kind == SymbolKind::Function || pointer {
-                ret symbol->value;
+                ret value;
             } else {
                 this.Error((String("Invalid symbol kind '") + SymbolKindToString(symbol->kind) + "'.").Data());
                 ret QualifiedValue(null, null);
@@ -2422,7 +2464,6 @@ class Compiler {
             } else if width == 8u64 {
                 _type = LLVMInt8TypeInContext(this.context);
             } else {
-                printf("lineno: %u\n", (literal as ASTNode*)->lineno);
                 this.Error((String("Invalid integer size '") + size +  "'.").Data());
                 ret QualifiedValue(null, null);
             }
@@ -2516,6 +2557,19 @@ class Compiler {
             let _class: QualifiedType& = instance.Type().Pointee();
             let method: Pair<Method, QualifiedType*>& = _class.Get(member_access->member, this.ValueToType(values));
             ret this.CompileCall2(QualifiedValue(method.left.value, method.right, instance), values, pointer, false);
+        } else if call->function->node_type == ASTNodeType::PRIMITIVE_TYPE {
+            let _class: QualifiedType& = this.CompileType(call->function);
+            let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
+            LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
+            let instance: QualifiedValue = QualifiedValue(LLVMBuildAlloca(this.builder, _class.Value(), ""), this.type_manager.Pointer(_class, _class.IsMutable()));
+            LLVMPositionBuilderAtEnd(this.builder, current);
+            this.CompileConstructor(_class, instance, values);
+
+            if !pointer {
+                ret QualifiedValue(LLVMBuildLoad2(this.builder, _class.Value(), instance.Value(), ""), _class);
+            } else {
+                ret instance;
+            }
         } else {
             ret this.CompileCall2(this.CompileExpression(call->function, true), values, pointer, false);
         }
@@ -2571,7 +2625,15 @@ class Compiler {
                         value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
                     }
 
-                    if *param->byval != value.Type() {
+                    let mut state: bool = false;
+
+                    if param->byval->IsPointer() && value.Type().IsPointer() {
+                        if LLVMGetTypeKind(param->byval->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || LLVMGetTypeKind(value.Type().Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind {
+                            state = true;
+                        }
+                    }
+
+                    if *param->byval != value.Type() && !state {
                         this.Error((String("Incompatible argument types for function '") + _func.Type().Pointee().name + "'. ('" + LLVMTypeToString(param->byval->Value()) + "' != '" + LLVMTypeToString(value.Type().Value()) + "').").Data());
                         ret QualifiedValue(null, null);
                     }
@@ -2592,15 +2654,27 @@ class Compiler {
                         args.PushBack(value.Value());
                     }
                 } else {
-                    if value.Type().IsReference() && param != value.Type() {
-                        value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
+                    if value.Type().IsReference() {
+                        if param == value.Type().Pointee() {
+                            value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
+                        }
                     }
 
-                    if param.IsReference() && param != value.Type() && LLVMGetInstructionOpcode(value.Value()) == LLVMOpcode::LLVMLoad {
-                        value = QualifiedValue(LLVMAddressOf(value.Value()), this.type_manager.Pointer(value.Type(), true));
+                    if param.IsReference() {
+                        if param.Pointee() == value.Type() {
+                            value = QualifiedValue(LLVMAddressOf(value.Value()), this.type_manager.Pointer(value.Type(), value.Type().IsMutable()));
+                        }
                     }
 
-                    if param != value.Type() && !(LLVMIsAConstantPointerNull(value.Value()) != null && param.IsPointer()) {
+                    let mut state: bool = false;
+
+                    if param.IsPointer() && value.Type().IsPointer() {
+                        if LLVMGetTypeKind(param.Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || LLVMGetTypeKind(value.Type().Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind {
+                            state = true;
+                        }
+                    }
+
+                    if param != value.Type() && !state {
                         this.Error((String("Incompatible argument types for function '") + _func.Type().Pointee().name + "'. ('" + LLVMTypeToString(param.Value()) + "' != '" + LLVMTypeToString(value.Type().Value()) + "').").Data());
                         ret QualifiedValue(null, null);
                     }
@@ -2802,7 +2876,7 @@ class Compiler {
             pointer = LLVMBuildMalloc(this.builder, _type.Value(), "");
             let mut i: u64 = 0u64;
             
-            while values.Size() > i {
+            while _new->arguments.Size() > i {
                 values.PushBack(this.CompileExpression(_new->arguments[i], false));
                 i += 1u64;
             }

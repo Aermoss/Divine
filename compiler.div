@@ -422,26 +422,26 @@ class QualifiedType {
                             _type = _type->Pointee();
                         }
 
-                        let mut _state: bool = false;
+                        let (mut _state: bool, mut state_: bool) = (false, false);
 
                         if params[j].IsReference() {
                             if (*_type) == params[j].Pointee() {
                                 _state = true;
                             } else if _type->IsPointer() && params[j].Pointee().IsPointer() {
                                 if LLVMGetTypeKind(_type->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || LLVMGetTypeKind(params[j].Pointee().Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind {
-                                    _state = true;
+                                    state_ = true;
                                 }
                             }
                         }
 
                         if _type->IsPointer() && params[j].IsPointer() {
                             if LLVMGetTypeKind(_type->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || LLVMGetTypeKind(params[j].Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind {
-                                _state = true;
+                                state_ = true;
                             }
                         }
 
-                        if (*_type) == params[j] || _state {
-                            score += _state ? 2u64 : 1u64;
+                        if (*_type) == params[j] || _state || state_ {
+                            score += _state ? 3u64 : (state_ ? 1u64 : 2u64);
                         } else {
                             _match = false;
                             break;
@@ -1024,7 +1024,11 @@ class Mangler {
                 i += 1u64;
             } ret result;
         } else if kind == LLVMTypeKind::LLVMStructTypeKind {
-            ret String(LLVMGetStructName(_type->Value()));
+            let mut name: String = LLVMGetStructName(_type->Value());
+
+            if name[0u64] != '$' || name[1u64] != 'd' {
+                name = this.MangleClass(name);
+            } ret String(name.Data() + 2u64);
         } else if kind == LLVMTypeKind::LLVMIntegerTypeKind {
             let width: u32 = LLVMGetIntTypeWidth(_type->Value());
             ret String(width == 1u32 ? "b" : (width == 8u32 ? "c" : (width == 16u32 ? "s" : (width == 32u32 ? "i" : "l"))));
@@ -1055,8 +1059,8 @@ class Mangler {
         let mut i: u64 = 0u64;
 
         while i < names.Size() {
-            let length[32]: i8;
-            sprintf(length, "%llu", names[i].Size());
+            let length[32u64]: i8;
+            sprintf(length, "%llu", names[i].Size() - 1u64);
             result += length;
             result += names[i];
             i += 1u64;
@@ -2118,9 +2122,9 @@ class Compiler {
 
     priv CompileVariable(mut this: Compiler&, variable: VariableDeclNode*) {
         let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
-        let _type: QualifiedType& = this.CompileType(variable->var_type);
+        let mut _type: QualifiedType* = this.CompileType(variable->var_type);
 
-        if _type.IsClass() {
+        if _type->IsClass() {
             let mut params: Vector<QualifiedValue>;
             let mut skip: bool = false;
 
@@ -2129,15 +2133,15 @@ class Compiler {
                     let mut value: QualifiedValue = this.CompileExpression(variable->initializer, false);
 
                     if !value.return {
-                        if value.Type() == _type {
+                        if value.Type() == *_type {
                             value = QualifiedValue(LLVMAddressOf(value.Value()), this.type_manager.Pointer(value.Type(), true));
                         } params.PushBack(value);
                     } else {
-                        if _type == value.Type() {
+                        if *_type == value.Type() {
                             this.scope_manager.Set(variable->name, SymbolKind::Variable, QualifiedValue(LLVMAddressOf(value.Value()), this.type_manager.Pointer(_type, variable->is_mutable)), false);
                             skip = true;
                         } else {
-                            this.Error((String("Incompatible variable initialization types. ('") + LLVMTypeToString(_type.Value()) + "' != '" + LLVMTypeToString(value.Type().Value()) + "').").Data());
+                            this.Error((String("Incompatible variable initialization types. ('") + LLVMTypeToString(_type->Value()) + "' != '" + LLVMTypeToString(value.Type().Value()) + "').").Data());
                             ret;
                         }
                     }
@@ -2154,7 +2158,7 @@ class Compiler {
 
             if !skip {
                 LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
-                let instance: QualifiedValue = QualifiedValue(LLVMBuildAlloca(this.builder, _type.Value(), ""), this.type_manager.Pointer(_type, variable->is_mutable));
+                let instance: QualifiedValue = QualifiedValue(LLVMBuildAlloca(this.builder, _type->Value(), ""), this.type_manager.Pointer(_type, variable->is_mutable));
                 LLVMPositionBuilderAtEnd(this.builder, current);
 
                 this.CompileConstructor(_type, instance, params);
@@ -2162,8 +2166,22 @@ class Compiler {
                 this.scope_manager.RegisterInstance(instance);
             }
         } else {
+            if variable->initializer != null {
+                if variable->initializer->node_type == ASTNodeType::INITIALIZER_LIST {
+                    let list: InitializerListNode* = variable->initializer as InitializerListNode*;
+
+                    if variable->var_type->node_type == ASTNodeType::ARRAY_TYPE {
+                        let array: ArrayTypeNode* = variable->var_type as ArrayTypeNode*;
+
+                        if array->size == null && list->expressions.Size() > 0u64 {
+                            _type = this.type_manager.Array(_type->Pointee(), list->expressions.Size(), _type->IsMutable());
+                        }
+                    }
+                }
+            }
+
             LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
-            let pointer: QualifiedValue = QualifiedValue(LLVMBuildAlloca(this.builder, _type.Value(), ""), this.type_manager.Pointer(_type, variable->is_mutable));
+            let pointer: QualifiedValue = QualifiedValue(LLVMBuildAlloca(this.builder, _type->Value(), ""), this.type_manager.Pointer(_type, variable->is_mutable));
             LLVMPositionBuilderAtEnd(this.builder, current);
 
             if variable->initializer != null {
@@ -2171,27 +2189,27 @@ class Compiler {
                     let mut initializer: QualifiedValue = this.CompileExpression(variable->initializer, false);
 
                     if initializer.Type().IsReference() {
-                        if _type == initializer.Type().Pointee() {
+                        if *_type == initializer.Type().Pointee() {
                             initializer = QualifiedValue(LLVMBuildLoad2(this.builder, initializer.Type().Pointee().Value(), initializer.Value(), ""), initializer.Type().Pointee());
                         }
                     }
 
-                    if _type.IsReference() {
-                        if _type.Pointee() == initializer.Type() {
+                    if _type->IsReference() {
+                        if _type->Pointee() == initializer.Type() {
                             initializer = QualifiedValue(LLVMAddressOf(initializer.Value()), this.type_manager.Pointer(initializer.Type(), initializer.Type().IsMutable()));
                         }
                     }
 
                     let mut state: bool = false;
 
-                    if _type.IsPointer() && initializer.Type().IsPointer() {
-                        if LLVMGetTypeKind(_type.Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || LLVMGetTypeKind(initializer.Type().Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind {
+                    if _type->IsPointer() && initializer.Type().IsPointer() {
+                        if LLVMGetTypeKind(_type->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || LLVMGetTypeKind(initializer.Type().Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind {
                             state = true;
                         }
                     }
 
-                    if _type != initializer.Type() && !state {
-                        this.Error((String("Incompatible variable initialization types. ('") + LLVMTypeToString(_type.Value()) + "' != '" + LLVMTypeToString(initializer.Type().Value()) + "').").Data());
+                    if *_type != initializer.Type() && !state {
+                        this.Error((String("Incompatible variable initialization types. ('") + LLVMTypeToString(_type->Value()) + "' != '" + LLVMTypeToString(initializer.Type().Value()) + "').").Data());
                         ret;
                     }
 
@@ -2203,7 +2221,7 @@ class Compiler {
                     while i < initializer_list->expressions.Size() {
                         let value: QualifiedValue = this.CompileExpression(initializer_list->expressions[i], false);
                         let indices[]: LLVMValueRef = { LLVMConstInt(LLVMInt32TypeInContext(this.context), i, 0i32) };
-                        LLVMBuildStore(this.builder, value.Value(), LLVMBuildGEP2(this.builder, _type.Value(), pointer.Value(), indices, 1u32, ""));
+                        LLVMBuildStore(this.builder, value.Value(), LLVMBuildGEP2(this.builder, _type->Value(), pointer.Value(), indices, 1u32, ""));
                         i += 1u64;
                     }
                 }
@@ -2979,7 +2997,11 @@ class Compiler {
     }
 
     priv CompileDelete(mut this: Compiler&, delete: DeleteNode*) -> QualifiedValue {
-        let pointer: QualifiedValue = this.CompileExpression(delete->expression, false);
+        let mut pointer: QualifiedValue = this.CompileExpression(delete->expression, false);
+
+        if pointer.Type().IsReference() {
+            pointer = QualifiedValue(LLVMBuildLoad2(this.builder, pointer.Type().Pointee().Value(), pointer.Value(), ""), pointer.Type().Pointee());
+        }
 
         if !pointer.Type().IsPointer() {
             this.Error("Delete value must be a pointer.");

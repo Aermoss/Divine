@@ -1,4 +1,4 @@
-include "divio", "divwin", "divfile", "divllvm", "_lexer.div", "_parser.div" : *;
+include "divio", "divwin", "divfile", "divllvm", "_lexer.div", "_parser.div", "_compiler.div" : *;
 
 class Timer {
     priv frequency: LARGE_INTEGER,
@@ -15,6 +15,34 @@ class Timer {
         ret (this.counter as f64) / (this.frequency as f64);
     }
 };
+
+/* func Execute(command: i8*, output: bool) -> DWORD {
+    let startup_info: mut STARTUPINFOA;
+    memset(&startup_info as void*, 0i32, sizeof(startup_info));
+    startup_info.cb = sizeof(startup_info) as DWORD;
+    let process_info: PROCESS_INFORMATION;
+
+    if output != true {
+        (startup_info.hStdOutput, startup_info.hStdError, startup_info.hStdInput) = (null, null, null);
+        startup_info.dwFlags |= STARTF_USESTDHANDLES;
+    }
+
+    if CreateProcessA(null, command, null, null, 0i32, 0u32, null, null, &startup_info, &process_info) == 0i32 {
+        printf("Failed to create process: %lu.\n", GetLastError());
+        exit(1i32);
+    }
+
+    let exit_code: DWORD;
+    WaitForSingleObject(process_info.hProcess, INFINITE);
+
+    if GetExitCodeProcess(process_info.hProcess, &exit_code) == 0i32 {
+        printf("Failed to get process exit code: %lu.\n", GetLastError());
+    }
+
+    CloseHandle(process_info.hProcess);
+    CloseHandle(process_info.hThread);
+    ret exit_code;
+} */
 
 func ErrorHandler(reason: i8*) {
     printf("LLVM fatal error: %s\n", reason);
@@ -51,5 +79,68 @@ func main(argc: i32, argv[]: i8*) -> i32 {
 
     printf("\n");
     PrintAST(ast as ASTNode*, 0i32);
-    ret 0i32;
+
+    let compiler: mut Compiler;
+    let module: LLVMModuleRef = compiler.Compile(ast, String(argv[1u64]));
+    let name: String = SplitName(String(argv[1u64]));
+
+    printf("\n");
+    LLVMDumpModule(module);
+    let string: i8* = LLVMPrintModuleToString(module);
+    WriteFile((name + ".ll").Data(), string);
+    LLVMDisposeMessage(string);
+
+    /* if false {
+        let err: i8* = null;
+        let engine: LLVMExecutionEngineRef;
+        let options: mut LLVMMCJITCompilerOptions;
+        LLVMInitializeMCJITCompilerOptions(&options, sizeof(options));
+        options.OptLevel = 0u32;
+
+        if LLVMCreateMCJITCompilerForModule(&engine, module, &options, sizeof(options), &err) != 0i32 {
+            printf("Failed to create execution engine: %s.\n", err);
+            LLVMDisposeMessage(err);
+            ret 1i32;
+        }
+
+        LLVMDisposeMessage(err);
+        printf("\nProgram compiled in %f seconds.\n", timer.Get() - start);
+        let addr: u64 = LLVMGetFunctionAddress(engine, "main");
+
+        if addr == 0u64 {
+            printf("Couldn't get function address.\n");
+            ret 1i32;
+        }
+
+        printf("Program finished with exit code: %d.\n", (addr as func() -> i32)());
+        LLVMDisposeExecutionEngine(engine);
+        compiler.Forget();
+    } else {
+        let err: i8* = null;
+
+        if LLVMTargetMachineEmitToFile(compiler.target_machine, module, (name + ".obj").Data(), LLVMCodeGenFileType::LLVMObjectFile, &err) != 0i32 {
+            printf("Failed to emit object to file: %s.\n", err);
+            LLVMDisposeMessage(err);
+            ret 1i32;
+        }
+
+        LLVMDisposeMessage(err);
+        printf("\nProgram compiled in %f seconds.\n", timer.Get() - start);
+
+        let sdk_path: String = "C:\\Program Files (x86)\\Windows Kits\\10\\Lib\\10.0.26100.0";
+        let vs_path: String = "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207";
+        let command: String = String("\"") + vs_path + "\\bin\\Hostx64\\x64\\link.exe\" /NOLOGO /DEBUG " + name + ".obj /OUT:" + name + ".exe /LIBPATH:lib \"/LIBPATH:" + vs_path + "\\lib\\x64\" \"/LIBPATH:" + sdk_path + "\\um\\x64\" \"/LIBPATH:" + sdk_path + "\\ucrt\\x64\" legacy_stdio_definitions.lib msvcrt.lib vcruntime.lib LLVM-C.lib raylibdll.lib";
+        Execute(command.Data(), true);
+
+        let mut i: i32 = 2i32;
+        let command2: mut String = name + ".exe";
+
+        while argc > i {
+            command2 += " ";
+            command2 += argv[i as u64];
+            i += 1i32;
+        }
+
+        printf("Program finished with exit code: %d.\n", Execute(command2.Data(), true));
+    } */ ret 0i32;
 }

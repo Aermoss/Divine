@@ -2212,7 +2212,7 @@ class Compiler {
                 this.scope_manager.RegisterInstance(instance);
             }
         } else {
-            /* if variable->initializer != null {
+            if variable->initializer != null {
                 if variable->initializer->node_type == ASTNodeType::INITIALIZER_LIST {
                     let list: InitializerListNode* = variable->initializer as InitializerListNode*;
 
@@ -2224,7 +2224,7 @@ class Compiler {
                         }
                     }
                 }
-            } */
+            }
 
             LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
             let pointer: QualifiedValue = QualifiedValue(LLVMBuildAlloca(this.builder, _type->Value(), ""), this.type_manager.Pointer(_type, variable->is_mutable));
@@ -2677,6 +2677,21 @@ class Compiler {
             i += 1u64;
         }
 
+        if call->expression->node_type == ASTNodeType::IDENTIFIER {
+            let identifier: IdentifierNode* = call->expression as IdentifierNode*;
+
+            if identifier->name == "sizeof" {
+                if values.Size() != 1u64 {
+                    this.Error("Invalid number of arguments for 'sizeof'.");
+                    ret QualifiedValue(null, null);
+                }
+
+                let size: u64 = LLVMStoreSizeOfType(this.layout, values[0u64].Type().Value());
+                let _type: QualifiedType& = this.type_manager.Primitive(LLVMInt64TypeInContext(this.context), false);
+                ret QualifiedValue(LLVMConstInt(_type.Value(), size, 0i32), _type);
+            }
+        }
+
         if call->expression->node_type == ASTNodeType::MEMBER_ACCESS {
             let member_access: MemberAccessNode* = call->expression as MemberAccessNode*;
             let mut instance: QualifiedValue = this.CompileExpression(member_access->expression, true);
@@ -2724,6 +2739,7 @@ class Compiler {
             let instance: QualifiedValue = QualifiedValue(LLVMBuildAlloca(this.builder, _class.Value(), ""), this.type_manager.Pointer(_class, _class.IsMutable()));
             LLVMPositionBuilderAtEnd(this.builder, current);
             this.CompileConstructor(_class, instance, values);
+            this.scope_manager.RegisterInstance(instance);
 
             if !pointer {
                 ret QualifiedValue(LLVMBuildLoad2(this.builder, _class.Value(), instance.Value(), ""), _class);

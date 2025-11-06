@@ -2669,6 +2669,22 @@ class Compiler {
     }
 
     priv CompileCall(mut this: Compiler&, call: CallNode*, pointer: bool) -> QualifiedValue {
+        if call->expression->node_type == ASTNodeType::IDENTIFIER {
+            let identifier: IdentifierNode* = call->expression as IdentifierNode*;
+
+            if identifier->name == "sizeof" {
+                if call->arguments.Size() != 1u64 {
+                    this.Error("Invalid number of arguments for 'sizeof'.");
+                    ret QualifiedValue(null, null);
+                }
+
+                let value: QualifiedValue = this.CompileExpression(call->arguments[0u64], true);
+                let size: u64 = LLVMStoreSizeOfType(this.layout, value.Type().Pointee().Value());
+                let _type: QualifiedType& = this.type_manager.Primitive(LLVMInt64TypeInContext(this.context), false);
+                ret QualifiedValue(LLVMConstInt(_type.Value(), size, 0i32), _type);
+            }
+        }
+
         let mut values: Vector<QualifiedValue>;
         let mut i: u64 = 0u64;
 
@@ -2724,6 +2740,7 @@ class Compiler {
             let instance: QualifiedValue = QualifiedValue(LLVMBuildAlloca(this.builder, _class.Value(), ""), this.type_manager.Pointer(_class, _class.IsMutable()));
             LLVMPositionBuilderAtEnd(this.builder, current);
             this.CompileConstructor(_class, instance, values);
+            this.scope_manager.RegisterInstance(instance);
 
             if !pointer {
                 ret QualifiedValue(LLVMBuildLoad2(this.builder, _class.Value(), instance.Value(), ""), _class);

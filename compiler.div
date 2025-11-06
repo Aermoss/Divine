@@ -130,10 +130,11 @@ func LLVMAddressOf(value: LLVMValueRef) -> LLVMValueRef {
 
 class Field {
     pub initializer: ASTNode*,
-    pub visibility: TokenType
+    pub visibility: TokenType,
+    pub index: u64 = 0u64
 } impl {
-    Field(mut this: Field&, initializer: ASTNode*, visibility: TokenType) {
-        (this.initializer, this.visibility) = (initializer, visibility);
+    Field(mut this: Field&, initializer: ASTNode*, visibility: TokenType, index: u64) {
+        (this.initializer, this.visibility, this.index) = (initializer, visibility, index);
     }
 
     ~Field(this: Field&) {}
@@ -293,8 +294,8 @@ class QualifiedType {
         let mut i: u64 = 0u64;
 
         while i < fields.Size() {
-            if fields.Data()[i].left == name {
-                ret i as i64;
+            if fields[i].left == name {
+                ret fields[i].right.left.index as i64;
             } i += 1u64;
         } ret -1i64;
     }
@@ -1787,7 +1788,7 @@ class Compiler {
 
         while i < class_decl->parents.Size() {
             let _type: QualifiedType& = this.CompileType(class_decl->parents[i]);
-            _class.fields[_type.name] = Pair<Field, QualifiedType*>(Field(null, TokenType::PRIVATE), _type);
+            _class.fields[_type.name] = Pair<Field, QualifiedType*>(Field(null, TokenType::PRIVATE, i), _type);
             field_types.PushBack(_type.Value());
             i += 1u64;
         }
@@ -1795,22 +1796,67 @@ class Compiler {
         while j < class_decl->fields.Size() {
             let field: Pair<TokenType, FieldNode*>& = class_decl->fields[j];
             let field_type: QualifiedType& = this.CompileType(field.right->field_type);
-            _class.fields[field.right->name] = Pair<Field, QualifiedType*>(Field(field.right->initializer, field.left), field_type);
+            _class.fields[field.right->name] = Pair<Field, QualifiedType*>(Field(field.right->initializer, field.left, j), field_type);
             field_types.PushBack(field_type.Value());
             j += 1u64;
+        }
+
+        let (mut alignment: u32, mut k: u64) = (0u32, 0u64);
+
+        while k < field_types.Size() {
+            let _alignment: u32 = LLVMABIAlignmentOfType(this.layout, field_types[k]);
+
+            if _alignment > alignment {
+                alignment = _alignment;
+            } k += 1u64;
+        }
+
+        let mut field_types2: Vector<LLVMTypeRef>;
+        let (mut offset: u64, mut l: u64) = (0u64, 0u64);
+
+        while l < field_types.Size() + 1u64 {
+            let (mut size: u64, mut _alignment: u32) = (0u64, 0u32);
+
+            if l != field_types.Size() {
+                _alignment = LLVMABIAlignmentOfType(this.layout, field_types[l]);
+                size = LLVMABISizeOfType(this.layout, field_types[l]);
+            }
+
+            let mut m: u64 = 0u64;
+
+            while m < 2u64 {
+                let n: u64 = (m > 0u64 ? _alignment : alignment) as u64;
+
+                if n != 0u64 {
+                    if (offset % n) != 0u64 && (l == field_types.Size() || (offset % n) + size > n) {
+                        let padding: u64 = n - (offset % n);
+                        field_types2.PushBack(LLVMArrayType(LLVMInt8TypeInContext(this.context), padding as u32));
+                        offset += padding;
+                    }
+                } m += 1u64;
+            }
+
+            if l != field_types.Size() {
+                field_types2.PushBack(field_types[l]);
+                _class.fields[l].right.left.index = field_types2.Size() - 1u64;
+                offset += size;
+            } l += 1u64;
         }
 
         let prev_class: QualifiedType* = this._class;
         this._class = _class;
 
-        LLVMStructSetBody(_class.Value(), field_types.Data(), field_types.Size() as u32, 0i32);
-        this.scope_manager.PushScope(class_decl->name, true);
-        let (mut k: u64, mut l: u64) = (0u64, 0u64);
+        if field_types2.Size() != 0u64 {
+            LLVMStructSetBody(_class.Value(), field_types2.Data(), field_types2.Size() as u32, 1i32);
+        }
 
-        while k < class_decl->constructors.Size() {
-            let method: QualifiedValue = this.CompileFunction(class_decl->constructors[k]);
-            _class.methods.PushBack(Pair<Method, QualifiedType*>(Method(class_decl->constructors[k]->name, method.Value(), TokenType::PUBLIC), method.Type()));
-            k += 1u64;
+        this.scope_manager.PushScope(class_decl->name, true);
+        let (mut m: u64, mut n: u64) = (0u64, 0u64);
+
+        while m < class_decl->constructors.Size() {
+            let method: QualifiedValue = this.CompileFunction(class_decl->constructors[m]);
+            _class.methods.PushBack(Pair<Method, QualifiedType*>(Method(class_decl->constructors[m]->name, method.Value(), TokenType::PUBLIC), method.Type()));
+            m += 1u64;
         }
 
         if class_decl->destructor != null {
@@ -1818,10 +1864,10 @@ class Compiler {
             _class.methods.PushBack(Pair<Method, QualifiedType*>(Method(class_decl->destructor->name, method.Value(), TokenType::PUBLIC), method.Type()));
         }
 
-        while l < class_decl->methods.Size() {
-            let method: QualifiedValue = this.CompileFunction(class_decl->methods[l].right);
-            _class.methods.PushBack(Pair<Method, QualifiedType*>(Method(class_decl->methods[l].right->name, method.Value(), class_decl->methods[l].left), method.Type()));
-            l += 1u64;
+        while n < class_decl->methods.Size() {
+            let method: QualifiedValue = this.CompileFunction(class_decl->methods[n].right);
+            _class.methods.PushBack(Pair<Method, QualifiedType*>(Method(class_decl->methods[n].right->name, method.Value(), class_decl->methods[n].left), method.Type()));
+            n += 1u64;
         }
 
         this.scope_manager.PopScope();

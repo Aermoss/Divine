@@ -629,11 +629,12 @@ class QualifiedValue {
 };
 
 enum SymbolKind {
-    Variable, Constant, Function, Parameter, Generic, Class, Type
+    Variable, GlobalVariable, Constant, Function, Parameter, Generic, Class, Type
 };
 
 func SymbolKindToString(kind: SymbolKind) -> String {
     if kind == SymbolKind::Variable { ret { "Variable" } as String; }
+    else if kind == SymbolKind::GlobalVariable { ret { "GlobalVariable" } as String; }
     else if kind == SymbolKind::Constant { ret { "Constant" } as String; }
     else if kind == SymbolKind::Function { ret { "Function" } as String; }
     else if kind == SymbolKind::Parameter { ret { "Parameter" } as String; }
@@ -1528,7 +1529,7 @@ class Compiler {
         }
 
         let global: LLVMValueRef = LLVMAddGlobal(this.module, _type.Value(), constant_decl->name.Data());
-        this.scope_manager.Set(constant_decl->name, SymbolKind::Variable, QualifiedValue(global, this.type_manager.Pointer(_type, false)), false);
+        this.scope_manager.Set(constant_decl->name, SymbolKind::GlobalVariable, QualifiedValue(global, this.type_manager.Pointer(_type, false)), false);
         LLVMSetLinkage(global, LLVMLinkage::LLVMPrivateLinkage);
         LLVMSetInitializer(global, initializer.Value());
         LLVMSetGlobalConstant(global, 1i32);
@@ -2509,7 +2510,7 @@ class Compiler {
                 }
             }
 
-            if (symbol->kind == SymbolKind::Variable || symbol->kind == SymbolKind::Constant || symbol->kind == SymbolKind::Parameter) && !pointer {
+            if (symbol->kind == SymbolKind::Variable || symbol->kind == SymbolKind::GlobalVariable || symbol->kind == SymbolKind::Constant || symbol->kind == SymbolKind::Parameter) && !pointer {
                 let mut _type: QualifiedType* = value.Type();
 
                 while !state {
@@ -2531,6 +2532,8 @@ class Compiler {
 
                 if symbol->kind == SymbolKind::Constant || (symbol->kind == SymbolKind::Parameter && !value.Type().IsMutable() && !state) {
                     ret value;
+                } else if symbol->kind == SymbolKind::GlobalVariable {
+                    ret QualifiedValue(LLVMGetInitializer(value.Value()), value.Type().Pointee());
                 } else {
                     ret QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
                 }
@@ -2985,7 +2988,12 @@ class Compiler {
             let field_pointer: LLVMValueRef = LLVMBuildStructGEP2(this.builder, instance.Type().Pointee().Value(), instance.Value(), index as u32, "");
 
             if !pointer {
-                ret QualifiedValue(LLVMBuildLoad2(this.builder, field.right->Value(), field_pointer, ""), field.right);
+                if field.right->IsArray() {
+                    let _type: QualifiedType& = this.type_manager.Pointer(field.right->Element(), instance.Type().Pointee().IsMutable());
+                    ret QualifiedValue(LLVMBuildBitCast(this.builder, field_pointer, _type.Value(), ""), _type);
+                } else {
+                    ret QualifiedValue(LLVMBuildLoad2(this.builder, field.right->Value(), field_pointer, ""), field.right);
+                }
             } else {
                 ret QualifiedValue(field_pointer, this.type_manager.Pointer(field.right, instance.Type().Pointee().IsMutable()));
             }

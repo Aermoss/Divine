@@ -236,57 +236,30 @@ func main(argc: i32, argv[]: i8*) -> i32 {
     let string: i8* = LLVMPrintModuleToString(module);
     WriteFile((name + ".ll").Data(), string);
     LLVMDisposeMessage(string);
+    let err: i8* = null;
 
-    if false {
-        let err: i8* = null;
-        let engine: LLVMExecutionEngineRef;
-        let options: mut LLVMMCJITCompilerOptions;
-        LLVMInitializeMCJITCompilerOptions(&options, sizeof(options));
-        options.OptLevel = 0u32;
-
-        if LLVMCreateMCJITCompilerForModule(&engine, module, &options, sizeof(options), &err) != 0i32 {
-            printf("Failed to create execution engine: %s.\n", err);
-            LLVMDisposeMessage(err);
-            ret 1i32;
-        }
-
+    if LLVMTargetMachineEmitToFile(compiler.target_machine, module, (name + ".obj").Data(), LLVMCodeGenFileType::LLVMObjectFile, &err) != 0i32 {
+        printf("Failed to emit object to file: %s.\n", err);
         LLVMDisposeMessage(err);
-        printf("Program compiled in %f seconds.\n", timer.Get() - start);
-        let addr: u64 = LLVMGetFunctionAddress(engine, "main");
+        ret 1i32;
+    }
 
-        if addr == 0u64 {
-            printf("Couldn't get function address.\n");
-            ret 1i32;
-        }
+    LLVMDisposeMessage(err);
+    printf("Program compiled in %f seconds.\n", timer.Get() - start);
 
-        printf("Program finished with exit code: %d.\n", (addr as func() -> i32)());
-        LLVMDisposeExecutionEngine(engine);
-        compiler.Forget();
-    } else {
-        let err: i8* = null;
+    let (sdk_path: String, vs_path: String) = (GetWindowsSDKPath(), GetVisualStudioPath());
+    let command: String = String("\"") + vs_path + "\\bin\\Hostx64\\x64\\link.exe\" /NOLOGO /DEBUG " + name + ".obj /OUT:" + name + ".exe /LIBPATH:lib \"/LIBPATH:" + vs_path + "\\lib\\x64\" \"/LIBPATH:" + sdk_path + "\\um\\x64\" \"/LIBPATH:" + sdk_path + "\\ucrt\\x64\" legacy_stdio_definitions.lib msvcrt.lib vcruntime.lib LLVM-C.lib raylibdll.lib";
+    Execute(command.Data(), true);
 
-        if LLVMTargetMachineEmitToFile(compiler.target_machine, module, (name + ".obj").Data(), LLVMCodeGenFileType::LLVMObjectFile, &err) != 0i32 {
-            printf("Failed to emit object to file: %s.\n", err);
-            LLVMDisposeMessage(err);
-            ret 1i32;
-        }
+    let mut i: i32 = 2i32;
+    let command2: mut String = name + ".exe";
 
-        LLVMDisposeMessage(err);
-        printf("Program compiled in %f seconds.\n", timer.Get() - start);
+    while argc > i {
+        command2 += " ";
+        command2 += argv[i as u64];
+        i += 1i32;
+    }
 
-        let (sdk_path: String, vs_path: String) = (GetWindowsSDKPath(), GetVisualStudioPath());
-        let command: String = String("\"") + vs_path + "\\bin\\Hostx64\\x64\\link.exe\" /NOLOGO /DEBUG " + name + ".obj /OUT:" + name + ".exe /LIBPATH:lib \"/LIBPATH:" + vs_path + "\\lib\\x64\" \"/LIBPATH:" + sdk_path + "\\um\\x64\" \"/LIBPATH:" + sdk_path + "\\ucrt\\x64\" legacy_stdio_definitions.lib msvcrt.lib vcruntime.lib LLVM-C.lib raylibdll.lib";
-        Execute(command.Data(), true);
-
-        let mut i: i32 = 2i32;
-        let command2: mut String = name + ".exe";
-
-        while argc > i {
-            command2 += " ";
-            command2 += argv[i as u64];
-            i += 1i32;
-        }
-
-        printf("Program finished with exit code: %d.\n", Execute(command2.Data(), true));
-    } ret 0i32;
+    printf("Program finished with exit code: %d.\n", Execute(command2.Data(), true));
+    ret 0i32;
 }

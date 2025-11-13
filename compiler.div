@@ -2959,13 +2959,13 @@ class Compiler {
             instance = QualifiedValue(LLVMBuildLoad2(this.builder, instance.Type().Pointee().Value(), instance.Value(), ""), instance.Type().Pointee());
         }
 
-        if member_access->arrow {
+        if member_access->arrow && instance.Type().Pointee().IsPointer() { // workaround
             instance = QualifiedValue(LLVMBuildLoad2(this.builder, instance.Type().Pointee().Value(), instance.Value(), ""), instance.Type().Pointee());
+        }
 
-            if !instance.Type().IsPointer() {
-                this.Error("Member access value must be a pointer.");
-                ret QualifiedValue(null, null);
-            }
+        if !instance.Type().IsPointer() {
+            this.Error("Member access value must be a pointer.");
+            ret QualifiedValue(null, null);
         }
 
         if !instance.Type().Pointee().IsClass() {
@@ -3123,10 +3123,13 @@ class Compiler {
     }
 
     priv CompileCast(this: mut Compiler&, cast: CastNode*, pointer: bool) -> QualifiedValue {
-        let target: QualifiedType& = this.CompileType(cast->target_type);
+        let mut target: QualifiedType* = this.CompileType(cast->target_type);
 
-        if cast->expression->node_type == ASTNodeType::INITIALIZER_LIST {
-            if !target.IsClass() {
+        if cast->expression->node_type != ASTNodeType::INITIALIZER_LIST {
+            if pointer { target = this.type_manager.Pointer(target, target->IsMutable()); }
+            ret this.CompileCast2(this.CompileExpression(cast->expression, pointer), target);
+        } else {
+            if !target->IsClass() {
                 this.Error("Expected a class.");
                 ret QualifiedValue(null, null);
             }
@@ -3142,21 +3145,18 @@ class Compiler {
 
             let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
             LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
-            let _pointer: LLVMValueRef = LLVMBuildAlloca(this.builder, target.Value(), "");
+            let _pointer: LLVMValueRef = LLVMBuildAlloca(this.builder, target->Value(), "");
             LLVMPositionBuilderAtEnd(this.builder, current);
             let instance: QualifiedValue = QualifiedValue(_pointer, this.type_manager.Pointer(target, false));
             this.CompileConstructor(target, instance, params);
             this.scope_manager.RegisterInstance(instance);
 
             if !pointer {
-                ret QualifiedValue(LLVMBuildLoad2(this.builder, target.Value(), instance.Value(), ""), target);
+                ret QualifiedValue(LLVMBuildLoad2(this.builder, target->Value(), instance.Value(), ""), target);
             } else {
                 ret instance;
             }
         }
-
-        let value: QualifiedValue = this.CompileExpression(cast->expression, false);
-        ret this.CompileCast2(value, target);
     }
 
     priv CompileCast2(this: mut Compiler&, value: QualifiedValue, target: QualifiedType&) -> QualifiedValue {
@@ -3586,11 +3586,9 @@ class Compiler {
                 let mut _type: QualifiedType* = null;
 
                 if this.scope_manager.Has(primitive_type->type_name, SymbolKind::Type) {
-                    let symbol: Symbol* = this.scope_manager.Get(primitive_type->type_name, SymbolKind::Type);
-                    _type = symbol->value.Type();
+                    _type = this.scope_manager.Get(primitive_type->type_name, SymbolKind::Type)->value.Type();
                 } else if this.scope_manager.Has(primitive_type->type_name, SymbolKind::Class) {
-                    let symbol: Symbol* = this.scope_manager.Get(primitive_type->type_name, SymbolKind::Class);
-                    _type = symbol->value.Type();
+                    _type = this.scope_manager.Get(primitive_type->type_name, SymbolKind::Class)->value.Type();
                 } else if this.scope_manager.Has(primitive_type->type_name, SymbolKind::Generic) {
                     if primitive_type->generic {
                         let types: mut Vector<QualifiedType*>;
@@ -3601,9 +3599,7 @@ class Compiler {
                             i += 1u64;
                         }
 
-                        let symbol: Symbol* = this.scope_manager.Get(primitive_type->type_name, SymbolKind::Generic);
-                        let generic: mut Generic* = symbol->pointer as Generic*;
-                        _type = generic->Get(types);
+                        _type = (this.scope_manager.Get(primitive_type->type_name, SymbolKind::Generic)->pointer as mut Generic*)->Get(types);
                     } else {
                         this.Error((String("Generic type '") + primitive_type->type_name + "' requires parameters.").Data());
                         ret null;

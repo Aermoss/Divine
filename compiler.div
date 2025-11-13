@@ -584,6 +584,7 @@ class QualifiedValue {
     priv _type: QualifiedType*,
     pub instance: LLVMValueRef = null,
     pub instance_type: QualifiedType* = null,
+    pub binding: bool = false,
     pub return: bool = false
 } impl {
     QualifiedValue(this: mut QualifiedValue&, value: LLVMValueRef, _type: QualifiedType*) {
@@ -592,6 +593,10 @@ class QualifiedValue {
 
     QualifiedValue(this: mut QualifiedValue&, value: LLVMValueRef, _type: QualifiedType*, instance: QualifiedValue&) {
         (this.value, this._type, this.instance, this.instance_type) = (value, _type, instance.value, instance._type);
+    }
+
+    QualifiedValue(this: mut QualifiedValue&, value: LLVMValueRef, _type: QualifiedType*, return: bool, binding: bool) {
+        (this.value, this._type, this.return, this.binding) = (value, _type, return, binding);
     }
 
     QualifiedValue(this: mut QualifiedValue&, value: LLVMValueRef, _type: QualifiedType*, return: bool) {
@@ -1401,10 +1406,10 @@ class Compiler {
                         type_ = this.type_manager.Copy(type_, param->is_mutable);
                     }
 
-                    this.scope_manager.Set(param->name, SymbolKind::Parameter, QualifiedValue(pointer, this.type_manager.Pointer(type_, param->is_mutable)), false);
+                    this.scope_manager.Set(param->name, SymbolKind::Parameter, QualifiedValue(pointer, this.type_manager.Pointer(type_, param->is_mutable), false, true), false);
                     LLVMBuildStore(this.builder, LLVMGetParam(this.function_ref, index as u32), pointer);
                 } else {
-                    this.scope_manager.Set(param->name, SymbolKind::Parameter, QualifiedValue(LLVMGetParam(this.function_ref, index as u32), params[index]), false);
+                    this.scope_manager.Set(param->name, SymbolKind::Parameter, QualifiedValue(LLVMGetParam(this.function_ref, index as u32), params[index], false, true), false);
                 } k += 1u64;
             }
 
@@ -1529,7 +1534,7 @@ class Compiler {
         }
 
         let global: LLVMValueRef = LLVMAddGlobal(this.module, _type.Value(), constant_decl->name.Data());
-        this.scope_manager.Set(constant_decl->name, SymbolKind::GlobalVariable, QualifiedValue(global, this.type_manager.Pointer(_type, false)), false);
+        this.scope_manager.Set(constant_decl->name, SymbolKind::GlobalVariable, QualifiedValue(global, this.type_manager.Pointer(_type, false), false, true), false);
         LLVMSetLinkage(global, LLVMLinkage::LLVMPrivateLinkage);
         LLVMSetInitializer(global, initializer.Value());
         LLVMSetGlobalConstant(global, 1i32);
@@ -2185,7 +2190,7 @@ class Compiler {
                         } params.PushBack(value);
                     } else {
                         if *_type == value.Type() {
-                            this.scope_manager.Set(variable->name, SymbolKind::Variable, QualifiedValue(LLVMAddressOf(value.Value()), this.type_manager.Pointer(_type, variable->is_mutable)), false);
+                            this.scope_manager.Set(variable->name, SymbolKind::Variable, QualifiedValue(LLVMAddressOf(value.Value()), this.type_manager.Pointer(_type, variable->is_mutable), false, true), false);
                             skip = true;
                         } else {
                             this.Error((String("Incompatible variable initialization types. ('") + LLVMTypeToString(_type->Value()) + "' != '" + LLVMTypeToString(value.Type().Value()) + "').").Data());
@@ -2205,7 +2210,7 @@ class Compiler {
 
             if !skip {
                 LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
-                let instance: QualifiedValue = QualifiedValue(LLVMBuildAlloca(this.builder, _type->Value(), ""), this.type_manager.Pointer(_type, variable->is_mutable));
+                let instance: QualifiedValue = QualifiedValue(LLVMBuildAlloca(this.builder, _type->Value(), ""), this.type_manager.Pointer(_type, variable->is_mutable), false, true);
                 LLVMPositionBuilderAtEnd(this.builder, current);
 
                 this.CompileConstructor(_type, instance, params);
@@ -2228,7 +2233,7 @@ class Compiler {
             }
 
             LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
-            let pointer: QualifiedValue = QualifiedValue(LLVMBuildAlloca(this.builder, _type->Value(), ""), this.type_manager.Pointer(_type, variable->is_mutable));
+            let pointer: QualifiedValue = QualifiedValue(LLVMBuildAlloca(this.builder, _type->Value(), ""), this.type_manager.Pointer(_type, variable->is_mutable), false, true);
             LLVMPositionBuilderAtEnd(this.builder, current);
 
             if variable->initializer != null {
@@ -2506,7 +2511,7 @@ class Compiler {
 
             if value.Type().IsPointer() {
                 if value.Type().Pointee().byval != null {
-                    (value, state) = (QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee()), true);
+                    (value, state) = (QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee(), false, value.binding), true);
                 }
             }
 
@@ -2701,16 +2706,23 @@ class Compiler {
             let mut instance: QualifiedValue = this.CompileExpression(member_access->expression, true);
 
             if instance.Type().Pointee().IsReference() {
-                instance = QualifiedValue(LLVMBuildLoad2(this.builder, instance.Type().Pointee().Value(), instance.Value(), ""), instance.Type().Pointee());
+                instance = QualifiedValue(LLVMBuildLoad2(this.builder, instance.Type().Pointee().Value(), instance.Value(), ""), instance.Type().Pointee(), false, instance.binding);
             }
 
-            if member_access->arrow {
-                instance = QualifiedValue(LLVMBuildLoad2(this.builder, instance.Type().Pointee().Value(), instance.Value(), ""), instance.Type().Pointee());
-
-                if !instance.Type().IsPointer() {
-                    this.Error("Member access value must be a pointer.");
+            if instance.binding || instance.Type().IsReference() {
+                if member_access->arrow {
+                    instance = QualifiedValue(LLVMBuildLoad2(this.builder, instance.Type().Pointee().Value(), instance.Value(), ""), instance.Type().Pointee(), false, instance.binding);
+                }
+            } else {
+                if !member_access->arrow && !instance.return {
+                    this.Error("Expected an arrow operator.");
                     ret QualifiedValue(null, null);
                 }
+            }
+
+            if !instance.Type().IsPointer() {
+                this.Error("Member access value must be a pointer.");
+                ret QualifiedValue(null, null);
             }
 
             if !instance.Type().Pointee().IsClass() {
@@ -2740,7 +2752,7 @@ class Compiler {
             let _class: QualifiedType& = this.CompileType(call->expression);
             let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
             LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
-            let instance: QualifiedValue = QualifiedValue(LLVMBuildAlloca(this.builder, _class.Value(), ""), this.type_manager.Pointer(_class, _class.IsMutable()));
+            let instance: QualifiedValue = QualifiedValue(LLVMBuildAlloca(this.builder, _class.Value(), ""), this.type_manager.Pointer(_class, _class.IsMutable()), false, true);
             LLVMPositionBuilderAtEnd(this.builder, current);
             this.CompileConstructor(_class, instance, values);
             this.scope_manager.RegisterInstance(instance);
@@ -2767,7 +2779,7 @@ class Compiler {
                 let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
                 LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
                 let _pointer: LLVMValueRef = LLVMBuildAlloca(this.builder, params[0u64]->sret->Value(), "");
-                return = QualifiedValue(_pointer, this.type_manager.Pointer(params[0u64]->sret, true), true);
+                return = QualifiedValue(_pointer, this.type_manager.Pointer(params[0u64]->sret, true), true, true);
                 LLVMPositionBuilderAtEnd(this.builder, current);
                 this.scope_manager.RegisterInstance(return);
                 args.PushBack(return.Value());
@@ -2874,7 +2886,7 @@ class Compiler {
             let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
             LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
             let _pointer: LLVMValueRef = LLVMBuildAlloca(this.builder, ret_type.sret->Value(), "");
-            return = QualifiedValue(_pointer, this.type_manager.Pointer(ret_type.sret, true), true);
+            return = QualifiedValue(_pointer, this.type_manager.Pointer(ret_type.sret, true), true, true);
             LLVMPositionBuilderAtEnd(this.builder, current);
             LLVMBuildStore(this.builder, value, LLVMBuildBitCast(this.builder, _pointer, LLVMPointerType(ret_type.Value(), 0u32), ""));
             this.scope_manager.RegisterInstance(return);
@@ -2956,11 +2968,18 @@ class Compiler {
         let mut instance: QualifiedValue = this.CompileExpression(member_access->expression, true);
 
         if instance.Type().Pointee().IsReference() {
-            instance = QualifiedValue(LLVMBuildLoad2(this.builder, instance.Type().Pointee().Value(), instance.Value(), ""), instance.Type().Pointee());
+            instance = QualifiedValue(LLVMBuildLoad2(this.builder, instance.Type().Pointee().Value(), instance.Value(), ""), instance.Type().Pointee(), false, instance.binding);
         }
 
-        if member_access->arrow && instance.Type().Pointee().IsPointer() { // workaround
-            instance = QualifiedValue(LLVMBuildLoad2(this.builder, instance.Type().Pointee().Value(), instance.Value(), ""), instance.Type().Pointee());
+        if instance.binding || instance.Type().IsReference() {
+            if member_access->arrow {
+                instance = QualifiedValue(LLVMBuildLoad2(this.builder, instance.Type().Pointee().Value(), instance.Value(), ""), instance.Type().Pointee(), false, instance.binding);
+            }
+        } else {
+            if !member_access->arrow && !instance.return {
+                this.Error("Expected an arrow operator.");
+                ret QualifiedValue(null, null);
+            }
         }
 
         if !instance.Type().IsPointer() {
@@ -2995,7 +3014,7 @@ class Compiler {
                     ret QualifiedValue(LLVMBuildLoad2(this.builder, field.right->Value(), field_pointer, ""), field.right);
                 }
             } else {
-                ret QualifiedValue(field_pointer, this.type_manager.Pointer(field.right, instance.Type().Pointee().IsMutable()));
+                ret QualifiedValue(field_pointer, this.type_manager.Pointer(field.right, instance.Type().Pointee().IsMutable()), false, true);
             }
         } else {
             let method: Pair<Method, QualifiedType*>& = instance.Type().Pointee().Get(member_access->member);
@@ -3147,7 +3166,7 @@ class Compiler {
             LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
             let _pointer: LLVMValueRef = LLVMBuildAlloca(this.builder, target->Value(), "");
             LLVMPositionBuilderAtEnd(this.builder, current);
-            let instance: QualifiedValue = QualifiedValue(_pointer, this.type_manager.Pointer(target, false));
+            let instance: QualifiedValue = QualifiedValue(_pointer, this.type_manager.Pointer(target, false), false, true);
             this.CompileConstructor(target, instance, params);
             this.scope_manager.RegisterInstance(instance);
 
@@ -3261,9 +3280,9 @@ class Compiler {
                 }
             }
 
-            ret QualifiedValue(LLVMBuildBitCast(this.builder, pointer, target.Value(), ""), target);
+            ret QualifiedValue(LLVMBuildBitCast(this.builder, pointer, target.Value(), ""), target, false, value.binding);
         } else {
-            this.Error(String("Cannot cast '" + LLVMTypeToString(value.Type().Value()) + "' to '" + LLVMTypeToString(target.Value()) + "'.").Data());
+            this.Error((String("Cannot cast '") + LLVMTypeToString(value.Type().Value()) + "' to '" + LLVMTypeToString(target.Value()) + "'.").Data());
             ret QualifiedValue(null, null);
         }
     }

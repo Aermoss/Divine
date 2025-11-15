@@ -21,7 +21,7 @@ enum ASTNodeType {
     CALL, MEMBER_ACCESS, INDEX_ACCESS, CAST, INITIALIZER_LIST, NEW, DELETE,
 
     EXPRESSION_STMT, VARIABLE_DECL, CONSTANT_DECL, ASSIGNMENT, IF_STMT, WHILE_STMT, 
-    RETURN_STMT, BREAK_STMT, CONTINUE_STMT, BLOCK_STMT,
+    LOOP_STMT, RETURN_STMT, BREAK_STMT, CONTINUE_STMT, BLOCK_STMT,
 
     FUNCTION_DECL, CLASS_DECL, ENUM_DECL, EXTERN_BLOCK, TYPE_DECL,
     IMPL_BLOCK, PARAMETER, FIELD,
@@ -310,6 +310,14 @@ class WhileStmtNode : ASTNode {
 } impl {
     WhileStmtNode(this: mut WhileStmtNode&, condition: ASTNode*, body: ASTNode*, line: u64, col: u64) : ASTNode(ASTNodeType::WHILE_STMT, line, col) {
         (this.condition, this.body) = (condition, body);
+    }
+};
+
+class LoopStmtNode : ASTNode {
+    pub body: ASTNode*
+} impl {
+    LoopStmtNode(this: mut LoopStmtNode&, body: ASTNode*, line: u64, col: u64) : ASTNode(ASTNodeType::LOOP_STMT, line, col) {
+        this.body = body;
     }
 };
 
@@ -746,7 +754,7 @@ class Parser {
     priv ParsePostfix(this: mut Parser&) -> ASTNode* {
         let mut expr: ASTNode* = this.ParsePrimary();
 
-        while true {
+        loop {
             let token: Token = this.CurrentToken();
 
             if token._type == TokenType::LPAREN {
@@ -826,7 +834,7 @@ class Parser {
     priv ParseBinaryExpression(this: mut Parser&, min_precedence: i32) -> ASTNode* {
         let mut left: ASTNode* = this.ParseUnary();
 
-        while true {
+        loop {
             let token: mut Token = this.CurrentToken();
 
             if this.PeekToken(1u64)._type == token._type {
@@ -931,6 +939,8 @@ class Parser {
             ret this.ParseIfStatement();
         } else if token._type == TokenType::WHILE {
             ret this.ParseWhileStatement();
+        } else if token._type == TokenType::LOOP {
+            ret this.ParseLoopStatement();
         } else if token._type == TokenType::RETURN {
             ret this.ParseReturnStatement();
         } else if token._type == TokenType::BREAK {
@@ -1100,7 +1110,7 @@ class Parser {
     priv ParseIfStatement(this: mut Parser&) -> ASTNode* {
         let token: Token = this.Expect(TokenType::IF);
         let condition: ASTNode* = this.ParseExpression();
-        let then_stmt: ASTNode* = this.ParseStatement();
+        let then_stmt: ASTNode* = this.ParseBlockStatement();
         let mut else_stmt: ASTNode* = null;
 
         if this.Match(TokenType::ELSE) {
@@ -1112,7 +1122,12 @@ class Parser {
 
     priv ParseWhileStatement(this: mut Parser&) -> ASTNode* {
         let token: Token = this.Expect(TokenType::WHILE);
-        ret new WhileStmtNode(this.ParseExpression(), this.ParseStatement(), token.lineno, token.column) as ASTNode*;
+        ret new WhileStmtNode(this.ParseExpression(), this.ParseBlockStatement(), token.lineno, token.column) as ASTNode*;
+    }
+
+    priv ParseLoopStatement(this: mut Parser&) -> ASTNode* {
+        let token: Token = this.Expect(TokenType::LOOP);
+        ret new LoopStmtNode(this.ParseBlockStatement(), token.lineno, token.column) as ASTNode*;
     }
 
     priv ParseReturnStatement(this: mut Parser&) -> ASTNode* {

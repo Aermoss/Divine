@@ -1973,6 +1973,8 @@ class Compiler {
             this.CompileIf(stmt as IfStmtNode*);
         } else if stmt->node_type == ASTNodeType::WHILE_STMT {
             this.CompileWhile(stmt as WhileStmtNode*);
+        } else if stmt->node_type == ASTNodeType::LOOP_STMT {
+            this.CompileLoop(stmt as LoopStmtNode*);
         } else if stmt->node_type == ASTNodeType::CONTINUE_STMT {
             this.CompileContinue(stmt as ContinueStmtNode*);
         } else if stmt->node_type == ASTNodeType::BREAK_STMT {
@@ -2162,6 +2164,26 @@ class Compiler {
 
         if LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(this.builder)) == null {
             LLVMBuildBr(this.builder, compare_block);
+        }
+
+        LLVMPositionBuilderAtStart(this.builder, end_block);
+        this.blocks.PopBack();
+    }
+
+    priv CompileLoop(this: mut Compiler&, loop_stmt: LoopStmtNode*) {
+        let function: LLVMValueRef = LLVMGetBasicBlockParent(LLVMGetInsertBlock(this.builder));
+        let loop_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "");
+        let end_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "");
+        this.blocks.PushBack(Pair<LLVMBasicBlockRef, LLVMBasicBlockRef>(loop_block, end_block));
+
+        LLVMBuildBr(this.builder, loop_block);
+        LLVMPositionBuilderAtStart(this.builder, loop_block);
+        this.scope_manager.PushScope(String("loop"), false);
+        this.CompileBlock(loop_stmt->body as BlockStmtNode*);
+        this.scope_manager.PopScope();
+
+        if LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(this.builder)) == null {
+            LLVMBuildBr(this.builder, loop_block);
         }
 
         LLVMPositionBuilderAtStart(this.builder, end_block);

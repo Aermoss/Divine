@@ -1394,7 +1394,7 @@ class Compiler {
                 let index: u64 = params[0u64]->sret != null ? k + 1u64 : k;
 
                 if params[index]->byval != null {
-                    this.scope_manager.RegisterInstance(QualifiedValue(LLVMGetParam(this.function_ref, index as u32), this.type_manager.Pointer(params[index]->byval, param->is_mutable)));
+                    this.scope_manager.RegisterInstance(QualifiedValue(LLVMGetParam(this.function_ref, index as u32), this.type_manager.Pointer(params[index]->byval, param->mutable)));
                 }
 
                 let mut state: bool = params[index]->byval != null;
@@ -1410,7 +1410,7 @@ class Compiler {
                     }
                 }
 
-                if param->is_mutable || state {
+                if param->mutable || state {
                     let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
                     LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
                     let pointer: LLVMValueRef = LLVMBuildAlloca(this.builder, params[index]->Value(), "");
@@ -1419,10 +1419,10 @@ class Compiler {
                     let mut type_: QualifiedType* = params[index];
 
                     if type_->IsClass() || type_->IsPointer() {
-                        type_ = this.type_manager.Copy(type_, param->is_mutable);
+                        type_ = this.type_manager.Copy(type_, param->mutable);
                     }
 
-                    this.scope_manager.Set(param->name, SymbolKind::Parameter, QualifiedValue(pointer, this.type_manager.Pointer(type_, param->is_mutable), false, true), false);
+                    this.scope_manager.Set(param->name, SymbolKind::Parameter, QualifiedValue(pointer, this.type_manager.Pointer(type_, param->mutable), false, true), false);
                     LLVMBuildStore(this.builder, LLVMGetParam(this.function_ref, index as u32), pointer);
                 } else {
                     this.scope_manager.Set(param->name, SymbolKind::Parameter, QualifiedValue(LLVMGetParam(this.function_ref, index as u32), params[index], false, true), false);
@@ -1517,7 +1517,7 @@ class Compiler {
     }
 
     priv CompileConstant(this: mut Compiler&, constant_decl: ConstantDeclNode*) {
-        let _type: QualifiedType& = this.CompileType(constant_decl->var_type);
+        let _type: QualifiedType& = this.CompileType(constant_decl->_type);
         let mut initializer: QualifiedValue;
 
         if constant_decl->initializer->node_type != ASTNodeType::INITIALIZER_LIST {
@@ -1989,7 +1989,7 @@ class Compiler {
     }
 
     priv CompileReturn(this: mut Compiler&, ret_stmt: ReturnStmtNode*) {
-        if ret_stmt->value != null {
+        if ret_stmt->expression != null {
             let return: QualifiedType& = this.function->Return();
             let params: Vector<QualifiedType*> = this.function->Parameters();
             let mut state: bool = false;
@@ -1999,7 +1999,7 @@ class Compiler {
             }
 
             if return.sret != null || state {
-                let mut value: QualifiedValue = this.CompileExpression(ret_stmt->value, true);
+                let mut value: QualifiedValue = this.CompileExpression(ret_stmt->expression, true);
 
                 if value.Type().Pointee().IsReference() {
                     value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
@@ -2026,7 +2026,7 @@ class Compiler {
                     LLVMBuildRetVoid(this.builder);
                 }
             } else {
-                let mut value: QualifiedValue = this.CompileExpression(ret_stmt->value, false);
+                let mut value: QualifiedValue = this.CompileExpression(ret_stmt->expression, false);
 
                 if value.Type().IsReference() {
                     if return == value.Type().Pointee() {
@@ -2195,7 +2195,7 @@ class Compiler {
         LLVMBuildBr(this.builder, loop_block);
         LLVMPositionBuilderAtStart(this.builder, loop_block);
         this.scope_manager.PushScope(String("loop"), false);
-        this.CompileBlock(loop_stmt->body as BlockStmtNode*);
+        this.CompileBlock(loop_stmt->loop_stmt as BlockStmtNode*);
         this.scope_manager.PopScope();
 
         if LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(this.builder)) == null {
@@ -2228,7 +2228,7 @@ class Compiler {
 
     priv CompileVariable(this: mut Compiler&, variable: VariableDeclNode*) {
         let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
-        let mut _type: QualifiedType* = this.CompileType(variable->var_type);
+        let mut _type: QualifiedType* = this.CompileType(variable->_type);
 
         if _type->IsClass() {
             let params: mut Vector<QualifiedValue>;
@@ -2244,7 +2244,7 @@ class Compiler {
                         } params.PushBack(value);
                     } else {
                         if *_type == value.Type() {
-                            this.scope_manager.Set(variable->name, SymbolKind::Variable, QualifiedValue(LLVMAddressOf(value.Value()), this.type_manager.Pointer(_type, variable->is_mutable), false, true), false);
+                            this.scope_manager.Set(variable->name, SymbolKind::Variable, QualifiedValue(LLVMAddressOf(value.Value()), this.type_manager.Pointer(_type, variable->mutable), false, true), false);
                             skip = true;
                         } else {
                             this.Error((String("Incompatible variable initialization types. ('") + LLVMTypeToString(_type->Value()) + "' != '" + LLVMTypeToString(value.Type().Value()) + "').").Data());
@@ -2264,7 +2264,7 @@ class Compiler {
 
             if !skip {
                 LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
-                let instance: QualifiedValue = QualifiedValue(LLVMBuildAlloca(this.builder, _type->Value(), ""), this.type_manager.Pointer(_type, variable->is_mutable), false, true);
+                let instance: QualifiedValue = QualifiedValue(LLVMBuildAlloca(this.builder, _type->Value(), ""), this.type_manager.Pointer(_type, variable->mutable), false, true);
                 LLVMPositionBuilderAtEnd(this.builder, current);
 
                 this.CompileConstructor(_type, instance, params);
@@ -2276,8 +2276,8 @@ class Compiler {
                 if variable->initializer->node_type == ASTNodeType::INITIALIZER_LIST {
                     let list: InitializerListNode* = variable->initializer as InitializerListNode*;
 
-                    if variable->var_type->node_type == ASTNodeType::ARRAY_TYPE {
-                        let array: ArrayTypeNode* = variable->var_type as ArrayTypeNode*;
+                    if variable->_type->node_type == ASTNodeType::ARRAY_TYPE {
+                        let array: ArrayTypeNode* = variable->_type as ArrayTypeNode*;
 
                         if array->size == null && list->expressions.Size() > 0u64 {
                             _type = this.type_manager.Array(_type->Pointee(), list->expressions.Size(), _type->IsMutable());
@@ -2287,7 +2287,7 @@ class Compiler {
             }
 
             LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
-            let pointer: QualifiedValue = QualifiedValue(LLVMBuildAlloca(this.builder, _type->Value(), ""), this.type_manager.Pointer(_type, variable->is_mutable), false, true);
+            let pointer: QualifiedValue = QualifiedValue(LLVMBuildAlloca(this.builder, _type->Value(), ""), this.type_manager.Pointer(_type, variable->mutable), false, true);
             LLVMPositionBuilderAtEnd(this.builder, current);
 
             if variable->initializer != null {
@@ -3637,32 +3637,32 @@ class Compiler {
         if type_node->node_type == ASTNodeType::PRIMITIVE_TYPE {
             let primitive_type: PrimitiveTypeNode* = type_node as PrimitiveTypeNode*;
 
-            if primitive_type->type_name == "bool" {
+            if primitive_type->name == "bool" {
                 ret this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false);
-            } else if primitive_type->type_name == "i8" || primitive_type->type_name == "u8" {
-                ret this.type_manager.Primitive(LLVMInt8TypeInContext(this.context), primitive_type->type_name[0u64] != 'u' ? true : false);
-            } else if primitive_type->type_name == "i16" || primitive_type->type_name == "u16" {
-                ret this.type_manager.Primitive(LLVMInt16TypeInContext(this.context), primitive_type->type_name[0u64] != 'u' ? true : false);
-            } else if primitive_type->type_name == "i32" || primitive_type->type_name == "u32" || primitive_type->type_name == "char" {
-                ret this.type_manager.Primitive(LLVMInt32TypeInContext(this.context), primitive_type->type_name[0u64] != 'u' ? true : false);
-            } else if primitive_type->type_name == "i64" || primitive_type->type_name == "u64" {
-                ret this.type_manager.Primitive(LLVMInt64TypeInContext(this.context), primitive_type->type_name[0u64] != 'u' ? true : false);
-            } else if primitive_type->type_name == "i128" || primitive_type->type_name == "u128" {
-                ret this.type_manager.Primitive(LLVMInt128TypeInContext(this.context), primitive_type->type_name[0u64] != 'u' ? true : false);
-            } else if primitive_type->type_name == "f32" {
+            } else if primitive_type->name == "i8" || primitive_type->name == "u8" {
+                ret this.type_manager.Primitive(LLVMInt8TypeInContext(this.context), primitive_type->name[0u64] != 'u' ? true : false);
+            } else if primitive_type->name == "i16" || primitive_type->name == "u16" {
+                ret this.type_manager.Primitive(LLVMInt16TypeInContext(this.context), primitive_type->name[0u64] != 'u' ? true : false);
+            } else if primitive_type->name == "i32" || primitive_type->name == "u32" || primitive_type->name == "char" {
+                ret this.type_manager.Primitive(LLVMInt32TypeInContext(this.context), primitive_type->name[0u64] != 'u' ? true : false);
+            } else if primitive_type->name == "i64" || primitive_type->name == "u64" {
+                ret this.type_manager.Primitive(LLVMInt64TypeInContext(this.context), primitive_type->name[0u64] != 'u' ? true : false);
+            } else if primitive_type->name == "i128" || primitive_type->name == "u128" {
+                ret this.type_manager.Primitive(LLVMInt128TypeInContext(this.context), primitive_type->name[0u64] != 'u' ? true : false);
+            } else if primitive_type->name == "f32" {
                 ret this.type_manager.Primitive(LLVMFloatTypeInContext(this.context), false);
-            } else if primitive_type->type_name == "f64" {
+            } else if primitive_type->name == "f64" {
                 ret this.type_manager.Primitive(LLVMDoubleTypeInContext(this.context), false);
-            } else if primitive_type->type_name == "void" {
+            } else if primitive_type->name == "void" {
                 ret this.type_manager.Primitive(LLVMVoidTypeInContext(this.context), false);
             } else {
                 let mut _type: QualifiedType* = null;
 
-                if this.scope_manager.Has(primitive_type->type_name, SymbolKind::Type) {
-                    _type = this.scope_manager.Get(primitive_type->type_name, SymbolKind::Type)->value.Type();
-                } else if this.scope_manager.Has(primitive_type->type_name, SymbolKind::Class) {
-                    _type = this.scope_manager.Get(primitive_type->type_name, SymbolKind::Class)->value.Type();
-                } else if this.scope_manager.Has(primitive_type->type_name, SymbolKind::Generic) {
+                if this.scope_manager.Has(primitive_type->name, SymbolKind::Type) {
+                    _type = this.scope_manager.Get(primitive_type->name, SymbolKind::Type)->value.Type();
+                } else if this.scope_manager.Has(primitive_type->name, SymbolKind::Class) {
+                    _type = this.scope_manager.Get(primitive_type->name, SymbolKind::Class)->value.Type();
+                } else if this.scope_manager.Has(primitive_type->name, SymbolKind::Generic) {
                     if primitive_type->generic {
                         let types: mut Vector<QualifiedType*>;
                         let mut i: u64 = 0u64;
@@ -3672,13 +3672,13 @@ class Compiler {
                             i += 1u64;
                         }
 
-                        _type = (this.scope_manager.Get(primitive_type->type_name, SymbolKind::Generic)->pointer as mut Generic*)->Get(types);
+                        _type = (this.scope_manager.Get(primitive_type->name, SymbolKind::Generic)->pointer as mut Generic*)->Get(types);
                     } else {
-                        this.Error((String("Generic type '") + primitive_type->type_name + "' requires parameters.").Data());
+                        this.Error((String("Generic type '") + primitive_type->name + "' requires parameters.").Data());
                         ret null;
                     }
                 } else {
-                    this.Error((String("Type '") + primitive_type->type_name + "' not found.").Data());
+                    this.Error((String("Type '") + primitive_type->name + "' not found.").Data());
                     ret null;
                 }
 

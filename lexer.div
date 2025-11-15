@@ -162,71 +162,73 @@ func UnaryOperatorToString(operator: TokenType) -> String {
 }
 
 class Token {
-    pub _type: TokenType,
-    pub value: String,
-    pub lineno: u64,
-    pub column: u64
+    pub _type: TokenType, pub value: mut String,
+    pub row: u64, pub column: u64
 };
 
 class Lexer {
     priv text: mut String,
-    priv pos: u64 = 0u64,
-    priv lineno: u64 = 1u64,
+    priv index: u64 = 0u64,
+    priv row: u64 = 1u64,
     priv column: u64 = 1u64,
     priv length: u64 = 0u64
 } impl {
     Lexer(this: Lexer&) {}
     ~Lexer(this: Lexer&) {}
 
-    pub IsDigit(this: Lexer&, c: i8) -> bool {
-        ret c >= '0' && c <= '9';
+    pub IsDigit(this: Lexer&, character: i8) -> bool {
+        ret character >= '0' && character <= '9';
     }
 
-    pub IsHexDigit(this: Lexer&, c: i8) -> bool {
-        ret (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+    pub IsHexDigit(this: Lexer&, character: i8) -> bool {
+        ret (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f') || (character >= 'A' && character <= 'F');
     }
 
-    pub IsBinDigit(this: Lexer&, c: i8) -> bool {
-        ret c == '0' || c == '1';
+    pub IsBinDigit(this: Lexer&, character: i8) -> bool {
+        ret character == '0' || character == '1';
     }
 
-    pub IsOctDigit(this: Lexer&, c: i8) -> bool {
-        ret c >= '0' && c <= '7';
+    pub IsOctDigit(this: Lexer&, character: i8) -> bool {
+        ret character >= '0' && character <= '7';
     }
 
-    pub IsAlpha(this: Lexer&, c: i8) -> bool {
-        ret (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+    pub IsAlpha(this: Lexer&, character: i8) -> bool {
+        ret (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || character == '_';
     }
 
-    pub IsAlphaNum(this: Lexer&, c: i8) -> bool {
-        ret this.IsAlpha(c) || this.IsDigit(c);
+    pub IsAlphaNum(this: Lexer&, character: i8) -> bool {
+        ret this.IsAlpha(character) || this.IsDigit(character);
     }
 
     pub CurrentChar(this: Lexer&) -> i8 {
-        if this.pos >= this.length { ret '\0'; }
-        ret this.text.Data()[this.pos];
+        if this.index >= this.length { ret '\0'; }
+        ret this.text.Data()[this.index];
     }
 
     pub PeekChar(this: Lexer&, offset: u64) -> i8 {
-        let peek_pos: u64 = this.pos + offset;
-        if peek_pos >= this.length { ret '\0'; }
-        ret this.text.Data()[peek_pos];
+        let peek_index: u64 = this.index + offset;
+        if peek_index >= this.length { ret '\0'; }
+        ret this.text.Data()[peek_index];
     }
 
-    pub Advance(this: mut Lexer&) {
-        if this.pos < this.length {
-            if this.CurrentChar() == '\n' {
-                this.lineno += 1u64;
-                this.column = 1u64;
-            } else {
-                this.column += 1u64;
-            } this.pos += 1u64;
+    pub Advance(this: mut Lexer&, count: u64) {
+        let mut i: u64 = 0u64;
+
+        while i < count {
+            if this.index < this.length {
+                if this.CurrentChar() == '\n' {
+                    this.row += 1u64;
+                    this.column = 1u64;
+                } else {
+                    this.column += 1u64;
+                } this.index += 1u64;
+            } i += 1u64;
         }
     }
 
     pub SkipWhitespace(this: mut Lexer&) {
         while this.CurrentChar() == ' ' || this.CurrentChar() == '\t' || this.CurrentChar() == '\r' {
-            this.Advance();
+            this.Advance(1u64);
         }
     }
 
@@ -234,445 +236,397 @@ class Lexer {
         if this.CurrentChar() == '/' {
             if this.PeekChar(1u64) == '/' {
                 while this.CurrentChar() != '\n' && this.CurrentChar() != '\0' {
-                    this.Advance();
+                    this.Advance(1u64);
                 } ret true;
             } else if this.PeekChar(1u64) == '*' {
-                this.Advance();
-                this.Advance();
+                this.Advance(2u64);
 
                 while this.CurrentChar() != '\0' {
                     if this.CurrentChar() == '*' && this.PeekChar(1u64) == '/' {
-                        this.Advance();
-                        this.Advance();
+                        this.Advance(2u64);
                         break;
-                    }
-
-                    this.Advance();
+                    } this.Advance(1u64);
                 } ret true;
             }
-        }
-
-        ret false;
+        } ret false;
     }
 
     pub ReadString(this: mut Lexer&) -> Token {
-        let start_pos: u64 = this.pos;
-        let start_col: u64 = this.column;
+        let token: mut Token;
+        (token.row, token.column) = (this.row, this.column);
         let quote_char: i8 = this.CurrentChar();
-        let value: mut String;
-        this.Advance();
+        token._type = quote_char != '"' ? TokenType::CHAR : TokenType::STRING;
+        this.Advance(1u64);
 
         while this.CurrentChar() != quote_char && this.CurrentChar() != '\0' {
             if this.CurrentChar() == '\\' {
-                this.Advance();
+                this.Advance(1u64);
 
                 if this.CurrentChar() != '\0' {
                     let escaped: i8 = this.CurrentChar();
 
                     if escaped == 'n' {
-                        value += "\n";
+                        token.value += "\n";
                     } else if escaped == 't' {
-                        value += "\t";
+                        token.value += "\t";
                     } else if escaped == 'r' {
-                        value += "\r";
+                        token.value += "\r";
                     } else if escaped == 'a' {
-                        value += "\a";
+                        token.value += "\a";
                     } else if escaped == 'b' {
-                        value += "\b";
+                        token.value += "\b";
                     } else if escaped == 'f' {
-                        value += "\f";
+                        token.value += "\f";
                     } else if escaped == 'v' {
-                        value += "\v";
+                        token.value += "\v";
                     } else if escaped == '0' {
-                        value += "\0";
+                        token.value += "\0";
                     } else if escaped == '\\' {
-                        value += "\\";
+                        token.value += "\\";
                     } else if escaped == '\'' {
-                        value += "'";
+                        token.value += "'";
                     } else if escaped == '"' {
-                        value += "\"";
+                        token.value += "\"";
                     } else {
-                        value += escaped;
-                    }
-
-                    this.Advance();
+                        token.value += escaped;
+                    } this.Advance(1u64);
                 }
             } else {
-                value += this.CurrentChar();
-                this.Advance();
+                token.value += this.CurrentChar();
+                this.Advance(1u64);
             }
         }
 
         if this.CurrentChar() == quote_char {
-            this.Advance();
-        }
-
-        if quote_char == '"' {
-            ret { TokenType::STRING, value, this.lineno, start_col } as Token;
-        } else {
-            ret { TokenType::CHAR, value, this.lineno, start_col } as Token;
-        }
+            this.Advance(1u64);
+        } ret token;
     }
 
     pub ReadNumber(this: mut Lexer&) -> Token {
-        let mut is_float: bool = false;
-        let start_col: u64 = this.column;
-        let value: mut String;
+        let token: mut Token;
+        (token.row, token.column) = (this.row, this.column);
+        token._type = TokenType::INTEGER;
 
         if this.CurrentChar() == '0' {
-            value += this.CurrentChar();
-            this.Advance();
-            
+            token.value += this.CurrentChar();
+            this.Advance(1u64);
+
             if this.CurrentChar() == 'x' || this.CurrentChar() == 'X' {
-                value += this.CurrentChar();
-                this.Advance();
+                token.value += this.CurrentChar();
+                this.Advance(1u64);
 
                 while this.IsHexDigit(this.CurrentChar()) {
-                    value += this.CurrentChar();
-                    this.Advance();
+                    token.value += this.CurrentChar();
+                    this.Advance(1u64);
                 }
             } else if this.CurrentChar() == 'b' || this.CurrentChar() == 'B' {
-                value += this.CurrentChar();
-                this.Advance();
+                token.value += this.CurrentChar();
+                this.Advance(1u64);
 
                 while this.IsBinDigit(this.CurrentChar()) {
-                    value += this.CurrentChar();
-                    this.Advance();
+                    token.value += this.CurrentChar();
+                    this.Advance(1u64);
                 }
             } else if this.CurrentChar() == 'o' || this.CurrentChar() == 'O' {
-                value += this.CurrentChar();
-                this.Advance();
+                token.value += this.CurrentChar();
+                this.Advance(1u64);
 
                 while this.IsOctDigit(this.CurrentChar()) {
-                    value += this.CurrentChar();
-                    this.Advance();
+                    token.value += this.CurrentChar();
+                    this.Advance(1u64);
                 }
             } else {
                 while this.IsDigit(this.CurrentChar()) {
-                    value += this.CurrentChar();
-                    this.Advance();
+                    token.value += this.CurrentChar();
+                    this.Advance(1u64);
                 }
             }
         } else {
             while this.IsDigit(this.CurrentChar()) {
-                value += this.CurrentChar();
-                this.Advance();
+                token.value += this.CurrentChar();
+                this.Advance(1u64);
             }
         }
 
         if this.CurrentChar() == '.' && this.IsDigit(this.PeekChar(1u64)) {
-            is_float = true;
-            value += this.CurrentChar();
-            this.Advance();
+            token._type = TokenType::FLOAT;
+            token.value += this.CurrentChar();
+            this.Advance(1u64);
 
             while this.IsDigit(this.CurrentChar()) {
-                value += this.CurrentChar();
-                this.Advance();
+                token.value += this.CurrentChar();
+                this.Advance(1u64);
             }
         }
 
         if this.CurrentChar() == 'e' || this.CurrentChar() == 'E' {
-            is_float = true;
-            value += this.CurrentChar();
-            this.Advance();
+            token._type = TokenType::FLOAT;
+            token.value += this.CurrentChar();
+            this.Advance(1u64);
 
             if this.CurrentChar() == '+' || this.CurrentChar() == '-' {
-                value += this.CurrentChar();
-                this.Advance();
+                token.value += this.CurrentChar();
+                this.Advance(1u64);
             }
 
             while this.IsDigit(this.CurrentChar()) {
-                value += this.CurrentChar();
-                this.Advance();
+                token.value += this.CurrentChar();
+                this.Advance(1u64);
             }
         }
 
         if this.CurrentChar() == 'i' || this.CurrentChar() == 'u' {
-            value += this.CurrentChar();
-            this.Advance();
+            token.value += this.CurrentChar();
+            this.Advance(1u64);
 
             while this.IsDigit(this.CurrentChar()) {
-                value += this.CurrentChar();
-                this.Advance();
+                token.value += this.CurrentChar();
+                this.Advance(1u64);
             }
         } else if this.CurrentChar() == 'f' {
-            is_float = true;
-            value += this.CurrentChar();
-            this.Advance();
+            token._type = TokenType::FLOAT;
+            token.value += this.CurrentChar();
+            this.Advance(1u64);
 
             while this.IsDigit(this.CurrentChar()) {
-                value += this.CurrentChar();
-                this.Advance();
+                token.value += this.CurrentChar();
+                this.Advance(1u64);
             }
-        }
-
-        if is_float {
-            ret { TokenType::FLOAT, value, this.lineno, start_col } as Token;
-        } else {
-            ret { TokenType::INTEGER, value, this.lineno, start_col } as Token;
-        }
+        } ret token;
     }
 
     pub ReadIdentifier(this: mut Lexer&) -> Token {
-        let mut token_type: TokenType;
-        let start_col: u64 = this.column;
-        let value: mut String;
+        let token: mut Token;
+        (token.row, token.column) = (this.row, this.column);
 
         while this.IsAlphaNum(this.CurrentChar()) {
-            value += this.CurrentChar();
-            this.Advance();
+            token.value += this.CurrentChar();
+            this.Advance(1u64);
         }
 
-        if value == "if" { token_type = TokenType::IF; }
-        else if value == "else" { token_type = TokenType::ELSE; }
-        else if value == "for" { token_type = TokenType::FOR; }
-        else if value == "while" { token_type = TokenType::WHILE; }
-        else if value == "loop" { token_type = TokenType::LOOP; }
-        else if value == "func" { token_type = TokenType::FUNC; }
-        else if value == "class" { token_type = TokenType::CLASS; }
-        else if value == "ret" { token_type = TokenType::RETURN; }
-        else if value == "break" { token_type = TokenType::BREAK; }
-        else if value == "continue" { token_type = TokenType::CONTINUE; }
-        else if value == "const" { token_type = TokenType::CONST; }
-        else if value == "op" { token_type = TokenType::OPERATOR; }
-        else if value == "pub" { token_type = TokenType::PUBLIC; }
-        else if value == "priv" { token_type = TokenType::PRIVATE; }
-        else if value == "include" { token_type = TokenType::INCLUDE; }
-        else if value == "use" { token_type = TokenType::USE; }
-        else if value == "mod" { token_type = TokenType::MOD; }
-        else if value == "type" { token_type = TokenType::TYPE; }
-        else if value == "let" { token_type = TokenType::LET; }
-        else if value == "mut" { token_type = TokenType::MUT; }
-        else if value == "true" { token_type = TokenType::TRUE; }
-        else if value == "false" { token_type = TokenType::FALSE; }
-        else if value == "null" { token_type = TokenType::NULL; }
-        else if value == "impl" { token_type = TokenType::IMPL; }
-        else if value == "new" { token_type = TokenType::NEW; }
-        else if value == "del" { token_type = TokenType::DELETE; }
-        else if value == "extern" { token_type = TokenType::EXTERN; }
-        else if value == "enum" { token_type = TokenType::ENUM; }
-        else if value == "as" { token_type = TokenType::AS; }
-        else { token_type = TokenType::NAME; }
-
-        ret { token_type, value, this.lineno, start_col } as Token;
+        if token.value == "if" { token._type = TokenType::IF; }
+        else if token.value == "else" { token._type = TokenType::ELSE; }
+        else if token.value == "for" { token._type = TokenType::FOR; }
+        else if token.value == "while" { token._type = TokenType::WHILE; }
+        else if token.value == "loop" { token._type = TokenType::LOOP; }
+        else if token.value == "func" { token._type = TokenType::FUNC; }
+        else if token.value == "class" { token._type = TokenType::CLASS; }
+        else if token.value == "ret" { token._type = TokenType::RETURN; }
+        else if token.value == "break" { token._type = TokenType::BREAK; }
+        else if token.value == "continue" { token._type = TokenType::CONTINUE; }
+        else if token.value == "const" { token._type = TokenType::CONST; }
+        else if token.value == "op" { token._type = TokenType::OPERATOR; }
+        else if token.value == "pub" { token._type = TokenType::PUBLIC; }
+        else if token.value == "priv" { token._type = TokenType::PRIVATE; }
+        else if token.value == "include" { token._type = TokenType::INCLUDE; }
+        else if token.value == "use" { token._type = TokenType::USE; }
+        else if token.value == "mod" { token._type = TokenType::MOD; }
+        else if token.value == "type" { token._type = TokenType::TYPE; }
+        else if token.value == "let" { token._type = TokenType::LET; }
+        else if token.value == "mut" { token._type = TokenType::MUT; }
+        else if token.value == "true" { token._type = TokenType::TRUE; }
+        else if token.value == "false" { token._type = TokenType::FALSE; }
+        else if token.value == "null" { token._type = TokenType::NULL; }
+        else if token.value == "impl" { token._type = TokenType::IMPL; }
+        else if token.value == "new" { token._type = TokenType::NEW; }
+        else if token.value == "del" { token._type = TokenType::DELETE; }
+        else if token.value == "extern" { token._type = TokenType::EXTERN; }
+        else if token.value == "enum" { token._type = TokenType::ENUM; }
+        else if token.value == "as" { token._type = TokenType::AS; }
+        else { token._type = TokenType::NAME; }
+        ret token;
     }
 
     pub ReadOperator(this: mut Lexer&) -> Token {
-        let c: i8 = this.CurrentChar();
-        let next: i8 = this.PeekChar(1u64);
-        let start_col: u64 = this.column;
-        let mut token_type: TokenType;
-        let value: mut String;
+        let token: mut Token;
+        (token.row, token.column) = (this.row, this.column);
+        let (current: i8, next: i8) = (this.CurrentChar(), this.PeekChar(1u64));
+        token.value += current;
 
-        if c == '.' && next == '.' && this.PeekChar(2u64) == '.' {
-            value = "...";
-            token_type = TokenType::THREE_DOT;
-            this.Advance(); this.Advance(); this.Advance();
-        } else if c == '+' {
+        if current == '.' && next == '.' && this.PeekChar(2u64) == '.' {
+            token.value += next;
+            token.value += this.PeekChar(2u64);
+            token._type = TokenType::THREE_DOT;
+            this.Advance(3u64);
+        } else if current == '+' {
             if next == '=' {
-                value = "+=";
-                token_type = TokenType::PLUS_ASSIGN;
-                this.Advance(); this.Advance();
+                token.value += next;
+                token._type = TokenType::PLUS_ASSIGN;
+                this.Advance(2u64);
             } else {
-                value = "+";
-                token_type = TokenType::PLUS;
-                this.Advance();
+                token._type = TokenType::PLUS;
+                this.Advance(1u64);
             }
-        } else if c == '-' {
+        } else if current == '-' {
             if next == '=' {
-                value = "-=";
-                token_type = TokenType::MINUS_ASSIGN;
-                this.Advance(); this.Advance();
+                token.value += next;
+                token._type = TokenType::MINUS_ASSIGN;
+                this.Advance(2u64);
             } else if next == '>' {
-                value = "->";
-                token_type = TokenType::ARROW;
-                this.Advance(); this.Advance();
+                token.value += next;
+                token._type = TokenType::ARROW;
+                this.Advance(2u64);
             } else {
-                value = "-";
-                token_type = TokenType::MINUS;
-                this.Advance();
+                token._type = TokenType::MINUS;
+                this.Advance(1u64);
             }
-        } else if c == '*' {
+        } else if current == '*' {
             if next == '=' {
-                value = "*=";
-                token_type = TokenType::MUL_ASSIGN;
-                this.Advance(); this.Advance();
+                token.value += next;
+                token._type = TokenType::MUL_ASSIGN;
+                this.Advance(2u64);
             } else {
-                value = "*";
-                token_type = TokenType::MUL;
-                this.Advance();
+                token._type = TokenType::MUL;
+                this.Advance(1u64);
             }
-        } else if c == '/' {
+        } else if current == '/' {
             if next == '=' {
-                value = "/=";
-                token_type = TokenType::DIV_ASSIGN;
-                this.Advance(); this.Advance();
+                token.value += next;
+                token._type = TokenType::DIV_ASSIGN;
+                this.Advance(2u64);
             } else {
-                value = "/";
-                token_type = TokenType::DIV;
-                this.Advance();
+                token._type = TokenType::DIV;
+                this.Advance(1u64);
             }
-        } else if c == '%' {
+        } else if current == '%' {
             if next == '=' {
-                value = "%=";
-                token_type = TokenType::MOD_ASSIGN;
-                this.Advance(); this.Advance();
+                token.value += next;
+                token._type = TokenType::MOD_ASSIGN;
+                this.Advance(2u64);
             } else {
-                value = "%";
-                token_type = TokenType::MOD;
-                this.Advance();
+                token._type = TokenType::MOD;
+                this.Advance(1u64);
             }
-        } else if c == '<' {
+        } else if current == '<' {
             if next == '<' && this.PeekChar(2u64) == '=' {
-                value = "<<=";
-                token_type = TokenType::LSHIFT_ASSIGN;
-                this.Advance(); this.Advance(); this.Advance();
+                token.value += next;
+                token.value += this.PeekChar(2u64);
+                token._type = TokenType::LSHIFT_ASSIGN;
+                this.Advance(3u64);
             } else if next == '=' {
-                value = "<=";
-                token_type = TokenType::LESS_EQUAL;
-                this.Advance(); this.Advance();
+                token.value += next;
+                token._type = TokenType::LESS_EQUAL;
+                this.Advance(2u64);
             } else {
-                value = "<";
-                token_type = TokenType::LESS;
-                this.Advance();
+                token._type = TokenType::LESS;
+                this.Advance(1u64);
             }
-        } else if c == '>' {
+        } else if current == '>' {
             if next == '>' && this.PeekChar(2u64) == '=' {
-                value = ">>=";
-                token_type = TokenType::RSHIFT_ASSIGN;
-                this.Advance(); this.Advance(); this.Advance();
+                token.value += next;
+                token.value += this.PeekChar(2u64);
+                token._type = TokenType::RSHIFT_ASSIGN;
+                this.Advance(3u64);
             } else if next == '=' {
-                value = ">=";
-                token_type = TokenType::GREATER_EQUAL;
-                this.Advance(); this.Advance();
+                token.value += next;
+                token._type = TokenType::GREATER_EQUAL;
+                this.Advance(2u64);
             } else {
-                value = ">";
-                token_type = TokenType::GREATER;
-                this.Advance();
+                token._type = TokenType::GREATER;
+                this.Advance(1u64);
             }
-        } else if c == '&' {
+        } else if current == '&' {
             if next == '&' {
-                value = "&&";
-                token_type = TokenType::AND;
-                this.Advance(); this.Advance();
+                token.value += next;
+                token._type = TokenType::AND;
+                this.Advance(2u64);
             } else if next == '=' {
-                value = "&=";
-                token_type = TokenType::AND_ASSIGN;
-                this.Advance(); this.Advance();
+                token.value += next;
+                token._type = TokenType::AND_ASSIGN;
+                this.Advance(2u64);
             } else {
-                value = "&";
-                token_type = TokenType::BITWISE_AND;
-                this.Advance();
+                token._type = TokenType::BITWISE_AND;
+                this.Advance(1u64);
             }
-        } else if c == '|' {
+        } else if current == '|' {
             if next == '|' {
-                value = "||";
-                token_type = TokenType::OR;
-                this.Advance(); this.Advance();
+                token.value += next;
+                token._type = TokenType::OR;
+                this.Advance(2u64);
             } else if next == '=' {
-                value = "|=";
-                token_type = TokenType::OR_ASSIGN;
-                this.Advance(); this.Advance();
+                token.value += next;
+                token._type = TokenType::OR_ASSIGN;
+                this.Advance(2u64);
             } else {
-                value = "|";
-                token_type = TokenType::BITWISE_OR;
-                this.Advance();
+                token._type = TokenType::BITWISE_OR;
+                this.Advance(1u64);
             }
-        } else if c == '^' {
+        } else if current == '^' {
             if next == '=' {
-                value = "^=";
-                token_type = TokenType::XOR_ASSIGN;
-                this.Advance(); this.Advance();
+                token.value += next;
+                token._type = TokenType::XOR_ASSIGN;
+                this.Advance(2u64);
             } else {
-                value = "^";
-                token_type = TokenType::BITWISE_XOR;
-                this.Advance();
+                token._type = TokenType::BITWISE_XOR;
+                this.Advance(1u64);
             }
-        } else if c == '=' {
+        } else if current == '=' {
             if next == '=' {
-                value = "==";
-                token_type = TokenType::EQUAL;
-                this.Advance(); this.Advance();
+                token.value += next;
+                token._type = TokenType::EQUAL;
+                this.Advance(2u64);
             } else {
-                value = "=";
-                token_type = TokenType::ASSIGN;
-                this.Advance();
+                token._type = TokenType::ASSIGN;
+                this.Advance(1u64);
             }
-        } else if c == '!' {
+        } else if current == '!' {
             if next == '=' {
-                value = "!=";
-                token_type = TokenType::NOT_EQUAL;
-                this.Advance(); this.Advance();
+                token.value += next;
+                token._type = TokenType::NOT_EQUAL;
+                this.Advance(2u64);
             } else {
-                value = "!";
-                token_type = TokenType::NOT;
-                this.Advance();
+                token._type = TokenType::NOT;
+                this.Advance(1u64);
             }
-        } else if c == '?' {
-            value = "?";
-            token_type = TokenType::QUESTION_MARK;
-            this.Advance();
-        } else if c == '~' {
-            value = "~";
-            token_type = TokenType::TILDE;
-            this.Advance();
-        } else if c == '.' {
-            value = ".";
-            token_type = TokenType::DOT;
-            this.Advance();
-        } else if c == ',' {
-            value = ",";
-            token_type = TokenType::COMMA;
-            this.Advance();
-        } else if c == ':' {
+        } else if current == '?' {
+            token._type = TokenType::QUESTION_MARK;
+            this.Advance(1u64);
+        } else if current == '~' {
+            token._type = TokenType::TILDE;
+            this.Advance(1u64);
+        } else if current == '.' {
+            token._type = TokenType::DOT;
+            this.Advance(1u64);
+        } else if current == ',' {
+            token._type = TokenType::COMMA;
+            this.Advance(1u64);
+        } else if current == ':' {
             if next == ':' {
-                value = "::";
-                token_type = TokenType::DOUBLE_COLON;
-                this.Advance(); this.Advance();
+                token.value += next;
+                token._type = TokenType::DOUBLE_COLON;
+                this.Advance(2u64);
             } else {
-                value = ":";
-                token_type = TokenType::COLON;
-                this.Advance();
+                token._type = TokenType::COLON;
+                this.Advance(1u64);
             }
-        } else if c == ';' {
-            value = ";";
-            token_type = TokenType::SEMICOLON;
-            this.Advance();
-        } else if c == '(' {
-            value = "(";
-            token_type = TokenType::LPAREN;
-            this.Advance();
-        } else if c == ')' {
-            value = ")";
-            token_type = TokenType::RPAREN;
-            this.Advance();
-        } else if c == '[' {
-            value = "[";
-            token_type = TokenType::LBRACKET;
-            this.Advance();
-        } else if c == ']' {
-            value = "]";
-            token_type = TokenType::RBRACKET;
-            this.Advance();
-        } else if c == '{' {
-            value = "{";
-            token_type = TokenType::LBRACE;
-            this.Advance();
-        } else if c == '}' {
-            value = "}";
-            token_type = TokenType::RBRACE;
-            this.Advance();
-        } else if c == '\\' {
-            value = "\\";
-            token_type = TokenType::BACKSLASH;
-            this.Advance();
+        } else if current == ';' {
+            token._type = TokenType::SEMICOLON;
+            this.Advance(1u64);
+        } else if current == '(' {
+            token._type = TokenType::LPAREN;
+            this.Advance(1u64);
+        } else if current == ')' {
+            token._type = TokenType::RPAREN;
+            this.Advance(1u64);
+        } else if current == '[' {
+            token._type = TokenType::LBRACKET;
+            this.Advance(1u64);
+        } else if current == ']' {
+            token._type = TokenType::RBRACKET;
+            this.Advance(1u64);
+        } else if current == '{' {
+            token._type = TokenType::LBRACE;
+            this.Advance(1u64);
+        } else if current == '}' {
+            token._type = TokenType::RBRACE;
+            this.Advance(1u64);
+        } else if current == '\\' {
+            token._type = TokenType::BACKSLASH;
+            this.Advance(1u64);
         } else {
-            value = c;
-            token_type = TokenType::ERROR;
-            this.Advance();
-        }
-
-        ret { token_type, value, this.lineno, start_col } as Token;
+            token._type = TokenType::ERROR;
+            this.Advance(1u64);
+        } ret token;
     }
 
     pub NextToken(this: mut Lexer&) -> Token {
@@ -684,7 +638,7 @@ class Lexer {
             }
 
             if this.CurrentChar() == '\n' {
-                this.Advance();
+                this.Advance(1u64);
                 continue;
             }
 
@@ -707,14 +661,13 @@ class Lexer {
             ret this.ReadOperator();
         }
 
-        ret { TokenType::EOF, "", this.lineno, this.column } as Token;
+        ret { TokenType::EOF, "", this.row, this.column } as Token;
     }
 
     pub Lex(this: mut Lexer&, text: String) -> Vector<Token> {
-        (this.text, this.length) = (text, text.Size());
-        (this.pos, this.lineno, this.column) = (0u64, 1u64, 1u64);
-
         let tokens: mut Vector<Token>;
+        (this.index, this.row, this.column) = (0u64, 1u64, 1u64);
+        (this.text, this.length) = (text, text.Size());
         let mut token: Token = this.NextToken();
 
         while token._type != TokenType::EOF && token._type != TokenType::ERROR {

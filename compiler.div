@@ -2150,24 +2150,40 @@ class Compiler {
         let compare_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "");
         let loop_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "");
         let end_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "");
-        this.blocks.PushBack(Pair<LLVMBasicBlockRef, LLVMBasicBlockRef>(compare_block, end_block));
 
-        LLVMBuildBr(this.builder, compare_block);
+        if while_stmt->else_stmt != null {
+            let else_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "");
+            let condition: QualifiedValue = this.CompileExpression(while_stmt->condition, false);
+            LLVMBuildCondBr(this.builder, condition.Value(), loop_block, else_block);
+
+            LLVMPositionBuilderAtStart(this.builder, else_block);
+            this.scope_manager.PushScope(String("else"), false);
+            this.CompileBlock(while_stmt->else_stmt as BlockStmtNode*);
+            this.scope_manager.PopScope();
+
+            if LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(this.builder)) == null {
+                LLVMBuildBr(this.builder, end_block);
+            }
+        } else {
+            LLVMBuildBr(this.builder, compare_block);
+        }
+
         LLVMPositionBuilderAtStart(this.builder, compare_block);
         let condition: QualifiedValue = this.CompileExpression(while_stmt->condition, false);
         LLVMBuildCondBr(this.builder, condition.Value(), loop_block, end_block);
 
         LLVMPositionBuilderAtStart(this.builder, loop_block);
+        this.blocks.PushBack(Pair<LLVMBasicBlockRef, LLVMBasicBlockRef>(compare_block, end_block));
         this.scope_manager.PushScope(String("while"), false);
-        this.CompileBlock(while_stmt->body as BlockStmtNode*);
+        this.CompileBlock(while_stmt->loop_stmt as BlockStmtNode*);
         this.scope_manager.PopScope();
+        this.blocks.PopBack();
 
         if LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(this.builder)) == null {
             LLVMBuildBr(this.builder, compare_block);
         }
 
         LLVMPositionBuilderAtStart(this.builder, end_block);
-        this.blocks.PopBack();
     }
 
     priv CompileLoop(this: mut Compiler&, loop_stmt: LoopStmtNode*) {

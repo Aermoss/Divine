@@ -27,7 +27,7 @@ enum TokenType {
     QUESTION_MARK, LSHIFT, RSHIFT, AND, BITWISE_AND, OR, BITWISE_OR, BITWISE_XOR, EQUAL, NOT_EQUAL, ARROW, GREATER_EQUAL, LESS_EQUAL, GREATER, LESS, ASSIGN,
     LBRACKET, RBRACKET, LBRACE, RBRACE, LPAREN, RPAREN, PLUS, MINUS, COMMA, MUL, DIV, BACKSLASH, MOD, COLON, DOUBLE_COLON, SEMICOLON, NOT, TILDE, DOT,
 
-    EOF, ERROR
+    EOF
 };
 
 func TokenTypeToString(_type: TokenType) -> String {
@@ -112,7 +112,6 @@ func TokenTypeToString(_type: TokenType) -> String {
     else if _type == TokenType::TILDE { ret { "TILDE" } as String; }
     else if _type == TokenType::DOT { ret { "DOT" } as String; }
     else if _type == TokenType::EOF { ret { "EOF" } as String; }
-    else if _type == TokenType::ERROR { ret { "ERROR" } as String; }
     else { ret { "UNKNOWN" } as String; }
 }
 
@@ -167,51 +166,46 @@ class Token {
 };
 
 class Lexer {
-    priv text: mut String,
-    priv index: u64 = 0u64,
-    priv row: u64 = 1u64,
-    priv column: u64 = 1u64,
-    priv length: u64 = 0u64
+    priv row: u64, priv column: u64,
+    priv text: mut String, priv file: mut String,
+    priv length: u64, priv index: u64
 } impl {
-    Lexer(this: Lexer&) {}
-    ~Lexer(this: Lexer&) {}
-
-    pub IsDigit(this: Lexer&, character: i8) -> bool {
+    priv IsDigit(this: Lexer&, character: i8) -> bool {
         ret character >= '0' && character <= '9';
     }
 
-    pub IsHexDigit(this: Lexer&, character: i8) -> bool {
+    priv IsHexDigit(this: Lexer&, character: i8) -> bool {
         ret (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f') || (character >= 'A' && character <= 'F');
     }
 
-    pub IsBinDigit(this: Lexer&, character: i8) -> bool {
+    priv IsBinDigit(this: Lexer&, character: i8) -> bool {
         ret character == '0' || character == '1';
     }
 
-    pub IsOctDigit(this: Lexer&, character: i8) -> bool {
+    priv IsOctDigit(this: Lexer&, character: i8) -> bool {
         ret character >= '0' && character <= '7';
     }
 
-    pub IsAlpha(this: Lexer&, character: i8) -> bool {
+    priv IsAlpha(this: Lexer&, character: i8) -> bool {
         ret (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || character == '_';
     }
 
-    pub IsAlphaNum(this: Lexer&, character: i8) -> bool {
+    priv IsAlphaNum(this: Lexer&, character: i8) -> bool {
         ret this.IsAlpha(character) || this.IsDigit(character);
     }
 
-    pub CurrentChar(this: Lexer&) -> i8 {
+    priv CurrentChar(this: Lexer&) -> i8 {
         if this.index >= this.length { ret '\0'; }
         ret this.text.Data()[this.index];
     }
 
-    pub PeekChar(this: Lexer&, offset: u64) -> i8 {
+    priv PeekChar(this: Lexer&, offset: u64) -> i8 {
         let peek_index: u64 = this.index + offset;
         if peek_index >= this.length { ret '\0'; }
         ret this.text.Data()[peek_index];
     }
 
-    pub Advance(this: mut Lexer&, count: u64) {
+    priv Advance(this: mut Lexer&, count: u64) {
         let mut i: u64 = 0u64;
 
         while i < count {
@@ -226,13 +220,13 @@ class Lexer {
         }
     }
 
-    pub SkipWhitespace(this: mut Lexer&) {
+    priv SkipWhitespace(this: mut Lexer&) {
         while this.CurrentChar() == ' ' || this.CurrentChar() == '\t' || this.CurrentChar() == '\r' {
             this.Advance(1u64);
         }
     }
 
-    pub SkipComment(this: mut Lexer&) -> bool {
+    priv SkipComment(this: mut Lexer&) -> bool {
         if this.CurrentChar() == '/' {
             if this.PeekChar(1u64) == '/' {
                 while this.CurrentChar() != '\n' && this.CurrentChar() != '\0' {
@@ -251,7 +245,7 @@ class Lexer {
         } ret false;
     }
 
-    pub ReadString(this: mut Lexer&) -> Token {
+    priv LexString(this: mut Lexer&) -> Token {
         let token: mut Token;
         (token.row, token.column) = (this.row, this.column);
         let quote_char: i8 = this.CurrentChar();
@@ -302,7 +296,7 @@ class Lexer {
         } ret token;
     }
 
-    pub ReadNumber(this: mut Lexer&) -> Token {
+    priv LexNumber(this: mut Lexer&) -> Token {
         let token: mut Token;
         (token.row, token.column) = (this.row, this.column);
         token._type = TokenType::INTEGER;
@@ -395,7 +389,7 @@ class Lexer {
         } ret token;
     }
 
-    pub ReadIdentifier(this: mut Lexer&) -> Token {
+    priv LexIdentifier(this: mut Lexer&) -> Token {
         let token: mut Token;
         (token.row, token.column) = (this.row, this.column);
 
@@ -437,10 +431,11 @@ class Lexer {
         ret token;
     }
 
-    pub ReadOperator(this: mut Lexer&) -> Token {
+    priv LexOperator(this: mut Lexer&) -> Token {
         let token: mut Token;
         (token.row, token.column) = (this.row, this.column);
-        let (current: i8, next: i8) = (this.CurrentChar(), this.PeekChar(1u64));
+        let current: i8 = this.CurrentChar();
+        let next: i8 = this.PeekChar(1u64);
         token.value += current;
 
         if current == '.' && next == '.' && this.PeekChar(2u64) == '.' {
@@ -624,12 +619,16 @@ class Lexer {
             token._type = TokenType::BACKSLASH;
             this.Advance(1u64);
         } else {
-            token._type = TokenType::ERROR;
+            this.Error((String("Invalid operator '") + current + "'").Data(), this.row, this.column);
             this.Advance(1u64);
         } ret token;
     }
 
-    pub NextToken(this: mut Lexer&) -> Token {
+    pub Lex(this: mut Lexer&, text: String, file: String) -> Vector<Token> {
+        (this.index, this.row, this.column) = (0u64, 1u64, 1u64);
+        (this.file, this.text, this.length) = (file, text, text.Size());
+        let tokens: mut Vector<Token>;
+
         while this.CurrentChar() != '\0' {
             this.SkipWhitespace();
 
@@ -647,32 +646,22 @@ class Lexer {
             }
 
             if this.CurrentChar() == '"' || this.CurrentChar() == '\'' {
-                ret this.ReadString();
+                tokens.PushBack(this.LexString());
+            } else if this.IsDigit(this.CurrentChar()) || (this.CurrentChar() == '.' && this.IsDigit(this.PeekChar(1u64))) {
+                tokens.PushBack(this.LexNumber());
+            } else if this.IsAlpha(this.CurrentChar()) {
+                tokens.PushBack(this.LexIdentifier());
+            } else {
+                tokens.PushBack(this.LexOperator());
             }
-
-            if this.IsDigit(this.CurrentChar()) || (this.CurrentChar() == '.' && this.IsDigit(this.PeekChar(1u64))) {
-                ret this.ReadNumber();
-            }
-
-            if this.IsAlpha(this.CurrentChar()) {
-                ret this.ReadIdentifier();
-            }
-
-            ret this.ReadOperator();
         }
 
-        ret { TokenType::EOF, "", this.row, this.column } as Token;
+        tokens.PushBack({ TokenType::EOF, "", this.row, this.column } as Token);
+        ret tokens;
     }
 
-    pub Lex(this: mut Lexer&, text: String) -> Vector<Token> {
-        let tokens: mut Vector<Token>;
-        (this.index, this.row, this.column) = (0u64, 1u64, 1u64);
-        (this.text, this.length) = (text, text.Size());
-        let mut token: Token = this.NextToken();
-
-        while token._type != TokenType::EOF && token._type != TokenType::ERROR {
-            tokens.PushBack(token);
-            token = this.NextToken();
-        } ret tokens;
+    priv Error(this: mut Lexer&, message: i8*, row: u64, column: u64) {
+        printf("Lexer error: %s at line %d, column %d. (%s)\n", message, row, column, this.file.Data());
+        exit(1i32);
     }
 };

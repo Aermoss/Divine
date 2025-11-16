@@ -420,36 +420,32 @@ class Parser {
     priv types: mut Vector<String>,
     pub include_paths: mut Vector<String>,
     priv included_paths: mut Vector<String>,
-    priv tokens: mut Vector<Token>,
-    priv current: u64 = 0u64,
-    priv file: mut String
+    priv file: mut String, priv index: u64,
+    priv tokens: mut Vector<Token>
 } impl {
-    Parser(this: Parser&) {}
-    ~Parser(this: Parser&) {}
-
     priv CurrentToken(this: Parser&) -> Token {
-        if this.current >= this.tokens.Size() {
-            ret { TokenType::EOF, "", 0u64, 0u64 } as Token;
+        if this.index >= this.tokens.Size() {
+            ret this.tokens[this.tokens.Size() - 1u64];
         } else {
-            ret this.tokens.Data()[this.current];
+            ret this.tokens[this.index];
         }
     }
 
     priv PeekToken(this: Parser&, offset: u64) -> Token {
-        let index: u64 = this.current + offset;
+        let index: u64 = this.index + offset;
 
         if index >= this.tokens.Size() {
-            ret { TokenType::EOF, "", 0u64, 0u64 } as Token;
+            ret this.tokens[this.tokens.Size() - 1u64];
         } else {
-            ret this.tokens.Data()[index];
+            ret this.tokens[index];
         }
     }
 
     priv Advance(this: mut Parser&) -> Token {
         let token: Token = this.CurrentToken();
 
-        if this.current < this.tokens.Size() {
-            this.current += 1u64;
+        if this.index < this.tokens.Size() {
+            this.index += 1u64;
         } ret token;
     }
 
@@ -677,7 +673,7 @@ class Parser {
         } ret left;
     }
 
-    pub ParseExpression(this: mut Parser&) -> ASTNode* {
+    priv ParseExpression(this: mut Parser&) -> ASTNode* {
         let mut condition: ASTNode* = this.ParseBinaryExpression(0i32);
         let token: Token = this.CurrentToken();
 
@@ -690,7 +686,7 @@ class Parser {
         } ret condition;
     }
 
-    pub ParseType(this: mut Parser&) -> ASTNode* {
+    priv ParseType(this: mut Parser&) -> ASTNode* {
         let mutable: bool = this.Match(TokenType::MUT);
         let token: Token = this.CurrentToken();
         let mut node: ASTNode* = null;
@@ -746,7 +742,7 @@ class Parser {
         } ret node;
     }
 
-    pub ParseStatement(this: mut Parser&) -> ASTNode* {
+    priv ParseStatement(this: mut Parser&) -> ASTNode* {
         let token: Token = this.CurrentToken();
 
         if token._type == TokenType::LET {
@@ -978,7 +974,7 @@ class Parser {
         ret block as ASTNode*;
     }
 
-    pub ParseDeclaration(this: mut Parser&) -> ASTNode* {
+    priv ParseDeclaration(this: mut Parser&) -> ASTNode* {
         let token: Token = this.CurrentToken();
 
         if token._type == TokenType::FUNC {
@@ -1355,8 +1351,8 @@ class Parser {
 
                 let lexer: mut Lexer;
                 let source: String = ReadFile(path.Data());
-                let (tokens: Vector<Token>, current: u64, file: String) = (this.tokens, this.current, this.file);
-                (this.tokens, this.current, this.file) = (lexer.Lex(source), 0u64, path);
+                let (tokens: Vector<Token>, current: u64, file: String) = (this.tokens, this.index, this.file);
+                (this.tokens, this.index, this.file) = (lexer.Lex(source, path), 0u64, path);
 
                 while this.CurrentToken()._type != TokenType::EOF {
                     let declaration: ASTNode* = this.ParseDeclaration();
@@ -1366,7 +1362,7 @@ class Parser {
                     }
                 }
 
-                (this.tokens, this.current, this.file, found) = (tokens, current, file, true);
+                (this.tokens, this.index, this.file, found) = (tokens, current, file, true);
                 this.included_paths.PushBack(path);
                 break;
             }
@@ -1381,7 +1377,10 @@ class Parser {
     }
 
     pub Parse(this: mut Parser&, tokens: Vector<Token>, file: String) -> RootNode* {
-        (this.tokens, this.file, this.root) = (tokens, file, new RootNode());
+        (this.tokens, this.index) = (tokens, 0u64);
+        (this.file, this.root) = (file, new RootNode());
+        this.included_paths.Clear();
+        this.types.Clear();
 
         while this.CurrentToken()._type != TokenType::EOF {
             let declaration: ASTNode* = this.ParseDeclaration();

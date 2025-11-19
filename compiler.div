@@ -117,7 +117,7 @@ func LLVMIsTypeEqual(left: LLVMTypeRef, right: LLVMTypeRef) -> bool {
 }
 
 func LLVMTypeToString(_type: LLVMTypeRef) -> String {
-    let result: mut String;
+    let mut result: String;
     let string: i8* = LLVMPrintTypeToString(_type);
     result += string;
     LLVMDisposeMessage(string);
@@ -125,7 +125,7 @@ func LLVMTypeToString(_type: LLVMTypeRef) -> String {
 }
 
 func LLVMValueToString(value: LLVMValueRef) -> String {
-    let result: mut String;
+    let mut result: String;
     let string: i8* = LLVMPrintValueToString(value);
     result += string;
     LLVMDisposeMessage(string);
@@ -157,7 +157,7 @@ class Field {
 };
 
 class Method {
-    pub name: mut String,
+    pub name: String,
     pub value: LLVMValueRef,
     pub visibility: TokenType
 } impl {
@@ -172,16 +172,15 @@ class QualifiedType {
     pub current_class: QualifiedType** = null,
     priv value: LLVMTypeRef, priv pointee: QualifiedType* = null,
     priv reference: bool = false, priv mutable: bool = false, priv signed: bool = false,
-    pub copy: QualifiedType* = null, pub original: QualifiedType* = null,
     priv array: bool = false, priv size: u64 = 0u64,
 
-    pub constructed: mut Vector<QualifiedType*>,
-    pub fields: mut Map<String, Pair<Field, QualifiedType*>>,
-    pub methods: mut Vector<Pair<Method, QualifiedType*>>,
-    pub name: mut String, priv _class: bool = false,
+    pub constructed: Vector<QualifiedType*>,
+    pub fields: Map<String, Pair<Field, QualifiedType*>>,
+    pub methods: Vector<Pair<Method, QualifiedType*>>,
+    pub name: String, priv _class: bool = false,
 
     pub sret: QualifiedType* = null, pub byval: QualifiedType* = null,
-    priv params: mut Vector<QualifiedType*>, priv return: QualifiedType* = null,
+    priv params: Vector<QualifiedType*>, priv return: QualifiedType* = null,
     priv _function: bool = false
 } impl {
     QualifiedType(this: mut QualifiedType&, value: LLVMTypeRef, signed: bool) {
@@ -281,11 +280,7 @@ class QualifiedType {
 
     pub Fields(this: QualifiedType&) -> mut Map<String, Pair<Field, QualifiedType*>>& {
         if this._class {
-            if this.original != null {
-                ret this.original->fields;
-            } else {
-                ret this.fields;
-            }
+            ret this.fields;
         } else {
             this.Error("Not a class!");
             ret null;
@@ -294,11 +289,7 @@ class QualifiedType {
 
     pub Methods(this: QualifiedType&) -> mut Vector<Pair<Method, QualifiedType*>>& {
         if this._class {
-            if this.original != null {
-                ret this.original->methods;
-            } else {
-                ret this.methods;
-            }
+            ret this.methods;
         } else {
             this.Error("Not a class!");
             ret null;
@@ -306,7 +297,7 @@ class QualifiedType {
     }
 
     pub Index(this: QualifiedType&, name: String&) -> i64 {
-        let fields: Map<String, Pair<Field, QualifiedType*>>& = this.Fields();
+        let fields: mut Map<String, Pair<Field, QualifiedType*>>& = this.Fields();
         let mut i: u64 = 0u64;
 
         while i < fields.Size() {
@@ -317,7 +308,7 @@ class QualifiedType {
     }
 
     pub Has(this: QualifiedType&, name: String&) -> bool {
-        let methods: Vector<Pair<Method, QualifiedType*>>& = this.Methods();
+        let methods: mut Vector<Pair<Method, QualifiedType*>>& = this.Methods();
         let mut i: u64 = 0u64;
 
         while i < methods.Size() {
@@ -328,7 +319,7 @@ class QualifiedType {
     }
 
     pub Has(this: QualifiedType&, name: String&, params: Vector<QualifiedType*>&) -> bool {
-        let methods: Vector<Pair<Method, QualifiedType*>>& = this.Methods();
+        let methods: mut Vector<Pair<Method, QualifiedType*>>& = this.Methods();
         let mut i: u64 = 0u64;
 
         while i < methods.Size() {
@@ -393,7 +384,7 @@ class QualifiedType {
     }
 
     pub Get(this: QualifiedType&, name: String&) -> mut Pair<Method, QualifiedType*>& {
-        let methods: Vector<Pair<Method, QualifiedType*>>& = this.Methods();
+        let methods: mut Vector<Pair<Method, QualifiedType*>>& = this.Methods();
         let mut i: u64 = 0u64;
 
         while i < methods.Size() {
@@ -405,7 +396,7 @@ class QualifiedType {
 
     pub Get(this: QualifiedType&, name: String&, params: Vector<QualifiedType*>&) -> mut Pair<Method, QualifiedType*>& {
         let (mut match: u64, mut best: u64) = (0u64, 0u64);
-        let methods: Vector<Pair<Method, QualifiedType*>>& = this.Methods();
+        let methods: mut Vector<Pair<Method, QualifiedType*>>& = this.Methods();
         let (mut state: u64, mut i: u64) = (0u64, 0u64);
 
         while i < methods.Size() {
@@ -510,7 +501,7 @@ class QualifiedType {
 
 class TypeManager {
     pub current_class: QualifiedType** = null,
-    priv types: mut Vector<QualifiedType*>
+    priv types: Vector<QualifiedType*>
 } impl {
     TypeManager(this: TypeManager&) {}
 
@@ -567,18 +558,11 @@ class TypeManager {
         if mutable != _type->IsMutable() {
             let mut copy: mut QualifiedType* = null;
 
-            if _type->IsClass() {
-                if _type->copy != null {
-                    ret _type->copy;
-                } else {
-                    _type->copy = new QualifiedType(_type->Value(), mutable, _type->name);
-                    (copy, copy->original, copy->current_class) = (_type->copy, _type, _type->current_class);
-                }
-            } else if _type->IsPointer() {
+            if _type->IsPointer() {
                 copy = new QualifiedType(_type->Value(), mutable, _type->IsReference(), _type->Pointee());
                 (copy->byval, copy->sret) = (_type->byval, _type->sret);
             } else {
-                this.Error("Cannot copy primitive or function type.");
+                this.Error("Cannot copy non-pointer type.");
                 ret null;
             }
 
@@ -666,7 +650,7 @@ func SymbolKindToString(kind: SymbolKind) -> String {
 }
 
 class Symbol {
-    pub name: mut String,
+    pub name: String,
     pub kind: SymbolKind,
     pub value: QualifiedValue,
     pub pointer: void* = null
@@ -684,11 +668,11 @@ class Symbol {
 
 class Scope {
     pub parent: Scope*,
-    pub children: mut Vector<Scope*>,
+    pub children: Vector<Scope*>,
     pub global: bool,
-    pub symbols: mut Vector<Symbol*>,
-    pub instances: mut Vector<QualifiedValue>,
-    pub name: mut String
+    pub symbols: Vector<Symbol*>,
+    pub instances: Vector<QualifiedValue>,
+    pub name: String
 } impl {
     Scope(this: mut Scope&, parent: Scope*, name: String&, global: bool) {
         (this.parent, this.name, this.global) = (parent, name, global);
@@ -776,7 +760,7 @@ class ScopeManager {
     pub builder: LLVMBuilderRef = null,
     pub CompileDestructor: func(void*, QualifiedType*, QualifiedValue),
     pub CompileDestructor2: func(void*, LLVMValueRef, QualifiedType*),
-    pub scopes: mut Vector<Scope*>,
+    pub scopes: Vector<Scope*>,
     pub current: mut Scope* = null
 } impl {
     ScopeManager(this: mut ScopeManager&) {
@@ -929,7 +913,7 @@ class ScopeManager {
 
     pub Namespaces(this: ScopeManager&) -> Vector<String> {
         let mut scope: Scope* = this.current;
-        let inverse: mut Vector<String>;
+        let mut inverse: Vector<String>;
 
         while scope->parent != null {
             if scope->global {
@@ -937,7 +921,7 @@ class ScopeManager {
             } scope = scope->parent;
         }
 
-        let result: mut Vector<String>;
+        let mut result: Vector<String>;
         let mut i: u64 = inverse.Size();
 
         while i > 0u64 {
@@ -1037,7 +1021,7 @@ class Mangler {
         } else if kind == LLVMTypeKind::LLVMPointerTypeKind {
             ret String("P") + this.MangleType(_type->Pointee());
         } else if kind == LLVMTypeKind::LLVMFunctionTypeKind {
-            let result: mut String = "F";
+            let mut result: String = "F";
             result += this.MangleType(_type->Return());
             let params: Vector<QualifiedType*> = _type->Parameters();
             let mut i: u64 = 0u64;
@@ -1047,7 +1031,7 @@ class Mangler {
                 i += 1u64;
             } ret result;
         } else if kind == LLVMTypeKind::LLVMStructTypeKind {
-            let name: mut String = LLVMGetStructName(_type->Value());
+            let mut name: String = LLVMGetStructName(_type->Value());
 
             if name[0u64] != '$' || name[1u64] != 'd' {
                 name = this.MangleClass(name);
@@ -1071,8 +1055,8 @@ class Mangler {
             ret String("");
         }
 
-        let result: mut String = this.prefix;
-        let names: mut Vector<String> = this.scope_manager->Namespaces();
+        let mut result: String = this.prefix;
+        let mut names: Vector<String> = this.scope_manager->Namespaces();
         names.PushBack(name);
 
         if names.Size() > 1u64 {
@@ -1095,7 +1079,7 @@ class Mangler {
     }
 
     pub MangleFunction(this: Mangler&, name: String, _type: QualifiedType*) -> String {
-        let result: mut String = this.MangleName(name);
+        let mut result: String = this.MangleName(name);
         let params: Vector<QualifiedType*> = _type->Parameters();
         let mut i: u64 = 0u64;
 
@@ -1110,7 +1094,7 @@ class Mangler {
     }
 
     pub MangleClass(this: Mangler&, name: String, types: Vector<QualifiedType*>) -> String {
-        let result: mut String = this.MangleName(name);
+        let mut result: String = this.MangleName(name);
 
         if types.Size() > 0u64 {
             result += "I";
@@ -1140,9 +1124,9 @@ class Generic {
     pub CompileClass: func(void*, ClassDeclNode*, Generic*) -> QualifiedType*,
     priv mangler: Mangler* = null,
     priv scope_manager: mut ScopeManager* = null,
-    priv cache: mut Map<String, QualifiedType*>,
-    priv name: mut String, pub current: mut String,
-    pub types: mut Vector<QualifiedType*>,
+    priv cache: Map<String, QualifiedType*>,
+    priv name: String, pub current: String,
+    pub types: Vector<QualifiedType*>,
     pub ast: ClassDeclNode* = null,
     pub scope: mut Scope* = null
 } impl {
@@ -1190,7 +1174,7 @@ class Generic {
         }
 
         let mut i: u64 = 0u64;
-        let symbols: mut Vector<Symbol*>;
+        let mut symbols: Vector<Symbol*>;
 
         while i < this.ast->types.Size() {
             symbols.PushBack(this.scope->Set(this.ast->types[i], SymbolKind::Type, QualifiedValue(null, types[i]), false));
@@ -1225,7 +1209,7 @@ class Generic {
 class Forward {
     pub _class: QualifiedType*,
     pub generic: Generic* = null,
-    pub types: mut Vector<QualifiedType*>,
+    pub types: Vector<QualifiedType*>,
     pub decl: FunctionDeclNode*,
     pub _type: QualifiedType*,
     pub value: LLVMValueRef
@@ -1242,17 +1226,17 @@ class Forward {
 };
 
 class Compiler {
-    priv mangler: mut Mangler,
+    priv mangler: Mangler,
     priv mangling: bool = true,
-    priv generics: mut Vector<Generic*>,
-    priv type_manager: mut TypeManager,
+    priv generics: Vector<Generic*>,
+    priv type_manager: TypeManager,
     priv generic: Generic* = null,
     priv _class: QualifiedType* = null,
     priv function: QualifiedType* = null,
     priv function_ref: LLVMValueRef = null,
-    priv scope_manager: mut ScopeManager,
-    priv blocks: mut Vector<Pair<LLVMBasicBlockRef, LLVMBasicBlockRef>>,
-    priv forwards: mut Vector<Forward>,
+    priv scope_manager: ScopeManager,
+    priv blocks: Vector<Pair<LLVMBasicBlockRef, LLVMBasicBlockRef>>,
+    priv forwards: Vector<Forward>,
     pub target_machine: LLVMTargetMachineRef = null,
     priv layout: LLVMTargetDataRef = null,
     priv context: LLVMContextRef = null,
@@ -1377,7 +1361,7 @@ class Compiler {
             }
 
             let mut j: u64 = 0u64;
-            let symbols: mut Vector<Symbol*>;
+            let mut symbols: Vector<Symbol*>;
 
             while j < forward.types.Size() {
                 symbols.PushBack(forward.generic->scope->Set(forward.generic->ast->types[j], SymbolKind::Type, QualifiedValue(null, forward.types[j]), false));
@@ -1416,13 +1400,7 @@ class Compiler {
                     let pointer: LLVMValueRef = LLVMBuildAlloca(this.builder, params[index]->Value(), "");
 
                     LLVMPositionBuilderAtEnd(this.builder, current);
-                    let mut type_: QualifiedType* = params[index];
-
-                    if type_->IsClass() || type_->IsPointer() {
-                        type_ = this.type_manager.Copy(type_, param->mutable);
-                    }
-
-                    this.scope_manager.Set(param->name, SymbolKind::Parameter, QualifiedValue(pointer, this.type_manager.Pointer(type_, param->mutable), false, true), false);
+                    this.scope_manager.Set(param->name, SymbolKind::Parameter, QualifiedValue(pointer, this.type_manager.Pointer(params[index], param->mutable), false, true), false);
                     LLVMBuildStore(this.builder, LLVMGetParam(this.function_ref, index as u32), pointer);
                 } else {
                     this.scope_manager.Set(param->name, SymbolKind::Parameter, QualifiedValue(LLVMGetParam(this.function_ref, index as u32), params[index], false, true), false);
@@ -1439,7 +1417,7 @@ class Compiler {
                     ret;
                 }
 
-                let values: mut Vector<QualifiedValue>;
+                let mut values: Vector<QualifiedValue>;
                 let mut m: u64 = 0u64;
 
                 while forward.decl->constructors[l]->arguments.Size() > m {
@@ -1523,9 +1501,9 @@ class Compiler {
         if constant_decl->initializer->node_type != ASTNodeType::INITIALIZER_LIST {
             initializer = this.CompileExpression(constant_decl->initializer, false);
         } else {
-            let values: mut Vector<LLVMValueRef>;
+            let mut values: Vector<LLVMValueRef>;
             let initializer_list: InitializerListNode* = constant_decl->initializer as InitializerListNode*;
-            let fields: Map<String, Pair<Field, QualifiedType*>> = _type.Fields();
+            let fields: mut Map<String, Pair<Field, QualifiedType*>>& = _type.Fields();
             let mut i: u64 = 0u64;
 
             while i < fields.Size() {
@@ -1584,9 +1562,9 @@ class Compiler {
             ret QualifiedValue(null, null);
         }
 
-        let (params: mut Vector<QualifiedType*>, param_types: mut Vector<LLVMTypeRef>);
+        let (mut params: Vector<QualifiedType*>, mut param_types: Vector<LLVMTypeRef>);
         let mut return_type: QualifiedType* = this.CompileType(func_decl->_type->return_type);
-        let attributes: mut Vector<LLVMTypeRef>;
+        let mut attributes: Vector<LLVMTypeRef>;
         let mut sret: bool = false;
 
         if LLVMGetTypeKind(return_type->Value()) == LLVMTypeKind::LLVMStructTypeKind {
@@ -1621,7 +1599,7 @@ class Compiler {
             } i += 1u64;
         }
 
-        let name: mut String = func_decl->name;
+        let mut name: String = func_decl->name;
         let type_ref: LLVMTypeRef = LLVMFunctionType(return_type->Value(), param_types.Data(), param_types.Size() as u32, func_decl->_type->var_arg ? 1i32 : 0i32);
         let _type: mut QualifiedType& = this.type_manager.Function(type_ref, params, return_type);
         let mangling: bool = this.mangling && name != "main";
@@ -1672,7 +1650,7 @@ class Compiler {
     }
 
     priv ValueToType(this: mut Compiler&, values: Vector<QualifiedValue>) -> Vector<QualifiedType*> {
-        let result: mut Vector<QualifiedType*>;
+        let mut result: Vector<QualifiedType*>;
         let mut i: u64 = 0u64;
 
         while i < values.Size() {
@@ -1706,10 +1684,10 @@ class Compiler {
         }
 
         let mut j: u64 = 0u64;
-        let fields: Map<String, Pair<Field, QualifiedType*>>& = _class.Fields();
+        let fields: mut Map<String, Pair<Field, QualifiedType*>>& = _class.Fields();
 
         while j < fields.Size() {
-            let field: Pair<String, Pair<Field, QualifiedType*>>& = fields[j];
+            let field: mut Pair<String, Pair<Field, QualifiedType*>>& = fields[j];
             let mut value: QualifiedValue;
 
             if !(has_constructor && !is_constructed) && j < params.Size() {
@@ -1727,7 +1705,7 @@ class Compiler {
             }
 
             if field.right.right->IsClass() {
-                let _params: mut Vector<QualifiedValue>;
+                let mut _params: Vector<QualifiedValue>;
                 if !value.Null() { _params.PushBack(value); }
                 this.CompileConstructor(field.right.right, QualifiedValue(LLVMBuildStructGEP2(this.builder, pointer.Type().Pointee().Value(), pointer.Value(), _class.Index(field.left) as u32, ""), this.type_manager.Pointer(field.right.right, true)), _params);
             } else if !value.Null() {
@@ -1767,11 +1745,11 @@ class Compiler {
             this.CompileCall2(QualifiedValue(method.left.value, method.right, pointer), params, false, true);
         }
 
-        let fields: Map<String, Pair<Field, QualifiedType*>>& = _class.Fields();
+        let fields: mut Map<String, Pair<Field, QualifiedType*>>& = _class.Fields();
         let mut i: u64 = 0u64;
 
         while i < fields.Size() {
-            let field: Pair<String, Pair<Field, QualifiedType*>>& = fields[i];
+            let field: mut Pair<String, Pair<Field, QualifiedType*>>& = fields[i];
 
             if field.right.right->IsClass() {
                 this.CompileDestructor(field.right.right, QualifiedValue(LLVMBuildStructGEP2(this.builder, pointer.Type().Pointee().Value(), pointer.Value(), _class.Index(field.left) as u32, ""), this.type_manager.Pointer(field.right.right, true)));
@@ -1805,7 +1783,7 @@ class Compiler {
             this.scope_manager.Set(class_decl->name, SymbolKind::Class, QualifiedValue(null, _class), false);
         }
 
-        let field_types: mut Vector<LLVMTypeRef>; 
+        let mut field_types: Vector<LLVMTypeRef>; 
         let (mut i: u64, mut j: u64) = (0u64, 0u64);
 
         while i < class_decl->parents.Size() {
@@ -1833,7 +1811,7 @@ class Compiler {
             } k += 1u64;
         }
 
-        let field_types2: mut Vector<LLVMTypeRef>;
+        let mut field_types2: Vector<LLVMTypeRef>;
         let (mut offset: u64, mut l: u64) = (0u64, 0u64);
 
         while l < field_types.Size() + 1u64 {
@@ -1897,7 +1875,7 @@ class Compiler {
         ret _class;
     }
 
-    priv CompileEnum(this: mut Compiler&, enum_decl: EnumDeclNode*) {
+    priv CompileEnum(this: mut Compiler&, enum_decl: mut EnumDeclNode*) {
         let underlying_type: QualifiedType& = this.CompileType(enum_decl->underlying_type);
 
         if LLVMGetTypeKind(underlying_type.Value()) != LLVMTypeKind::LLVMIntegerTypeKind {
@@ -2019,7 +1997,7 @@ class Compiler {
                         ret;
                     }
 
-                    let _params: mut Vector<QualifiedValue>;
+                    let mut _params: Vector<QualifiedValue>;
                     _params.PushBack(value);
                     this.CompileConstructor(value.Type().Pointee(), QualifiedValue(LLVMGetParam(this.function_ref, 0u32), params[0u64]), _params);
                     this.scope_manager.InvokeDestructors(value);
@@ -2231,7 +2209,7 @@ class Compiler {
         let mut _type: QualifiedType* = this.CompileType(variable->_type);
 
         if _type->IsClass() {
-            let params: mut Vector<QualifiedValue>;
+            let mut params: Vector<QualifiedValue>;
             let mut skip: bool = false;
 
             if variable->initializer != null {
@@ -2360,10 +2338,10 @@ class Compiler {
         }
 
         if pointer.Type().Pointee().IsClass() {
-            let params: mut Vector<QualifiedValue>;
+            let mut params: Vector<QualifiedValue>;
             params.PushBack(value);
 
-            let method_name: mut String = "op";
+            let mut method_name: String = "op";
             method_name += AssignmentOperatorToString(operator);
             let param_types: Vector<QualifiedType*> = this.ValueToType(params);
             let _class: QualifiedType& = pointer.Type().Pointee();
@@ -2390,15 +2368,15 @@ class Compiler {
                     ret QualifiedValue(null, null);
                 }
 
-                let fields: Map<String, Pair<Field, QualifiedType*>>& = _class.Fields();
+                let fields: mut Map<String, Pair<Field, QualifiedType*>>& = _class.Fields();
                 value = QualifiedValue(LLVMAddressOf(value.Value()), this.type_manager.Pointer(value.Type(), true));
                 let mut i: u64 = 0u64;
 
                 while i < fields.Size() {
-                    let field: Pair<String, Pair<Field, QualifiedType*>>& = fields[i];
+                    let field: mut Pair<String, Pair<Field, QualifiedType*>>& = fields[i];
                     let mut _type: QualifiedType* = field.right.right;
 
-                    if !_type->IsMutable() && (_type->IsClass() || _type->IsPointer()) {
+                    if _type->IsPointer() {
                         _type = this.type_manager.Copy(_type, true);
                     }
 
@@ -2565,7 +2543,13 @@ class Compiler {
 
             if value.Type().IsPointer() {
                 if value.Type().Pointee().byval != null {
-                    (value, state) = (QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee(), false, value.binding), true);
+                    let mut _type: QualifiedType* = value.Type().Pointee();
+
+                    if _type->IsPointer() {
+                        _type = this.type_manager.Copy(_type, value.Type().IsMutable());
+                    }
+
+                    (value, state) = (QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), _type, false, value.binding), true);
                 }
             }
 
@@ -2633,7 +2617,7 @@ class Compiler {
         if literal->literal_type == TokenType::INTEGER {
             let (mut state: bool, mut base: i32) = (false, 10i32);
             let (mut signed: bool, mut width: u64) = (true, 32u64);
-            let (value: mut String, size: mut String);
+            let (mut value: String, mut size: String);
             let mut i: u64 = 0u64;
 
             while i < literal->value.Size() {
@@ -2678,7 +2662,7 @@ class Compiler {
             ret QualifiedValue(LLVMConstInt(_type, value.ToInteger(base) as u64, signed ? 1i32 : 0i32), this.type_manager.Primitive(_type, signed));
         } else if literal->literal_type == TokenType::FLOAT {
             let (mut state: bool, mut i: u64) = (false, 0u64);
-            let (value: mut String, size: mut String);
+            let (mut value: String, mut size: String);
             let mut width: u64 = 32u64;
 
             while i < literal->value.Size() {
@@ -2747,7 +2731,7 @@ class Compiler {
             }
         }
 
-        let values: mut Vector<QualifiedValue>;
+        let mut values: Vector<QualifiedValue>;
         let mut i: u64 = 0u64;
 
         while i < call->arguments.Size() {
@@ -2822,7 +2806,7 @@ class Compiler {
     }
 
     priv CompileCall2(this: mut Compiler&, _func: QualifiedValue, values: Vector<QualifiedValue>&, pointer: bool, ignore: bool) -> QualifiedValue {
-        let args: mut Vector<LLVMValueRef>;
+        let mut args: Vector<LLVMValueRef>;
         let ret_type: QualifiedType& = _func.Type().Pointee().Return();
         let params: Vector<QualifiedType*> = _func.Type().Pointee().Parameters();
         let mut return: QualifiedValue = QualifiedValue(null, null);
@@ -2847,7 +2831,7 @@ class Compiler {
                 param = params[1u64];
             }
 
-            if param->IsMutable() && !_func.instance_type->Pointee().IsMutable() && !ignore {
+            if param->IsMutable() && !_func.instance_type->IsMutable() && !ignore {
                 this.Error((String("Cannot call mutable method '") + _func.Type().Pointee().name + "' on immutable instance.").Data());
                 ret QualifiedValue(null, null);
             } else {
@@ -2884,7 +2868,7 @@ class Compiler {
                         ret QualifiedValue(null, null);
                     }
 
-                    let _params: mut Vector<QualifiedValue>;
+                    let mut _params: Vector<QualifiedValue>;
                     value = QualifiedValue(LLVMAddressOf(value.Value()), this.type_manager.Pointer(value.Type(), value.Type().IsMutable()));
                     _params.PushBack(value);
                     let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
@@ -3000,9 +2984,15 @@ class Compiler {
         }
 
         if value.Type().IsClass() {
-            let params: mut Vector<QualifiedValue>;
-            value = QualifiedValue(LLVMAddressOf(value.Value()), this.type_manager.Pointer(value.Type(), value.Type().IsMutable()));
+            let mut params: Vector<QualifiedValue>;
             params.PushBack(index);
+
+            // value = QualifiedValue(LLVMAddressOf(value.Value()), this.type_manager.Pointer(value.Type(), value.Type().IsMutable()));
+            value = this.CompileExpression(index_access->expression, true);
+
+            if value.Type().Pointee().IsReference() {
+                value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
+            }
 
             let method: Pair<Method, QualifiedType*>& = value.Type().Pointee().Get(String("op[]"), this.ValueToType(params));
             ret this.CompileCall2(QualifiedValue(method.left.value, method.right, value), params, pointer, false);
@@ -3062,13 +3052,13 @@ class Compiler {
 
             if !pointer {
                 if field.right->IsArray() {
-                    let _type: QualifiedType& = this.type_manager.Pointer(field.right->Element(), instance.Type().Pointee().IsMutable());
+                    let _type: QualifiedType& = this.type_manager.Pointer(field.right->Element(), instance.Type().IsMutable());
                     ret QualifiedValue(LLVMBuildBitCast(this.builder, field_pointer, _type.Value(), ""), _type);
                 } else {
                     ret QualifiedValue(LLVMBuildLoad2(this.builder, field.right->Value(), field_pointer, ""), field.right);
                 }
             } else {
-                ret QualifiedValue(field_pointer, this.type_manager.Pointer(field.right, instance.Type().Pointee().IsMutable()), false, true);
+                ret QualifiedValue(field_pointer, this.type_manager.Pointer(field.right, instance.Type().IsMutable()), false, true);
             }
         } else {
             let method: Pair<Method, QualifiedType*>& = instance.Type().Pointee().Get(member_access->member);
@@ -3120,7 +3110,7 @@ class Compiler {
                 LLVMPositionBuilderAtStart(this.builder, end_block);
             }
         } else {
-            let values: mut Vector<QualifiedValue>;
+            let mut values: Vector<QualifiedValue>;
             pointer = LLVMBuildMalloc(this.builder, _type.Value(), "");
             let mut i: u64 = 0u64;
             
@@ -3207,7 +3197,7 @@ class Compiler {
                 ret QualifiedValue(null, null);
             }
 
-            let params: mut Vector<QualifiedValue>;
+            let mut params: Vector<QualifiedValue>;
             let initializer_list: InitializerListNode* = cast->expression as InitializerListNode*;
             let mut i: u64 = 0u64;
 
@@ -3305,8 +3295,8 @@ class Compiler {
                 let value_class: QualifiedType& = value.Type().Pointee();
                 let target_class: QualifiedType& = target.Pointee();
 
-                let value_fields: Map<String, Pair<Field, QualifiedType*>>& = value_class.Fields();
-                let target_fields: Map<String, Pair<Field, QualifiedType*>>& = target_class.Fields();
+                let value_fields: mut Map<String, Pair<Field, QualifiedType*>>& = value_class.Fields();
+                let target_fields: mut Map<String, Pair<Field, QualifiedType*>>& = target_class.Fields();
                 let (mut related: bool, mut index: u32) = (false, 0u32);
                 let (mut i: u64, mut j: u64) = (0u64, 0u64);
 
@@ -3436,10 +3426,10 @@ class Compiler {
             let value: QualifiedValue& = left.Type().IsClass() ? &right : &left;
             let instance: QualifiedValue& = left.Type().IsClass() ? &left : &right;
 
-            let values: mut Vector<QualifiedValue>;
+            let mut values: Vector<QualifiedValue>;
             values.PushBack(value);
 
-            let method_name: mut String = "op";
+            let mut method_name: String = "op";
             method_name += BinaryOperatorToString(operator);
             let param_types: Vector<QualifiedType*> = this.ValueToType(values);
             let _class: QualifiedType& = instance.Type();
@@ -3456,14 +3446,14 @@ class Compiler {
                     ret QualifiedValue(null, null);
                 }
 
-                let fields: Map<String, Pair<Field, QualifiedType*>>& = _class.Fields();
+                let fields: mut Map<String, Pair<Field, QualifiedType*>>& = _class.Fields();
                 left = QualifiedValue(LLVMAddressOf(left.Value()), this.type_manager.Pointer(left.Type(), true));
                 right = QualifiedValue(LLVMAddressOf(right.Value()), this.type_manager.Pointer(right.Type(), true));
                 let mut result: LLVMValueRef = null;
                 let mut i: u64 = 0u64;
 
                 while i < fields.Size() {
-                    let field: Pair<String, Pair<Field, QualifiedType*>>& = fields[i];
+                    let field: mut Pair<String, Pair<Field, QualifiedType*>>& = fields[i];
                     let left: QualifiedValue = QualifiedValue(LLVMBuildLoad2(this.builder, field.right.right->Value(), LLVMBuildStructGEP2(this.builder, left.Type().Pointee().Value(), left.Value(), _class.Index(field.left) as u32, ""), ""), field.right.right);
                     let right: QualifiedValue = QualifiedValue(LLVMBuildLoad2(this.builder, field.right.right->Value(), LLVMBuildStructGEP2(this.builder, right.Type().Pointee().Value(), right.Value(), _class.Index(field.left) as u32, ""), ""), field.right.right);
                     let _result: LLVMValueRef = this.CompileBinaryOperation2(left, right, operator, pointer).Value();
@@ -3656,15 +3646,13 @@ class Compiler {
             } else if primitive_type->name == "void" {
                 ret this.type_manager.Primitive(LLVMVoidTypeInContext(this.context), false);
             } else {
-                let mut _type: QualifiedType* = null;
-
                 if this.scope_manager.Has(primitive_type->name, SymbolKind::Type) {
-                    _type = this.scope_manager.Get(primitive_type->name, SymbolKind::Type)->value.Type();
+                    ret this.scope_manager.Get(primitive_type->name, SymbolKind::Type)->value.Type();
                 } else if this.scope_manager.Has(primitive_type->name, SymbolKind::Class) {
-                    _type = this.scope_manager.Get(primitive_type->name, SymbolKind::Class)->value.Type();
+                    ret this.scope_manager.Get(primitive_type->name, SymbolKind::Class)->value.Type();
                 } else if this.scope_manager.Has(primitive_type->name, SymbolKind::Generic) {
                     if primitive_type->generic {
-                        let types: mut Vector<QualifiedType*>;
+                        let mut types: Vector<QualifiedType*>;
                         let mut i: u64 = 0u64;
 
                         while i < primitive_type->types.Size() {
@@ -3672,7 +3660,7 @@ class Compiler {
                             i += 1u64;
                         }
 
-                        _type = (this.scope_manager.Get(primitive_type->name, SymbolKind::Generic)->pointer as mut Generic*)->Get(types);
+                        ret (this.scope_manager.Get(primitive_type->name, SymbolKind::Generic)->pointer as mut Generic*)->Get(types);
                     } else {
                         this.Error((String("Generic type '") + primitive_type->name + "' requires parameters.").Data());
                         ret null;
@@ -3680,12 +3668,6 @@ class Compiler {
                 } else {
                     this.Error((String("Type '") + primitive_type->name + "' not found.").Data());
                     ret null;
-                }
-
-                if _type->IsClass() || _type->IsPointer() {
-                    ret this.type_manager.Copy(_type, primitive_type->mutable);
-                } else {
-                    ret _type;
                 }
             }
         } else if type_node->node_type == ASTNodeType::POINTER_TYPE {
@@ -3712,7 +3694,7 @@ class Compiler {
             }
         } else if type_node->node_type == ASTNodeType::FUNCTION_TYPE {
             let function_type: FunctionTypeNode* = type_node as FunctionTypeNode*;
-            let (params: mut Vector<QualifiedType*>, param_types: mut Vector<LLVMTypeRef>);
+            let (mut params: Vector<QualifiedType*>, mut param_types: Vector<LLVMTypeRef>);
             let mut return_type: QualifiedType* = this.CompileType(function_type->return_type);
 
             if LLVMGetTypeKind(return_type->Value()) == LLVMTypeKind::LLVMStructTypeKind {

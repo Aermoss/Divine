@@ -32,11 +32,10 @@ extern "C" {
 
 class String {
     priv data: *mut i8 = null,
-    priv size: u64 = 0u64
+    priv length: u64 = 0u64
 } impl {
     String(this: &mut String) {
-        this.Allocate(1u64);
-        this.data[0u64] = '\0';
+        this.Allocate(0u64);
     }
 
     String(this: &mut String, other: &String) {
@@ -50,8 +49,8 @@ class String {
 
     String(this: &mut String, string: *const i8) {
         if string == null { ret; }
-        this.Allocate(strlen(string) + 1u64);
-        memcpy(this.data, string, this.size);
+        this.Allocate(strlen(string));
+        memcpy(this.data, string, this.length);
     }
 
     ~String(this: &mut String) {
@@ -59,15 +58,16 @@ class String {
     }
 
     pub Data(this: &String) -> *mut i8 { ret this.data; }
-    pub Size(this: &String) -> u64 { ret this.size; }
+    pub Size(this: &String) -> u64 { ret this.length + 1u64; }
 
-    priv Allocate(this: &mut String, newSize: u64) {
-        (this.data, this.size) = (malloc(newSize) as *mut i8, newSize);
+    priv Allocate(this: &mut String, length: u64) {
+        (this.data, this.length) = (new i8[length + 1u64], length);
+        this.data[length] = '\0';
     }
 
     priv Release(this: &mut String) {
-        if this.data != null { free(this.data); }
-        (this.data, this.size) = (null, 0u64);
+        if this.data != null { del[] this.data; }
+        (this.data, this.length) = (null, 0u64);
     }
 
     pub ToInteger(this: &String) -> i64 { ret strtoll(this.data, null, 10i32); }
@@ -78,7 +78,7 @@ class String {
         let mut result: String;
         let mut i: u64 = 0u64;
 
-        while i < this.size - 1u64 {
+        while i < this.length {
             if this.data[i] == '\n' {
                 result += "\\n";
             } else if this.data[i] == '\t' {
@@ -106,35 +106,46 @@ class String {
     }
 
     pub Replace(this: &String, from: &String, to: &String) -> String {
-        ret this.Replace(from.data, to.data);
+        ret this.Replace(from.data, to.data, from.length);
+    }
+
+    pub Replace(this: &String, from: *const i8, to: &String) -> String {
+        ret this.Replace(from, to.data, strlen(from));
+    }
+
+    pub Replace(this: &String, from: &String, to: *const i8) -> String {
+        ret this.Replace(from.data, to, from.length);
     }
 
     pub Replace(this: &String, from: *const i8, to: *const i8) -> String {
+        ret this.Replace(from, to, strlen(from));
+    }
+
+    priv Replace(this: &String, from: *const i8, to: *const i8, length: u64) -> String {
         let mut result: String;
-        let size: u64 = strlen(from);
         let mut i: u64 = 0u64;
 
-        if size == 0u64 {
-            result = this;
+        if length == 0u64 {
+            result += this.data;
             ret result;
         }
 
-        while i < this.size - 1u64 {
-            let mut match: bool = true;
+        while i < this.length {
+            let mut _match: bool = true;
             let mut j: u64 = 0u64;
 
-            while j < size {
-                if i + j >= this.size - 1u64 || this.data[i + j] != from[j] {
-                    match = false;
+            while j < length {
+                if i + j >= this.length || this.data[i + j] != from[j] {
+                    _match = false;
                     break;
                 } else {
                     j += 1u64;
                 }
             }
 
-            if match {
+            if _match {
                 result += to;
-                i += size;
+                i += length;
             } else {
                 result += this.data[i];
                 i += 1u64;
@@ -147,18 +158,22 @@ class String {
     }
 
     pub op=(this: &mut String, string: *const i8) -> &String {
-        if string == null { ret this; }
-        if this.data != null { free(this.data); }
-        this.Allocate(strlen(string) + 1u64);
-        memcpy(this.data, string, this.size);
+        this.Release();
+
+        if string == null {
+            this.Allocate(0u64);
+            ret this;
+        }
+
+        this.Allocate(strlen(string));
+        memcpy(this.data, string, this.length);
         ret this;
     }
 
     pub op=(this: &mut String, character: i8) -> &String {
-        if this.data != null { free(this.data); }
-        this.Allocate(2u64);
+        this.Release();
+        this.Allocate(1u64);
         this.data[0u64] = character;
-        this.data[1u64] = '\0';
         ret this;
     }
 
@@ -168,29 +183,29 @@ class String {
 
     pub op+=(this: &mut String, string: *const i8) -> &String {
         if string == null { ret this; }
-        let (oldData: *const i8, oldSize: u64) = (this.data, strlen(this.data));
-        this.Allocate(oldSize + strlen(string) + 1u64);
+        let string_length: u64 = strlen(string);
+        let (data: *const i8, length: u64) = (this.data, this.length);
+        this.Allocate(length + string_length);
 
-        if oldData != null {
-            memcpy(this.data, oldData, oldSize);
-            free(oldData);
+        if data != null {
+            memcpy(this.data, data, length);
+            del[] data;
         }
 
-        memcpy((this.data + oldSize), string, strlen(string) + 1u64);
+        memcpy((this.data + length), string, string_length);
         ret this;
     }
 
     pub op+=(this: &mut String, character: i8) -> &String {
-        let (oldData: *const i8, oldSize: u64) = (this.data, strlen(this.data));
-        this.Allocate(oldSize + 2u64);
+        let (data: *const i8, length: u64) = (this.data, this.length);
+        this.Allocate(length + 1u64);
 
-        if oldData != null {
-            memcpy(this.data, oldData, oldSize);
-            free(oldData);
+        if data != null {
+            memcpy(this.data, data, length);
+            del[] data;
         }
 
-        this.data[oldSize] = character;
-        this.data[oldSize + 1u64] = '\0';
+        this.data[length] = character;
         ret this;
     }
 
@@ -213,8 +228,7 @@ class String {
     pub op*=(this: &mut String, count: u64) -> &String {
         if count <= 0u64 {
             this.Release();
-            this.Allocate(1u64);
-            this.data[0u64] = '\0';
+            this.Allocate(0u64);
             ret this;
         } else {
             let temp: String = this.data;
@@ -238,13 +252,13 @@ class String {
     }
 
     pub op==(this: &String, string: *const i8) -> bool {
-        if this.size - 1u64 != strlen(string) { ret false; }
+        if this.length != strlen(string) { ret false; }
         if this.data == null || string == null { ret false; }
         ret strcmp(this.data, string) == 0i32;
     }
 
     pub op==(this: &String, character: i8) -> bool {
-        if this.size - 1u64 != 1u64 { ret false; }
+        if this.length != 1u64 { ret false; }
         if this.data == null { ret false; }
         ret this.data[0u64] == character;
     }

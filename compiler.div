@@ -169,7 +169,10 @@ class Method {
 };
 
 class QualifiedType {
+    pub compiler: *const void,
+    pub Error2: func(*const void, *const i8, *const ASTNode),
     pub current_class: *const *const QualifiedType = null,
+
     priv value: LLVMTypeRef, priv pointee: *const QualifiedType = null,
     priv reference: bool = false, priv mutable: bool = false, priv signed: bool = false,
     priv array: bool = false, priv size: u64 = 0u64,
@@ -383,7 +386,7 @@ class QualifiedType {
         } ret false;
     }
 
-    pub Get(this: &QualifiedType, name: &String) -> &mut Pair<Method, *const QualifiedType> {
+    pub Get(this: &QualifiedType, name: &String, node: *const ASTNode) -> &mut Pair<Method, *const QualifiedType> {
         let methods: &mut Vector<Pair<Method, *const QualifiedType>> = this.Methods();
         let mut i: u64 = 0u64;
 
@@ -394,7 +397,7 @@ class QualifiedType {
         } ret null;
     }
 
-    pub Get(this: &QualifiedType, name: &String, params: &Vector<*const QualifiedType>) -> &mut Pair<Method, *const QualifiedType> {
+    pub Get(this: &QualifiedType, name: &String, params: &Vector<*const QualifiedType>, node: *const ASTNode) -> &mut Pair<Method, *const QualifiedType> {
         let (mut index: u64, mut best: u64) = (0u64, 0u64);
         let methods: &mut Vector<Pair<Method, *const QualifiedType>> = this.Methods();
         let (mut state: u64, mut i: u64) = (0u64, 0u64);
@@ -416,6 +419,7 @@ class QualifiedType {
 
                     if params.Size() != _params.Size() - offset {
                         i += 1u64;
+                        state = 2u64;
                         continue;
                     }
 
@@ -469,13 +473,13 @@ class QualifiedType {
             ret methods[index];
         } else {
             if state == 0u64 {
-                this.Error((String("Class '") + this.name + "' doesn't contain any member named '" + name + "'.").Data());
+                this.Error2(this.compiler, (String("Class '") + this.name + "' doesn't contain any member named '" + name + "'.").Data(), node);
                 ret null;
             } else if state == 1u64 {
-                this.Error((String("Function '") + name + "' is not accessible.").Data());
+                this.Error2(this.compiler, (String("Function '") + name + "' is not accessible.").Data(), node);
                 ret null;
             } else {
-                this.Error((String("Invalid arguments for: '") + name + "'.").Data());
+                this.Error2(this.compiler, (String("Invalid arguments for: '") + name + "'.").Data(), node);
                 ret null;
             }
         }        
@@ -500,6 +504,8 @@ class QualifiedType {
 };
 
 class TypeManager {
+    pub compiler: *const void,
+    pub Error2: func(*const void, *const i8, *const ASTNode),
     pub current_class: *const *const QualifiedType = null,
     priv types: Vector<*const QualifiedType>
 } impl {
@@ -531,7 +537,7 @@ class TypeManager {
 
     pub Class(this: &mut TypeManager, value: LLVMTypeRef, name: String) -> *const QualifiedType {
         let _type: *mut QualifiedType = new QualifiedType(value, false, name);
-        _type->current_class = this.current_class;
+        (_type->compiler, _type->Error2, _type->current_class) = (this.compiler, this.Error2, this.current_class);
         this.types.PushBack(_type);
         ret _type;
     }
@@ -667,6 +673,8 @@ class Symbol {
 };
 
 class Scope {
+    pub compiler: *const void,
+    pub Error2: func(*const void, *const i8, *const ASTNode),
     pub parent: *const Scope,
     pub children: Vector<*const Scope>,
     pub global: bool,
@@ -707,9 +715,9 @@ class Scope {
         } ret false;
     }
 
-    pub Set(this: &mut Scope, name: &String, kind: SymbolKind, value: &QualifiedValue, overload: bool) -> *const Symbol {
+    pub Set(this: &mut Scope, name: &String, kind: SymbolKind, value: &QualifiedValue, overload: bool, node: *const ASTNode) -> *const Symbol {
         if this.Has(name) && !overload {
-            this.Error((String("Symbol '") + name + "' already exists.").Data());
+            this.Error2(this.compiler, (String("Symbol '") + name + "' already exists.").Data(), node);
             ret null;
         } else {
             let symbol: *const Symbol = new Symbol(name, kind, value);
@@ -718,9 +726,9 @@ class Scope {
         }
     }
 
-    pub Set(this: &mut Scope, name: &String, kind: SymbolKind, pointer: *const void, overload: bool) -> *const Symbol {
+    pub Set(this: &mut Scope, name: &String, kind: SymbolKind, pointer: *const void, overload: bool, node: *const ASTNode) -> *const Symbol {
         if this.Has(name) && !overload {
-            this.Error((String("Symbol '") + name + "' already exists.").Data());
+            this.Error2(this.compiler, (String("Symbol '") + name + "' already exists.").Data(), node);
             ret null;
         } else {
             let symbol: *const Symbol = new Symbol(name, kind, pointer);
@@ -757,8 +765,9 @@ class Scope {
 
 class ScopeManager {
     pub compiler: *const void = null,
-    pub builder: LLVMBuilderRef = null,
+    pub Error2: func(*const void, *const i8, *const ASTNode),
     pub CompileDestructor2: func(*const void, LLVMValueRef, *const QualifiedType),
+    pub builder: LLVMBuilderRef = null,
     pub scopes: Vector<*const Scope>,
     pub current: *mut Scope = null
 } impl {
@@ -771,7 +780,8 @@ class ScopeManager {
     }
 
     pub PushScope(this: &mut ScopeManager, name: String, global: bool) {
-        let scope: *const Scope = new Scope(this.current, name, global);
+        let scope: *mut Scope = new Scope(this.current, name, global);
+        (scope->compiler, scope->Error2) = (this.compiler, this.Error2);
 
         if global {
             this.scopes.PushBack(scope);
@@ -878,12 +888,12 @@ class ScopeManager {
         } ret false;
     }
 
-    pub Set(this: &mut ScopeManager, name: String, kind: SymbolKind, value: QualifiedValue, overload: bool) -> *const Symbol {
-        ret this.current->Set(name, kind, value, overload);
+    pub Set(this: &mut ScopeManager, name: String, kind: SymbolKind, value: QualifiedValue, overload: bool, node: *const ASTNode) -> *const Symbol {
+        ret this.current->Set(name, kind, value, overload, node);
     }
 
-    pub Set(this: &mut ScopeManager, name: String, kind: SymbolKind, pointer: *const void, overload: bool) -> *const Symbol {
-        ret this.current->Set(name, kind, pointer, overload);
+    pub Set(this: &mut ScopeManager, name: String, kind: SymbolKind, pointer: *const void, overload: bool, node: *const ASTNode) -> *const Symbol {
+        ret this.current->Set(name, kind, pointer, overload, node);
     }
 
     pub Get(this: &ScopeManager, name: String) -> *const Symbol {
@@ -940,7 +950,7 @@ class ScopeManager {
             }
         }
 
-        this.Error((String("Scope '") + identifier->name + "' not found.").Data());
+        this.Error2(this.compiler, (String("Scope '") + identifier->name + "' not found.").Data(), identifier as *const ASTNode);
         ret null;
     }
 
@@ -974,7 +984,7 @@ class ScopeManager {
         if scope->Has(resolution->identifier->name) {
             ret scope->Get(resolution->identifier->name);
         } else {
-            this.Error((String("Symbol '") + resolution->identifier->name + "' not found.").Data());
+            this.Error2(this.compiler, (String("Symbol '") + resolution->identifier->name + "' not found.").Data(), resolution as *const ASTNode);
             ret null;
         }
     }
@@ -983,7 +993,7 @@ class ScopeManager {
         if this.Has(identifier->name) {
             ret this.Get(identifier->name);
         } else {
-            this.Error((String("Symbol '") + identifier->name + "' not found.").Data());
+            this.Error2(this.compiler, (String("Symbol '") + identifier->name + "' not found.").Data(), identifier as *const ASTNode);
             ret null;
         }
     }
@@ -994,7 +1004,7 @@ class ScopeManager {
         } else if node->node_type == ASTNodeType::IDENTIFIER {
             ret this.Resolve(node as *const IdentifierNode);
         } else {
-            this.Error((String("Unknown resolution '") + ASTNodeTypeToString(node->node_type) + "'.").Data());
+            this.Error2(this.compiler, (String("Unknown resolution '") + ASTNodeTypeToString(node->node_type) + "'.").Data(), node);
             ret null;
         }
     }
@@ -1173,7 +1183,7 @@ class Generic {
         let mut symbols: Vector<*const Symbol>;
 
         while i < this.ast->types.Size() {
-            symbols.PushBack(this.scope->Set(this.ast->types[i], SymbolKind::Type, QualifiedValue(null, types[i]), false));
+            symbols.PushBack(this.scope->Set(this.ast->types[i], SymbolKind::Type, QualifiedValue(null, types[i]), false, this.ast as *const ASTNode));
             i += 1u64;
         }
 
@@ -1260,17 +1270,15 @@ class Compiler {
         this.target_machine = LLVMCreateTargetMachine(this.target, this.triple, "generic", "", LLVMCodeGenOptLevel::LLVMCodeGenLevelDefault, LLVMRelocMode::LLVMRelocDefault, LLVMCodeModel::LLVMCodeModelDefault);
         this.layout = LLVMCreateTargetDataLayout(this.target_machine);
 
-        this.scope_manager.compiler = this as *const void;
-        this.scope_manager.CompileDestructor2 = Compiler::CompileDestructor2;
         this.mangler.scope_manager = &this.scope_manager;
-        this.type_manager.current_class = &this._class;
+        (this.scope_manager.compiler, this.scope_manager.Error2, this.scope_manager.CompileDestructor2) = (this as *const void, Compiler::Error, Compiler::CompileDestructor2);
+        (this.type_manager.compiler, this.type_manager.Error2, this.type_manager.current_class) = (this as *const void, Compiler::Error, &this._class);
     }
 
     ~Compiler(this: &mut Compiler) {
+        (this.type_manager.compiler, this.type_manager.Error2, this.type_manager.current_class) = (null, null, null);
+        (this.scope_manager.compiler, this.scope_manager.Error2, this.scope_manager.CompileDestructor2) = (null, null, null);
         this.mangler.scope_manager = null;
-        this.type_manager.current_class = null;
-        this.scope_manager.CompileDestructor2 = null;
-        this.scope_manager.compiler = null;
 
         if this.builder != null {
             LLVMDisposeBuilder(this.builder);
@@ -1358,7 +1366,7 @@ class Compiler {
             let mut symbols: Vector<*const Symbol>;
 
             while j < forward.types.Size() {
-                symbols.PushBack(forward.generic->scope->Set(forward.generic->ast->types[j], SymbolKind::Type, QualifiedValue(null, forward.types[j]), false));
+                symbols.PushBack(forward.generic->scope->Set(forward.generic->ast->types[j], SymbolKind::Type, QualifiedValue(null, forward.types[j]), false, forward.decl as *const ASTNode));
                 j += 1u64;
             }
 
@@ -1375,7 +1383,7 @@ class Compiler {
                 if params[index]->byval != null && LLVMGetTypeKind(_type->Value()) == LLVMTypeKind::LLVMPointerTypeKind {
                     _type = this.type_manager.Pointer(params[index]->byval, param->mutable);
                     let instance: QualifiedValue = QualifiedValue(LLVMGetParam(this.function_ref, index as u32), _type, false, true);
-                    this.scope_manager.Set(param->name, SymbolKind::Parameter, instance, false);
+                    this.scope_manager.Set(param->name, SymbolKind::Parameter, instance, false, forward.decl as *const ASTNode);
                     this.scope_manager.RegisterInstance(instance);
                 } else {
                     if params[index]->byval != null { _type = params[index]->byval; }
@@ -1387,7 +1395,7 @@ class Compiler {
                     LLVMBuildStore(this.builder, LLVMGetParam(this.function_ref, index as u32), pointer);
                     let instance: QualifiedValue = QualifiedValue(pointer, this.type_manager.Pointer(_type, param->mutable), false, true);
                     if params[index]->byval != null { this.scope_manager.RegisterInstance(instance); }
-                    this.scope_manager.Set(param->name, SymbolKind::Parameter, instance, false);
+                    this.scope_manager.Set(param->name, SymbolKind::Parameter, instance, false, forward.decl as *const ASTNode);
                 } k += 1u64;
             }
 
@@ -1478,7 +1486,7 @@ class Compiler {
                 ret;
             }
 
-            this.scope_manager.Set(type_decl->name, SymbolKind::Type, QualifiedValue(null, this.CompileType(type_decl->_type)), false);
+            this.scope_manager.Set(type_decl->name, SymbolKind::Type, QualifiedValue(null, this.CompileType(type_decl->_type)), false, decl);
         } else {
             this.Error((String("Unknown declaration '") + ASTNodeTypeToString(decl->node_type) + "'.").Data(), decl);
         }
@@ -1523,7 +1531,7 @@ class Compiler {
         }
 
         let global: LLVMValueRef = LLVMAddGlobal(this.module, _type.Value(), constant_decl->name.Data());
-        this.scope_manager.Set(constant_decl->name, SymbolKind::GlobalVariable, QualifiedValue(global, this.type_manager.Pointer(_type, false), false, true), false);
+        this.scope_manager.Set(constant_decl->name, SymbolKind::GlobalVariable, QualifiedValue(global, this.type_manager.Pointer(_type, false), false, true), false, constant_decl as *const ASTNode);
         LLVMSetLinkage(global, LLVMLinkage::LLVMPrivateLinkage);
         LLVMSetInitializer(global, initializer.Value());
         LLVMSetGlobalConstant(global, 1i32);
@@ -1611,7 +1619,7 @@ class Compiler {
 
         let function: LLVMValueRef = LLVMAddFunction(this.module, name.Data(), _type.Value());
         let value: QualifiedValue = QualifiedValue(function, this.type_manager.Pointer(_type, false));
-        this.scope_manager.Set(func_decl->name, SymbolKind::Function, value, mangling);
+        this.scope_manager.Set(func_decl->name, SymbolKind::Function, value, mangling, func_decl as *const ASTNode);
         let mut j: u64 = 0u64;
 
         while j < attributes.Size() {
@@ -1743,7 +1751,7 @@ class Compiler {
             let param_types: Vector<*const QualifiedType> = this.ValueToType(params);
 
             if _class.Has(_class.name, param_types) {
-                let method: &Pair<Method, *const QualifiedType> = _class.Get(_class.name, param_types);
+                let method: &Pair<Method, *const QualifiedType> = _class.Get(_class.name, param_types, node);
                 this.CompileCall2(QualifiedValue(method.left.value, method.right, pointer), params, false, true, node);
             } else {
                 this.Error("Class doesn't have compatible constructor.", node);
@@ -1759,7 +1767,7 @@ class Compiler {
         let (params: Vector<QualifiedValue>, params_types: Vector<*const QualifiedType>);
 
         if _class.Has(String("~") + _class.name, params_types) {
-            let method: &Pair<Method, *const QualifiedType> = _class.Get(String("~") + _class.name, params_types);
+            let method: &Pair<Method, *const QualifiedType> = _class.Get(String("~") + _class.name, params_types, node);
             this.CompileCall2(QualifiedValue(method.left.value, method.right, pointer), params, false, true, node);
         }
 
@@ -1793,7 +1801,7 @@ class Compiler {
 
             let _generic: *mut Generic = new Generic(this as *const void, class_decl, &this.mangler, &this.scope_manager, &this.generic);
             _generic->CompileClass = Compiler::CompileClass;
-            this.scope_manager.Set(class_decl->name, SymbolKind::Generic, _generic as *const void, false);
+            this.scope_manager.Set(class_decl->name, SymbolKind::Generic, _generic as *const void, false, class_decl as *const ASTNode);
             this.generics.PushBack(_generic);
             ret null;
         }
@@ -1803,7 +1811,7 @@ class Compiler {
         let _class: &mut QualifiedType = this.type_manager.Class(LLVMStructCreateNamed(this.context, struct_name), class_decl->name);
 
         if generic != null { generic->Set(_class); } else {
-            this.scope_manager.Set(class_decl->name, SymbolKind::Class, QualifiedValue(null, _class), false);
+            this.scope_manager.Set(class_decl->name, SymbolKind::Class, QualifiedValue(null, _class), false, class_decl as *const ASTNode);
         }
 
         let mut field_types: Vector<LLVMTypeRef>; 
@@ -1911,7 +1919,7 @@ class Compiler {
             ret;
         }
 
-        this.scope_manager.Set(enum_decl->name, SymbolKind::Type, QualifiedValue(null, underlying_type), false);
+        this.scope_manager.Set(enum_decl->name, SymbolKind::Type, QualifiedValue(null, underlying_type), false, enum_decl as *const ASTNode);
         let mut value: LLVMValueRef = LLVMConstInt(underlying_type.Value(), 0u64, underlying_type.IsSigned() ? 1i32 : 0i32);
         this.scope_manager.PushScope(enum_decl->name, true);
         let mut i: u64 = 0u64;
@@ -1928,7 +1936,7 @@ class Compiler {
                 }
             }
 
-            this.scope_manager.Set(enum_decl->values[i].left, SymbolKind::Constant, QualifiedValue(value, underlying_type), false);
+            this.scope_manager.Set(enum_decl->values[i].left, SymbolKind::Constant, QualifiedValue(value, underlying_type), false, enum_decl as *const ASTNode);
             value = LLVMConstAdd(value, LLVMConstInt(underlying_type.Value(), 1u64, underlying_type.IsSigned() ? 1i32 : 0i32));
             i += 1u64;
         }
@@ -2254,7 +2262,7 @@ class Compiler {
                         } params.PushBack(value);
                     } else {
                         if *_type == value.Type() {
-                            this.scope_manager.Set(variable->name, SymbolKind::Variable, QualifiedValue(LLVMAddressOf(value.Value()), this.type_manager.Pointer(_type, variable->mutable), false, true), false);
+                            this.scope_manager.Set(variable->name, SymbolKind::Variable, QualifiedValue(LLVMAddressOf(value.Value()), this.type_manager.Pointer(_type, variable->mutable), false, true), false, variable as *const ASTNode);
                             skip = true;
                         } else {
                             this.Error((String("Incompatible variable initialization types. ('") + LLVMTypeToString(_type->Value()) + "' != '" + LLVMTypeToString(value.Type().Value()) + "').").Data(), variable as *const ASTNode);
@@ -2278,7 +2286,7 @@ class Compiler {
                 LLVMPositionBuilderAtEnd(this.builder, current);
 
                 this.CompileConstructor(_type, instance, params, variable as *const ASTNode);
-                this.scope_manager.Set(variable->name, SymbolKind::Variable, instance, false);
+                this.scope_manager.Set(variable->name, SymbolKind::Variable, instance, false, variable as *const ASTNode);
                 this.scope_manager.RegisterInstance(instance);
             }
         } else {
@@ -2343,7 +2351,7 @@ class Compiler {
                 }
             }
 
-            this.scope_manager.Set(variable->name, SymbolKind::Variable, pointer, false);
+            this.scope_manager.Set(variable->name, SymbolKind::Variable, pointer, false, variable as *const ASTNode);
         }
 
         if variable->next != null {
@@ -2379,7 +2387,7 @@ class Compiler {
             let _class: &QualifiedType = pointer.Type().Pointee();
 
             if _class.Has(method_name, param_types) {
-                let method: &Pair<Method, *const QualifiedType> = _class.Get(method_name, param_types);
+                let method: &Pair<Method, *const QualifiedType> = _class.Get(method_name, param_types, node);
                 ret this.CompileCall2(QualifiedValue(method.left.value, method.right, pointer), params, false, false, node);
             }
 
@@ -2790,7 +2798,7 @@ class Compiler {
                 let field_pointer: LLVMValueRef = LLVMBuildStructGEP2(this.builder, instance.Type().Pointee().Value(), instance.Value(), index as u32, "");
                 ret this.CompileCall2(QualifiedValue(LLVMBuildLoad2(this.builder, field.right->Value(), field_pointer, ""), field.right), values, pointer, false, call as *const ASTNode);
             } else {
-                let method: &Pair<Method, *const QualifiedType> = instance.Type().Pointee().Get(member_access->member, this.ValueToType(values));
+                let method: &Pair<Method, *const QualifiedType> = instance.Type().Pointee().Get(member_access->member, this.ValueToType(values), call as *const ASTNode);
                 ret this.CompileCall2(QualifiedValue(method.left.value, method.right, instance), values, pointer, false, call as *const ASTNode);
             }
         } else if call->expression->node_type == ASTNodeType::PRIMITIVE_TYPE {
@@ -3001,7 +3009,7 @@ class Compiler {
                 value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
             }
 
-            let method: &Pair<Method, *const QualifiedType> = value.Type().Pointee().Get(String("op[]"), this.ValueToType(params));
+            let method: &Pair<Method, *const QualifiedType> = value.Type().Pointee().Get(String("op[]"), this.ValueToType(params), index_access as *const ASTNode);
             ret this.CompileCall2(QualifiedValue(method.left.value, method.right, value), params, pointer, false, index_access as *const ASTNode);
         }
 
@@ -3068,7 +3076,7 @@ class Compiler {
                 ret QualifiedValue(field_pointer, this.type_manager.Pointer(field.right, instance.Type().IsMutable()), false, true);
             }
         } else {
-            let method: &Pair<Method, *const QualifiedType> = instance.Type().Pointee().Get(member_access->member);
+            let method: &Pair<Method, *const QualifiedType> = instance.Type().Pointee().Get(member_access->member, member_access as *const ASTNode);
             ret QualifiedValue(method.left.value, method.right, instance);
         }
     }
@@ -3442,7 +3450,7 @@ class Compiler {
             let _class: &QualifiedType = instance.Type();
 
             if _class.Has(method_name, param_types) {
-                let method: &Pair<Method, *const QualifiedType> = _class.Get(method_name, param_types);
+                let method: &Pair<Method, *const QualifiedType> = _class.Get(method_name, param_types, node);
                 let _instance: QualifiedValue = QualifiedValue(LLVMAddressOf(instance.Value()), this.type_manager.Pointer(instance.Type(), instance.Type().IsMutable()));
                 ret this.CompileCall2(QualifiedValue(method.left.value, method.right, _instance), values, pointer, false, node);
             }

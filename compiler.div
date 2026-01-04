@@ -132,11 +132,28 @@ func LLVMValueToString(value: LLVMValueRef) -> String {
     ret result;
 }
 
-func LLVMAddressOf(value: LLVMValueRef) -> LLVMValueRef {
+func LLVMAddressOf(value: LLVMValueRef, builder: LLVMBuilderRef) -> LLVMValueRef {
     if LLVMGetInstructionOpcode(value) == LLVMOpcode::LLVMLoad {
         let operand: LLVMValueRef = LLVMGetOperand(value, 0u32);
         LLVMInstructionEraseFromParent(value);
         ret operand;
+    } else if LLVMGetInstructionOpcode(value) == LLVMOpcode::LLVMPHI {
+        let count: u32 = LLVMCountIncoming(value);
+        let current: LLVMBasicBlockRef = LLVMGetInsertBlock(builder);
+        LLVMPositionBuilderBefore(builder, value);
+        let result: LLVMValueRef = LLVMBuildPhi(builder, LLVMPointerType(LLVMTypeOf(value), 0u32), "");
+        let mut i: u32 = 0u32;
+
+        while i < count {
+            let block: LLVMBasicBlockRef = LLVMGetIncomingBlock(value, i);
+            let value: LLVMValueRef = LLVMAddressOf(LLVMGetIncomingValue(value, i), builder);
+            LLVMAddIncoming(result, &value, &block, 1u32);
+            i += 1u32;
+        }
+
+        LLVMInstructionEraseFromParent(value);
+        LLVMPositionBuilderAtEnd(builder, current);
+        ret result;
     } else {
         printf("\x1b[31mFailed to get address of '%s'.\x1b[0m\n", LLVMValueToString(value).Data());
         exit(1i32);
@@ -1755,7 +1772,7 @@ class Compiler {
 
                 if !value.Null() {
                     if value.Type().IsClass() {
-                        value = QualifiedValue(LLVMAddressOf(value.Value()), this.type_manager.Pointer(value.Type(), true));
+                        value = QualifiedValue(LLVMAddressOf(value.Value(), this.builder), this.type_manager.Pointer(value.Type(), true));
                     } _params.PushBack(value);
                 } else {
                     if field.right.left.initializer != null {
@@ -2087,7 +2104,7 @@ class Compiler {
 
                 if return.IsReference() {
                     if return.Pointee() == value.Type() {
-                        value = QualifiedValue(LLVMAddressOf(value.Value()), this.type_manager.Pointer(value.Type(), value.Type().IsMutable()));
+                        value = QualifiedValue(LLVMAddressOf(value.Value(), this.builder), this.type_manager.Pointer(value.Type(), value.Type().IsMutable()));
                     }
                 }
 
@@ -2296,11 +2313,11 @@ class Compiler {
 
                     if !value.return {
                         if value.Type() == *_type {
-                            value = QualifiedValue(LLVMAddressOf(value.Value()), this.type_manager.Pointer(value.Type(), true));
+                            value = QualifiedValue(LLVMAddressOf(value.Value(), this.builder), this.type_manager.Pointer(value.Type(), true));
                         } params.PushBack(value);
                     } else {
                         if *_type == value.Type() {
-                            this.scope_manager.Set(variable->name, SymbolKind::Variable, QualifiedValue(LLVMAddressOf(value.Value()), this.type_manager.Pointer(_type, variable->mutable), false, true), false, variable as *const ASTNode);
+                            this.scope_manager.Set(variable->name, SymbolKind::Variable, QualifiedValue(LLVMAddressOf(value.Value(), this.builder), this.type_manager.Pointer(_type, variable->mutable), false, true), false, variable as *const ASTNode);
                             skip = true;
                         } else {
                             this.Error((String("Incompatible variable initialization types. ('") + LLVMTypeToString(_type->Value()) + "' != '" + LLVMTypeToString(value.Type().Value()) + "').").Data(), variable as *const ASTNode);
@@ -2358,7 +2375,7 @@ class Compiler {
 
                     if _type->IsReference() {
                         if _type->Pointee() == initializer.Type() {
-                            initializer = QualifiedValue(LLVMAddressOf(initializer.Value()), this.type_manager.Pointer(initializer.Type(), initializer.Type().IsMutable()));
+                            initializer = QualifiedValue(LLVMAddressOf(initializer.Value(), this.builder), this.type_manager.Pointer(initializer.Type(), initializer.Type().IsMutable()));
                         }
                     }
 
@@ -2447,7 +2464,7 @@ class Compiler {
                 }
 
                 let fields: &mut Map<String, Pair<Field, *const QualifiedType>> = _class.Fields();
-                value = QualifiedValue(LLVMAddressOf(value.Value()), this.type_manager.Pointer(value.Type(), true));
+                value = QualifiedValue(LLVMAddressOf(value.Value(), this.builder), this.type_manager.Pointer(value.Type(), true));
                 let mut i: u64 = 0u64;
 
                 while i < fields.Size() {
@@ -2922,7 +2939,7 @@ class Compiler {
                     }
 
                     let mut _params: Vector<QualifiedValue>;
-                    value = QualifiedValue(LLVMAddressOf(value.Value()), this.type_manager.Pointer(value.Type(), value.Type().IsMutable()));
+                    value = QualifiedValue(LLVMAddressOf(value.Value(), this.builder), this.type_manager.Pointer(value.Type(), value.Type().IsMutable()));
                     _params.PushBack(value);
                     let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
                     LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
@@ -2945,7 +2962,7 @@ class Compiler {
 
                     if param.IsReference() {
                         if param.Pointee() == value.Type() {
-                            value = QualifiedValue(LLVMAddressOf(value.Value()), this.type_manager.Pointer(value.Type(), value.Type().IsMutable()));
+                            value = QualifiedValue(LLVMAddressOf(value.Value(), this.builder), this.type_manager.Pointer(value.Type(), value.Type().IsMutable()));
                         }
                     }
 
@@ -3040,7 +3057,7 @@ class Compiler {
             let mut params: Vector<QualifiedValue>;
             params.PushBack(index);
 
-            // value = QualifiedValue(LLVMAddressOf(value.Value()), this.type_manager.Pointer(value.Type(), value.Type().IsMutable()));
+            // value = QualifiedValue(LLVMAddressOf(value.Value(), this.builder), this.type_manager.Pointer(value.Type(), value.Type().IsMutable()));
             value = this.CompileExpression(index_access->expression, true);
 
             if value.Type().Pointee().IsReference() {
@@ -3489,7 +3506,7 @@ class Compiler {
 
             if _class.Has(method_name, param_types, this._class) {
                 let method: &Pair<Method, *const QualifiedType> = _class.Get(method_name, param_types, this._class, node);
-                let _instance: QualifiedValue = QualifiedValue(LLVMAddressOf(instance.Value()), this.type_manager.Pointer(instance.Type(), instance.Type().IsMutable()));
+                let _instance: QualifiedValue = QualifiedValue(LLVMAddressOf(instance.Value(), this.builder), this.type_manager.Pointer(instance.Type(), instance.Type().IsMutable()));
                 ret this.CompileCall2(QualifiedValue(method.left.value, method.right, _instance), values, pointer, false, node);
             }
 
@@ -3500,8 +3517,8 @@ class Compiler {
                 }
 
                 let fields: &mut Map<String, Pair<Field, *const QualifiedType>> = _class.Fields();
-                left = QualifiedValue(LLVMAddressOf(left.Value()), this.type_manager.Pointer(left.Type(), true));
-                right = QualifiedValue(LLVMAddressOf(right.Value()), this.type_manager.Pointer(right.Type(), true));
+                left = QualifiedValue(LLVMAddressOf(left.Value(), this.builder), this.type_manager.Pointer(left.Type(), true));
+                right = QualifiedValue(LLVMAddressOf(right.Value(), this.builder), this.type_manager.Pointer(right.Type(), true));
                 let mut result: LLVMValueRef = null;
                 let mut i: u64 = 0u64;
 

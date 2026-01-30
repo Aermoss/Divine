@@ -1525,6 +1525,8 @@ class Compiler {
     priv CompileDeclaration(this: &mut Compiler, decl: *const ASTNode) {
         if decl->node_type == ASTNodeType::CONSTANT_DECL {
             this.CompileConstant(decl as *const ConstantDeclNode);
+        } else if decl->node_type == ASTNodeType::STATIC_DECL {
+            this.CompileStatic(decl as *const StaticDeclNode);
         } else if decl->node_type == ASTNodeType::FUNCTION_DECL {
             this.CompileFunction(decl as *const FunctionDeclNode);
         } else if decl->node_type == ASTNodeType::CLASS_DECL {
@@ -1580,7 +1582,15 @@ class Compiler {
             initializer = QualifiedValue(LLVMConstNamedStruct(_type.Value(), values.Data(), values.Size() as u32), _type);
         }
 
-        if initializer.Type() != _type {
+        let mut state: bool = false;
+
+        if initializer.Type().IsPointer() && _type.IsPointer() {
+            if LLVMGetTypeKind(initializer.Type().Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || LLVMGetTypeKind(_type.Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind {
+                state = true;
+            }
+        }
+
+        if initializer.Type() != _type && !state {
             this.Error((String("Incompatible constant initialization types. ('") + LLVMTypeToString(_type.Value()) + "' != '" + LLVMTypeToString(initializer.Type().Value()) + "').").Data(), constant_decl as *const ASTNode);
             ret;
         }
@@ -1590,6 +1600,62 @@ class Compiler {
         LLVMSetLinkage(global, LLVMLinkage::LLVMPrivateLinkage);
         LLVMSetInitializer(global, initializer.Value());
         LLVMSetGlobalConstant(global, 1i32);
+    }
+
+    priv CompileStatic(this: &mut Compiler, static_decl: *const StaticDeclNode) {
+        if StringToKeyword(static_decl->name) != TokenType::UNKNOWN {
+            this.Error((String("Static name '") + static_decl->name + "' is a reserved keyword.").Data(), static_decl as *const ASTNode);
+            ret;
+        }
+
+        let _type: &QualifiedType = this.CompileType(static_decl->_type);
+        let global: LLVMValueRef = LLVMAddGlobal(this.module, _type.Value(), static_decl->name.Data());
+        this.scope_manager.Set(static_decl->name, SymbolKind::Variable, QualifiedValue(global, this.type_manager.Pointer(_type, static_decl->mutable), false, true), false, static_decl as *const ASTNode);
+        LLVMSetGlobalConstant(global, static_decl->mutable ? 0i32 : 1i32);
+        LLVMSetLinkage(global, LLVMLinkage::LLVMInternalLinkage);
+
+        if static_decl->initializer != null {
+            let mut initializer: QualifiedValue;
+
+            if static_decl->initializer->node_type != ASTNodeType::INITIALIZER_LIST {
+                initializer = this.CompileExpression(static_decl->initializer, false);
+            } else {
+                let mut values: Vector<LLVMValueRef>;
+                let initializer_list: *const InitializerListNode = static_decl->initializer as *const InitializerListNode;
+                let fields: &mut Map<String, Pair<Field, *const QualifiedType>> = _type.Fields();
+                let mut i: u64 = 0u64;
+
+                while i < fields.Size() {
+                    if i < initializer_list->expressions.Size() {
+                        values.PushBack(this.CompileExpression(initializer_list->expressions[i], false).Value());
+                    } else {
+                        if fields[i].right.left.initializer != null {
+                            values.PushBack(this.CompileExpression(fields[i].right.left.initializer, false).Value());
+                        } else {
+                            this.Error((String("Missing initializer for field '") + fields[i].left + "'.").Data(), static_decl as *const ASTNode);
+                            ret;
+                        }
+                    } i += 1u64;
+                }
+
+                initializer = QualifiedValue(LLVMConstNamedStruct(_type.Value(), values.Data(), values.Size() as u32), _type);
+            }
+
+            let mut state: bool = false;
+
+            if initializer.Type().IsPointer() && _type.IsPointer() {
+                if LLVMGetTypeKind(initializer.Type().Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || LLVMGetTypeKind(_type.Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind {
+                    state = true;
+                }
+            }
+
+            if initializer.Type() != _type && !state {
+                this.Error((String("Incompatible constant initialization types. ('") + LLVMTypeToString(_type.Value()) + "' != '" + LLVMTypeToString(initializer.Type().Value()) + "').").Data(), static_decl as *const ASTNode);
+                ret;
+            }
+
+            LLVMSetInitializer(global, initializer.Value());
+        }
     }
 
     priv ProcessType(this: &mut Compiler, _type: *const QualifiedType) -> *const QualifiedType {
@@ -2875,7 +2941,13 @@ class Compiler {
         }
     }
 
-    priv CompileCall2(this: &mut Compiler, _func: QualifiedValue, values: &Vector<QualifiedValue>, pointer: bool, ignore: bool, node: *const ASTNode) -> QualifiedValue {
+    priv CompileCall2(this: &mut Compiler, mut _func: QualifiedValue, values: &Vector<QualifiedValue>, pointer: bool, ignore: bool, node: *const ASTNode) -> QualifiedValue {
+        if _func.Type().Pointee().IsPointer() {
+            if _func.Type().Pointee().Pointee().IsFunction() {
+                _func = QualifiedValue(LLVMBuildLoad2(this.builder, _func.Type().Pointee().Value(), _func.Value(), ""), _func.Type().Pointee());
+            }
+        }
+
         let mut args: Vector<LLVMValueRef>;
         let ret_type: &QualifiedType = _func.Type().Pointee().Return();
         let params: Vector<*const QualifiedType> = _func.Type().Pointee().Parameters();

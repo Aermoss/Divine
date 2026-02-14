@@ -1555,47 +1555,78 @@ class Compiler {
             ret;
         }
 
-        let _type: &QualifiedType = this.CompileType(constant_decl->_type);
         let mut initializer: QualifiedValue;
+        let mut _type: *mut QualifiedType = this.CompileType(constant_decl->_type);
 
         if constant_decl->initializer->node_type != ASTNodeType::INITIALIZER_LIST {
             initializer = this.CompileExpression(constant_decl->initializer, false);
         } else {
             let mut values: Vector<LLVMValueRef>;
             let initializer_list: *const InitializerListNode = constant_decl->initializer as *const InitializerListNode;
-            let fields: &mut Map<String, Pair<Field, *const QualifiedType>> = _type.Fields();
-            let mut i: u64 = 0u64;
 
-            while i < fields.Size() {
-                if i < initializer_list->expressions.Size() {
-                    values.PushBack(this.CompileExpression(initializer_list->expressions[i], false).Value());
-                } else {
-                    if fields[i].right.left.initializer != null {
-                        values.PushBack(this.CompileExpression(fields[i].right.left.initializer, false).Value());
-                    } else {
-                        this.Error((String("Missing initializer for field '") + fields[i].left + "'.").Data(), constant_decl as *const ASTNode);
-                        ret;
-                    }
-                } i += 1u64;
+            if _type->IsPointer() {
+                _type = this.type_manager.Array(_type->Pointee(), initializer_list->expressions.Size(), _type->IsMutable());
             }
 
-            initializer = QualifiedValue(LLVMConstNamedStruct(_type.Value(), values.Data(), values.Size() as u32), _type);
+            if _type->IsClass() {
+                let fields: &mut Map<String, Pair<Field, *const QualifiedType>> = _type->Fields();
+                let mut i: u64 = 0u64;
+
+                while i < fields.Size() {
+                    if i < initializer_list->expressions.Size() {
+                        values.PushBack(this.CompileExpression(initializer_list->expressions[i], false).Value());
+                    } else {
+                        if fields[i].right.left.initializer != null {
+                            values.PushBack(this.CompileExpression(fields[i].right.left.initializer, false).Value());
+                        } else {
+                            this.Error((String("Missing initializer for field '") + fields[i].left + "'.").Data(), constant_decl as *const ASTNode);
+                            ret;
+                        }
+                    } i += 1u64;
+                }
+
+                initializer = QualifiedValue(LLVMConstNamedStruct(_type->Value(), values.Data(), values.Size() as u32), _type);
+            } else if _type->IsArray() {
+                if initializer_list->expressions.Size() != _type->Size() {
+                    this.Error((String("Incompatible initializer list size. ('") + String(_type->Size() as i32) + "' != '" + String(initializer_list->expressions.Size() as i32) + "').").Data(), constant_decl as *const ASTNode);
+                    ret;
+                }
+
+                let mut i: u64 = 0u64;
+
+                while i < initializer_list->expressions.Size() {
+                    let value: QualifiedValue = this.CompileExpression(initializer_list->expressions[i], false);
+
+                    if value.Type() != _type->Element() {
+                        this.Error((String("Incompatible initializer list element types. ('") + LLVMTypeToString(value.Type().Value()) + "' != '" + LLVMTypeToString(_type->Element().Value()) + "').").Data(), constant_decl as *const ASTNode);
+                        ret;
+                    }
+
+                    values.PushBack(value.Value());
+                    i += 1u64;
+                }
+
+                initializer = QualifiedValue(LLVMConstArray2(_type->Value(), values.Data(), values.Size()), _type);
+            } else {
+                this.Error((String("Invalid type '") + LLVMTypeToString(_type->Value()) + "' for initializer list.").Data(), constant_decl as *const ASTNode);
+                ret;
+            }
         }
 
         let mut state: bool = false;
 
-        if initializer.Type().IsPointer() && _type.IsPointer() {
-            if LLVMGetTypeKind(initializer.Type().Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || LLVMGetTypeKind(_type.Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind {
+        if initializer.Type().IsPointer() && _type->IsPointer() {
+            if LLVMGetTypeKind(initializer.Type().Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || LLVMGetTypeKind(_type->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind {
                 state = true;
             }
         }
 
-        if initializer.Type() != _type && !state {
-            this.Error((String("Incompatible constant initialization types. ('") + LLVMTypeToString(_type.Value()) + "' != '" + LLVMTypeToString(initializer.Type().Value()) + "').").Data(), constant_decl as *const ASTNode);
+        if initializer.Type() != *_type && !state {
+            this.Error((String("Incompatible constant initialization types. ('") + LLVMTypeToString(_type->Value()) + "' != '" + LLVMTypeToString(initializer.Type().Value()) + "').").Data(), constant_decl as *const ASTNode);
             ret;
         }
 
-        let global: LLVMValueRef = LLVMAddGlobal(this.module, _type.Value(), constant_decl->name.Data());
+        let global: LLVMValueRef = LLVMAddGlobal(this.module, _type->Value(), constant_decl->name.Data());
         this.scope_manager.Set(constant_decl->name, SymbolKind::GlobalVariable, QualifiedValue(global, this.type_manager.Pointer(_type, false), false, true), false, constant_decl as *const ASTNode);
         LLVMSetLinkage(global, LLVMLinkage::LLVMPrivateLinkage);
         LLVMSetInitializer(global, initializer.Value());
@@ -1608,52 +1639,85 @@ class Compiler {
             ret;
         }
 
-        let _type: &QualifiedType = this.CompileType(static_decl->_type);
-        let global: LLVMValueRef = LLVMAddGlobal(this.module, _type.Value(), static_decl->name.Data());
-        this.scope_manager.Set(static_decl->name, SymbolKind::Variable, QualifiedValue(global, this.type_manager.Pointer(_type, static_decl->mutable), false, true), false, static_decl as *const ASTNode);
-        LLVMSetGlobalConstant(global, static_decl->mutable ? 0i32 : 1i32);
-        LLVMSetLinkage(global, LLVMLinkage::LLVMInternalLinkage);
+        let mut initializer: QualifiedValue;
+        let mut _type: *mut QualifiedType = this.CompileType(static_decl->_type);
 
         if static_decl->initializer != null {
-            let mut initializer: QualifiedValue;
-
             if static_decl->initializer->node_type != ASTNodeType::INITIALIZER_LIST {
                 initializer = this.CompileExpression(static_decl->initializer, false);
             } else {
                 let mut values: Vector<LLVMValueRef>;
                 let initializer_list: *const InitializerListNode = static_decl->initializer as *const InitializerListNode;
-                let fields: &mut Map<String, Pair<Field, *const QualifiedType>> = _type.Fields();
-                let mut i: u64 = 0u64;
 
-                while i < fields.Size() {
-                    if i < initializer_list->expressions.Size() {
-                        values.PushBack(this.CompileExpression(initializer_list->expressions[i], false).Value());
-                    } else {
-                        if fields[i].right.left.initializer != null {
-                            values.PushBack(this.CompileExpression(fields[i].right.left.initializer, false).Value());
-                        } else {
-                            this.Error((String("Missing initializer for field '") + fields[i].left + "'.").Data(), static_decl as *const ASTNode);
-                            ret;
-                        }
-                    } i += 1u64;
+                if _type->IsPointer() {
+                    _type = this.type_manager.Array(_type->Pointee(), initializer_list->expressions.Size(), _type->IsMutable());
                 }
 
-                initializer = QualifiedValue(LLVMConstNamedStruct(_type.Value(), values.Data(), values.Size() as u32), _type);
+                if _type->IsClass() {
+                    let fields: &mut Map<String, Pair<Field, *const QualifiedType>> = _type->Fields();
+                    let mut i: u64 = 0u64;
+
+                    while i < fields.Size() {
+                        if i < initializer_list->expressions.Size() {
+                            values.PushBack(this.CompileExpression(initializer_list->expressions[i], false).Value());
+                        } else {
+                            if fields[i].right.left.initializer != null {
+                                values.PushBack(this.CompileExpression(fields[i].right.left.initializer, false).Value());
+                            } else {
+                                this.Error((String("Missing initializer for field '") + fields[i].left + "'.").Data(), static_decl as *const ASTNode);
+                                ret;
+                            }
+                        } i += 1u64;
+                    }
+
+                    initializer = QualifiedValue(LLVMConstNamedStruct(_type->Value(), values.Data(), values.Size() as u32), _type);
+                } else if _type->IsArray() {
+                    if initializer_list->expressions.Size() != _type->Size() {
+                        this.Error((String("Incompatible initializer list size. ('") + String(_type->Size() as i32) + "' != '" + String(initializer_list->expressions.Size() as i32) + "').").Data(), static_decl as *const ASTNode);
+                        ret;
+                    }
+
+                    let mut i: u64 = 0u64;
+
+                    while i < initializer_list->expressions.Size() {
+                        let value: QualifiedValue = this.CompileExpression(initializer_list->expressions[i], false);
+
+                        if value.Type() != _type->Element() {
+                            this.Error((String("Incompatible initializer list element types. ('") + LLVMTypeToString(value.Type().Value()) + "' != '" + LLVMTypeToString(_type->Element().Value()) + "').").Data(), static_decl as *const ASTNode);
+                            ret;
+                        }
+
+                        values.PushBack(value.Value());
+                        i += 1u64;
+                    }
+
+                    initializer = QualifiedValue(LLVMConstArray2(_type->Value(), values.Data(), values.Size()), _type);
+                } else {
+                    this.Error((String("Invalid type '") + LLVMTypeToString(_type->Value()) + "' for initializer list.").Data(), static_decl as *const ASTNode);
+                    ret;
+                }
             }
 
             let mut state: bool = false;
 
-            if initializer.Type().IsPointer() && _type.IsPointer() {
-                if LLVMGetTypeKind(initializer.Type().Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || LLVMGetTypeKind(_type.Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind {
+            if initializer.Type().IsPointer() && _type->IsPointer() {
+                if LLVMGetTypeKind(initializer.Type().Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || LLVMGetTypeKind(_type->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind {
                     state = true;
                 }
             }
 
-            if initializer.Type() != _type && !state {
-                this.Error((String("Incompatible constant initialization types. ('") + LLVMTypeToString(_type.Value()) + "' != '" + LLVMTypeToString(initializer.Type().Value()) + "').").Data(), static_decl as *const ASTNode);
+            if initializer.Type() != *_type && !state {
+                this.Error((String("Incompatible constant initialization types. ('") + LLVMTypeToString(_type->Value()) + "' != '" + LLVMTypeToString(initializer.Type().Value()) + "').").Data(), static_decl as *const ASTNode);
                 ret;
             }
+        }
 
+        let global: LLVMValueRef = LLVMAddGlobal(this.module, _type->Value(), static_decl->name.Data());
+        this.scope_manager.Set(static_decl->name, SymbolKind::Variable, QualifiedValue(global, this.type_manager.Pointer(_type, static_decl->mutable), false, true), false, static_decl as *const ASTNode);
+        LLVMSetGlobalConstant(global, static_decl->mutable ? 0i32 : 1i32);
+        LLVMSetLinkage(global, LLVMLinkage::LLVMInternalLinkage);
+
+        if !initializer.Null() {
             LLVMSetInitializer(global, initializer.Value());
         }
     }
@@ -2366,7 +2430,6 @@ class Compiler {
             ret;
         }
 
-        let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
         let mut _type: *const QualifiedType = this.CompileType(variable->_type);
 
         if _type->IsClass() {
@@ -2402,6 +2465,7 @@ class Compiler {
             }
 
             if !skip {
+                let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
                 LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
                 let instance: QualifiedValue = QualifiedValue(LLVMBuildAlloca(this.builder, _type->Value(), ""), this.type_manager.Pointer(_type, variable->mutable), false, true);
                 LLVMPositionBuilderAtEnd(this.builder, current);
@@ -2425,6 +2489,7 @@ class Compiler {
                 }
             }
 
+            let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
             LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
             let pointer: QualifiedValue = QualifiedValue(LLVMBuildAlloca(this.builder, _type->Value(), ""), this.type_manager.Pointer(_type, variable->mutable), false, true);
             LLVMPositionBuilderAtEnd(this.builder, current);
@@ -3087,7 +3152,6 @@ class Compiler {
         let function: LLVMValueRef = LLVMGetBasicBlockParent(LLVMGetInsertBlock(this.builder));
         let mut then_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "");
         let mut else_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "");
-        let merge_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "");
 
         let condition: QualifiedValue = this.CompileExpression(ternary->condition, false);
         LLVMBuildCondBr(this.builder, condition.Value(), then_block, else_block);
@@ -3095,17 +3159,23 @@ class Compiler {
         LLVMPositionBuilderAtEnd(this.builder, then_block);
         let then_value: QualifiedValue = this.CompileExpression(ternary->then_expr, pointer);
         then_block = LLVMGetInsertBlock(this.builder);
-        LLVMBuildBr(this.builder, merge_block);
 
         LLVMPositionBuilderAtEnd(this.builder, else_block);
         let else_value: QualifiedValue = this.CompileExpression(ternary->else_expr, pointer);
         else_block = LLVMGetInsertBlock(this.builder);
-        LLVMBuildBr(this.builder, merge_block);
 
         if then_value.Type() != else_value.Type() {
             this.Error((String("Incompatible ternary types. ('") + LLVMTypeToString(then_value.Type().Value()) + "' != '" + LLVMTypeToString(else_value.Type().Value()) + "').").Data(), ternary as *const ASTNode);
             ret QualifiedValue(null, null);
         }
+
+        let merge_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "");
+
+        LLVMPositionBuilderAtEnd(this.builder, then_block);
+        LLVMBuildBr(this.builder, merge_block);
+
+        LLVMPositionBuilderAtEnd(this.builder, else_block);
+        LLVMBuildBr(this.builder, merge_block);
 
         LLVMPositionBuilderAtEnd(this.builder, merge_block);
         let value: LLVMValueRef = LLVMBuildPhi(this.builder, then_value.Type().Value(), "");

@@ -7,21 +7,21 @@ uniform sampler2DArray albedoMap;
 in vec3 fragTexCoord;
 in vec3 fragLight;
 
-vec3 defaultValues = vec3(142, 185, 113);
-vec3 plains = vec3(145, 189, 89);
-vec3 snowyPlains = vec3(128, 180, 151);
-vec3 lushCaves = vec3(185, 183, 91);
-vec3 desert = vec3(191, 183, 85);
-vec3 badlands = vec3(144, 129, 77);
-vec3 swamp = vec3(106, 112, 57);
-vec3 forest = vec3(121, 192, 90);
-vec3 darkForest = vec3(80, 122, 50);
-vec3 taiga = vec3(134, 183, 131);
-vec3 jungle = vec3(89, 201, 60);
-vec3 meadow = vec3(131, 187, 109);
-vec3 cherryGrove = vec3(182, 219, 97);
-vec3 magenta = vec3(255, 0, 255);
-vec3 cyan = vec3(0, 255, 255);
+vec3 default_ = vec3(142.0f, 185.0f, 113.0f);
+vec3 plains = vec3(145.0f, 189.0f, 89.0f);
+vec3 snowyPlains = vec3(128.0f, 180.0f, 151.0f);
+vec3 lushCaves = vec3(185.0f, 183.0f, 91.0f);
+vec3 desert = vec3(191.0f, 183.0f, 85.0f);
+vec3 badlands = vec3(144.0f, 129.0f, 77.0f);
+vec3 swamp = vec3(106.0f, 112.0f, 57.0f);
+vec3 forest = vec3(121.0f, 192.0f, 90.0f);
+vec3 darkForest = vec3(80.0f, 122.0f, 50.0f);
+vec3 taiga = vec3(134.0f, 183.0f, 131.0f);
+vec3 jungle = vec3(89.0f, 201.0f, 60.0f);
+vec3 meadow = vec3(131.0f, 187.0f, 109.0f);
+vec3 cherryGrove = vec3(182.0f, 219.0f, 97.0f);
+vec3 magenta = vec3(255.0f, 0.0f, 255.0f);
+vec3 cyan = vec3(0.0f, 255.0f, 255.0f);
 
 void main() {
     vec4 albedo = texture(albedoMap, fragTexCoord);

@@ -622,9 +622,22 @@ class Logger {} impl {
 };
 
 class Shader {
-    pub id: u32
+    pub id: u32,
+    pub vertex_path: String,
+    pub fragment_path: String
 } impl {
-    Shader(this: &mut Shader, vertex_source: *const i8, fragment_source: *const i8) {
+    Shader(this: &mut Shader, vertex_path: *const i8, fragment_path: *const i8) {
+        (this.vertex_path, this.fragment_path) = (vertex_path, fragment_path);
+        this.FromPath(this.vertex_path.Data(), this.fragment_path.Data());
+    }
+
+    ~Shader(this: &mut Shader) {
+        if this.id != 0u32 {
+            glDeleteProgram(this.id);
+        }
+    }
+
+    priv FromSource(this: &mut Shader, vertex_source: *const i8, fragment_source: *const i8) {
         let vertex_shader: u32 = glCreateShader(GL_VERTEX_SHADER);
         glShaderSource(vertex_shader, 1i32, &vertex_source, null);
         glCompileShader(vertex_shader);
@@ -662,35 +675,12 @@ class Shader {
             ret;
         }
 
-        /* let geometry_shader: u32 = glCreateShader(GL_GEOMETRY_SHADER);
-        glShaderSource(geometry_shader, 1i32, &geometry_source, null);
-        glCompileShader(geometry_shader);
-
-        let geometry_status: i32;
-        glGetShaderiv(geometry_shader, GL_COMPILE_STATUS, &geometry_status);
-
-        if geometry_status == 0i32 {
-            let mut length: i32;
-            glGetShaderiv(geometry_shader, GL_INFO_LOG_LENGTH, &length);
-            let mut buffer: *mut i8 = malloc((length + 1i32) as u64) as *mut i8;
-            glGetShaderInfoLog(geometry_shader, length, null, buffer);
-            Logger::Error((String("Geometry shader compilation error: ") + buffer).Data());
-            free(buffer as *mut void);
-            glDeleteShader(geometry_shader);
-            glDeleteShader(fragment_shader);
-            glDeleteShader(vertex_shader);
-            ret;
-        } */
-
         this.id = glCreateProgram();
         glAttachShader(this.id, vertex_shader);
         glAttachShader(this.id, fragment_shader);
-        // glAttachShader(this.id, geometry_shader);
         glLinkProgram(this.id);
-        // glDetachShader(this.id, geometry_shader);
         glDetachShader(this.id, fragment_shader);
         glDetachShader(this.id, vertex_shader);
-        // glDeleteShader(geometry_shader);
         glDeleteShader(fragment_shader);
         glDeleteShader(vertex_shader);
 
@@ -709,10 +699,16 @@ class Shader {
         }
     }
 
-    ~Shader(this: &mut Shader) {
-        if this.id != 0u32 {
-            glDeleteProgram(this.id);
-        }
+    priv FromPath(this: &mut Shader, vertex_path: *const i8, fragment_path: *const i8) {
+        let vertex_source: *const i8 = ReadFile(vertex_path).Data();
+        let fragment_source: *const i8 = ReadFile(fragment_path).Data();
+        this.FromSource(vertex_source, fragment_source);
+    }
+
+    pub Reload(this: &mut Shader) {
+        if this.id != 0u32 { glDeleteProgram(this.id); }
+        this.FromPath(this.vertex_path.Data(), this.fragment_path.Data());
+        Logger::Info("Shader reloaded successfully.");
     }
 
     pub GetUniformLocation(this: &Shader, name: *const i8) -> i32 {
@@ -2202,8 +2198,7 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
     glfwSetWindowUserPointer(window, &player as *mut void);
     glfwSetScrollCallback(window, ScrollCallback);
 
-    let shader: Shader = Shader(ReadFile("default.vert").Data(), ReadFile("default.frag").Data());
-
+    let mut shader: Shader = Shader("default.vert", "default.frag");
     let mut texture_manager: TextureManager = TextureManager(16i32, 16i32, 256i32);
     texture_manager.AddTexture(String("grass_block_side_overlay"));
     texture_manager.AddTexture(String("grass_block_side"));
@@ -2216,6 +2211,7 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
     texture_manager.AddTexture(String("oak_log_top"));
     texture_manager.GenerateMipmaps();
 
+    let mut reload_state: bool = true;
     let mut last_time: f64 = glfwGetTime();
     glClearColor(0.0f32, 0.0f32, 0.0f32, 1.0f32);
     glEnable(GL_DEPTH_TEST);
@@ -2241,6 +2237,15 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
             let eye_translation: Vector3 = player.translation + Vector3(0.0f32, player.eye_level, 0.0f32);
             let view: Matrix4 = LookAt(eye_translation, eye_translation + player.front.Normalize(), Vector3(0.0f32, 1.0f32, 0.0f32));
             let projection: Matrix4 = Perspective(ToRadians(player.fov), (width as f32) / (height as f32), 0.1f32, 1000.0f32);
+
+            if glfwGetKey(window, GLFW_KEY_R) >= GLFW_PRESS {
+                if reload_state {
+                    shader.Reload();
+                    reload_state = false;
+                }
+            } else {
+                reload_state = true;
+            }
 
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             shader.Bind();

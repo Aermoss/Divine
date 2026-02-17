@@ -1897,7 +1897,8 @@ class Player {
     pub fov: f32 = 90.0f32,
     priv no_clip_state: bool = true,
     priv no_clip: bool = false,
-    priv accumulator: f64 = 0.0f64
+    priv accumulator: f64 = 0.0f64,
+    priv mouse_skip: bool = false
 } impl {
     Player(this: &mut Player, world: *mut World) {
         (this.yaw, this.pitch) = (0.0f64, 0.0f64);
@@ -1932,25 +1933,30 @@ class Player {
         glfwGetWindowSize(window, &width, &height);
         let sensitivity: f64 = 100.0f64;
 
-        if glfwGetKey(window, GLFW_KEY_LEFT_ALT) < GLFW_PRESS {
-            let (mut x: f64, mut y: f64);
-            glfwGetCursorPos(window, &x, &y);
+        if glfwGetKey(window, GLFW_KEY_LEFT_ALT) < GLFW_PRESS && glfwGetWindowAttrib(window, GLFW_FOCUSED) != 0i32 {
+            if !this.mouse_skip {
+                let (mut x: f64, mut y: f64);
+                glfwGetCursorPos(window, &x, &y);
 
-            this.yaw += sensitivity * (x - (width as f64) / 2.0f64) / (width as f64);
-            this.pitch -= sensitivity * (y - (height as f64) / 2.0f64) / (height as f64);
+                this.yaw += sensitivity * (x - (width as f64) / 2.0f64) / (width as f64);
+                this.pitch -= sensitivity * (y - (height as f64) / 2.0f64) / (height as f64);
 
-            if this.pitch > 89.9f64 {
-                this.pitch = 89.9f64;
-            }
+                if this.pitch > 89.9f64 {
+                    this.pitch = 89.9f64;
+                }
 
-            if this.pitch < -89.9f64 {
-                this.pitch = -89.9f64;
+                if this.pitch < -89.9f64 {
+                    this.pitch = -89.9f64;
+                }
+            } else {
+                this.mouse_skip = false;
             }
 
             glfwSetCursorPos(window, (width as f64) / 2.0f64, (height as f64) / 2.0f64);
             glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_HIDDEN);
         } else {
             glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+            this.mouse_skip = true;
         }
 
         let current: f64 = glfwGetTime();
@@ -2182,14 +2188,13 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
     let window: *mut GLFWwindow = glfwCreateWindow(1600i32, 900i32, "Divcraft", null, null);
     glfwSetFramebufferSizeCallback(window, UpdateViewport);
     glfwMakeContextCurrent(window);
-    glfwSwapInterval(1i32);
+    // glfwSwapInterval(1i32);
 
     let darkMode: i32 = 1i32;
     DwmSetWindowAttribute(glfwGetWin32Window(window), DWMWINDOWATTRIBUTE::DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode) as u32);
 
     gladLoadGLLoader(glfwGetProcAddress);
     Logger::Info((String("OpenGL version: ") + (glGetString(GL_VERSION) as *const i8) + ".").Data());
-    glClearColor(0.0f32, 0.0f32, 0.0f32, 1.0f32);
 
     let mut world: World;
     let mut player: Player = { &world };
@@ -2212,39 +2217,43 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
     texture_manager.GenerateMipmaps();
 
     let mut last_time: f64 = glfwGetTime();
-
+    glClearColor(0.0f32, 0.0f32, 0.0f32, 1.0f32);
     glEnable(GL_DEPTH_TEST);
 
     while glfwWindowShouldClose(window) == 0i32 {
+        glfwPollEvents();
+
         let current_time: f64 = glfwGetTime();
         let delta_time: f64 = current_time - last_time;
         last_time = current_time;
 
-        let (width: i32, height: i32);
-        glfwGetWindowSize(window, &width, &height);
         player.Update(window, delta_time);
         world.Update(delta_time, &player as *mut void);
 
-        // let mut view: Matrix4 = { 1.0f32 };
-        // view *= Rotate(ToRadians(player.yaw as f32) + M_PI_2 as f32, Vector3(0.0f32, 1.0f32, 0.0f32));
-        // view *= Rotate(ToRadians(-player.pitch as f32), Vector3(cosf(ToRadians(player.yaw as f32) + M_PI_2 as f32), 0.0f32, sinf(ToRadians(player.yaw as f32) + M_PI_2 as f32)));
-        // view *= Translate(Vector3(-player.translation.x, -player.translation.y - player.eye_level, -player.translation.z));
-        let eye_translation: Vector3 = player.translation + Vector3(0.0f32, player.eye_level, 0.0f32);
-        let view: Matrix4 = LookAt(eye_translation, eye_translation + player.front.Normalize(), Vector3(0.0f32, 1.0f32, 0.0f32));
-        let projection: Matrix4 = Perspective(ToRadians(player.fov), (width as f32) / (height as f32), 0.1f32, 1000.0f32);
+        if glfwGetWindowAttrib(window, GLFW_ICONIFIED) == 0i32 {
+            let (width: i32, height: i32);
+            glfwGetWindowSize(window, &width, &height);
 
-        glfwPollEvents();
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        shader.Bind();
-        glUniformMatrix4fv(shader.GetUniformLocation("view"), 1i32, 0u8, &view.values[0u64]);
-        glUniformMatrix4fv(shader.GetUniformLocation("projection"), 1i32, 0u8, &projection.values[0u64]);
-        glUniform1f(shader.GetUniformLocation("daylight"), 1.0f32);
-        glUniform1i(shader.GetUniformLocation("albedoMap"), 0i32);
-        texture_manager.Bind(0u32);
-        world.Render();
-        texture_manager.Unbind(0u32);
-        shader.Unbind();
-        glfwSwapBuffers(window);
+            // let mut view: Matrix4 = { 1.0f32 };
+            // view *= Rotate(ToRadians(player.yaw as f32) + M_PI_2 as f32, Vector3(0.0f32, 1.0f32, 0.0f32));
+            // view *= Rotate(ToRadians(-player.pitch as f32), Vector3(cosf(ToRadians(player.yaw as f32) + M_PI_2 as f32), 0.0f32, sinf(ToRadians(player.yaw as f32) + M_PI_2 as f32)));
+            // view *= Translate(Vector3(-player.translation.x, -player.translation.y - player.eye_level, -player.translation.z));
+            let eye_translation: Vector3 = player.translation + Vector3(0.0f32, player.eye_level, 0.0f32);
+            let view: Matrix4 = LookAt(eye_translation, eye_translation + player.front.Normalize(), Vector3(0.0f32, 1.0f32, 0.0f32));
+            let projection: Matrix4 = Perspective(ToRadians(player.fov), (width as f32) / (height as f32), 0.1f32, 1000.0f32);
+
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            shader.Bind();
+            glUniformMatrix4fv(shader.GetUniformLocation("view"), 1i32, 0u8, &view.values[0u64]);
+            glUniformMatrix4fv(shader.GetUniformLocation("projection"), 1i32, 0u8, &projection.values[0u64]);
+            glUniform1f(shader.GetUniformLocation("daylight"), 1.0f32);
+            glUniform1i(shader.GetUniformLocation("albedoMap"), 0i32);
+            texture_manager.Bind(0u32);
+            world.Render();
+            texture_manager.Unbind(0u32);
+            shader.Unbind();
+            glfwSwapBuffers(window);
+        }
 
         let error: u32 = glGetError();
 

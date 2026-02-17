@@ -606,6 +606,21 @@ func LookAt(eye: &Vector3, target: &Vector3, up: &Vector3) -> Matrix4 {
     ret result;
 }
 
+class Logger {} impl {
+    pub Info(message: *const i8) {
+        printf("Divcraft: \x1b[32mInfo:\x1b[0m %s\n", message);
+    }
+
+    pub Warning(message: *const i8) {
+        printf("Divcraft: \x1b[35mWarning:\x1b[0m %s\n", message);
+    }
+
+    pub Error(message: *const i8) {
+        printf("Divcraft: \x1b[31mError:\x1b[0m %s\n", message);
+        exit(1i32);
+    }
+};
+
 class Shader {
     pub id: u32
 } impl {
@@ -622,7 +637,7 @@ class Shader {
             glGetShaderiv(vertex_shader, GL_INFO_LOG_LENGTH, &length);
             let mut buffer: *mut i8 = malloc((length + 1i32) as u64) as *mut i8;
             glGetShaderInfoLog(vertex_shader, length, null, buffer);
-            printf("Vertex shader compilation error: %s\n", buffer);
+            Logger::Error((String("Vertex shader compilation error: ") + buffer).Data());
             free(buffer as *mut void);
             glDeleteShader(vertex_shader);
             ret;
@@ -640,7 +655,7 @@ class Shader {
             glGetShaderiv(fragment_shader, GL_INFO_LOG_LENGTH, &length);
             let mut buffer: *mut i8 = malloc((length + 1i32) as u64) as *mut i8;
             glGetShaderInfoLog(fragment_shader, length, null, buffer);
-            printf("Fragment shader compilation error: %s\n", buffer);
+            Logger::Error((String("Fragment shader compilation error: ") + buffer).Data());
             free(buffer as *mut void);
             glDeleteShader(fragment_shader);
             glDeleteShader(vertex_shader);
@@ -659,7 +674,7 @@ class Shader {
             glGetShaderiv(geometry_shader, GL_INFO_LOG_LENGTH, &length);
             let mut buffer: *mut i8 = malloc((length + 1i32) as u64) as *mut i8;
             glGetShaderInfoLog(geometry_shader, length, null, buffer);
-            printf("Geometry shader compilation error: %s\n", buffer);
+            Logger::Error((String("Geometry shader compilation error: ") + buffer).Data());
             free(buffer as *mut void);
             glDeleteShader(geometry_shader);
             glDeleteShader(fragment_shader);
@@ -687,7 +702,7 @@ class Shader {
             glGetProgramiv(this.id, GL_INFO_LOG_LENGTH, &length);
             let mut buffer: *mut i8 = malloc((length + 1i32) as u64) as *mut i8;
             glGetProgramInfoLog(this.id, length, null, buffer);
-            printf("Program linking error: %s\n", buffer);
+            Logger::Error((String("Program linking error: ") + buffer).Data());
             free(buffer as *mut void);
             glDeleteProgram(this.id);
             ret;
@@ -743,11 +758,11 @@ class TextureManager {
             let data: *mut u8 = stbi_load(path.Data(), &width, &height, &channels, 0i32);
 
             if data != null {
-                printf("Loaded texture: %s\n", path.Data());
+                Logger::Info((String("Texture '") + path + "' loaded successfully, id: " + String(this.textures.Size() as i32 - 1i32) + ".").Data());
                 glTextureSubImage3D(this.id, 0i32, 0i32, 0i32, this.textures.Size() as i32 - 1i32, this.width, this.height, 1i32, GL_RGBA, GL_UNSIGNED_BYTE, data);
                 stbi_image_free(data);
             } else {
-                printf("Failed to load texture: %s\n", path.Data());
+                Logger::Error((String("Failed to load texture: '") + path + "'.").Data());
             }
         }
     }
@@ -892,7 +907,7 @@ class Subchunk {
             result.PushBack(direction + Vector3(-1.0f32, -1.0f32, 0.0f32));
             result.PushBack(direction + Vector3( 0.0f32, -1.0f32, 0.0f32));
             result.PushBack(direction + Vector3( 1.0f32, -1.0f32, 0.0f32));
-        } else if index == 5u64 {
+        } else {
             result.PushBack(direction + Vector3( 1.0f32,  1.0f32, 0.0f32));
             result.PushBack(direction + Vector3( 0.0f32,  1.0f32, 0.0f32));
             result.PushBack(direction + Vector3(-1.0f32,  1.0f32, 0.0f32));
@@ -901,8 +916,6 @@ class Subchunk {
             result.PushBack(direction + Vector3( 1.0f32, -1.0f32, 0.0f32));
             result.PushBack(direction + Vector3( 0.0f32, -1.0f32, 0.0f32));
             result.PushBack(direction + Vector3(-1.0f32, -1.0f32, 0.0f32));
-        } else {
-            printf("Wrong index: %u\n", index);
         } ret result;
     }
 
@@ -1308,18 +1321,19 @@ class World {
         this.last_chunk = Vector3(0.0f32, -1.0f32, 0.0f32);
 
         if mtx_init(&this.chunk_mutex, mtx_plain) != thrd_success {
-            printf("Failed to initialize mutex!\n");
-            exit(1i32);
+            Logger::Error("Failed to initialize chunk mutex.");
         }
 
         if mtx_init(&this.chunk_update_mutex, mtx_plain) != thrd_success {
-            printf("Failed to initialize mutex!\n");
-            exit(1i32);
+            Logger::Error("Failed to initialize chunk update mutex.");
+        }
+
+        if mtx_init(&this.chunk_delete_mutex, mtx_plain) != thrd_success {
+            Logger::Error("Failed to initialize chunk delete mutex.");
         }
 
         if mtx_init(&this.current_chunk_mutex, mtx_plain) != thrd_success {
-            printf("Failed to initialize mutex!\n");
-            exit(1i32);
+            Logger::Error("Failed to initialize current chunk mutex.");
         }
 
         let mut i: u64 = 0u64;
@@ -1365,6 +1379,7 @@ class World {
         } i = 0u64;
 
         mtx_destroy(&this.current_chunk_mutex);
+        mtx_destroy(&this.chunk_delete_mutex);
         mtx_destroy(&this.chunk_update_mutex);
         mtx_destroy(&this.chunk_mutex);
 
@@ -1643,7 +1658,7 @@ class World {
                         avg_gen_speed /= 2.0f64;
                     }
 
-                    printf("generation speed: %f chunks/sec, avg: %f chunks/sec\n", gen_speed, avg_gen_speed);
+                    Logger::Info((String("Chunk generation speed: ") + String(gen_speed) + " chunks/sec, avg: " + String(avg_gen_speed) + " chunks/sec.").Data());
                 }
             }
         }
@@ -2153,7 +2168,7 @@ class Player {
 };
 
 func UpdateViewport(window: *mut GLFWwindow, width: i32, height: i32) {
-    printf("Viewport updated: %dx%d\n", width, height);
+    Logger::Info((String("Viewport updated, width: ") + String(width) + ", height: " + String(height) + ".").Data());
     glViewport(0i32, 0i32, width, height);
 }
 
@@ -2173,7 +2188,7 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
     DwmSetWindowAttribute(glfwGetWin32Window(window), DWMWINDOWATTRIBUTE::DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode) as u32);
 
     gladLoadGLLoader(glfwGetProcAddress);
-    printf("OpenGL Version: %s\n", glGetString(GL_VERSION));
+    Logger::Info((String("OpenGL version: ") + (glGetString(GL_VERSION) as *const i8) + ".").Data());
     glClearColor(0.0f32, 0.0f32, 0.0f32, 1.0f32);
 
     let mut world: World;
@@ -2234,7 +2249,7 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
         let error: u32 = glGetError();
 
         if error != 0u32 {
-            printf("OpenGL error code: %d\n", error);
+            Logger::Warning((String("OpenGL error code: ") + String(error as i32) + ".").Data());
         }
     }
 

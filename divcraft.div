@@ -2314,8 +2314,12 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
 
     let mut reload_state: bool = true;
     let mut last_time: f64 = glfwGetTime();
-    glClearColor(0.0f32, 0.0f32, 0.0f32, 1.0f32);
+    let mut sun_angle: f64 = 0.0f64;
     glEnable(GL_DEPTH_TEST);
+
+    let day_tint: Vector3 = { 0.4f32, 0.6f32, 1.0f32 };
+    let sunset_tint: Vector3 = { 0.7f32, 0.4f32, 0.35f32 };
+    let night_tint: Vector3 = { 0.05f32, 0.05f32, 0.15f32 };
 
     while glfwWindowShouldClose(window) == 0i32 {
         glfwPollEvents();
@@ -2326,6 +2330,7 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
 
         player.Update(window, delta_time);
         world.Update(delta_time, &player as *mut void);
+        sun_angle += delta_time * 0.01f64;
 
         if glfwGetWindowAttrib(window, GLFW_ICONIFIED) == 0i32 {
             let (mut width: i32, mut height: i32);
@@ -2348,11 +2353,33 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
                 reload_state = true;
             }
 
+            let mut skylight: Vector3;
+            let sun_height: f32 = sinf(sun_angle as f32);
+
+            if sun_height > 0.2f32 {
+                let t: f64 = ((sun_height - 0.2f32) / 0.8f32) as f64;
+                skylight.x = Lerp(sunset_tint.x as f64, day_tint.x as f64, t) as f32;
+                skylight.y = Lerp(sunset_tint.y as f64, day_tint.y as f64, t) as f32;
+                skylight.z = Lerp(sunset_tint.z as f64, day_tint.z as f64, t) as f32;
+            } else if sun_height > -0.2f32 {
+                let t: f64 = ((sun_height + 0.2f32) / 0.4f32) as f64;
+                skylight.x = Lerp(night_tint.x as f64, sunset_tint.x as f64, t) as f32;
+                skylight.y = Lerp(night_tint.y as f64, sunset_tint.y as f64, t) as f32;
+                skylight.z = Lerp(night_tint.z as f64, sunset_tint.z as f64, t) as f32;
+            } else {
+                skylight = night_tint;
+            }
+
+            glClearColor(skylight.x, skylight.y, skylight.z, 1.0f32);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             shader.Bind();
             glUniformMatrix4fv(shader.GetUniformLocation("view"), 1i32, 0u8, &view.values[0u64]);
             glUniformMatrix4fv(shader.GetUniformLocation("projection"), 1i32, 0u8, &projection.values[0u64]);
-            glUniform1f(shader.GetUniformLocation("daylight"), 1.0f32);
+            glUniform3f(shader.GetUniformLocation("viewPosition"), eye_translation.x, eye_translation.y, eye_translation.z);
+            glUniform3f(shader.GetUniformLocation("fogColor"), skylight.x, skylight.y, skylight.z);
+            glUniform1f(shader.GetUniformLocation("fogStart"), (RENDER_DISTANCE as f32) * 16.0f32 - 48.0f32);
+            glUniform1f(shader.GetUniformLocation("fogEnd"), (RENDER_DISTANCE as f32) * 16.0f32 - 16.0f32);
+            glUniform1f(shader.GetUniformLocation("sunHeight"), sun_height);
             glUniform1i(shader.GetUniformLocation("albedoMap"), 0i32);
             texture_manager.Bind(0u32);
             world.Render();

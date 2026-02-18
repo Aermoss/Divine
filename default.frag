@@ -5,6 +5,7 @@ out vec4 fragColor;
 uniform sampler2DArray albedoMap;
 
 in vec3 fragTexCoord;
+in vec3 fragPosition;
 in vec3 fragLight;
 
 vec3 default_ = vec3(142.0f, 185.0f, 113.0f);
@@ -23,6 +24,12 @@ vec3 cherryGrove = vec3(182.0f, 219.0f, 97.0f);
 vec3 magenta = vec3(255.0f, 0.0f, 255.0f);
 vec3 cyan = vec3(0.0f, 255.0f, 255.0f);
 
+uniform vec3 viewPosition;
+
+uniform vec3 fogColor;
+uniform float fogStart;
+uniform float fogEnd;
+
 void main() {
     vec4 albedo = texture(albedoMap, fragTexCoord);
     vec4 grassColor = vec4(cherryGrove / 255.0f, 1.0f);
@@ -38,5 +45,7 @@ void main() {
     if (albedo.a == 0.0f)
         discard;
 
-    fragColor = albedo * vec4(fragLight, 1.0f);
+    float distance = length(fragPosition - viewPosition);
+    float fogFactor = clamp((distance - fogStart) / (fogEnd - fogStart), 0.0f, 1.0f);
+    fragColor = mix(albedo * vec4(fragLight, 1.0f), vec4(fogColor, 1.0f), fogFactor);
 }

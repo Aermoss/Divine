@@ -917,17 +917,17 @@ class Subchunk {
 
     pub GetLight(this: &Subchunk, number: u8, index: u64, position: &Vector3, direction: &Vector3) -> Vector<f32> {
         let world: *mut World = (this.parent as *mut Chunk)->parent as *mut World;
-        let mut light_block: bool = false;
+        let mut light_source: bool = false;
         let mut i: u64 = 0u64;
 
         while i < world->light_blocks.Size() {
             if world->light_blocks[i] == number {
-                light_block = true;
+                light_source = true;
                 break;
             } i += 1u64;
         } i = 0u64;
 
-        if light_block {
+        if light_source {
             let mut result: Vector<f32>;
             result.PushBack(world->GetLight(position) as f32);
             result.PushBack(world->GetLight(position) as f32);
@@ -951,17 +951,17 @@ class Subchunk {
 
     pub GetSkylight(this: &Subchunk, number: u8, index: u64, position: &Vector3, direction: &Vector3) -> Vector<f32> {
         let world: *mut World = (this.parent as *mut Chunk)->parent as *mut World;
-        let mut light_block: bool = false;
+        let mut light_source: bool = false;
         let mut i: u64 = 0u64;
 
         while i < world->light_blocks.Size() {
             if world->light_blocks[i] == number {
-                light_block = true;
+                light_source = true;
                 break;
             } i += 1u64;
         } i = 0u64;
 
-        if light_block {
+        if light_source {
             let mut result: Vector<f32>;
             result.PushBack(world->GetSkylight(position) as f32);
             result.PushBack(world->GetSkylight(position) as f32);
@@ -993,16 +993,16 @@ class Subchunk {
         } i = 0u64;
 
         let world: *mut World = (this.parent as *mut Chunk)->parent as *mut World;
-        let mut light_block: bool = false;
+        let mut light_source: bool = false;
 
         while i < world->light_blocks.Size() {
             if world->light_blocks[i] == number {
-                light_block = true;
+                light_source = true;
                 break;
             } i += 1u64;
         } i = 0u64;
 
-        if light_block {
+        if light_source {
             ret result;
         } else {
             let positions: Vector<Vector3> = this.GetNeighbourVoxels(direction, index);
@@ -1022,10 +1022,19 @@ class Subchunk {
         }
     }
 
+    pub SetBlock(this: &mut Subchunk, position: &Vector3, block: u8) {
+        if position.x >= 0.0f32 && position.x < SUBCHUNK_WIDTH as f32 && position.y >= 0.0f32 && position.y < SUBCHUNK_HEIGHT as f32 && position.z >= 0.0f32 && position.z < SUBCHUNK_DEPTH as f32 {
+            this.blocks[this.IndexFromPosition(position)] = block;
+        } else {
+            Logger::Error("Trying to set block out of bounds.");
+        }
+    }
+
     pub GetBlock(this: &Subchunk, position: &Vector3) -> u8 {
-        if position.x < SUBCHUNK_WIDTH as f32 && position.y < SUBCHUNK_HEIGHT as f32 && position.z < SUBCHUNK_DEPTH as f32 {
+        if position.x >= 0.0f32 && position.x < SUBCHUNK_WIDTH as f32 && position.y >= 0.0f32 && position.y < SUBCHUNK_HEIGHT as f32 && position.z >= 0.0f32 && position.z < SUBCHUNK_DEPTH as f32 {
             ret this.blocks[this.IndexFromPosition(position)];
         } else {
+            Logger::Error("Trying to get block out of bounds.");
             ret 0u8;
         }
     }
@@ -1063,13 +1072,11 @@ class Subchunk {
     }
 
     pub Update(this: &mut Subchunk) {
-        let world: *mut World = (this.parent as *mut Chunk)->parent as *mut World;
-
         this.offset = 0u32;
         this.vertices.Clear();
         this.indices.Clear();
 
-        let directions[]: Vector3 = {
+        let neighbor_offsets[]: Vector3 = {
             Vector3( 1.0f32,  0.0f32,  0.0f32),
             Vector3(-1.0f32,  0.0f32,  0.0f32),
             Vector3( 0.0f32,  1.0f32,  0.0f32),
@@ -1078,6 +1085,8 @@ class Subchunk {
             Vector3( 0.0f32,  0.0f32, -1.0f32)
         };
 
+        let chunk: *mut Chunk = this.parent as *mut Chunk;
+        let world: *mut World = chunk->parent as *mut World;
         let mut x: u64 = 0u64;
 
         while x < SUBCHUNK_WIDTH {
@@ -1089,19 +1098,19 @@ class Subchunk {
                 while z < SUBCHUNK_DEPTH {
                     let position: Vector3 = Vector3(x as f32, y as f32, z as f32);
                     let block: u8 = this.blocks[x + y * SUBCHUNK_WIDTH + z * SUBCHUNK_WIDTH * SUBCHUNK_HEIGHT];
-                    let blockType: *mut BlockType = world->block_types[block as u64 - 1u64];
+                    let block_type: *mut BlockType = world->block_types[block as u64 - 1u64];
 
                     if block != 0u8 {
                         let mut i: u64 = 0u64;
 
                         while i < 6u64 {
-                            let neighborPosition: Vector3 = position + this.world_position + directions[i];
-                            let neighborBlock: u8 = this.GetBlockFast(neighborPosition);
+                            let neighbor_position: Vector3 = position + this.world_position + neighbor_offsets[i];
+                            let neighbor_block: u8 = this.GetBlockFast(neighbor_position);
 
-                            if neighborBlock == 0u8 {
-                                let shadings: Vector<f32> = this.GetShading(block, i, position + this.world_position + directions[i]);
-                                let lights: Vector<f32> = this.GetLight(block, i, position + this.world_position, position + this.world_position + directions[i]);
-                                let skylights: Vector<f32> = this.GetSkylight(block, i, position + this.world_position, position + this.world_position + directions[i]);
+                            if neighbor_block == 0u8 {
+                                let shadings: Vector<f32> = this.GetShading(block, i, position + this.world_position + neighbor_offsets[i]);
+                                let lights: Vector<f32> = this.GetLight(block, i, position + this.world_position, position + this.world_position + neighbor_offsets[i]);
+                                let skylights: Vector<f32> = this.GetSkylight(block, i, position + this.world_position, position + this.world_position + neighbor_offsets[i]);
                                 let mut j: u64 = 0u64;
 
                                 while j < 4u64 {
@@ -1111,7 +1120,7 @@ class Subchunk {
 
                                     this.vertices.PushBack(tex_coords[i * 12u64 + j * 3u64 + 0u64]);
                                     this.vertices.PushBack(tex_coords[i * 12u64 + j * 3u64 + 1u64]);
-                                    this.vertices.PushBack(blockType->textures[i]);
+                                    this.vertices.PushBack(block_type->textures[i]);
 
                                     this.vertices.PushBack(shadings[j]);
                                     this.vertices.PushBack(lights[j]);
@@ -1180,6 +1189,15 @@ class Chunk {
     }
 
     pub Update(this: &mut Chunk) {
+        let mut i: u64 = 0u64;
+
+        while i < CHUNK_HEIGHT / SUBCHUNK_HEIGHT {
+            this.subchunks[i]->Update();
+            i += 1u64;
+        }
+    }
+
+    pub Upload(this: &mut Chunk) {
         this.offset = 0u32;
         this.vertices.Clear();
         this.indices.Clear();
@@ -1187,7 +1205,6 @@ class Chunk {
 
         while i < CHUNK_HEIGHT / SUBCHUNK_HEIGHT {
             let subchunk: *mut Subchunk = this.subchunks[i];
-            subchunk->Update();
             this.vertices += subchunk->vertices;
             let mut j: u64 = 0u64;
 
@@ -1199,9 +1216,7 @@ class Chunk {
             this.offset += subchunk->offset;
             i += 1u64;
         }
-    }
 
-    pub Upload(this: &mut Chunk) {
         if this.vertex_array == 0u32 {
             glCreateVertexArrays(1i32, &this.vertex_array);
         }
@@ -1291,6 +1306,16 @@ class BlockType {
     ~BlockType(this: &mut BlockType) {}
 };
 
+class RaycastResult {
+    pub hit: bool,
+    pub position: Vector3,
+    pub normal: Vector3
+} impl {
+    RaycastResult(this: &mut RaycastResult, hit: bool, position: &Vector3, normal: &Vector3) {
+        (this.hit, this.position, this.normal) = (hit, position, normal);
+    }
+};
+
 const RENDER_DISTANCE: i64 = 8i64;
 const RENDER_DISTANCE_SQ: i64 = RENDER_DISTANCE * RENDER_DISTANCE;
 const UNLOAD_DISTANCE: i64 = RENDER_DISTANCE + 2i64;
@@ -1305,7 +1330,10 @@ class World {
     priv current_chunk: Vector3, priv last_chunk: Vector3,
     pub block_types: Vector<*mut BlockType>,
     pub light_blocks: Vector<u8>,
+    priv light_increase_queue: Vector<Pair<Vector3, u8>>,
+    priv light_decrease_queue: Vector<Pair<Vector3, u8>>,
     priv skylight_increase_queue: Vector<Pair<Vector3, u8>>,
+    priv skylight_decrease_queue: Vector<Pair<Vector3, u8>>,
     priv threads: Vector<thrd_t>,
     pub chunk_mutex: mtx_t,
     priv chunk_update_mutex: mtx_t,
@@ -1437,9 +1465,10 @@ class World {
     }
 
     pub GetChunk(this: &World, position: &Vector3) -> *mut Chunk {
+        if position.y != 0.0f32 { ret null; }
         let hash: u64 = this.GetHash(position.x as i32, position.z as i32);
-        let mut i: u64 = 0u64;
         mtx_lock(&this.chunk_mutex);
+        let mut i: u64 = 0u64;
 
         while i < this.buckets[hash]->Size() {
             let chunk: *mut Chunk = this.buckets[hash]->Data()[i];
@@ -1456,70 +1485,63 @@ class World {
 
     pub GetRawLight(this: &World, position: &Vector3) -> u8 {
         let chunk_position: Vector3 = (position / Vector3(CHUNK_WIDTH as f32, CHUNK_HEIGHT as f32, CHUNK_DEPTH as f32)).Floor();
-
-        if chunk_position.y != 0.0f32 {
-            ret 15u8 << 4u8;
-        }
-
         let chunk: *mut Chunk = this.GetChunk(chunk_position);
 
-        if chunk == null {
+        if chunk != null {
+            let subchunk_position: Vector3 = (position / Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)).Floor();
+            ret chunk->subchunks[subchunk_position.y as u64]->GetRawLight(position - (subchunk_position * Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)));
+        } else {
             ret 15u8 << 4u8;
         }
-
-        let subchunk_position: Vector3 = (position / Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)).Floor();
-        ret chunk->subchunks[subchunk_position.y as u64]->GetRawLight(position - (subchunk_position * Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)));
     }
 
     pub GetLight(this: &World, position: &Vector3) -> u8 {
         let chunk_position: Vector3 = (position / Vector3(CHUNK_WIDTH as f32, CHUNK_HEIGHT as f32, CHUNK_DEPTH as f32)).Floor();
-
-        if chunk_position.y != 0.0f32 {
-            ret 0u8;
-        }
-
         let chunk: *mut Chunk = this.GetChunk(chunk_position);
 
-        if chunk == null {
+        if chunk != null {
+            let subchunk_position: Vector3 = (position / Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)).Floor();
+            ret chunk->subchunks[subchunk_position.y as u64]->GetBlockLight(position - (subchunk_position * Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)));
+        } else {
             ret 0u8;
         }
-
-        let subchunk_position: Vector3 = (position / Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)).Floor();
-        ret chunk->subchunks[subchunk_position.y as u64]->GetBlockLight(position - (subchunk_position * Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)));
     }
 
     pub GetSkylight(this: &World, position: &Vector3) -> u8 {
         let chunk_position: Vector3 = (position / Vector3(CHUNK_WIDTH as f32, CHUNK_HEIGHT as f32, CHUNK_DEPTH as f32)).Floor();
-
-        if chunk_position.y != 0.0f32 {
-            ret 15u8;
-        }
-
         let chunk: *mut Chunk = this.GetChunk(chunk_position);
 
-        if chunk == null {
+        if chunk != null {
+            let subchunk_position: Vector3 = (position / Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)).Floor();
+            ret chunk->subchunks[subchunk_position.y as u64]->GetSkylight(position - (subchunk_position * Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)));
+        } else {
             ret 15u8;
         }
+    }
 
-        let subchunk_position: Vector3 = (position / Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)).Floor();
-        ret chunk->subchunks[subchunk_position.y as u64]->GetSkylight(position - (subchunk_position * Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)));
+    pub SetBlock(this: &mut World, position: &Vector3, block: u8) {
+        let chunk_position: Vector3 = (position / Vector3(CHUNK_WIDTH as f32, CHUNK_HEIGHT as f32, CHUNK_DEPTH as f32)).Floor();
+        let chunk: *mut Chunk = this.GetChunk(chunk_position);
+
+        if chunk != null {
+            let subchunk_position: Vector3 = (position / Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)).Floor();
+            chunk->subchunks[subchunk_position.y as u64]->SetBlock(position - (subchunk_position * Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)), block);
+            this.UpdateAtPosition(position);
+            this.DecreaseLight(position);
+            this.DecreaseSkylight(position, true);
+        }
     }
 
     pub GetBlock(this: &World, position: &Vector3) -> u8 {
         let chunk_position: Vector3 = (position / Vector3(CHUNK_WIDTH as f32, CHUNK_HEIGHT as f32, CHUNK_DEPTH as f32)).Floor();
-
-        if chunk_position.y != 0.0f32 {
-            ret 0u8;
-        }
-
         let chunk: *mut Chunk = this.GetChunk(chunk_position);
 
-        if chunk == null {
+        if chunk != null {
+            let subchunk_position: Vector3 = (position / Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)).Floor();
+            ret chunk->subchunks[subchunk_position.y as u64]->GetBlock(position - (subchunk_position * Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)));
+        } else {
             ret 0u8;
         }
-
-        let subchunk_position: Vector3 = (position / Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)).Floor();
-        ret chunk->subchunks[subchunk_position.y as u64]->GetBlock(position - (subchunk_position * Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)));
     }
 
     pub GenerateChunk(this: &mut World, position: Vector3) -> *mut Chunk {
@@ -1572,25 +1594,25 @@ class World {
                         let dist_sq: f32 = dist_x * dist_x + dist_z * dist_z;
 
                         if dist_sq > UNLOAD_DISTANCE_SQ as f32 {
-                            let mut state: bool = chunk->busy;
+                            let mut busy: bool = chunk->busy;
 
                             if chunk->east_neighbor != null {
-                                state |= chunk->east_neighbor->busy;
+                                busy |= chunk->east_neighbor->busy;
                             }
 
                             if chunk->west_neighbor != null {
-                                state |= chunk->west_neighbor->busy;
+                                busy |= chunk->west_neighbor->busy;
                             }
 
                             if chunk->north_neighbor != null {
-                                state |= chunk->north_neighbor->busy;
+                                busy |= chunk->north_neighbor->busy;
                             }
 
                             if chunk->south_neighbor != null {
-                                state |= chunk->south_neighbor->busy;
+                                busy |= chunk->south_neighbor->busy;
                             }
 
-                            if !state {
+                            if !busy {
                                 let mut k: u64 = 0u64;
                                 mtx_lock(&this.chunk_update_mutex);
 
@@ -1657,21 +1679,21 @@ class World {
                                     }
 
                                     let mut j: u64 = 0u64;
-                                    let mut state: bool = false;
+                                    let mut found: bool = false;
 
                                     while j < chunk_update_queue.Size() {
                                         if chunk_update_queue[j] == neighbor_chunk {
-                                            state = true;
+                                            found = true;
                                             break;
                                         } j += 1u64;
                                     } j = 0u64;
 
-                                    if !state {
+                                    if !found {
                                         mtx_lock(&this.chunk_update_mutex);
 
                                         while j < this.chunk_update_queue.Size() {
                                             if this.chunk_update_queue[j] == neighbor_chunk {
-                                                state = true;
+                                                found = true;
                                                 break;
                                             } j += 1u64;
                                         }
@@ -1679,7 +1701,7 @@ class World {
                                         mtx_unlock(&this.chunk_update_mutex);
                                     }
 
-                                    if !state {
+                                    if !found {
                                         chunk_update_queue.PushBack(neighbor_chunk);
                                     }
                                 } i += 1u64;
@@ -1795,17 +1817,14 @@ class World {
             } x += 1u64;
         }
 
-        this.PropogateSkylightIncrease();
+        this.PropagateSkylightIncrease(false);
     }
 
-    priv PropogateSkylightIncrease(this: &mut World) {
-        let directions[]: Vector3 = {
-            Vector3( 1.0f32,  0.0f32,  0.0f32),
-            Vector3(-1.0f32,  0.0f32,  0.0f32),
-            Vector3( 0.0f32,  1.0f32,  0.0f32),
-            Vector3( 0.0f32, -1.0f32,  0.0f32),
-            Vector3( 0.0f32,  0.0f32,  1.0f32),
-            Vector3( 0.0f32,  0.0f32, -1.0f32)
+    priv PropagateSkylightIncrease(this: &mut World, light_update: bool) {
+        let neighbor_offsets[]: Vector3 = {
+            Vector3(1.0f32, 0.0f32, 0.0f32), Vector3(-1.0f32,  0.0f32,  0.0f32),
+            Vector3(0.0f32, 1.0f32, 0.0f32), Vector3( 0.0f32, -1.0f32,  0.0f32),
+            Vector3(0.0f32, 0.0f32, 1.0f32), Vector3( 0.0f32,  0.0f32, -1.0f32)
         };
 
         while this.skylight_increase_queue.Size() != 0u64 {
@@ -1813,42 +1832,350 @@ class World {
             let mut i: u64 = 0u64;
 
             while i < 6u64 {
-                let position: Vector3 = values.left + directions[i];
+                let neighbour_position: Vector3 = values.left + neighbor_offsets[i];
 
-                if position.y > CHUNK_HEIGHT as f32 {
+                if neighbour_position.y < 0.0f32 || neighbour_position.y >= CHUNK_HEIGHT as f32 {
                     i += 1u64;
                     continue;
                 }
 
-                let chunk_position: Vector3 = (position / Vector3(CHUNK_WIDTH as f32, CHUNK_HEIGHT as f32, CHUNK_DEPTH as f32)).Floor();
-
-                if chunk_position.y != 0.0f32 {
-                    i += 1u64;
-                    continue;
-                }
-
+                let chunk_position: Vector3 = (neighbour_position / Vector3(CHUNK_WIDTH as f32, CHUNK_HEIGHT as f32, CHUNK_DEPTH as f32)).Floor();
                 let chunk: *mut Chunk = this.GetChunk(chunk_position);
 
-                if chunk == null {
-                    i += 1u64;
-                    continue;
-                }
+                if chunk != null {
+                    let subchunk_position: Vector3 = (neighbour_position / Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)).Floor();
+                    let local_position: Vector3 = neighbour_position - (subchunk_position * Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32));
+                    let subchunk: *mut Subchunk = chunk->subchunks[subchunk_position.y as u64];
 
-                let subchunk_position: Vector3 = (position / Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)).Floor();
-                let local_position: Vector3 = position - (subchunk_position * Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32));
-                let subchunk: *mut Subchunk = chunk->subchunks[subchunk_position.y as u64];
+                    if subchunk->GetBlock(local_position) == 0u8 {
+                        let current_skylight: u8 = subchunk->GetSkylight(local_position);
+                        
+                        if current_skylight < values.right {
+                            if light_update {
+                                this.UpdateAtPosition(neighbour_position);
+                            }
 
-                if subchunk->GetBlock(local_position) == 0u8 && subchunk->GetSkylight(local_position) < values.right {
-                    if directions[i].y == -1.0f32 {
-                        subchunk->SetSkylight(local_position, values.right);
-                        this.skylight_increase_queue.PushBack(Pair<Vector3, u8>(position, values.right));
-                    } else if subchunk->GetSkylight(local_position) + 2u8 <= values.right {
-                        subchunk->SetSkylight(local_position, values.right - 1u8);
-                        this.skylight_increase_queue.PushBack(Pair<Vector3, u8>(position, values.right - 1u8));
+                            if neighbor_offsets[i].y == -1.0f32 {
+                                subchunk->SetSkylight(local_position, values.right);
+                                this.skylight_increase_queue.PushBack(Pair<Vector3, u8>(neighbour_position, values.right));
+                            } else if current_skylight + 2u8 <= values.right {
+                                subchunk->SetSkylight(local_position, values.right - 1u8);
+                                this.skylight_increase_queue.PushBack(Pair<Vector3, u8>(neighbour_position, values.right - 1u8));
+                            }
+                        }
                     }
                 } i += 1u64;
             }
         }
+    }
+
+    pub DecreaseSkylight(this: &mut World, position: &Vector3, light_update: bool) {
+        let chunk_position: Vector3 = (position / Vector3(CHUNK_WIDTH as f32, CHUNK_HEIGHT as f32, CHUNK_DEPTH as f32)).Floor();
+        let chunk: *mut Chunk = this.GetChunk(chunk_position);
+
+        if chunk != null {
+            let subchunk_position: Vector3 = (position / Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)).Floor();
+            let local_position: Vector3 = position - (subchunk_position * Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32));
+            let old_light: u8 = chunk->subchunks[subchunk_position.y as u64]->GetSkylight(local_position);
+            chunk->subchunks[subchunk_position.y as u64]->SetSkylight(local_position, 0u8);
+            this.skylight_decrease_queue.PushBack(Pair<Vector3, u8>(position, old_light));
+            this.PropagateSkylightDecrease(light_update);
+            this.PropagateSkylightIncrease(light_update);
+        }
+    }
+
+    priv PropagateSkylightDecrease(this: &mut World, light_update: bool) {
+        let neighbor_offsets[]: Vector3 = {
+            Vector3(1.0f32, 0.0f32, 0.0f32), Vector3(-1.0f32,  0.0f32,  0.0f32),
+            Vector3(0.0f32, 1.0f32, 0.0f32), Vector3( 0.0f32, -1.0f32,  0.0f32),
+            Vector3(0.0f32, 0.0f32, 1.0f32), Vector3( 0.0f32,  0.0f32, -1.0f32)
+        };
+
+        while this.skylight_decrease_queue.Size() != 0u64 {
+            let values: Pair<Vector3, u8> = this.skylight_decrease_queue.Pop(0u64);
+            let mut i: u64 = 0u64;
+
+            while i < 6u64 {
+                let neighbour_position: Vector3 = values.left + neighbor_offsets[i];
+
+                if neighbour_position.y < 0.0f32 || neighbour_position.y >= CHUNK_HEIGHT as f32 {
+                    i += 1u64;
+                    continue;
+                }
+
+                let chunk_position: Vector3 = (neighbour_position / Vector3(CHUNK_WIDTH as f32, CHUNK_HEIGHT as f32, CHUNK_DEPTH as f32)).Floor();
+                let chunk: *mut Chunk = this.GetChunk(chunk_position);
+
+                if chunk != null {
+                    let subchunk_position: Vector3 = (neighbour_position / Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)).Floor();
+                    let local_position: Vector3 = neighbour_position - (subchunk_position * Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32));
+                    let subchunk: *mut Subchunk = chunk->subchunks[subchunk_position.y as u64];
+
+                    if subchunk->GetBlock(local_position) == 0u8 {
+                        let neighbour_level: u8 = subchunk->GetSkylight(local_position);
+
+                        if neighbour_level != 0u8 {
+                            if neighbor_offsets[i].y == -1.0f32 || neighbour_level < values.right {
+                                subchunk->SetSkylight(local_position, 0u8);
+
+                                if light_update {
+                                    this.UpdateAtPosition(neighbour_position);
+                                }
+
+                                this.skylight_decrease_queue.PushBack(Pair<Vector3, u8>(neighbour_position, neighbour_level));
+                            } else if neighbour_level >= values.right {
+                                this.skylight_increase_queue.PushBack(Pair<Vector3, u8>(neighbour_position, neighbour_level));
+                            }
+                        }
+                    }
+                } i += 1u64;
+            }
+        }
+    }
+
+    pub IncreaseLight(this: &mut World, position: &Vector3, newlight: u8, light_update: bool) {
+        let chunk_position: Vector3 = (position / Vector3(CHUNK_WIDTH as f32, CHUNK_HEIGHT as f32, CHUNK_DEPTH as f32)).Floor();
+        let chunk: *mut Chunk = this.GetChunk(chunk_position);
+
+        if chunk != null {
+            let subchunk_position: Vector3 = (position / Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)).Floor();
+            let local_position: Vector3 = position - (subchunk_position * Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32));
+            chunk->subchunks[subchunk_position.y as u64]->SetBlockLight(local_position, newlight);
+            this.light_increase_queue.PushBack(Pair<Vector3, u8>(position, newlight));
+            this.PropagateIncrease(light_update);
+        }
+    }
+
+    priv PropagateIncrease(this: &mut World, light_update: bool) {
+        let neighbor_offsets[]: Vector3 = {
+            Vector3(1.0f32, 0.0f32, 0.0f32), Vector3(-1.0f32,  0.0f32,  0.0f32),
+            Vector3(0.0f32, 1.0f32, 0.0f32), Vector3( 0.0f32, -1.0f32,  0.0f32),
+            Vector3(0.0f32, 0.0f32, 1.0f32), Vector3( 0.0f32,  0.0f32, -1.0f32)
+        };
+
+        while this.light_increase_queue.Size() != 0u64 {
+            let values: Pair<Vector3, u8> = this.light_increase_queue.Pop(0u64);
+            let mut i: u64 = 0u64;
+
+            while i < 6u64 {
+                let neighbour_position: Vector3 = values.left + neighbor_offsets[i];
+
+                if neighbour_position.y < 0.0f32 || neighbour_position.y >= CHUNK_HEIGHT as f32 {
+                    i += 1u64;
+                    continue;
+                }
+
+                let chunk_position: Vector3 = (neighbour_position / Vector3(CHUNK_WIDTH as f32, CHUNK_HEIGHT as f32, CHUNK_DEPTH as f32)).Floor();
+                let chunk: *mut Chunk = this.GetChunk(chunk_position);
+
+                if chunk != null {
+                    let subchunk_position: Vector3 = (neighbour_position / Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)).Floor();
+                    let local_position: Vector3 = neighbour_position - (subchunk_position * Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32));
+                    let subchunk: *mut Subchunk = chunk->subchunks[subchunk_position.y as u64];
+
+                    if subchunk->GetBlock(local_position) == 0u8 && subchunk->GetBlockLight(local_position) + 2u8 <= values.right {
+                        subchunk->SetBlockLight(local_position, values.right - 1u8);
+                        this.light_increase_queue.PushBack(Pair<Vector3, u8>(neighbour_position, values.right - 1u8));
+
+                        if light_update {
+                            this.UpdateAtPosition(neighbour_position);
+                        }
+                    }
+                } i += 1u64;
+            }
+        }
+    }
+
+    pub DecreaseLight(this: &mut World, position: &Vector3) {
+        let chunk_position: Vector3 = (position / Vector3(CHUNK_WIDTH as f32, CHUNK_HEIGHT as f32, CHUNK_DEPTH as f32)).Floor();
+        let chunk: *mut Chunk = this.GetChunk(chunk_position);
+
+        if chunk != null {
+            let subchunk_position: Vector3 = (position / Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)).Floor();
+            let local_position: Vector3 = position - (subchunk_position * Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32));
+            let old_light: u8 = chunk->subchunks[subchunk_position.y as u64]->GetBlockLight(local_position);
+            chunk->subchunks[subchunk_position.y as u64]->SetBlockLight(local_position, 0u8);
+            this.light_decrease_queue.PushBack(Pair<Vector3, u8>(position, old_light));
+            this.PropagateDecrease(true);
+            this.PropagateIncrease(true);
+        }
+    }
+
+    priv PropagateDecrease(this: &mut World, light_update: bool) {
+        let neighbor_offsets[]: Vector3 = {
+            Vector3(1.0f32, 0.0f32, 0.0f32), Vector3(-1.0f32,  0.0f32,  0.0f32),
+            Vector3(0.0f32, 1.0f32, 0.0f32), Vector3( 0.0f32, -1.0f32,  0.0f32),
+            Vector3(0.0f32, 0.0f32, 1.0f32), Vector3( 0.0f32,  0.0f32, -1.0f32)
+        };
+
+        while this.light_decrease_queue.Size() != 0u64 {
+            let values: Pair<Vector3, u8> = this.light_decrease_queue.Pop(0u64);
+            let mut i: u64 = 0u64;
+
+            while i < 6u64 {
+                let neighbour_position: Vector3 = values.left + neighbor_offsets[i];
+
+                if neighbour_position.y < 0.0f32 || neighbour_position.y >= CHUNK_HEIGHT as f32 {
+                    i += 1u64;
+                    continue;
+                }
+
+                let chunk_position: Vector3 = (neighbour_position / Vector3(CHUNK_WIDTH as f32, CHUNK_HEIGHT as f32, CHUNK_DEPTH as f32)).Floor();
+                let chunk: *mut Chunk = this.GetChunk(chunk_position);
+
+                if chunk != null {
+                    let subchunk_position: Vector3 = (neighbour_position / Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)).Floor();
+                    let local_position: Vector3 = neighbour_position - (subchunk_position * Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32));
+                    let subchunk: *mut Subchunk = chunk->subchunks[subchunk_position.y as u64];
+                    let block: u8 = subchunk->GetBlock(local_position);
+                    let mut light_source: bool = false;
+                    let mut j: u64 = 0u64;
+
+                    while j < this.light_blocks.Size() {
+                        if this.light_blocks[j] == block {
+                            light_source = true;
+                            break;
+                        } j += 1u64;
+                    }
+
+                    if light_source {
+                        this.light_increase_queue.PushBack(Pair<Vector3, u8>(neighbour_position, 15u8));
+                    } else if block == 0u8 {
+                        let neighbour_level: u8 = subchunk->GetBlockLight(local_position);
+
+                        if neighbour_level != 0u8 {
+                            if neighbour_level < values.right {
+                                subchunk->SetBlockLight(local_position, 0u8);
+
+                                if light_update {
+                                    this.UpdateAtPosition(neighbour_position);
+                                }
+
+                                this.light_decrease_queue.PushBack(Pair<Vector3, u8>(neighbour_position, neighbour_level));
+                            } else if neighbour_level >= values.right {
+                                this.light_increase_queue.PushBack(Pair<Vector3, u8>(neighbour_position, neighbour_level));
+                            }
+                        }
+                    }
+                } i += 1u64;
+            }
+        }
+    }
+
+    priv QueueChunkUpload(this: &mut World, chunk: *mut Chunk) {
+        let mut found: bool = false;
+        mtx_lock(&this.chunk_upload_mutex);
+        let mut i: u64 = 0u64;
+
+        while i < this.chunk_upload_queue.Size() {
+            if this.chunk_upload_queue[i] == chunk { 
+                found = true; 
+                break; 
+            } i += 1u64;
+        }
+
+        if !found { 
+            this.chunk_upload_queue.PushBack(chunk); 
+        }
+
+        mtx_unlock(&this.chunk_upload_mutex);
+    }
+
+    priv UpdateAtPosition(this: &mut World, position: Vector3) {
+        let chunk_position: Vector3 = (position / Vector3(CHUNK_WIDTH as f32, CHUNK_HEIGHT as f32, CHUNK_DEPTH as f32)).Floor();
+        let chunk: *mut Chunk = this.GetChunk(chunk_position);
+
+        if chunk != null {
+            let subchunk_position: Vector3 = (position / Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)).Floor();
+            let local_position: Vector3 = position - (subchunk_position * Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32));
+            chunk->subchunks[subchunk_position.y as u64]->Update();
+            this.QueueChunkUpload(chunk);
+
+            if local_position.x == (SUBCHUNK_WIDTH as f32) - 1.0f32 {
+                if chunk->east_neighbor != null {
+                    chunk->east_neighbor->subchunks[subchunk_position.y as u64]->Update();
+                    this.QueueChunkUpload(chunk->east_neighbor);
+                }
+            } else if local_position.x == 0.0f32 {
+                if chunk->west_neighbor != null {
+                    chunk->west_neighbor->subchunks[subchunk_position.y as u64]->Update();
+                    this.QueueChunkUpload(chunk->west_neighbor);
+                }
+            }
+
+            if local_position.y == (SUBCHUNK_HEIGHT as f32) - 1.0f32 {
+                chunk->subchunks[(subchunk_position.y as u64) + 1u64]->Update();
+                this.QueueChunkUpload(chunk);
+            } else if local_position.y == 0.0f32 {
+                chunk->subchunks[(subchunk_position.y as u64) - 1u64]->Update();
+                this.QueueChunkUpload(chunk);
+            }
+
+            if local_position.z == (SUBCHUNK_DEPTH as f32) - 1.0f32 {
+                if chunk->south_neighbor != null {
+                    chunk->south_neighbor->subchunks[subchunk_position.y as u64]->Update();
+                    this.QueueChunkUpload(chunk->south_neighbor);
+                }
+            } else if local_position.z == 0.0f32 {
+                if chunk->north_neighbor != null {
+                    chunk->north_neighbor->subchunks[subchunk_position.y as u64]->Update();
+                    this.QueueChunkUpload(chunk->north_neighbor);
+                }
+            }
+        }
+    }
+
+    pub Raycast(this: &World, origin: Vector3, direction: Vector3, max_distance: f32) -> RaycastResult {
+        let mut position: Vector3 = origin + Vector3(0.5f32, 0.5f32, 0.5f32);
+
+        let step_x: f32 = direction.x > 0.0f32 ? 1.0f32 : (direction.x < 0.0f32 ? -1.0f32 : 0.0f32);
+        let step_y: f32 = direction.y > 0.0f32 ? 1.0f32 : (direction.y < 0.0f32 ? -1.0f32 : 0.0f32);
+        let step_z: f32 = direction.z > 0.0f32 ? 1.0f32 : (direction.z < 0.0f32 ? -1.0f32 : 0.0f32);
+
+        let delta_x: f32 = direction.x != 0.0f32 ? fabs(1.0f64 / direction.x as f64) as f32 : 1.0f32 / 0.0f32;
+        let delta_y: f32 = direction.y != 0.0f32 ? fabs(1.0f64 / direction.y as f64) as f32 : 1.0f32 / 0.0f32;
+        let delta_z: f32 = direction.z != 0.0f32 ? fabs(1.0f64 / direction.z as f64) as f32 : 1.0f32 / 0.0f32;
+
+        let mut max_x: f32 = direction.x > 0.0f32 ? (floorf(position.x) + 1.0f32 - position.x) * delta_x : (position.x - floorf(position.x)) * delta_x;
+        let mut max_y: f32 = direction.y > 0.0f32 ? (floorf(position.y) + 1.0f32 - position.y) * delta_y : (position.y - floorf(position.y)) * delta_y;
+        let mut max_z: f32 = direction.z > 0.0f32 ? (floorf(position.z) + 1.0f32 - position.z) * delta_z : (position.z - floorf(position.z)) * delta_z;
+
+        let mut normal: Vector3;
+        let mut distance: f32 = 0.0f32;
+
+        while distance < max_distance {
+            if this.GetBlock(position) != 0u8 {
+                ret RaycastResult(true, position.Floor(), normal);
+            }
+
+            if max_x < max_y {
+                if max_x < max_z {
+                    distance = max_x;
+                    max_x += delta_x;
+                    position.x += step_x;
+                    normal = Vector3(-step_x, 0.0f32, 0.0f32);
+                } else {
+                    distance = max_z;
+                    max_z += delta_z;
+                    position.z += step_z;
+                    normal = Vector3(0.0f32, 0.0f32, -step_z);
+                }
+            } else {
+                if max_y < max_z {
+                    distance = max_y;
+                    max_y += delta_y;
+                    position.y += step_y;
+                    normal = Vector3(0.0f32, -step_y, 0.0f32);
+                } else {
+                    distance = max_z;
+                    max_z += delta_z;
+                    position.z += step_z;
+                    normal = Vector3(0.0f32, 0.0f32, -step_z);
+                }
+            }
+        }
+
+        ret RaycastResult(false, Vector3(0.0f32, 0.0f32, 0.0f32), Vector3(0.0f32, 0.0f32, 0.0f32));
     }
 
     pub Update(this: &mut World, delta_time: f64, _player: *mut void) {
@@ -1911,6 +2238,10 @@ class Collider {
     }
 
     ~Collider(this: &mut Collider) {}
+
+    pub Collide(this: &Collider, other: &Collider) -> bool {
+        ret this.min.x < other.max.x && this.max.x > other.min.x && this.min.y < other.max.y && this.max.y > other.min.y && this.min.z < other.max.z && this.max.z > other.min.z;
+    }
 
     pub Collide(this: &Collider, other: &Collider, velocity: Vector3) -> Pair<f32, Vector3> {
         let xEntry: f32 = velocity.x != 0.0f32 ? (velocity.x > 0.0f32 ? other.min.x - this.max.x : other.max.x - this.min.x) / velocity.x : (this.min.x < other.max.x && this.max.x > other.min.x ? -1.0f32 / 0.0f32 : 1.0f32 / 0.0f32);
@@ -1977,6 +2308,9 @@ class Player {
     priv last_walk: f64 = 0.0f64,
     priv jump_state: bool = true,
     priv walk_state: bool = true,
+    priv left_click_state: bool = true,
+    priv right_click_state: bool = true,
+    priv selected_block: u8 = 3u8,
     pub flight_multiplier: f32 = 2.0f32,
     priv target_speed: f32 = WALKING_SPEED,
     priv speed: f32 = WALKING_SPEED,
@@ -2016,14 +2350,16 @@ class Player {
     }
 
     priv FixedUpdate(this: &mut Player, window: *mut GLFWwindow, delta_time: f64) {
-        let (mut width: i32, mut height: i32);
-        glfwGetWindowSize(window, &width, &height);
-        let sensitivity: f64 = 100.0f64;
+        this.UpdateCollider();
 
         if glfwGetKey(window, GLFW_KEY_LEFT_ALT) < GLFW_PRESS && glfwGetWindowAttrib(window, GLFW_FOCUSED) != 0i32 {
+            let (mut width: i32, mut height: i32);
+            glfwGetWindowSize(window, &width, &height);
+
             if !this.mouse_skip {
                 let (mut x: f64, mut y: f64);
                 glfwGetCursorPos(window, &x, &y);
+                let sensitivity: f64 = 100.0f64;
 
                 this.yaw += sensitivity * (x - (width as f64) / 2.0f64) / (width as f64);
                 this.pitch -= sensitivity * (y - (height as f64) / 2.0f64) / (height as f64);
@@ -2034,6 +2370,36 @@ class Player {
 
                 if this.pitch < -89.9f64 {
                     this.pitch = -89.9f64;
+                }
+
+                if glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) >= GLFW_PRESS {
+                    if this.left_click_state {
+                        let eye_translation: Vector3 = this.translation + Vector3(0.0f32, this.eye_level, 0.0f32);
+                        let ray: RaycastResult = this.world->Raycast(eye_translation, this.front.Normalize(), 3.0f32);
+
+                        if ray.hit {
+                            this.world->SetBlock(ray.position, 0u8);
+                        } this.left_click_state = false;
+                    }
+                } else {
+                    this.left_click_state = true;
+                }
+
+                if glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) >= GLFW_PRESS {
+                    if this.right_click_state {
+                        let eye_translation: Vector3 = this.translation + Vector3(0.0f32, this.eye_level, 0.0f32);
+                        let ray: RaycastResult = this.world->Raycast(eye_translation, this.front.Normalize(), 3.0f32);
+
+                        if ray.hit {
+                            let collider: Collider = Collider(Vector3(-0.5f32, -0.5f32, -0.5f32), Vector3(0.5f32, 0.5f32, 0.5f32));
+
+                            if !this.collider.Collide(collider + ray.position + ray.normal) {
+                                this.world->SetBlock(ray.position + ray.normal, this.selected_block);
+                            }
+                        } this.right_click_state = false;
+                    }
+                } else {
+                    this.right_click_state = true;
                 }
             } else {
                 this.mouse_skip = false;
@@ -2139,8 +2505,6 @@ class Player {
         this.velocity += this.acceleration * friction * (delta_time as f32);
         this.acceleration = Vector3(0.0f32, 0.0f32, 0.0f32);
         let mut _: u64 = 0u64;
-
-        this.UpdateCollider();
 
         if glfwGetKey(window, GLFW_KEY_TAB) >= GLFW_PRESS {
             if this.no_clip_state {

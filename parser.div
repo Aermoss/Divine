@@ -20,8 +20,8 @@ enum ASTNodeType: i32 {
     LITERAL, IDENTIFIER, SCOPE_RESOLUTION, BINARY_OP, UNARY_OP, TERNARY,
     CALL, MEMBER_ACCESS, INDEX_ACCESS, CAST, INITIALIZER_LIST, NEW, DELETE,
 
-    EXPRESSION_STMT, VARIABLE_DECL, CONSTANT_DECL, STATIC_DECL, ASSIGNMENT, IF_STMT,
-    WHILE_STMT, LOOP_STMT, RETURN_STMT, BREAK_STMT, CONTINUE_STMT, BLOCK_STMT,
+    EXPRESSION_STMT, VARIABLE_DECL, CONSTANT_DECL, STATIC_DECL, ASSIGNMENT, IF_STMT, WHILE_STMT,
+    LOOP_STMT, MATCH_STMT, CASE_STMT, DEFAULT_STMT, RETURN_STMT, BREAK_STMT, CONTINUE_STMT, BLOCK_STMT,
 
     FUNCTION_DECL, CLASS_DECL, ENUM_DECL, EXTERN_BLOCK, TYPE_DECL,
     IMPL_BLOCK, PARAMETER, FIELD,
@@ -413,6 +413,33 @@ class EnumDeclNode : ASTNode {
     }
 };
 
+class CaseStmtNode : ASTNode {
+    pub pattern: *const ASTNode,
+    pub body: *const ASTNode
+} impl {
+    CaseStmtNode(this: &mut CaseStmtNode, pattern: *const ASTNode, body: *const ASTNode, row: u64, column: u64, file: String) : ASTNode(ASTNodeType::CASE_STMT, row, column, file) {
+        (this.pattern, this.body) = (pattern, body);
+    }
+};
+
+class DefaultStmtNode : ASTNode {
+    pub body: *const ASTNode
+} impl {
+    DefaultStmtNode(this: &mut DefaultStmtNode, body: *const ASTNode, row: u64, column: u64, file: String) : ASTNode(ASTNodeType::DEFAULT_STMT, row, column, file) {
+        this.body = body;
+    }
+};
+
+class MatchStmtNode : ASTNode {
+    pub expression: *const ASTNode,
+    pub cases: Vector<*const CaseStmtNode>,
+    pub default_case: *const DefaultStmtNode
+} impl {
+    MatchStmtNode(this: &mut MatchStmtNode, expression: *const ASTNode, row: u64, column: u64, file: String) : ASTNode(ASTNodeType::MATCH_STMT, row, column, file) {
+        (this.expression, this.default_case) = (expression, null);
+    }
+};
+
 class ExternBlockNode : ASTNode {
     pub linkage: String,
     pub declarations: Vector<*const ASTNode>
@@ -567,9 +594,9 @@ class Parser {
             } ret initializer_list as *const ASTNode;
         } else if token._type == TokenType::LPAREN {
             this.Advance();
-            let expr: *const ASTNode = this.ParseExpression();
+            let expression: *const ASTNode = this.ParseExpression();
             this.Expect(TokenType::RPAREN);
-            ret expr;
+            ret expression;
         } else {
             this.Error((String("Unexpected token '") + token.value + "'.").Data(), token.row, token.column);
             ret null;
@@ -577,14 +604,14 @@ class Parser {
     }
 
     priv ParsePostfix(this: &mut Parser) -> *const ASTNode {
-        let mut expr: *const ASTNode = this.ParsePrimary();
+        let mut expression: *const ASTNode = this.ParsePrimary();
 
         loop {
             let token: Token = this.CurrentToken();
 
             if token._type == TokenType::LPAREN {
                 this.Advance();
-                let call: *mut CallNode = new CallNode(expr, token.row, token.column, this.file);
+                let call: *mut CallNode = new CallNode(expression, token.row, token.column, this.file);
 
                 if !this.Match(TokenType::RPAREN) {
                     call->arguments.PushBack(this.ParseExpression());
@@ -592,10 +619,10 @@ class Parser {
                     while this.Match(TokenType::COMMA) {
                         call->arguments.PushBack(this.ParseExpression());
                     } this.Expect(TokenType::RPAREN);
-                } expr = call as *const ASTNode;
+                } expression = call as *const ASTNode;
             } else if token._type == TokenType::DOT || token._type == TokenType::ARROW {
                 this.Advance();
-                let member_access: *mut MemberAccessNode = new MemberAccessNode(expr, token._type == TokenType::ARROW, token.row, token.column, this.file);
+                let member_access: *mut MemberAccessNode = new MemberAccessNode(expression, token._type == TokenType::ARROW, token.row, token.column, this.file);
 
                 if this.Match(TokenType::OPERATOR) {
                     member_access->member += "op";
@@ -606,16 +633,16 @@ class Parser {
                     }
                 } else {
                     member_access->member += this.Expect(TokenType::NAME).value;
-                } expr = member_access as *const ASTNode;
+                } expression = member_access as *const ASTNode;
             } else if token._type == TokenType::LBRACKET {
                 this.Advance();
-                let index_access: *const IndexAccessNode = new IndexAccessNode(expr, this.ParseExpression(), token.row, token.column, this.file);
+                let index_access: *const IndexAccessNode = new IndexAccessNode(expression, this.ParseExpression(), token.row, token.column, this.file);
                 this.Expect(TokenType::RBRACKET);
-                expr = index_access as *const ASTNode;
+                expression = index_access as *const ASTNode;
             } else {
                 break;
             }
-        } ret expr;
+        } ret expression;
     }
 
     priv ParseUnary(this: &mut Parser) -> *const ASTNode {
@@ -779,27 +806,25 @@ class Parser {
         } ret node;
     }
 
-    priv ParseStatement(this: &mut Parser) -> *const ASTNode {
+    priv ParseStatement(this: &mut Parser, expression: bool) -> *const ASTNode {
         let token: Token = this.CurrentToken();
 
-        if token._type == TokenType::LET {
+        if token._type == TokenType::LET && !expression {
             ret this.ParseVariableDeclaration();
-        } else if token._type == TokenType::IF {
+        } else if token._type == TokenType::IF && !expression {
             ret this.ParseIfStatement();
-        } else if token._type == TokenType::WHILE {
+        } else if token._type == TokenType::WHILE && !expression {
             ret this.ParseWhileStatement();
-        } else if token._type == TokenType::LOOP {
+        } else if token._type == TokenType::LOOP && !expression {
             ret this.ParseLoopStatement();
+        } else if token._type == TokenType::MATCH && !expression {
+            ret this.ParseMatchStatement();
         } else if token._type == TokenType::RETURN {
-            ret this.ParseReturnStatement();
+            ret this.ParseReturnStatement(expression);
         } else if token._type == TokenType::BREAK {
-            this.Advance();
-            this.Expect(TokenType::SEMICOLON);
-            ret new BreakStmtNode(token.row, token.column, this.file) as *const ASTNode;
+            ret this.ParseBreakStatement(expression);
         } else if token._type == TokenType::CONTINUE {
-            this.Advance();
-            this.Expect(TokenType::SEMICOLON);
-            ret new ContinueStmtNode(token.row, token.column, this.file) as *const ASTNode;
+            ret this.ParseContinueStatement(expression);
         } else {
             let index: u64 = this.index;
 
@@ -839,16 +864,16 @@ class Parser {
                 }
             }
 
-            let expr: *const ASTNode = this.ParseExpression();
+            let _expression: *const ASTNode = this.ParseExpression();
 
             if this.IsAssignmentOperator(this.CurrentToken()._type) {
                 let token: Token = this.Advance();
-                let assignment: *const AssignmentNode = new AssignmentNode(expr, this.ParseExpression(), token._type, token.row, token.column, this.file);
-                this.Expect(TokenType::SEMICOLON);
+                let assignment: *const AssignmentNode = new AssignmentNode(_expression, this.ParseExpression(), token._type, token.row, token.column, this.file);
+                if !expression { this.Expect(TokenType::SEMICOLON); }
                 ret assignment as *const ASTNode;
             } else {
-                this.Expect(TokenType::SEMICOLON);
-                ret new ExpressionStmtNode(expr, token.row, token.column, this.file) as *const ASTNode;
+                if !expression { this.Expect(TokenType::SEMICOLON); }
+                ret new ExpressionStmtNode(_expression, token.row, token.column, this.file) as *const ASTNode;
             }
         }
     }
@@ -1025,7 +1050,45 @@ class Parser {
         ret new LoopStmtNode(this.ParseBlockStatement(), token.row, token.column, this.file) as *const ASTNode;
     }
 
-    priv ParseReturnStatement(this: &mut Parser) -> *const ASTNode {
+    priv ParseMatchStatement(this: &mut Parser) -> *const ASTNode {
+        let match_token: Token = this.Expect(TokenType::MATCH);
+        let match_node: *mut MatchStmtNode = new MatchStmtNode(this.ParseExpression(), match_token.row, match_token.column, this.file);
+        this.Expect(TokenType::LBRACE);
+
+        while this.CurrentToken()._type != TokenType::RBRACE && this.CurrentToken()._type != TokenType::EOF {
+            let mut pattern: *const ASTNode = null;
+
+            if this.CurrentToken()._type == TokenType::NAME && this.CurrentToken().value == "_" {
+                this.Advance();
+            } else {
+                pattern = this.ParseExpression();
+            }
+
+            this.Expect(TokenType::FAT_ARROW);
+            let mut body: *const ASTNode = null;
+
+            if this.CurrentToken()._type == TokenType::LBRACE {
+                body = this.ParseBlockStatement();
+            } else {
+                body = this.ParseStatement(true);
+            }
+
+            if pattern == null {
+                match_node->default_case = new DefaultStmtNode(body, match_token.row, match_token.column, this.file);
+            } else {
+                match_node->cases.PushBack(new CaseStmtNode(pattern, body, match_token.row, match_token.column, this.file));
+            }
+
+            if this.CurrentToken()._type != TokenType::RBRACE && this.CurrentToken()._type != TokenType::EOF {
+                this.Expect(TokenType::COMMA);
+            }
+        }
+
+        this.Expect(TokenType::RBRACE);
+        ret match_node as *const ASTNode;
+    }
+
+    priv ParseReturnStatement(this: &mut Parser, expression: bool) -> *const ASTNode {
         let token: Token = this.Expect(TokenType::RETURN);
         let mut value: *const ASTNode = null;
 
@@ -1033,8 +1096,20 @@ class Parser {
             value = this.ParseExpression();
         }
 
-        this.Expect(TokenType::SEMICOLON);
+        if !expression { this.Expect(TokenType::SEMICOLON); }
         ret new ReturnStmtNode(value, token.row, token.column, this.file) as *const ASTNode;
+    }
+
+    priv ParseBreakStatement(this: &mut Parser, expression: bool) -> *const ASTNode {
+        let token: Token = this.Expect(TokenType::BREAK);
+        if !expression { this.Expect(TokenType::SEMICOLON); }
+        ret new BreakStmtNode(token.row, token.column, this.file) as *const ASTNode;
+    }
+
+    priv ParseContinueStatement(this: &mut Parser, expression: bool) -> *const ASTNode {
+        let token: Token = this.Expect(TokenType::CONTINUE);
+        if !expression { this.Expect(TokenType::SEMICOLON); }
+        ret new ContinueStmtNode(token.row, token.column, this.file) as *const ASTNode;
     }
 
     priv ParseBlockStatement(this: &mut Parser) -> *const ASTNode {
@@ -1042,7 +1117,7 @@ class Parser {
         let block: *mut BlockStmtNode = new BlockStmtNode(token.row, token.column, this.file);
 
         while this.CurrentToken()._type != TokenType::RBRACE && this.CurrentToken()._type != TokenType::EOF {
-            let stmt: *const ASTNode = this.ParseStatement();
+            let stmt: *const ASTNode = this.ParseStatement(false);
 
             if stmt != null {
                 block->statements.PushBack(stmt);

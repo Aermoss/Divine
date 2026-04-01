@@ -2171,6 +2171,8 @@ class Compiler {
             this.CompileIf(stmt as *const IfStmtNode);
         } else if stmt->node_type == ASTNodeType::WHILE_STMT {
             this.CompileWhile(stmt as *const WhileStmtNode);
+        } else if stmt->node_type == ASTNodeType::FOR_STMT {
+            this.CompileFor(stmt as *const ForStmtNode);
         } else if stmt->node_type == ASTNodeType::LOOP_STMT {
             this.CompileLoop(stmt as *const LoopStmtNode);
         } else if stmt->node_type == ASTNodeType::CONTINUE_STMT {
@@ -2380,6 +2382,83 @@ class Compiler {
         if LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(this.builder)) == null {
             LLVMBuildBr(this.builder, compare_block);
         }
+
+        LLVMPositionBuilderAtStart(this.builder, end_block);
+    }
+
+    priv CompileFor(this: &mut Compiler, for_stmt: *const ForStmtNode) {
+        if for_stmt->iterable->node_type != ASTNodeType::RANGE_EXPR {
+            this.Error("For loop currently only supports range expressions.", for_stmt as *const ASTNode);
+            ret;
+        }
+
+        let range: *const RangeExprNode = for_stmt->iterable as *const RangeExprNode;
+        let start_val: QualifiedValue = this.CompileExpression(range->start, false);
+        let end_val: QualifiedValue = this.CompileExpression(range->end, false);
+        let iter_type: *const QualifiedType = &start_val.Type();
+
+        let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
+        LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
+        let iter_alloca: LLVMValueRef = LLVMBuildAlloca(this.builder, iter_type->Value(), "");
+        LLVMPositionBuilderAtEnd(this.builder, current);
+        LLVMBuildStore(this.builder, start_val.Value(), iter_alloca);
+
+        let function: LLVMValueRef = LLVMGetBasicBlockParent(LLVMGetInsertBlock(this.builder));
+        let compare_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "");
+        let loop_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "");
+        let step_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "");
+        let end_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "");
+
+        LLVMBuildBr(this.builder, compare_block);
+        LLVMPositionBuilderAtStart(this.builder, compare_block);
+
+        let iter_val: LLVMValueRef = LLVMBuildLoad2(this.builder, iter_type->Value(), iter_alloca, "");
+        let mut condition: LLVMValueRef = null;
+        let type_kind: LLVMTypeKind = LLVMGetTypeKind(iter_type->Value());
+
+        if type_kind == LLVMTypeKind::LLVMFloatTypeKind || type_kind == LLVMTypeKind::LLVMDoubleTypeKind {
+            if range->inclusive {
+                condition = LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOLE, iter_val, end_val.Value(), "");
+            } else {
+                condition = LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOLT, iter_val, end_val.Value(), "");
+            }
+        } else {
+            if range->inclusive {
+                condition = LLVMBuildICmp(this.builder, iter_type->IsSigned() ? LLVMIntPredicate::LLVMIntSLE : LLVMIntPredicate::LLVMIntULE, iter_val, end_val.Value(), "");
+            } else {
+                condition = LLVMBuildICmp(this.builder, iter_type->IsSigned() ? LLVMIntPredicate::LLVMIntSLT : LLVMIntPredicate::LLVMIntULT, iter_val, end_val.Value(), "");
+            }
+        }
+
+        LLVMBuildCondBr(this.builder, condition, loop_block, end_block);
+
+        LLVMPositionBuilderAtStart(this.builder, loop_block);
+        this.blocks.PushBack(Pair<LLVMBasicBlockRef, LLVMBasicBlockRef>(step_block, end_block));
+        this.scope_manager.PushScope(String("for"), false);
+
+        let iter_ptr: QualifiedValue = QualifiedValue(iter_alloca, this.type_manager.Pointer(iter_type, false), false, true);
+        this.scope_manager.Set(for_stmt->variable, SymbolKind::Variable, iter_ptr, false, for_stmt as *const ASTNode);
+
+        this.CompileBlock(for_stmt->loop_stmt as *const BlockStmtNode);
+        this.scope_manager.PopScope();
+        this.blocks.PopBack();
+
+        if LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(this.builder)) == null {
+            LLVMBuildBr(this.builder, step_block);
+        }
+
+        LLVMPositionBuilderAtStart(this.builder, step_block);
+        let current_val: LLVMValueRef = LLVMBuildLoad2(this.builder, iter_type->Value(), iter_alloca, "");
+        let mut next_val: LLVMValueRef = null;
+
+        if type_kind == LLVMTypeKind::LLVMFloatTypeKind || type_kind == LLVMTypeKind::LLVMDoubleTypeKind {
+            next_val = LLVMBuildFAdd(this.builder, current_val, LLVMConstReal(iter_type->Value(), 1.0f64), "");
+        } else {
+            next_val = LLVMBuildAdd(this.builder, current_val, LLVMConstInt(iter_type->Value(), 1u64, 0i32), "");
+        }
+
+        LLVMBuildStore(this.builder, next_val, iter_alloca);
+        LLVMBuildBr(this.builder, compare_block);
 
         LLVMPositionBuilderAtStart(this.builder, end_block);
     }

@@ -24,7 +24,7 @@ enum ASTNodeType: i32 {
     FOR_STMT, LOOP_STMT, MATCH_STMT, CASE_STMT, DEFAULT_STMT, RETURN_STMT, BREAK_STMT, CONTINUE_STMT, BLOCK_STMT, RANGE_EXPR,
 
     FUNCTION_DECL, CLASS_DECL, ENUM_DECL, EXTERN_BLOCK, TYPE_DECL,
-    IMPL_BLOCK, PARAMETER, FIELD,
+    IMPL_BLOCK, PARAMETER, FIELD, VARIANT, STRUCT_INIT, OR_PATTERN,
 
     PRIMITIVE_TYPE, POINTER_TYPE, REFERENCE_TYPE, ARRAY_TYPE, FUNCTION_TYPE,
 
@@ -68,6 +68,9 @@ func ASTNodeTypeToString(_type: ASTNodeType) -> String {
     else if _type == ASTNodeType::IMPL_BLOCK { ret { "IMPL_BLOCK" } as String; }
     else if _type == ASTNodeType::PARAMETER { ret { "PARAMETER" } as String; }
     else if _type == ASTNodeType::FIELD { ret { "FIELD" } as String; }
+    else if _type == ASTNodeType::VARIANT { ret { "VARIANT" } as String; }
+    else if _type == ASTNodeType::STRUCT_INIT { ret { "STRUCT_INIT" } as String; }
+    else if _type == ASTNodeType::OR_PATTERN { ret { "OR_PATTERN" } as String; }
     else if _type == ASTNodeType::PRIMITIVE_TYPE { ret { "PRIMITIVE_TYPE" } as String; }
     else if _type == ASTNodeType::POINTER_TYPE { ret { "POINTER_TYPE" } as String; }
     else if _type == ASTNodeType::REFERENCE_TYPE { ret { "REFERENCE_TYPE" } as String; }
@@ -407,22 +410,37 @@ class ClassDeclNode : ASTNode {
     }
 };
 
+class VariantNode : ASTNode {
+    pub name: String,
+    pub types: Vector<*const ASTNode>,
+    pub field_names: Vector<String>,
+    pub value: *const ASTNode = null
+} impl {
+    VariantNode(this: &mut VariantNode, name: String, row: u64, column: u64, file: String) : ASTNode(ASTNodeType::VARIANT, row, column, file) {
+        this.name = name;
+    }
+};
+
 class EnumDeclNode : ASTNode {
     pub name: String,
-    pub values: Map<String, *const ASTNode>,
-    pub underlying_type: *const ASTNode
+    pub variants: Vector<*const VariantNode>,
+    pub methods: Vector<Pair<TokenType, *const FunctionDeclNode>>,
+    pub underlying_type: *const ASTNode,
+    pub generic: bool,
+    pub types: Vector<String>
 } impl {
     EnumDeclNode(this: &mut EnumDeclNode, name: String, row: u64, column: u64, file: String) : ASTNode(ASTNodeType::ENUM_DECL, row, column, file) {
-        this.name = name;
+        (this.name, this.underlying_type, this.generic) = (name, null, false);
     }
 };
 
 class CaseStmtNode : ASTNode {
     pub pattern: *const ASTNode,
-    pub body: *const ASTNode
+    pub body: *const ASTNode,
+    pub guard: *const ASTNode
 } impl {
-    CaseStmtNode(this: &mut CaseStmtNode, pattern: *const ASTNode, body: *const ASTNode, row: u64, column: u64, file: String) : ASTNode(ASTNodeType::CASE_STMT, row, column, file) {
-        (this.pattern, this.body) = (pattern, body);
+    CaseStmtNode(this: &mut CaseStmtNode, pattern: *const ASTNode, body: *const ASTNode, guard: *const ASTNode, row: u64, column: u64, file: String) : ASTNode(ASTNodeType::CASE_STMT, row, column, file) {
+        (this.pattern, this.body, this.guard) = (pattern, body, guard);
     }
 };
 
@@ -441,6 +459,25 @@ class MatchStmtNode : ASTNode {
 } impl {
     MatchStmtNode(this: &mut MatchStmtNode, expression: *const ASTNode, row: u64, column: u64, file: String) : ASTNode(ASTNodeType::MATCH_STMT, row, column, file) {
         (this.expression, this.default_case) = (expression, null);
+    }
+};
+
+class StructInitNode : ASTNode {
+    pub expression: *const ASTNode,
+    pub field_names: Vector<String>,
+    pub field_values: Vector<*const ASTNode>
+} impl {
+    StructInitNode(this: &mut StructInitNode, expression: *const ASTNode, row: u64, column: u64, file: String) : ASTNode(ASTNodeType::STRUCT_INIT, row, column, file) {
+        this.expression = expression;
+    }
+};
+
+class OrPatternNode : ASTNode {
+    pub left: *const ASTNode,
+    pub right: *const ASTNode
+} impl {
+    OrPatternNode(this: &mut OrPatternNode, left: *const ASTNode, right: *const ASTNode, row: u64, column: u64, file: String) : ASTNode(ASTNodeType::OR_PATTERN, row, column, file) {
+        (this.left, this.right) = (left, right);
     }
 };
 
@@ -577,6 +614,24 @@ class Parser {
         ret _type == TokenType::NOT || _type == TokenType::MINUS || _type == TokenType::BITWISE_AND || _type == TokenType::MUL;
     }
 
+    priv IsStructInit(this: &Parser, node_type: ASTNodeType) -> bool {
+        let after_brace: Token = this.PeekToken(1u64);
+
+        if node_type == ASTNodeType::SCOPE_RESOLUTION {
+            if after_brace._type == TokenType::RBRACE { ret true; }
+            if after_brace._type == TokenType::TWO_DOT { ret true; }
+        }
+
+        if after_brace._type == TokenType::NAME {
+            let after_name: Token = this.PeekToken(2u64);
+            if after_name._type == TokenType::COLON { ret true; }
+
+            if node_type == ASTNodeType::SCOPE_RESOLUTION {
+                ret after_name._type == TokenType::COMMA || after_name._type == TokenType::RBRACE;
+            }
+        } ret false;
+    }
+
     priv IsAssignmentOperator(this: &Parser, _type: TokenType) -> bool {
         ret _type == TokenType::ASSIGN || _type == TokenType::PLUS_ASSIGN || _type == TokenType::MINUS_ASSIGN || _type == TokenType::MUL_ASSIGN || _type == TokenType::DIV_ASSIGN || _type == TokenType::MOD_ASSIGN
            || _type == TokenType::LSHIFT_ASSIGN || _type == TokenType::RSHIFT_ASSIGN || _type == TokenType::AND_ASSIGN || _type == TokenType::OR_ASSIGN || _type == TokenType::XOR_ASSIGN;
@@ -684,6 +739,30 @@ class Parser {
                 let index_access: *const IndexAccessNode = new IndexAccessNode(expression, this.ParseExpression(), token.row, token.column, this.file);
                 this.Expect(TokenType::RBRACKET);
                 expression = index_access as *const ASTNode;
+            } else if token._type == TokenType::LBRACE && (expression->node_type == ASTNodeType::SCOPE_RESOLUTION || expression->node_type == ASTNodeType::IDENTIFIER) && this.IsStructInit(expression->node_type) {
+                this.Advance();
+                let struct_init: *mut StructInitNode = new StructInitNode(expression, token.row, token.column, this.file);
+
+                while this.CurrentToken()._type != TokenType::RBRACE && this.CurrentToken()._type != TokenType::EOF {
+                    if this.CurrentToken()._type == TokenType::TWO_DOT {
+                        this.Advance();
+                        break;
+                    }
+
+                    let field_name_tok: Token = this.Expect(TokenType::NAME);
+
+                    if this.Match(TokenType::COLON) {
+                        struct_init->field_values.PushBack(this.ParseExpression());
+                    } else {
+                        struct_init->field_values.PushBack(new IdentifierNode(field_name_tok.value, field_name_tok.row, field_name_tok.column, this.file) as *const ASTNode);
+                    }
+
+                    struct_init->field_names.PushBack(field_name_tok.value);
+                    if !this.Match(TokenType::COMMA) { break; }
+                }
+
+                this.Expect(TokenType::RBRACE);
+                expression = struct_init as *const ASTNode;
             } else {
                 break;
             }
@@ -1150,6 +1229,59 @@ class Parser {
         ret new LoopStmtNode(this.ParseBlockStatement(), token.row, token.column, this.file) as *const ASTNode;
     }
 
+    priv ConvertBitwiseToPattern(this: &mut Parser, node: *const ASTNode) -> *const ASTNode {
+        if node->node_type != ASTNodeType::BINARY_OP { ret node; }
+        let binary_operation: *const BinaryOpNode = node as *const BinaryOpNode;
+        if binary_operation->operator != TokenType::BITWISE_OR { ret node; }
+
+        let left: *const ASTNode = this.ConvertBitwiseToPattern(binary_operation->left);
+        let right: *const ASTNode = this.ConvertBitwiseToPattern(binary_operation->right);
+        ret new OrPatternNode(left, right, node->row, node->column, node->file) as *const ASTNode;
+    }
+
+    priv ParsePattern(this: &mut Parser) -> *const ASTNode {
+        ret this.ParseSinglePattern();
+    }
+
+    priv ParseSinglePattern(this: &mut Parser) -> *const ASTNode {
+        if this.CurrentToken()._type == TokenType::NAME && this.CurrentToken().value == "_" {
+            let token: Token = this.CurrentToken();
+            this.Advance();
+            ret new IdentifierNode({ "_" } as String, token.row, token.column, this.file) as *const ASTNode;
+        }
+
+        let expression: *const ASTNode = this.ParseExpression();
+        let converted: *const ASTNode = this.ConvertBitwiseToPattern(expression);
+        if converted != expression { ret converted; }
+
+        if this.CurrentToken()._type == TokenType::LBRACE && (expression->node_type == ASTNodeType::IDENTIFIER || expression->node_type == ASTNodeType::SCOPE_RESOLUTION) {
+            let brace_token: Token = this.CurrentToken();
+            this.Advance();
+            let struct_pattern: *mut StructInitNode = new StructInitNode(expression, brace_token.row, brace_token.column, this.file);
+
+            while this.CurrentToken()._type != TokenType::RBRACE && this.CurrentToken()._type != TokenType::EOF {
+                if this.CurrentToken()._type == TokenType::TWO_DOT {
+                    this.Advance();
+                    break;
+                }
+
+                let field_name_token: Token = this.Expect(TokenType::NAME);
+
+                if this.Match(TokenType::COLON) {
+                    struct_pattern->field_values.PushBack(this.ParsePattern());
+                } else {
+                    struct_pattern->field_values.PushBack(new IdentifierNode(field_name_token.value, field_name_token.row, field_name_token.column, this.file) as *const ASTNode);
+                }
+
+                struct_pattern->field_names.PushBack(field_name_token.value);
+                if !this.Match(TokenType::COMMA) { break; }
+            }
+
+            this.Expect(TokenType::RBRACE);
+            ret struct_pattern as *const ASTNode;
+        } ret expression;
+    }
+
     priv ParseMatchStatement(this: &mut Parser) -> *const ASTNode {
         let match_token: Token = this.Expect(TokenType::MATCH);
         let match_node: *mut MatchStmtNode = new MatchStmtNode(this.ParseExpression(), match_token.row, match_token.column, this.file);
@@ -1161,7 +1293,14 @@ class Parser {
             if this.CurrentToken()._type == TokenType::NAME && this.CurrentToken().value == "_" && this.PeekToken(1u64)._type == TokenType::FAT_ARROW {
                 this.Advance();
             } else {
-                pattern = this.ParseExpression();
+                pattern = this.ParsePattern();
+            }
+
+            let mut guard: *const ASTNode = null;
+
+            if pattern != null && this.CurrentToken()._type == TokenType::IF {
+                this.Advance();
+                guard = this.ParseExpression();
             }
 
             this.Expect(TokenType::FAT_ARROW);
@@ -1176,7 +1315,7 @@ class Parser {
             if pattern == null {
                 match_node->default_case = new DefaultStmtNode(body, match_token.row, match_token.column, this.file);
             } else {
-                match_node->cases.PushBack(new CaseStmtNode(pattern, body, match_token.row, match_token.column, this.file));
+                match_node->cases.PushBack(new CaseStmtNode(pattern, body, guard, match_token.row, match_token.column, this.file));
             }
 
             if !this.Match(TokenType::COMMA) {
@@ -1513,6 +1652,17 @@ class Parser {
 
         let enum_decl: *mut EnumDeclNode = new EnumDeclNode(name_token.value, enum_token.row, enum_token.column, this.file);
 
+        if this.Match(TokenType::LESS) {
+            enum_decl->types.PushBack(this.Expect(TokenType::NAME).value);
+
+            while this.Match(TokenType::COMMA) {
+                enum_decl->types.PushBack(this.Expect(TokenType::NAME).value);
+            }
+
+            this.Expect(TokenType::GREATER);
+            enum_decl->generic = true;
+        }
+
         if this.Match(TokenType::COLON) {
             let _type: *const ASTNode = this.ParseType();
             enum_decl->underlying_type = _type;
@@ -1522,27 +1672,58 @@ class Parser {
 
         this.Expect(TokenType::LBRACE);
 
-        if this.CurrentToken()._type != TokenType::RBRACE {
-            let mut name_token: Token = this.Expect(TokenType::NAME);
+        while this.CurrentToken()._type != TokenType::RBRACE && this.CurrentToken()._type != TokenType::EOF {
+            let variant_name: Token = this.Expect(TokenType::NAME);
+            let variant: *mut VariantNode = new VariantNode(variant_name.value, variant_name.row, variant_name.column, this.file);
 
-            if this.Match(TokenType::ASSIGN) {
-                enum_decl->values[name_token.value] = this.ParseExpression();
-            } else {
-                enum_decl->values[name_token.value] = null;
+            if this.Match(TokenType::LBRACE) {
+                while this.CurrentToken()._type != TokenType::RBRACE && this.CurrentToken()._type != TokenType::EOF {
+                    let field_name_token: Token = this.Expect(TokenType::NAME);
+                    this.Expect(TokenType::COLON);
+                    variant->field_names.PushBack(field_name_token.value);
+                    variant->types.PushBack(this.ParseType());
+                    if !this.Match(TokenType::COMMA) { break; }
+                }
+
+                this.Expect(TokenType::RBRACE);
+            } else if this.Match(TokenType::LPAREN) {
+                variant->types.PushBack(this.ParseType());
+
+                while this.Match(TokenType::COMMA) {
+                    variant->types.PushBack(this.ParseType());
+                }
+
+                this.Expect(TokenType::RPAREN);
+            } else if this.Match(TokenType::ASSIGN) {
+                variant->value = this.ParseExpression();
             }
 
-            while this.Match(TokenType::COMMA) {
-                name_token = this.Expect(TokenType::NAME);
+            enum_decl->variants.PushBack(variant);
 
-                if this.Match(TokenType::ASSIGN) {
-                    enum_decl->values[name_token.value] = this.ParseExpression();
-                } else {
-                    enum_decl->values[name_token.value] = null;
-                }
+            if !this.Match(TokenType::COMMA) {
+                break;
             }
         }
 
         this.Expect(TokenType::RBRACE);
+
+        if this.Match(TokenType::IMPL) {
+            this.Expect(TokenType::LBRACE);
+
+            while this.CurrentToken()._type != TokenType::RBRACE && this.CurrentToken()._type != TokenType::EOF {
+                let visibility_token: Token = this.CurrentToken();
+
+                if visibility_token._type == TokenType::PUBLIC || visibility_token._type == TokenType::PRIVATE {
+                    enum_decl->methods.PushBack(Pair<TokenType, *const FunctionDeclNode>(visibility_token._type, this.ParseFunctionDeclaration() as *const FunctionDeclNode));
+                } else {
+                    this.Error("Expected visibility modifier.", visibility_token.row, visibility_token.column);
+                    break;
+                }
+            }
+
+            this.Expect(TokenType::RBRACE);
+        }
+
         this.Match(TokenType::SEMICOLON);
         ret enum_decl as *const ASTNode;
     }

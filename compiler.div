@@ -2788,79 +2788,49 @@ class Compiler {
 
     priv CompileIf(this: &mut Compiler, if_stmt: *const IfStmtNode) {
         let function: LLVMValueRef = LLVMGetBasicBlockParent(LLVMGetInsertBlock(this.builder));
-        let (mut current: *const IfStmtNode, mut end_block: LLVMBasicBlockRef) = (if_stmt, null);
+        let then_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "");
+        let (mut else_block: LLVMBasicBlockRef, mut end_block: LLVMBasicBlockRef) = (null, null);
 
-        while current != null {
-            let then_stmt: *const BlockStmtNode = current->then_stmt as *const BlockStmtNode;
-            let else_stmt: *const ASTNode = current->else_stmt;
-            let mut has_else: bool = false;
+        if if_stmt->else_stmt != null {
+            else_block = LLVMAppendBasicBlockInContext(this.context, function, "");
+        } else {
+            if end_block == null {
+                end_block = LLVMAppendBasicBlockInContext(this.context, function, "");
+            } else_block = end_block;
+        }
 
-            if else_stmt != null {
-                if else_stmt->node_type == ASTNodeType::BLOCK_STMT {
-                    let block: *const BlockStmtNode = else_stmt as *const BlockStmtNode;
-                    has_else = block->statements.Size() > 0u64;
-                } else if else_stmt->node_type == ASTNodeType::IF_STMT {
-                    has_else = true;
-                } else {
-                    this.Error((String("Unknown else statement '") + ASTNodeTypeToString(else_stmt->node_type) + "'.").Data(), else_stmt);
-                    ret;
-                }
-            }
+        let condition: QualifiedValue = this.CompileExpression(if_stmt->condition, false);
+        LLVMBuildCondBr(this.builder, condition.Value(), then_block, else_block);
 
-            let mut then_block: LLVMBasicBlockRef;
+        LLVMPositionBuilderAtEnd(this.builder, then_block);
+        this.scope_manager.PushScope(String("then"), false);
+        this.CompileBlock(if_stmt->then_stmt as *const BlockStmtNode);
+        this.scope_manager.PopScope();
 
-            if then_stmt->statements.Size() > 0u64 {
-                then_block = LLVMAppendBasicBlockInContext(this.context, function, "");
-            } else {
-                if end_block == null {
-                    end_block = LLVMAppendBasicBlockInContext(this.context, function, "");
-                } then_block = end_block;
-            }
+        if LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(this.builder)) == null {
+            if end_block == null {
+                end_block = LLVMAppendBasicBlockInContext(this.context, function, "");
+            } LLVMBuildBr(this.builder, end_block);
+        }
 
-            let mut else_block: LLVMBasicBlockRef;
-
-            if has_else {
-                else_block = LLVMAppendBasicBlockInContext(this.context, function, "");
-            } else {
-                if end_block == null {
-                    end_block = LLVMAppendBasicBlockInContext(this.context, function, "");
-                } else_block = end_block;
-            }
-
-            let condition: QualifiedValue = this.CompileExpression(current->condition, false);
-            LLVMBuildCondBr(this.builder, condition.Value(), then_block, else_block);
-
-            if then_stmt->statements.Size() > 0u64 {
-                LLVMPositionBuilderAtEnd(this.builder, then_block);
-                this.scope_manager.PushScope(String("then"), false);
-                this.CompileBlock(then_stmt);
-                this.scope_manager.PopScope();
-
-                if LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(this.builder)) == null {
-                    if end_block == null {
-                        end_block = LLVMAppendBasicBlockInContext(this.context, function, "");
-                    } LLVMBuildBr(this.builder, end_block);
-                }
-            }
-
+        if if_stmt->else_stmt != null {
             LLVMPositionBuilderAtEnd(this.builder, else_block);
+            this.scope_manager.PushScope(String("else"), false);
 
-            if has_else {
-                if else_stmt->node_type == ASTNodeType::BLOCK_STMT {
-                    this.scope_manager.PushScope(String("else"), false);
-                    this.CompileBlock(else_stmt as *const BlockStmtNode);
-                    this.scope_manager.PopScope();
-
-                    if LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(this.builder)) == null {
-                        if end_block == null {
-                            end_block = LLVMAppendBasicBlockInContext(this.context, function, "");
-                        } LLVMBuildBr(this.builder, end_block);
-                    } current = null;
-                } else {
-                    current = else_stmt as *const IfStmtNode;
-                }
+            if if_stmt->else_stmt->node_type == ASTNodeType::IF_LET_STMT {
+                this.CompileIfLet(if_stmt->else_stmt as *const IfLetStmtNode);
+            } else if if_stmt->else_stmt->node_type == ASTNodeType::IF_STMT {
+                this.CompileIf(if_stmt->else_stmt as *const IfStmtNode);
             } else {
-                current = null;
+                this.CompileBlock(if_stmt->else_stmt as *const BlockStmtNode);
+            }
+
+            this.scope_manager.PopScope();
+
+            if LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(this.builder)) == null {
+                if end_block == null {
+                    end_block = LLVMAppendBasicBlockInContext(this.context, function, "");
+                } LLVMBuildBr(this.builder, end_block);
             }
         }
 
@@ -2871,12 +2841,15 @@ class Compiler {
 
     priv CompileIfLet(this: &mut Compiler, if_let: *const IfLetStmtNode) {
         let function: LLVMValueRef = LLVMGetBasicBlockParent(LLVMGetInsertBlock(this.builder));
-        let then_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "if_let_then");
-        let end_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "if_let_end");
-        let mut else_block: LLVMBasicBlockRef = end_block;
+        let then_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "");
+        let (mut else_block: LLVMBasicBlockRef, mut end_block: LLVMBasicBlockRef) = (null, null);
 
         if if_let->else_stmt != null {
-            else_block = LLVMAppendBasicBlockInContext(this.context, function, "if_let_else");
+            else_block = LLVMAppendBasicBlockInContext(this.context, function, "");
+        } else {
+            if end_block == null {
+                end_block = LLVMAppendBasicBlockInContext(this.context, function, "");
+            } else_block = end_block;
         }
 
         let mut expression: QualifiedValue = this.CompileExpression(if_let->expression, false);
@@ -2885,48 +2858,57 @@ class Compiler {
             expression = QualifiedValue(LLVMBuildLoad2(this.builder, expression.Type().Pointee().Value(), expression.Value(), ""), expression.Type().Pointee());
         }
 
-        let mut match_pointer: LLVMValueRef = LLVMBuildAlloca(this.builder, expression.Type().Value(), "if_let_val");
+        let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
+        LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(function));
+        let mut match_pointer: LLVMValueRef = LLVMBuildAlloca(this.builder, expression.Type().Value(), "");
+        LLVMPositionBuilderAtEnd(this.builder, current);
         LLVMBuildStore(this.builder, expression.Value(), match_pointer);
         let condition: LLVMValueRef = this.BuildPatternCondition(if_let->pattern, match_pointer, &expression.Type());
         LLVMBuildCondBr(this.builder, condition, then_block, else_block);
 
         LLVMPositionBuilderAtEnd(this.builder, then_block);
-        this.scope_manager.PushScope(String("if_let"), false);
+        this.scope_manager.PushScope(String("then"), false);
         this.BindPattern(if_let->pattern, match_pointer, &expression.Type());
         this.CompileStatement(if_let->then_stmt);
         this.scope_manager.PopScope();
 
         if LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(this.builder)) == null {
-            LLVMBuildBr(this.builder, end_block);
+            if end_block == null {
+                end_block = LLVMAppendBasicBlockInContext(this.context, function, "");
+            } LLVMBuildBr(this.builder, end_block);
         }
 
         if if_let->else_stmt != null {
             LLVMPositionBuilderAtEnd(this.builder, else_block);
-            this.scope_manager.PushScope(String("if_let_else"), false);
+            this.scope_manager.PushScope(String("else"), false);
 
             if if_let->else_stmt->node_type == ASTNodeType::IF_LET_STMT {
                 this.CompileIfLet(if_let->else_stmt as *const IfLetStmtNode);
             } else if if_let->else_stmt->node_type == ASTNodeType::IF_STMT {
                 this.CompileIf(if_let->else_stmt as *const IfStmtNode);
             } else {
-                this.CompileStatement(if_let->else_stmt);
+                this.CompileBlock(if_let->else_stmt as *const BlockStmtNode);
             }
 
             this.scope_manager.PopScope();
 
             if LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(this.builder)) == null {
-                LLVMBuildBr(this.builder, end_block);
+                if end_block == null {
+                    end_block = LLVMAppendBasicBlockInContext(this.context, function, "");
+                } LLVMBuildBr(this.builder, end_block);
             }
         }
 
-        LLVMPositionBuilderAtEnd(this.builder, end_block);
+        if end_block != null {
+            LLVMPositionBuilderAtEnd(this.builder, end_block);
+        }
     }
 
     priv CompileWhileLet(this: &mut Compiler, while_let: *const WhileLetStmtNode) {
         let function: LLVMValueRef = LLVMGetBasicBlockParent(LLVMGetInsertBlock(this.builder));
-        let compare_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "while_let_cmp");
-        let loop_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "while_let_body");
-        let end_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "while_let_end");
+        let compare_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "");
+        let loop_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "");
+        let end_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "");
 
         LLVMBuildBr(this.builder, compare_block);
         LLVMPositionBuilderAtEnd(this.builder, compare_block);
@@ -2937,17 +2919,17 @@ class Compiler {
             expression = QualifiedValue(LLVMBuildLoad2(this.builder, expression.Type().Pointee().Value(), expression.Value(), ""), expression.Type().Pointee());
         }
 
-        let cmp_block: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
+        let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
         LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(function));
-        let mut match_pointer: LLVMValueRef = LLVMBuildAlloca(this.builder, expression.Type().Value(), "while_let_val");
-        LLVMPositionBuilderAtEnd(this.builder, cmp_block);
+        let mut match_pointer: LLVMValueRef = LLVMBuildAlloca(this.builder, expression.Type().Value(), "");
+        LLVMPositionBuilderAtEnd(this.builder, current);
         LLVMBuildStore(this.builder, expression.Value(), match_pointer);
         let condition: LLVMValueRef = this.BuildPatternCondition(while_let->pattern, match_pointer, &expression.Type());
         LLVMBuildCondBr(this.builder, condition, loop_block, end_block);
 
         LLVMPositionBuilderAtEnd(this.builder, loop_block);
         this.blocks.PushBack(Pair<LLVMBasicBlockRef, LLVMBasicBlockRef>(compare_block, end_block));
-        this.scope_manager.PushScope(String("while_let"), false);
+        this.scope_manager.PushScope(String("while"), false);
         this.BindPattern(while_let->pattern, match_pointer, &expression.Type());
         this.CompileStatement(while_let->loop_stmt);
         this.scope_manager.PopScope();
@@ -3808,10 +3790,11 @@ class Compiler {
                 let _pointer: LLVMValueRef = LLVMBuildAlloca(this.builder, params[0u64]->sret->Value(), "");
                 return = QualifiedValue(_pointer, this.type_manager.Pointer(params[0u64]->sret, true), true, true);
                 LLVMPositionBuilderAtEnd(this.builder, current);
+                args.PushBack(return.Value());
+
                 if params[0u64]->sret->IsClass() {
                     this.scope_manager.RegisterInstance(return);
                 }
-                args.PushBack(return.Value());
             }
         }
 
@@ -3935,6 +3918,7 @@ class Compiler {
             return = QualifiedValue(_pointer, this.type_manager.Pointer(ret_type.sret, true), true, true);
             LLVMPositionBuilderAtEnd(this.builder, current);
             LLVMBuildStore(this.builder, value, LLVMBuildBitCast(this.builder, _pointer, LLVMPointerType(ret_type.Value(), 0u32), ""));
+
             if ret_type.sret->IsClass() {
                 this.scope_manager.RegisterInstance(return);
             }

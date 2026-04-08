@@ -1166,7 +1166,7 @@ class Mangler {
     pub MangleClass(this: &Mangler, name: String, types: Vector<*const QualifiedType>) -> String {
         let mut result: String = this.MangleName(name);
 
-        if types.Size() > 0u64 {
+        if !types.Empty() {
             result += "I";
         }
 
@@ -1177,7 +1177,7 @@ class Mangler {
             i += 1u64;
         }
 
-        if types.Size() > 0u64 {
+        if !types.Empty() {
             result += "E";
         } ret result;
     }
@@ -1327,26 +1327,30 @@ class Compiler {
     priv context: LLVMContextRef = null,
     priv module: LLVMModuleRef = null,
     priv builder: LLVMBuilderRef = null,
-    priv target: LLVMTargetRef = null,
-    priv triple: *const i8 = null
+    priv triple: String, priv march: String,
+    priv target: LLVMTargetRef = null
 } impl {
-    Compiler(this: &mut Compiler, triple: *const i8, opt_level: LLVMCodeGenOptLevel) {
+    Compiler(this: &mut Compiler, triple: String, march: String, opt_level: LLVMCodeGenOptLevel) {
         LLVMInitializeNativeTarget();
         LLVMInitializeNativeAsmPrinter();
         // LLVMInitializeNativeAsmParser();
         // LLVMInitializeNativeDisassembler();
-        this.triple = triple != null ? triple : LLVMGetDefaultTargetTriple();
         this.context = LLVMContextCreate();
+
+        (this.triple, this.march) = (triple, march);
+        if this.triple.Empty() { this.triple = LLVMGetDefaultTargetTriple(); }
+        if this.march == "native" { this.march = LLVMGetHostCPUName(); }
+        if this.march.Empty() { this.march = "generic"; }
         let message: *const i8 = null;
 
-        if LLVMGetTargetFromTriple(this.triple, &this.target, &message) != 0i32 {
+        if LLVMGetTargetFromTriple(this.triple.Data(), &this.target, &message) != 0i32 {
             printf("\x1b[31mFailed to get target from triple: %s.\x1b[0m\n", message);
             LLVMDisposeMessage(message);
             ret;
         }
 
         LLVMDisposeMessage(message);
-        this.target_machine = LLVMCreateTargetMachine(this.target, this.triple, "generic", "", opt_level, LLVMRelocMode::LLVMRelocDefault, LLVMCodeModel::LLVMCodeModelDefault);
+        this.target_machine = LLVMCreateTargetMachine(this.target, this.triple.Data(), this.march.Data(), "", opt_level, LLVMRelocMode::LLVMRelocDefault, LLVMCodeModel::LLVMCodeModelDefault);
         this.layout = LLVMCreateTargetDataLayout(this.target_machine);
 
         this.scope_manager.compiler = this as *const void;
@@ -1392,7 +1396,7 @@ class Compiler {
         this.builder = LLVMCreateBuilderInContext(this.context);
         this.scope_manager.builder = this.builder;
         LLVMSetSourceFileName(this.module, file_name.Data(), file_name.Size() - 1u64);
-        LLVMSetTarget(this.module, this.triple);
+        LLVMSetTarget(this.module, this.triple.Data());
         let layout: *const i8 = LLVMCopyStringRepOfTargetData(this.layout);
         LLVMSetDataLayout(this.module, layout);
         LLVMDisposeMessage(layout);
@@ -1509,7 +1513,7 @@ class Compiler {
                 let mut state: bool = true;
 
                 if LLVMGetTypeKind(this.function->Return().Value()) == LLVMTypeKind::LLVMVoidTypeKind {
-                    if params.Size() > 0u64 {
+                    if !params.Empty() {
                         state = params[0u64]->sret != null;
                     } else {
                         state = false;
@@ -1838,7 +1842,7 @@ class Compiler {
             } j += 1u64;
         }
 
-        if this._class == null && func_decl->constructors.Size() != 0u64 {
+        if this._class == null && !func_decl->constructors.Empty() {
             this.Error("Constructors can only be declared inside classes.", func_decl as *const ASTNode);
             ret value;
         }
@@ -2044,7 +2048,7 @@ class Compiler {
         let prev_class: *const QualifiedType = this._class;
         this._class = _class;
 
-        if field_types.Size() != 0u64 {
+        if !field_types.Empty() {
             LLVMStructSetBody(_class.Value(), field_types.Data(), field_types.Size() as u32, 0i32);
         }
 
@@ -2100,7 +2104,7 @@ class Compiler {
         let mut i: u64 = 0u64;
 
         while i < enum_decl->variants.Size() {
-            if enum_decl->variants[i]->types.Size() > 0u64 {
+            if !enum_decl->variants[i]->types.Empty() {
                 is_adt = true;
                 break;
             } i += 1u64;
@@ -2158,7 +2162,7 @@ class Compiler {
                 let variant: *const VariantNode = enum_decl->variants[k];
                 let current_variant_types: Vector<*const QualifiedType> = variant_types[k].right;
 
-                if current_variant_types.Size() == 0u64 {
+                if current_variant_types.Empty() {
                     let tag_value: LLVMValueRef = LLVMConstInt(tag_type, k, 0i32);
                     let data_value: LLVMValueRef = LLVMConstNull(data_type);
                     let values[]: LLVMValueRef = { tag_value, data_value };
@@ -2204,7 +2208,7 @@ class Compiler {
                 } k += 1u64;
             }
 
-            if enum_decl->methods.Size() > 0u64 {
+            if !enum_decl->methods.Empty() {
                 let prev_class: *const QualifiedType = this._class;
                 this._class = _enum;
                 this.scope_manager.PushScope(enum_decl->name, true);
@@ -2258,7 +2262,7 @@ class Compiler {
     }
 
     priv CreateVariantPayloadType(this: &mut Compiler, types: Vector<*const QualifiedType>) -> LLVMTypeRef {
-        if types.Size() == 0u64 {
+        if types.Empty() {
             ret LLVMStructTypeInContext(this.context, null, 0u32, 0i32);
         }
 
@@ -2676,7 +2680,7 @@ class Compiler {
             let params: Vector<*const QualifiedType> = this.function->Parameters();
             let mut state: bool = false;
 
-            if params.Size() > 0u64 {
+            if !params.Empty() {
                 state = params[0u64]->sret != null;
             }
 
@@ -3039,7 +3043,7 @@ class Compiler {
     }
 
     priv CompileContinue(this: &Compiler, continue_stmt: *const ContinueStmtNode) {
-        if this.blocks.Size() == 0u64 {
+        if this.blocks.Empty() {
             this.Error("Continue statement outside of loop.", continue_stmt as *const ASTNode);
             ret;
         }
@@ -3049,7 +3053,7 @@ class Compiler {
     }
 
     priv CompileBreak(this: &Compiler, break_stmt: *const BreakStmtNode) {
-        if this.blocks.Size() == 0u64 {
+        if this.blocks.Empty() {
             this.Error("Break statement outside of loop.", break_stmt as *const ASTNode);
             ret;
         }
@@ -3116,7 +3120,7 @@ class Compiler {
                     if variable->_type->node_type == ASTNodeType::ARRAY_TYPE {
                         let array: *const ArrayTypeNode = variable->_type as *const ArrayTypeNode;
 
-                        if array->size == null && list->expressions.Size() > 0u64 {
+                        if array->size == null && !list->expressions.Empty() {
                             _type = this.type_manager.Array(_type->Pointee(), list->expressions.Size(), _type->IsMutable());
                         }
                     }
@@ -3741,7 +3745,7 @@ class Compiler {
         let mut return: QualifiedValue = QualifiedValue(null, null);
         let mut i: u64 = 0u64;
 
-        if params.Size() > 0u64 {
+        if !params.Empty() {
             if params[0u64]->sret != null {
                 let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
                 LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
@@ -4078,7 +4082,7 @@ class Compiler {
 
             if _type.IsClass() {
                 this.CompileConstructor(_type, QualifiedValue(pointer, this.type_manager.Pointer(_type, true)), values, _new as *const ASTNode);
-            } else if values.Size() > 0u64 {
+            } else if !values.Empty() {
                 this.Error("Cannot initialize non-class types with parameters.", _new as *const ASTNode);
                 ret QualifiedValue(null, null);
             }

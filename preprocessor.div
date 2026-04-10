@@ -14,127 +14,112 @@
  * limitations under the License.
  */
 
-include "divio", "divstr", "divvec", "divmap", "divfile", "divstd" : *;
+include "divio", "divstr", "divvec", "divmap", "divfile", "divstd", "lexer.div" : *;
 
 class Preprocessor {
-    pub include_paths: Vector<String>,
-    priv included_paths: Vector<String>,
-    priv current_file: String
+    pub defines: Vector<String>,
+    priv file: String, priv index: u64,
+    priv conditions: Vector<bool>,
+    priv tokens: Vector<Token>
 } impl {
-    priv IsDigit(this: &Preprocessor, character: i8) -> bool {
-        ret character >= '0' && character <= '9';
+    priv Current(this: &Preprocessor) -> Token {
+        if this.index >= this.tokens.Size() {
+            ret this.tokens[this.tokens.Size() - 1u64];
+        } else {
+            ret this.tokens[this.index];
+        }
     }
 
-    priv IsHexDigit(this: &Preprocessor, character: i8) -> bool {
-        ret (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f') || (character >= 'A' && character <= 'F');
+    priv Peek(this: &Preprocessor, offset: u64) -> Token {
+        let index: u64 = this.index + offset;
+
+        if index >= this.tokens.Size() {
+            ret this.tokens[this.tokens.Size() - 1u64];
+        } else {
+            ret this.tokens[index];
+        }
     }
 
-    priv IsBinDigit(this: &Preprocessor, character: i8) -> bool {
-        ret character == '0' || character == '1';
+    priv Advance(this: &mut Preprocessor) -> Token {
+        let token: Token = this.Current();
+
+        if this.index < this.tokens.Size() {
+            this.index += 1u64;
+        } ret token;
     }
 
-    priv IsOctDigit(this: &Preprocessor, character: i8) -> bool {
-        ret character >= '0' && character <= '7';
+    priv Match(this: &mut Preprocessor, _type: TokenType) -> bool {
+        if this.Current()._type == _type {
+            this.Advance();
+            ret true;
+        } else {
+            ret false;
+        }
     }
 
-    priv IsAlpha(this: &Preprocessor, character: i8) -> bool {
-        ret (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || character == '_';
+    priv Expect(this: &mut Preprocessor, _type: TokenType) -> Token {
+        let token: Token = this.Current();
+
+        if token._type != _type {
+            this.Error((String("Expected '") + TokenTypeToString(_type) + "' but got '" + TokenTypeToString(token._type) + "'.").Data(), token);
+        } else {
+            this.Advance();
+        } ret token;
     }
 
-    priv IsAlphaNum(this: &Preprocessor, character: i8) -> bool {
-        ret this.IsAlpha(character) || this.IsDigit(character);
-    }
+    pub Condition(this: &Preprocessor) -> bool {
+        let mut i: u64 = 0u64;
 
-    pub Process(this: &mut Preprocessor, source: String, file: String) -> String {
-        let lines: Vector<String> = source.Split('\n');
-        let (mut output: String, mut i: u64) = ("", 0u64);
-        this.current_file = file;
-
-        while i < lines.Size() {
-            let trimmed: String = lines[i].Trim();
-
-            if trimmed.Size() > 1u64 && trimmed[0u64] == '#' {
-                let (bracket_start: i64, bracket_end: i64) = (trimmed.Find('['), trimmed.Find(']'));
-
-                if bracket_start == -1i64 || bracket_end == -1i64 {
-                    this.Error((String("Failed to parse directive: '") + trimmed + "'.").Data(), i + 1u64, 0u64);
-                }
-
-                let (mut directive: String, mut j: u64) = ("", (bracket_start as u64) + 1u64);
-
-                while j < trimmed.Size() {
-                    if !this.IsAlpha(trimmed[j]) {
-                        break;
-                    } else {
-                        directive += trimmed[j];
-                    } j += 1u64;
-                }
-
-                if directive == "include" {
-                    let content: String = trimmed.SubString((bracket_start as u64) + 8u64, (bracket_end - bracket_start - 8i64) as u64);
-                    let modules: Vector<String> = content.Trim().Split(',');
-                    let mut k: u64 = 0u64;
-
-                    while k < modules.Size() {
-                        let (mut found: bool, mut l: u64) = (false, 0u64);
-                        let mut module: String = modules[k].Trim();
-
-                        if module.Size() > 2u64 && module[0u64] == '"' && module[module.Size() - 2u64] == '"' {
-                            module = module.SubString(1u64, module.Size() - 3u64);
-                        } else {
-                            this.Error((String("Failed to parse module string: '") + module + "'.").Data(), i + 1u64, 0u64);
-                        }
-
-                        while l < this.include_paths.Size() {
-                            let mut path: String = this.include_paths[l] + "\\" + module;
-                            let mut attributes: DWORD = GetFileAttributesA(path.Data());
-                            l += 1u64;
-
-                            if attributes != INVALID_FILE_ATTRIBUTES {
-                                found = true;
-                            } else {
-                                continue;
-                            }
-
-                            if (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0u32 {
-                                path += "\\Entry.div";
-                                attributes = GetFileAttributesA(path.Data());
-
-                                if attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0u32 {
-                                    this.Error((String("Module '") + module + "' entry point not found.").Data(), i + 1u64, 0u64);
-                                }
-                            }
-
-                            if this.included_paths.Index(path) != -1i64 {
-                                break;
-                            }
-
-                            let source: String = ReadFile(path.Data());
-                            let previous_file: String = this.current_file;
-                            this.current_file = path;
-                            output += this.Process(source, path) + "\n";
-                            this.current_file = previous_file;
-                            this.included_paths.PushBack(path);
-                            break;
-                        }
-
-                        if found {
-                            k += 1u64;
-                        } else {
-                            this.Error((String("Module '") + module + "' not found.").Data(), i + 1u64, 0u64);
-                        }
-                    }
-                } else {
-                    this.Error((String("Unknown directive: '") + directive + "'.").Data(), i + 1u64, 0u64);
-                }
-            } else {
-                output += lines[i] + "\n";
+        while i < this.conditions.Size() {
+            if !this.conditions[i] {
+                ret false;
             } i += 1u64;
-        } ret output;
+        } ret true;
     }
 
-    priv Error(this: &mut Preprocessor, message: *const i8, row: u64, column: u64) {
-        printf("%s:%llu:%llu: \x1b[31mError:\x1b[0m %s\n", this.current_file.Data(), row, column, message);
+    pub ProcessDirective(this: &mut Preprocessor) {
+        let token: Token = this.Current();
+
+        if this.Match(TokenType::IF) {
+            this.conditions.PushBack(this.defines.Contains(this.Expect(TokenType::IDENTIFIER).value));
+        } else if this.Match(TokenType::ENDIF) {
+            if !this.conditions.Empty() {
+                this.conditions.PopBack();
+            } else {
+                this.Error("Unexpected 'endif' directive.", token);
+            }
+        } else {
+            this.Error((String("Unknown directive: '") + token.value + "'.").Data(), token);
+        }
+    }
+
+    pub Process(this: &mut Preprocessor, tokens: &Vector<Token>, file: &String) -> Vector<Token> {
+        let mut result: Vector<Token>;
+        (this.tokens, this.file, this.index) = (tokens, file, 0u64);
+
+        loop {
+            let token: Token = this.Current();
+
+            if this.Match(TokenType::PREPROCESSOR_START) {
+                this.ProcessDirective();
+                this.Expect(TokenType::PREPROCESSOR_END);
+            } else if token._type != TokenType::EOF {
+                if this.Condition() {
+                    result.PushBack(token);
+                } this.Advance();
+            } else {
+                if !this.conditions.Empty() {
+                    this.Error("Expected 'endif' directive.", token);
+                } else {
+                    result.PushBack(token);
+                    break;
+                }
+            }
+        } ret result;
+    }
+
+    priv Error(this: &mut Preprocessor, message: *const i8, token: Token) {
+        printf("%s:%llu:%llu: \x1b[31mError:\x1b[0m %s\n", this.file.Data(), token.row, token.column, message);
         exit(1i32);
     }
 };

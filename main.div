@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-include "divio", "divwin", "divfile", "divstd", "divllvm", "lexer.div", "parser.div", "compiler.div" : *;
+include "divio", "divwin", "divfile", "divstd", "divllvm", "lexer.div", "preprocessor.div", "parser.div", "compiler.div" : *;
 
 class Timer {
     priv frequency: LARGE_INTEGER,
@@ -260,34 +260,31 @@ func ErrorHandler(reason: *const i8) {
 }
 
 func main(argc: i32, argv[]: *const i8) -> i32 {
-    let executable: String = SplitPath(String(argv[0u64])).right;
-
     LLVMEnablePrettyStackTrace();
     LLVMInstallFatalErrorHandler(ErrorHandler);
+
+    let executable: String = SplitPath(String(argv[0u64])).right;
 
     if argc < 2i32 {
         PrintUsage(executable);
         ret 1i32;
     }
 
-    let mut input_files: Vector<String>;
-    let mut output_file: String;
-    let mut include_paths: Vector<String>;
-    let mut lib_paths: Vector<String>;
-    let mut libs: Vector<String>;
-    let mut defines: Vector<String>;
-    let mut opt_level: LLVMCodeGenOptLevel = LLVMCodeGenOptLevel::LLVMCodeGenLevelDefault;
-    let mut emit_object: bool = false;
-    let mut emit_asm: bool = false;
-    let mut emit_llvm: bool = false;
-    let mut run_after: bool = false;
-    let mut debug: bool = false;
-    let mut verbose: bool = false;
-    let mut triple: String = LLVMGetDefaultTargetTriple();
-    let mut march: String = "generic";
+    let (mut input_files: Vector<String>, mut output_file: String);
+    let (mut include_paths: Vector<String>, mut lib_paths: Vector<String>);
+    let (mut defines: Vector<String>, mut libs: Vector<String>);
 
     include_paths.PushBack(String("."));
     include_paths.PushBack(String("include"));
+
+#[if WINDOWS]
+    defines.PushBack(String("WINDOWS"));
+#[endif]
+
+    let mut opt_level: LLVMCodeGenOptLevel = LLVMCodeGenOptLevel::LLVMCodeGenLevelDefault;
+    let (mut triple: String, mut march: String) = (LLVMGetDefaultTargetTriple(), "generic");
+    let (mut emit_object: bool, mut emit_asm: bool, mut emit_llvm: bool) = (false, false, false);
+    let (mut run: bool, mut debug: bool, mut verbose: bool) = (false, false, false);
     let mut i: i32 = 1i32;
 
     while i < argc {
@@ -310,7 +307,7 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
         } else if arg == "-emit-llvm" {
             emit_llvm = true;
         } else if arg == "-r" || arg == "--run" {
-            run_after = true;
+            run = true;
         } else if arg == "-O0" {
             opt_level = LLVMCodeGenOptLevel::LLVMCodeGenLevelNone;
         } else if arg == "-O1" {
@@ -421,25 +418,25 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
 
     let timer: Timer;
     let start: f64 = timer.Get();
-    let temp_path: String = GetTemporaryPath();
+
     let mut objects: Vector<String>;
+    let temp_path: String = GetTemporaryPath();
     let mut j: u64 = 0u64;
 
     while j < input_files.Size() {
         let input_file: String = input_files[j];
         if verbose { printf("Compiling: %s\n", input_file.Data()); }
-        let source: String = ReadFile(input_file.Data());
-
-        if source.Empty() {
-            j += 1u64;
-            continue;
-        }
+        let source: String = ReadFile(input_file);
 
         let mut lexer: Lexer;
-        let tokens: Vector<Token> = lexer.Lex(source, input_file);
+        let mut preprocessor: Preprocessor;
+        preprocessor.defines = defines;
+
+        let mut tokens: Vector<Token> = lexer.Lex(source, input_file);
+        tokens = preprocessor.Process(tokens, input_file);
 
         let mut parser: Parser;
-        parser.include_paths = include_paths;
+        (parser.defines, parser.include_paths) = (defines, include_paths);
         let ast: *const RootNode = parser.Parse(tokens, input_file);
 
         let mut compiler: Compiler = { triple, march, opt_level };
@@ -479,7 +476,7 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
 
         if emit_llvm {
             let string: *const i8 = LLVMPrintModuleToString(module);
-            WriteFile((name + ".ll").Data(), string);
+            WriteFile(name + ".ll", String(string));
             LLVMDisposeMessage(string);
         }
 
@@ -550,12 +547,12 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
 
     if !emit_object {
         while k < objects.Size() {
-            RemoveFile(objects[k].Data());
+            RemoveFile(objects[k]);
             k += 1u64;
         }
     }
 
-    if run_after {
+    if run {
         printf("Program finished with exit code: %d.\n", Execute(final_output.Data(), true));
     } ret 0i32;
 }

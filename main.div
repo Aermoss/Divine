@@ -14,11 +14,57 @@
  * limitations under the License.
  */
 
-include "divio", "divwin", "divfile", "divstd", "divllvm", "lexer.div", "preprocessor.div", "parser.div", "compiler.div" : *;
+include "divio", "divfile", "divstd", "divllvm", "lexer.div", "preprocessor.div", "parser.div", "compiler.div" : *;
+
+const STARTF_USESTDHANDLES: u32 = 0x00000100u32;
+const INFINITE: u32 = 0xFFFFFFFFu32;
+
+class STARTUPINFOA {
+    pub cb: u32,
+    pub lpReserved: *mut i8,
+    pub lpDesktop: *mut i8,
+    pub lpTitle: *mut i8,
+    pub dwX: u32,
+    pub dwY: u32,
+    pub dwXSize: u32,
+    pub dwYSize: u32,
+    pub dwXCountChars: u32,
+    pub dwYCountChars: u32,
+    pub dwFillAttribute: u32,
+    pub dwFlags: u32,
+    pub wShowWindow: u16,
+    pub cbReserved2: u16,
+    pub lpReserved2: *mut u8,
+    pub hStdInput: *mut void,
+    pub hStdOutput: *mut void,
+    pub hStdError: *mut void
+};
+
+type LPSTARTUPINFOA = *mut STARTUPINFOA;
+
+class PROCESS_INFORMATION {
+    pub hProcess: *mut void,
+    pub hThread: *mut void,
+    pub dwProcessId: u32,
+    pub dwThreadId: u32
+};
+
+type LPPROCESS_INFORMATION = *mut PROCESS_INFORMATION;
+
+extern "C" {
+    func QueryPerformanceCounter(lpPerformanceCount: *mut i64) -> i32;
+    func QueryPerformanceFrequency(lpFrequency: *mut i64) -> i32;
+
+    func CreateProcessA(lpApplicationName: *const i8, lpCommandLine: *mut i8, lpProcessAttributes: *mut void, lpThreadAttributes: *mut void, bInheritHandles: i32, dwCreationFlags: u32, lpEnvironment: *mut void, lpCurrentDirectory: *const i8, lpStartupInfo: LPSTARTUPINFOA, lpProcessInformation: LPPROCESS_INFORMATION) -> i32;
+    func WaitForSingleObject(hHandle: *mut void, dwMilliseconds: u32) -> u32;
+    func GetExitCodeProcess(hProcess: *mut void, lpExitCode: *mut u32) -> i32;
+    func CloseHandle(hObject: *mut void) -> i32;
+    func GetLastError() -> u32;
+}
 
 class Timer {
-    priv frequency: LARGE_INTEGER,
-    priv counter: LARGE_INTEGER
+    priv frequency: i64,
+    priv counter: i64
 } impl {
     Timer(this: &Timer) {
         QueryPerformanceFrequency(&this.frequency);
@@ -32,10 +78,10 @@ class Timer {
     }
 };
 
-func Execute(command: *const i8, output: bool) -> DWORD {
+func Execute(command: *const i8, output: bool) -> u32 {
     let mut startup_info: STARTUPINFOA;
     memset(&startup_info as *const void, 0i32, sizeof(startup_info));
-    startup_info.cb = sizeof(startup_info) as DWORD;
+    startup_info.cb = sizeof(startup_info) as u32;
     let process_info: PROCESS_INFORMATION;
 
     if output != true {
@@ -44,15 +90,15 @@ func Execute(command: *const i8, output: bool) -> DWORD {
     }
 
     if CreateProcessA(null, command, null, null, 0i32, 0u32, null, null, &startup_info, &process_info) == 0i32 {
-        printf("\x1b[31mFailed to create process: %lu.\x1b[0m\n", GetLastError());
-        exit(1i32);
+        WriteLine(String("\x1b[31mFailed to create process: ") + String(GetLastError() as i64) + ".\x1b[0m");
+        Exit(1i32);
     }
 
-    let exit_code: DWORD;
+    let exit_code: u32;
     WaitForSingleObject(process_info.hProcess, INFINITE);
 
     if GetExitCodeProcess(process_info.hProcess, &exit_code) == 0i32 {
-        printf("\x1b[31mFailed to get process exit code: %lu.\x1b[0m\n", GetLastError());
+        WriteLine(String("\x1b[31mFailed to get process exit code: ") + String(GetLastError() as i64) + ".\x1b[0m");
     }
 
     CloseHandle(process_info.hProcess);
@@ -61,16 +107,14 @@ func Execute(command: *const i8, output: bool) -> DWORD {
 }
 
 func GetWindowsSDKPath() -> String {
-    let search_path[MAX_PATH]: i8;
     let mut path: String = "C:\\Program Files (x86)\\Windows Kits\\10\\Lib";
-    sprintf(search_path, "%s\\*", path.Data());
 
     let find_data: WIN32_FIND_DATAA;
-    let find_handle: HANDLE = FindFirstFileA(search_path, &find_data);
+    let find_handle: *mut void = FindFirstFileA((path + "\\*").Data(), &find_data);
 
     if find_handle == INVALID_HANDLE_VALUE {
-        printf("\x1b[31mFailed to find Windows SDK path.\x1b[0m\n");
-        exit(1i32);
+        WriteLine("\x1b[31mFailed to find Windows SDK path.\x1b[0m");
+        Exit(1i32);
     }
 
     let mut highest_version_string: String = "";
@@ -79,12 +123,20 @@ func GetWindowsSDKPath() -> String {
 
     loop {
         if (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0u32 {
-            if strcmp(find_data.cFileName, ".") != 0i32 && strcmp(find_data.cFileName, "..") != 0i32 && strcmp(find_data.cFileName, "wdf") != 0i32 {
-                let (parsed_v1: u64, parsed_v2: u64, parsed_v3: u64, parsed_v4: u64) = (0u64, 0u64, 0u64, 0u64);
-                sscanf(find_data.cFileName, "%llu.%llu.%llu.%llu", &parsed_v1, &parsed_v2, &parsed_v3, &parsed_v4);
+            let file_name: String = find_data.cFileName;
+
+            if file_name != "." && file_name != ".." && file_name != "wdf" {
+                let parts: Vector<String> = file_name.Split('.');
+                let (mut parsed_v1: u64, mut parsed_v2: u64, mut parsed_v3: u64, mut parsed_v4: u64) = (0u64, 0u64, 0u64, 0u64);
+
+                if parts.Size() != 4u64 {
+                    Exit(1i32);
+                } else {
+                    (parsed_v1, parsed_v2, parsed_v3, parsed_v4) = (parts[0u64].ToInteger() as u64, parts[1u64].ToInteger() as u64, parts[2u64].ToInteger() as u64, parts[3u64].ToInteger() as u64);
+                }
 
                 if parsed_v1 > highest_v1 || (parsed_v1 == highest_v1 && parsed_v2 > highest_v2) || (parsed_v1 == highest_v1 && parsed_v2 == highest_v2 && parsed_v3 > highest_v3) || (parsed_v1 == highest_v1 && parsed_v2 == highest_v2 && parsed_v3 == highest_v3 && parsed_v4 > highest_v4) {
-                    (highest_version_string, highest_v1, highest_v2, highest_v3, highest_v4) = (find_data.cFileName, parsed_v1, parsed_v2, parsed_v3, parsed_v4);
+                    (highest_version_string, highest_v1, highest_v2, highest_v3, highest_v4) = (file_name, parsed_v1, parsed_v2, parsed_v3, parsed_v4);
                 }
             }
         }
@@ -98,8 +150,8 @@ func GetWindowsSDKPath() -> String {
         path += "\\";
         path += highest_version_string;
     } else {
-        printf("\x1b[31mFailed to find a valid Windows SDK version.\x1b[0m\n");
-        exit(1i32);
+        WriteLine("\x1b[31mFailed to find a valid Windows SDK version.\x1b[0m");
+        Exit(1i32);
     }
 
     FindClose(find_handle);
@@ -107,16 +159,14 @@ func GetWindowsSDKPath() -> String {
 }
 
 func GetMSVCPath() -> String {
-    let search_path[MAX_PATH]: i8;
     let mut path: String = "C:\\Program Files\\Microsoft Visual Studio";
-    sprintf(search_path, "%s\\*", path.Data());
 
     let find_data: WIN32_FIND_DATAA;
-    let find_handle: HANDLE = FindFirstFileA(search_path, &find_data);
+    let find_handle: *mut void = FindFirstFileA((path + "\\*").Data(), &find_data);
 
     if find_handle == INVALID_HANDLE_VALUE {
-        printf("\x1b[31mFailed to find Visual Studio path.\x1b[0m\n");
-        exit(1i32);
+        WriteLine("\x1b[31mFailed to find Visual Studio path.\x1b[0m");
+        Exit(1i32);
     }
 
     let mut highest_version_string: String = "";
@@ -124,18 +174,17 @@ func GetMSVCPath() -> String {
 
     loop {
         if (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0u32 {
-            if strcmp(find_data.cFileName, ".") != 0i32 && strcmp(find_data.cFileName, "..") != 0i32 {
-                let mut parsed_version: u64 = 0u64;
-                sscanf(find_data.cFileName, "%llu", &parsed_version);
-                let mut normalized_version: u64;
+            let file_name: String = find_data.cFileName;
 
-                if parsed_version == 2017u64 { normalized_version = 15u64; }
-                else if parsed_version == 2019u64 { normalized_version = 16u64; }
-                else if parsed_version == 2022u64 { normalized_version = 17u64; }
-                else { normalized_version = parsed_version; }
+            if file_name != "." && file_name != ".." {
+                let mut parsed_version: u64 = file_name.ToInteger() as u64;
 
-                if normalized_version > highest_version {
-                    (highest_version_string, highest_version) = (find_data.cFileName, normalized_version);
+                if parsed_version == 2017u64 { parsed_version = 15u64; }
+                else if parsed_version == 2019u64 { parsed_version = 16u64; }
+                else if parsed_version == 2022u64 { parsed_version = 17u64; }
+
+                if parsed_version > highest_version {
+                    (highest_version_string, highest_version) = (file_name, parsed_version);
                 }
             }
         }
@@ -149,27 +198,26 @@ func GetMSVCPath() -> String {
         path += "\\";
         path += highest_version_string;
     } else {
-        printf("\x1b[31mFailed to find a valid Visual Studio version.\x1b[0m\n");
-        exit(1i32);
+        WriteLine("\x1b[31mFailed to find a valid Visual Studio version.\x1b[0m");
+        Exit(1i32);
     }
 
     FindClose(find_handle);
-    let search_path2[MAX_PATH]: i8;
-    sprintf(search_path2, "%s\\*", path.Data());
-
     let find_data2: WIN32_FIND_DATAA;
-    let find_handle2: HANDLE = FindFirstFileA(search_path2, &find_data2);
+    let find_handle2: *mut void = FindFirstFileA((path + "\\*").Data(), &find_data2);
 
     if find_handle2 == INVALID_HANDLE_VALUE {
-        printf("\x1b[31mFailed to find Visual Studio path.\x1b[0m\n");
-        exit(1i32);
+        WriteLine("\x1b[31mFailed to find Visual Studio path.\x1b[0m");
+        Exit(1i32);
     }
 
     loop {
         if (find_data2.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0u32 {
-            if strcmp(find_data2.cFileName, ".") != 0i32 && strcmp(find_data2.cFileName, "..") != 0i32 {
+            let file_name: String = find_data2.cFileName;
+
+            if file_name != "." && file_name != ".." {
                 path += "\\";
-                path += find_data2.cFileName;
+                path += file_name;
                 path += "\\VC\\Tools\\MSVC";
                 break;
             }
@@ -181,15 +229,12 @@ func GetMSVCPath() -> String {
     }
 
     FindClose(find_handle2);
-    let search_path3[MAX_PATH]: i8;
-    sprintf(search_path3, "%s\\*", path.Data());
-
     let find_data3: WIN32_FIND_DATAA;
-    let find_handle3: HANDLE = FindFirstFileA(search_path3, &find_data3);
+    let find_handle3: *mut void = FindFirstFileA((path + "\\*").Data(), &find_data3);
 
     if find_handle3 == INVALID_HANDLE_VALUE {
-        printf("\x1b[31mFailed to find MSVC path.\x1b[0m\n");
-        exit(1i32);
+        WriteLine("\x1b[31mFailed to find MSVC path.\x1b[0m");
+        Exit(1i32);
     }
 
     let mut highest_version_string2: String = "";
@@ -198,12 +243,20 @@ func GetMSVCPath() -> String {
 
     loop {
         if (find_data3.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0u32 {
-            if strcmp(find_data3.cFileName, ".") != 0i32 && strcmp(find_data3.cFileName, "..") != 0i32 {
+            let file_name: String = find_data3.cFileName;
+
+            if file_name != "." && file_name != ".." {
+                let parts: Vector<String> = file_name.Split('.');
                 let (mut parsed_v1: u64, mut parsed_v2: u64, mut parsed_v3: u64) = (0u64, 0u64, 0u64);
-                sscanf(find_data3.cFileName, "%llu.%llu.%llu", &parsed_v1, &parsed_v2, &parsed_v3);
+
+                if parts.Size() != 3u64 {
+                    Exit(1i32);
+                } else {
+                    (parsed_v1, parsed_v2, parsed_v3) = (parts[0u64].ToInteger() as u64, parts[1u64].ToInteger() as u64, parts[2u64].ToInteger() as u64);
+                }
 
                 if parsed_v1 > highest_v1 || (parsed_v1 == highest_v1 && parsed_v2 > highest_v2) || (parsed_v1 == highest_v1 && parsed_v2 == highest_v2 && parsed_v3 > highest_v3) {
-                    (highest_version_string2, highest_v1, highest_v2, highest_v3) = (find_data3.cFileName, parsed_v1, parsed_v2, parsed_v3);
+                    (highest_version_string2, highest_v1, highest_v2, highest_v3) = (file_name, parsed_v1, parsed_v2, parsed_v3);
                 }
             }
         }
@@ -217,8 +270,8 @@ func GetMSVCPath() -> String {
         path += "\\";
         path += highest_version_string2;
     } else {
-        printf("\x1b[31mFailed to find a valid MSVC version.\x1b[0m\n");
-        exit(1i32);
+        WriteLine("\x1b[31mFailed to find a valid MSVC version.\x1b[0m");
+        Exit(1i32);
     }
 
     FindClose(find_handle3);
@@ -226,37 +279,37 @@ func GetMSVCPath() -> String {
 }
 
 func PrintVersion(executable: String) {
-    printf("Unversioned build of %s (%s).\n", executable.Data(), LLVMGetDefaultTargetTriple());
-    printf("Copyright (c) 2025-2026 Yusuf Rençber. All rights reserved.\n");
-    printf("This software is licensed under the Apache License, Version 2.0.\n");
-    printf("See the LICENSE file in the project root for more information.\n");
+    WriteLine(String("Unversioned build of ") + executable + " (" + LLVMGetDefaultTargetTriple() + ").");
+    WriteLine("Copyright (c) 2025-2026 Yusuf Rençber. All rights reserved.");
+    WriteLine("This software is licensed under the Apache License, Version 2.0.");
+    WriteLine("See the LICENSE file in the project root for more information.");
 }
 
 func PrintUsage(executable: String) {
-    printf("OVERVIEW: Divine compiler\n\n");
-    printf("USAGE: %s [options] <inputs>\n\n", executable.Data());
-    printf("OPTIONS:\n");
-    printf("  -o <file>                Write output to <file>\n");
-    printf("  -I <dir>                 Add directory to include search path\n");
-    printf("  -L <dir>                 Add directory to library search path\n");
-    printf("  -l <name>                Link against library <name>\n");
-    printf("  -D <macro>[=<value>]     Define a macro\n");
-    printf("  -O<level>, -O            Optimization level (0, 1, 2, 3) [-O defaults to -O2]\n");
-    printf("  -g, --debug              Enable debug information\n");
-    printf("  -c                       Emit object code (.obj) alongside the executable\n");
-    printf("  -S                       Emit assembly code (.s) alongside the executable\n");
-    printf("  -emit-llvm               Emit LLVM IR (.ll) alongside the executable\n");
-    printf("  -target <triple>         Generate code for the given target\n");
-    printf("  -march <arch>            Architecture to generate code for\n");
-    printf("  -r, --run                Run the program after compiling\n");
-    printf("  -v, --verbose            Show verbose output\n");
-    printf("  --version                Display compiler version\n");
-    printf("  -h, --help               Display this help message\n");
+    WriteLine("OVERVIEW: Divine compiler");
+    WriteLine(String("USAGE: ") + executable + " [options] <inputs>");
+    WriteLine("OPTIONS:");
+    WriteLine("  -o <file>                Write output to <file>");
+    WriteLine("  -I <dir>                 Add directory to include search path");
+    WriteLine("  -L <dir>                 Add directory to library search path");
+    WriteLine("  -l <name>                Link against library <name>");
+    WriteLine("  -D <macro>[=<value>]     Define a macro");
+    WriteLine("  -O<level>, -O            Optimization level (0, 1, 2, 3) [-O defaults to -O2]");
+    WriteLine("  -g, --debug              Enable debug information");
+    WriteLine("  -c                       Emit object code (.obj) alongside the executable");
+    WriteLine("  -S                       Emit assembly code (.s) alongside the executable");
+    WriteLine("  -emit-llvm               Emit LLVM IR (.ll) alongside the executable");
+    WriteLine("  -target <triple>         Generate code for the given target");
+    WriteLine("  -march <arch>            Architecture to generate code for");
+    WriteLine("  -r, --run                Run the program after compiling");
+    WriteLine("  -v, --verbose            Show verbose output");
+    WriteLine("  --version                Display compiler version");
+    WriteLine("  -h, --help               Display this help message");
 }
 
 func ErrorHandler(reason: *const i8) {
-    printf("\x1b[31mLLVM: Fatal Error: %s\x1b[0m\n", reason);
-    exit(1i32);
+    WriteLine(String("\x1b[31mLLVM: Fatal Error: ") + reason + "\x1b[0m");
+    Exit(1i32);
 }
 
 func main(argc: i32, argv[]: *const i8) -> i32 {
@@ -322,7 +375,7 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
             if i < argc {
                 output_file = argv[i as u64];
             } else {
-                printf("%s: \x1b[31mError:\x1b[0m Missing argument to '-o'.\n", executable.Data());
+                WriteLine(executable + ": \x1b[31mError:\x1b[0m Missing argument to '-o'.");
                 ret 1i32;
             }
         } else if arg.StartsWith("-I") {
@@ -334,7 +387,7 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
                 if i < argc {
                     path = argv[i as u64];
                 } else {
-                    printf("%s: \x1b[31mError:\x1b[0m Missing argument to '-I'.\n", executable.Data());
+                    WriteLine(executable + ": \x1b[31mError:\x1b[0m Missing argument to '-I'.");
                     ret 1i32;
                 }
             }
@@ -349,7 +402,7 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
                 if i < argc {
                     path = argv[i as u64];
                 } else {
-                    printf("%s: \x1b[31mError:\x1b[0m Missing argument to '-L'.\n", executable.Data());
+                    WriteLine(executable + ": \x1b[31mError:\x1b[0m Missing argument to '-L'.");
                     ret 1i32;
                 }
             }
@@ -364,7 +417,7 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
                 if i < argc {
                     name = argv[i as u64];
                 } else {
-                    printf("%s: \x1b[31mError:\x1b[0m Missing argument to '-l'.\n", executable.Data());
+                    WriteLine(executable + ": \x1b[31mError:\x1b[0m Missing argument to '-l'.");
                     ret 1i32;
                 }
             }
@@ -379,7 +432,7 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
                 if i < argc {
                     define = argv[i as u64];
                 } else {
-                    printf("%s: \x1b[31mError:\x1b[0m Missing argument to '-D'.\n", executable.Data());
+                    WriteLine(executable + ": \x1b[31mError:\x1b[0m Missing argument to '-D'.");
                     ret 1i32;
                 }
             }
@@ -391,7 +444,7 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
             if i < argc {
                 triple = argv[i as u64];
             } else {
-                printf("%s: \x1b[31mError:\x1b[0m Missing argument to '-target'.\n", executable.Data());
+                WriteLine(executable + ": \x1b[31mError:\x1b[0m Missing argument to '-target'.");
                 ret 1i32;
             }
         } else if arg == "-march" {
@@ -400,11 +453,11 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
             if i < argc {
                 march = argv[i as u64];
             } else {
-                printf("%s: \x1b[31mError:\x1b[0m Missing argument to '-march'.\n", executable.Data());
+                WriteLine(executable + ": \x1b[31mError:\x1b[0m Missing argument to '-march'.");
                 ret 1i32;
             }
         } else if arg.StartsWith("-") {
-            printf("%s: \x1b[31mError:\x1b[0m Unknown option '%s'.\n", executable.Data(), arg.Data());
+            WriteLine(executable + ": \x1b[31mError:\x1b[0m Unknown option '" + arg + "'.");
             ret 1i32;
         } else {
             input_files.PushBack(arg);
@@ -412,7 +465,7 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
     }
 
     if input_files.Empty() {
-        printf("%s: \x1b[31mError:\x1b[0m No input files.\n", executable.Data());
+        WriteLine(executable + ": \x1b[31mError:\x1b[0m No input files.");
         ret 1i32;
     }
 
@@ -423,8 +476,8 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
 
     while j < input_files.Size() {
         let input_file: String = input_files[j];
-        if verbose { printf("Compiling: %s\n", input_file.Data()); }
-        let source: String = ReadFile(input_file);
+        if verbose { WriteLine(String("Compiling: ") + input_file); }
+        let source: String = _ReadFile(input_file);
 
         let mut lexer: Lexer;
         let mut preprocessor: Preprocessor;
@@ -445,16 +498,16 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
             let mut passes: String;
 
             if opt_level == LLVMCodeGenOptLevel::LLVMCodeGenLevelLess {
-                printf("%s: \x1b[35mWarning:\x1b[0m Optimizing at less level which may break your program in this version. (\x1b[36m-O1\x1b[0m)\n", input_file.Data());
+                WriteLine(input_file + ": \x1b[35mWarning:\x1b[0m Optimizing at less level which may break your program in this version. (\x1b[36m-O1\x1b[0m)");
                 passes = "default<O1>";
             } else if opt_level == LLVMCodeGenOptLevel::LLVMCodeGenLevelDefault {
-                printf("%s: \x1b[35mWarning:\x1b[0m Optimizing at default level which may break your program in this version. (\x1b[36m-O2\x1b[0m)\n", input_file.Data());
+                WriteLine(input_file + ": \x1b[35mWarning:\x1b[0m Optimizing at default level which may break your program in this version. (\x1b[36m-O2\x1b[0m)");
                 passes = "default<O2>";
             } else if opt_level == LLVMCodeGenOptLevel::LLVMCodeGenLevelAggressive {
-                printf("%s: \x1b[35mWarning:\x1b[0m Optimizing at aggressive level which may break your program in this version. (\x1b[36m-O3\x1b[0m)\n", input_file.Data());
+                WriteLine(input_file + ": \x1b[35mWarning:\x1b[0m Optimizing at aggressive level which may break your program in this version. (\x1b[36m-O3\x1b[0m)");
                 passes = "default<O3>";
             } else {
-                printf("%s: \x1b[31mError:\x1b[0m Failed to optimize module, unknown optimization level. (\x1b[36m-O%d\x1b[0m)\n", input_file.Data(), opt_level);
+                WriteLine(input_file + ": \x1b[31mError:\x1b[0m Failed to optimize module, unknown optimization level. (\x1b[36m-O" + String(opt_level as i64) + "\x1b[0m)");
                 ret 1i32;
             }
 
@@ -465,7 +518,7 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
 
                 if error != LLVMErrorSuccess {
                     let message: *const i8 = LLVMGetErrorMessage(error);
-                    printf("%s: \x1b[31mError:\x1b[0m Failed to optimize module: %s\n", input_file.Data(), message);
+                    WriteLine(input_file + ": \x1b[31mError:\x1b[0m Failed to optimize module: " + message);
                     LLVMDisposeErrorMessage(message);
                     ret 1i32;
                 }
@@ -474,7 +527,7 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
 
         if emit_llvm {
             let string: *const i8 = LLVMPrintModuleToString(module);
-            WriteFile(name + ".ll", String(string));
+            _WriteFile(name + ".ll", String(string));
             LLVMDisposeMessage(string);
         }
 
@@ -482,7 +535,7 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
             let message: *const i8 = null;
 
             if LLVMTargetMachineEmitToFile(compiler.target_machine, module, (name + ".s").Data(), LLVMCodeGenFileType::LLVMAssemblyFile, &message) != 0i32 {
-                printf("%s: \x1b[31mError:\x1b[0m Failed to emit assembly: %s\n", input_file.Data(), message);
+                WriteLine(input_file + ": \x1b[31mError:\x1b[0m Failed to emit assembly: " + message);
                 LLVMDisposeMessage(message);
                 ret 1i32;
             }
@@ -498,7 +551,7 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
         }
 
         if LLVMTargetMachineEmitToFile(compiler.target_machine, module, object_name.Data(), LLVMCodeGenFileType::LLVMObjectFile, &message) != 0i32 {
-            printf("%s: \x1b[31mError:\x1b[0m Failed to emit object: %s\n", input_file.Data(), message);
+            WriteLine(input_file + ": \x1b[31mError:\x1b[0m Failed to emit object: " + message);
             LLVMDisposeMessage(message);
             ret 1i32;
         }
@@ -509,7 +562,7 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
     }
 
     let (sdk_path: String, msvc_path: String) = (GetWindowsSDKPath(), GetMSVCPath());
-    let mut command: String = String("\"") + msvc_path + "\\bin\\Hostx64\\x64\\link.exe\" /NOLOGO";
+    let mut command: String = String("\"") + msvc_path + "\\bin\\Hostx64\\x64\\link.exe\" /NOLOGO /SUBSYSTEM:CONSOLE /NODEFAULTLIB /ENTRY:_start";
     if debug { command += " /DEBUG"; }
 
     let mut final_output: String;
@@ -532,16 +585,16 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
         k += 1u64;
     } k = 0u64;
 
-    command += " legacy_stdio_definitions.lib ucrt.lib vcruntime.lib msvcrt.lib user32.lib kernel32.lib";
+    command += " user32.lib shell32.lib kernel32.lib";
 
     while k < libs.Size() {
         command += String(" ") + libs[k] + ".lib";
         k += 1u64;
     } k = 0u64;
 
-    if verbose { printf("Link: %s\n", command.Data()); }
+    if verbose { WriteLine(String("Link: ") + command); }
     Execute(command.Data(), true);
-    printf("Program compiled in %f seconds.\n", timer.Get() - start);
+    WriteLine(String("Program compiled in ") + String(timer.Get() - start) + " seconds.");
 
     if !emit_object {
         while k < objects.Size() {
@@ -551,6 +604,6 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
     }
 
     if run {
-        printf("Program finished with exit code: %d.\n", Execute(final_output.Data(), true));
+        WriteLine(String("Program finished with exit code: ") + String(Execute(final_output.Data(), true) as i64) + ".");
     } ret 0i32;
 }

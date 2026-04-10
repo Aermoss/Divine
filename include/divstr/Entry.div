@@ -17,18 +17,17 @@
 include "divio", "divmem", "divvec", "divdef" : *;
 
 extern "C" {
-    func strlen(str: *const i8) -> size_t;
-    func strcmp(str1: *const i8, str2: *const i8) -> i32;
-    func strncmp(str1: *const i8, str2: *const i8, n: size_t) -> i32;
+    func strlen(str: *const i8) -> size_t {
+        let mut i: u64 = 0u64;
 
-    func strtof(str: *const i8, endptr: *const *const i8) -> f32;
-    func strtod(str: *const i8, endptr: *const *const i8) -> f64;
-
-    func strtol(str: *const i8, endptr: *const *const i8, base: i32) -> i32;
-    func strtoul(str: *const i8, endptr: *const *const i8, base: i32) -> u32;
-
-    func strtoll(str: *const i8, endptr: *const *const i8, base: i32) -> i64;
-    func strtoull(str: *const i8, endptr: *const *const i8, base: i32) -> u64;
+        loop {
+            if str[i] == 0i8 {
+                ret i;
+            } else {
+                i += 1u64;
+            }
+        } ret 0u64;
+    }
 }
 
 class String {
@@ -121,14 +120,12 @@ class String {
         memcpy(this.data, (other.data + start), length);
     }
 
-    String(this: &mut String, integer: i32) {
-        this.Allocate(32u64);
-        sprintf(this.data, "%d", integer);
+    String(this: &mut String, integer: i64) {
+        this.FromInteger(integer, 10i32);
     }
 
     String(this: &mut String, float: f64) {
-        this.Allocate(32u64);
-        sprintf(this.data, "%f", float);
+        this.FromFloat(float, 6i32);
     }
 
     ~String(this: &mut String) {
@@ -149,9 +146,143 @@ class String {
         (this.data, this.length) = (null, 0u64);
     }
 
-    pub ToInteger(this: &String) -> i64 { ret strtoll(this.data, null, 10i32); }
-    pub ToInteger(this: &String, base: i32) -> i64 { ret strtoll(this.data, null, base); }
-    pub ToFloat(this: &String) -> f64 { ret strtod(this.data, null); }
+    priv FromInteger(this: &mut String, value: i64, base: i32) {
+        let digits: *const i8 = "0123456789ABCDEF";
+        let mut n: i64 = value;
+        let mut is_negative: bool = (n < 0i64 && base == 10i32);
+        let mut size: u64 = 0u64;
+        let mut temp_n: i64 = n;
+        
+        if temp_n == 0i64 {
+            size = 1u64;
+        } else {
+            if is_negative {
+                size += 1u64;
+                temp_n = -temp_n;
+            }
+
+            while temp_n > 0i64 {
+                size += 1u64;
+                temp_n = temp_n / (base as i64);
+            }
+        }
+
+        this.Allocate(size);
+
+        if n == 0i64 {
+            this.data[0u64] = 48i8;
+        } else {
+            let mut i: u64 = size;
+            if n < 0i64 { n = -n; }
+            
+            while n > 0i64 {
+                i -= 1u64;
+                this.data[i] = digits[(n % (base as i64)) as u64];
+                n = n / (base as i64);
+            }
+
+            if is_negative {
+                this.data[0u64] = 45i8;
+            }
+        }
+    }
+
+    pub ToInteger(this: &String, base: i32) -> i64 {
+        let mut result: i64 = 0i64;
+        let mut sign: i64 = 1i64;
+        let mut i: u64 = 0u64;
+
+        if this.data[0u64] == 45i8 {
+            sign = -1i64;
+            i = 1u64;
+        }
+
+        while this.data[i] != 0i8 {
+            let mut value: i64 = 0i64;
+            let c: i8 = this.data[i];
+
+            if c >= 48i8 && c <= 57i8 {
+                value = (c - 48i8) as i64;
+            } else if c >= 65i8 && c <= 70i8 {
+                value = (c - 65i8 + 10i8) as i64;
+            } else if c >= 97i8 && c <= 102i8 {
+                value = (c - 97i8 + 10i8) as i64;
+            } else {
+                break;
+            }
+
+            if value >= (base as i64) { break; }
+            result = result * (base as i64) + value;
+            i += 1u64;
+        } ret result * sign;
+    }
+
+    pub ToInteger(this: &String) -> i64 {
+        ret this.ToInteger(10i32);
+    }
+
+    priv FromFloat(this: &mut String, value: f64, precision: i32) {
+        let mut ipart: i64 = value as i64;
+        let mut fpart: f64 = value - (ipart as f64);
+        if fpart < 0.0f64 { fpart = -fpart; }
+
+        let mut temp_str: String;
+        temp_str.FromInteger(ipart, 10i32);
+        let mut ipart_len: u64 = 0u64;
+        while temp_str.data[ipart_len] != 0i8 { ipart_len += 1u64; }
+
+        let total_size: u64 = ipart_len + 1u64 + (precision as u64);
+        this.Allocate(total_size + 1u64);
+        let mut i: u64 = 0u64;
+
+        while i < ipart_len {
+            this.data[i] = temp_str.data[i];
+            i += 1u64;
+        }
+
+        this.data[i] = 46i8;
+        i += 1u64;
+
+        let mut p: i32 = 0i32;
+
+        while p < precision {
+            fpart = fpart * 10.0f64;
+            let digit: i32 = fpart as i32;
+            this.data[i] = (digit + 48i32) as i8;
+            fpart = fpart - (digit as f64);
+            i += 1u64;
+            p += 1i32;
+        }
+
+        this.data[i] = 0i8;
+    }
+
+    pub ToFloat(this: &String) -> f64 {
+        let mut res: f64 = 0.0f64;
+        let mut sign: f64 = 1.0f64;
+        let mut i: u64 = 0u64;
+
+        if this.data[0u64] == 45i8 {
+            sign = -1.0f64;
+            i = 1u64;
+        }
+
+        while this.data[i] >= 48i8 && this.data[i] <= 57i8 {
+            res = res * 10.0f64 + ((this.data[i] - 48i8) as f64);
+            i += 1u64;
+        }
+
+        if this.data[i] == 46i8 {
+            i += 1u64;
+            let mut divisor: f64 = 10.0f64;
+
+            while this.data[i] >= 48i8 && this.data[i] <= 57i8 {
+                res = res + ((this.data[i] - 48i8) as f64) / divisor;
+                divisor = divisor * 10.0f64;
+                i += 1u64;
+            }
+        } ret res * sign;
+    }
 
     pub Escape(this: &String) -> String {
         let mut result: String;
@@ -596,7 +727,13 @@ class String {
     pub op==(this: &String, string: *const i8) -> bool {
         if this.length != strlen(string) { ret false; }
         if this.data == null || string == null { ret false; }
-        ret strcmp(this.data, string) == 0i32;
+        let mut i: u64 = 0u64;
+
+        while this.data[i] == string[i] {
+            if this.data[i] == 0i8 {
+                ret true;
+            } i += 1u64;
+        } ret false;
     }
 
     pub op==(this: &String, character: i8) -> bool {

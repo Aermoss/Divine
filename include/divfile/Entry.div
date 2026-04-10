@@ -14,47 +14,102 @@
  * limitations under the License.
  */
 
-include "divio", "divstd", "divwin", "divstr", "divpair" : *;
+include "divio", "divstd", "divstr", "divpair" : *;
 
-func ReadFile(path: &String) -> String {
+const INVALID_FILE_ATTRIBUTES: u32 = 0xFFFFFFFFu32;
+const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x00000010u32;
+
+const INVALID_HANDLE_VALUE: *mut void = -1i64 as *mut void;
+
+const MAX_PATH: u64 = 260u64;
+
+class FILETIME {
+    pub dwLowDateTime: u32,
+    pub dwHighDateTime: u32
+};
+
+type LPFILETIME = *mut FILETIME;
+
+class WIN32_FIND_DATAA {
+    pub dwFileAttributes: u32,
+    pub ftCreationTime: FILETIME,
+    pub ftLastAccessTime: FILETIME,
+    pub ftLastWriteTime: FILETIME,
+    pub nFileSizeHigh: u32,
+    pub nFileSizeLow: u32,
+    pub dwReserved0: u32,
+    pub dwReserved1: u32,
+    pub cFileName[MAX_PATH]: i8,
+    pub cAlternateFileName[14u64]: i8,
+    pub dwFileType: u32,
+    pub dwCreatorType: u32,
+    pub wFinderFlags: u16
+};
+
+type LPWIN32_FIND_DATAA = *mut WIN32_FIND_DATAA;
+
+extern "C" {
+    func GetFileAttributesA(lpFileName: *const i8) -> u32;
+
+    func FindFirstFileA(lpFileName: *const i8, lpFindFileData: LPWIN32_FIND_DATAA) -> *mut void;
+    func FindNextFileA(hFindFile: *mut void, lpFindFileData: LPWIN32_FIND_DATAA) -> i32;
+    func FindClose(hFindFile: *mut void) -> i32;
+
+    func GetTempPathA(nBufferLength: u32, lpBuffer: *mut i8) -> u32;
+
+    func CreateFileA(lpFileName: *const i8, dwDesiredAccess: u32, dwShareMode: u32, lpSecurityAttributes: *mut void, dwCreationDisposition: u32, dwFlagsAndAttributes: u32, hTemplateFile: *mut void) -> *mut void;
+    func DeleteFileA(lpFileName: *const i8) -> i32;
+
+    func GetFileSize(hFile: *mut void, lpFileSizeHigh: *mut u32) -> u32;
+    func CloseHandle(hObject: *mut void) -> i32;
+}
+
+func _ReadFile(path: &String) -> String {
     let mut content: String;
-    let file: *const FILE = fopen(path.Data(), "r");
-    let buffer[256u64]: i8;
+    let handle = CreateFileA(path.Data(), 0x80000000, 1u32, null, 3u32, 0x80u32, null);
 
-    if file == null {
-        printf("\x1b[31mFailed to open file: '%s'.\x1b[0m\n", path.Data());
+    if handle == INVALID_HANDLE_VALUE {
+        WriteLine(String("\x1b[31mFailed to open file for reading: '") + path + "'.\x1b[0m");
         ret content;
     }
 
-    while fgets(buffer, sizeof(buffer) as i32, file) != null {
-        content += buffer;
+    let size: u32 = GetFileSize(handle, null);
+
+    if size > 0u32 {
+        content.Allocate((size + 1u32) as u64);
+        let mut bytesRead: u32 = 0u32;
+        
+        if ReadFile(handle, content.Data(), size, &bytesRead, null) != 0i32 {
+            content.Data()[size as u64] = 0i8;
+        }
     }
 
-    fclose(file);
+    CloseHandle(handle);
     ret content;
 }
 
-func WriteFile(path: &String, content: &String) -> bool {
-    let file: *const FILE = fopen(path.Data(), "w");
+func _WriteFile(path: &String, content: &String) -> bool {
+    let handle = CreateFileA(path.Data(), 0x40000000, 0u32, null, 2u32, 0x80u32, null);
 
-    if file == null {
-        printf("\x1b[31mFailed to open file: '%s'.\x1b[0m\n", path.Data());
+    if handle == INVALID_HANDLE_VALUE {
+        WriteLine(String("\x1b[31mFailed to open file for writing: '") + path + "'.\x1b[0m");
         ret false;
     }
 
-    fwrite(content.Data(), 1u64, content.Size() - 1u64, file);
-    fclose(file);
-    ret true;
+    let mut written: u32 = 0u32;
+    let success = WriteFile(handle, content.Data(), (content.Size() - 1u64) as u32, &written, null);
+    CloseHandle(handle);
+    ret success != 0i32;
 }
 
 func GetTemporaryPath() -> String {
     let buffer[256u64]: i8;
-    let length: DWORD = GetTempPathA(sizeof(buffer) as DWORD, buffer);
+    let length: u32 = GetTempPathA(sizeof(buffer) as u32, buffer);
 
-    if length > 0u32 && length < sizeof(buffer) as DWORD {
+    if length > 0u32 && length < sizeof(buffer) as u32 {
         ret String(buffer, 0u64, length as u64);
     } else {
-        printf("\x1b[31mFailed to get temporary path.\x1b[0m\n");
+        WriteLine("\x1b[31mFailed to get temporary path.\x1b[0m");
         ret String();
     }
 }
@@ -76,7 +131,7 @@ func PathExists(path: &String) -> bool {
 }
 
 func FileExists(path: &String) -> bool {
-    let attributes: DWORD = GetFileAttributesA(path.Data());
+    let attributes: u32 = GetFileAttributesA(path.Data());
 
     if attributes != INVALID_FILE_ATTRIBUTES {
         ret (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0u32;
@@ -86,7 +141,7 @@ func FileExists(path: &String) -> bool {
 }
 
 func FolderExists(path: &String) -> bool {
-    let attributes: DWORD = GetFileAttributesA(path.Data());
+    let attributes: u32 = GetFileAttributesA(path.Data());
 
     if attributes != INVALID_FILE_ATTRIBUTES {
         ret (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0u32;

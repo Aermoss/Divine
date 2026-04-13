@@ -524,7 +524,7 @@ class QualifiedType {
                 this.Error((String("Invalid arguments for: '") + name + "'.").Data(), node);
                 ret null;
             }
-        }        
+        }
     }
 
     pub op==(this: &QualifiedType, other: &QualifiedType) -> bool {
@@ -559,7 +559,7 @@ class TypeManager {
     TypeManager(this: &TypeManager) {}
 
     ~TypeManager(this: &mut TypeManager) {
-        WriteLine(String("Disposing ") + String(this.types.Size() as i64) + " types...");
+        WriteLine(String("Disposing ") + String(this.types.Size() as i64) + " types (" + String((this.types.Size() * sizeof(QualifiedType)) as f64 / 1024.0f64 / 1024.0f64) + " MB)...");
         let mut i: u64 = 0u64;
 
         while i < this.types.Size() {
@@ -803,6 +803,28 @@ class Scope {
         } ret null;
     }
 
+    pub GetAll(this: &Scope, name: &String) -> Vector<*const Symbol> {
+        let mut result: Vector<*const Symbol>;
+        let mut i: u64 = 0u64;
+
+        while i < this.symbols.Size() {
+            if this.symbols[i]->name == name {
+                result.PushBack(this.symbols[i]);
+            } i += 1u64;
+        } ret result;
+    }
+
+    pub GetAll(this: &Scope, name: &String, kind: SymbolKind) -> Vector<*const Symbol> {
+        let mut result: Vector<*const Symbol>;
+        let mut i: u64 = 0u64;
+
+        while i < this.symbols.Size() {
+            if this.symbols[i]->name == name && this.symbols[i]->kind == kind {
+                result.PushBack(this.symbols[i]);
+            } i += 1u64;
+        } ret result;
+    }
+
     priv Error(this: &Scope, message: *const i8, node: *const ASTNode) {
         if node != null {
             WriteLine(node->file + ":" + String(node->row as i64) + ":" + String(node->column as i64) + ": \x1b[31mError:\x1b[0m " + message);
@@ -928,6 +950,18 @@ class ScopeManager {
         } ret false;
     }
 
+    pub HasLocal(this: &ScopeManager, name: String) -> bool {
+        let mut scope: *const Scope = this.current;
+
+        while scope != null && !scope->global {
+            if scope->Has(name) {
+                ret true;
+            } else {
+                scope = scope->parent;
+            }
+        } ret false;
+    }
+
     pub Has(this: &ScopeManager, name: String, kind: SymbolKind) -> bool {
         let mut scope: *const Scope = this.current;
 
@@ -970,6 +1004,28 @@ class ScopeManager {
                 scope = scope->parent;
             }
         } ret null;
+    }
+
+    pub GetAll(this: &ScopeManager, name: String) -> Vector<*const Symbol> {
+        let mut result: Vector<*const Symbol>;
+        let mut scope: *const Scope = this.current;
+
+        while scope != null {
+            if scope->Has(name) {
+                result += scope->GetAll(name);
+            } scope = scope->parent;
+        } ret result;
+    }
+
+    pub GetAll(this: &ScopeManager, name: String, kind: SymbolKind) -> Vector<*const Symbol> {
+        let mut result: Vector<*const Symbol>;
+        let mut scope: *const Scope = this.current;
+
+        while scope != null {
+            if scope->Has(name, kind) {
+                result += scope->GetAll(name, kind);
+            } scope = scope->parent;
+        } ret result;
     }
 
     pub Namespaces(this: &ScopeManager) -> Vector<String> {
@@ -1091,6 +1147,104 @@ class ScopeManager {
             ret this.Resolve(node as *const ScopeResolutionNode);
         } else if node->node_type == ASTNodeType::IDENTIFIER {
             ret this.Resolve(node as *const IdentifierNode);
+        } else {
+            this.Error((String("Unknown resolution '") + ASTNodeTypeToString(node->node_type) + "'.").Data(), node);
+            ret null;
+        }
+    }
+
+    pub Resolve(this: &ScopeManager, symbols: &Vector<*const Symbol>, params: &Vector<*const QualifiedType>, node: *const ASTNode) -> *const Symbol {
+        let (mut index: u64, mut best: u64, mut i: u64) = (0u64, 0u64, 0u64);
+
+        while i < symbols.Size() {
+            let (mut _match: bool, mut score: u64, mut j: u64) = (true, 1u64, 0u64);
+            let _params: &Vector<*const QualifiedType> = symbols[i]->value.Type().Pointee().Parameters();
+            let mut offset: u64 = 0u64;
+
+            if _params.Size() != 0u64 {
+                offset = _params[0u64]->sret != null ? 1u64 : 0u64;
+            }
+
+            if params.Size() != _params.Size() - offset {
+                i += 1u64;
+                continue;
+            }
+
+            while params.Size() > j {
+                let mut _type: *const QualifiedType = _params[j + offset];
+
+                if _type->byval != null {
+                    _type = _type->byval;
+                }
+
+                if _type->IsReference() && *_type != *(params[j]) {
+                    _type = _type->Pointee();
+                }
+
+                let (mut _state: bool, mut state_: bool) = (false, false);
+
+                if params[j]->IsReference() {
+                    if *_type == params[j]->Pointee() {
+                        _state = true;
+                    } else if _type->IsPointer() && params[j]->Pointee().IsPointer() {
+                        if LLVMGetTypeKind(_type->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || LLVMGetTypeKind(params[j]->Pointee().Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind {
+                            state_ = true;
+                        }
+                    }
+                }
+
+                if _type->IsPointer() && params[j]->IsPointer() {
+                    if LLVMGetTypeKind(_type->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || LLVMGetTypeKind(params[j]->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind {
+                        state_ = true;
+                    }
+                }
+
+                if *_type == *(params[j]) || _state || state_ {
+                    score += _state ? 3u64 : (state_ ? 1u64 : 2u64);
+                } else {
+                    _match = false;
+                    break;
+                } j += 1u64;
+            }
+
+            if _match && score > best {
+                (index, best) = (i, score);
+            } i += 1u64;
+        }
+
+        if best != 0u64 {
+            ret symbols[index];
+        } else {
+            this.Error((String("Invalid arguments for: '") + symbols[0u64]->name + "'.").Data(), node);
+            ret null;
+        }
+    }
+
+    pub Resolve(this: &ScopeManager, resolution: *const ScopeResolutionNode, params: &Vector<*const QualifiedType>) -> *const Symbol {
+        let scope: *const Scope = this.ResolveScopeHalf(resolution);
+
+        if scope->Has(resolution->identifier->name, SymbolKind::Function) {
+            ret this.Resolve(scope->GetAll(resolution->identifier->name, SymbolKind::Function), params, resolution as *const ASTNode);
+        } else {
+            this.Error((String("Symbol '") + resolution->identifier->name + "' not found.").Data(), resolution as *const ASTNode);
+            ret null;
+        }
+    }
+
+    pub Resolve(this: &ScopeManager, identifier: *const IdentifierNode, params: &Vector<*const QualifiedType>) -> *const Symbol {
+        if this.Has(identifier->name, SymbolKind::Function) {
+            ret this.Resolve(this.GetAll(identifier->name, SymbolKind::Function), params, identifier as *const ASTNode);
+        } else {
+            this.Error((String("Symbol '") + identifier->name + "' not found.").Data(), identifier as *const ASTNode);
+            ret null;
+        }
+    }
+
+    pub Resolve(this: &ScopeManager, node: *const ASTNode, params: &Vector<*const QualifiedType>) -> *const Symbol {
+        if node->node_type == ASTNodeType::SCOPE_RESOLUTION {
+            ret this.Resolve(node as *const ScopeResolutionNode, params);
+        } else if node->node_type == ASTNodeType::IDENTIFIER {
+            ret this.Resolve(node as *const IdentifierNode, params);
         } else {
             this.Error((String("Unknown resolution '") + ASTNodeTypeToString(node->node_type) + "'.").Data(), node);
             ret null;
@@ -3424,20 +3578,20 @@ class Compiler {
         } ret pointer;
     }
 
-    priv CompileExpression(this: &mut Compiler, expr: *const ASTNode, pointer: bool) -> QualifiedValue {
-        if expr->node_type == ASTNodeType::LITERAL {
+    priv CompileExpression(this: &mut Compiler, expression: *const ASTNode, pointer: bool) -> QualifiedValue {
+        if expression->node_type == ASTNodeType::LITERAL {
             if !pointer {
-                ret this.CompileLiteral(expr as *const LiteralNode);
+                ret this.CompileLiteral(expression as *const LiteralNode);
             } else {
-                this.Error("Invalid pointer literal expression.", expr);
+                this.Error("Invalid pointer literal expression.", expression);
                 ret QualifiedValue(null, null);
             }
-        } else if expr->node_type == ASTNodeType::CALL {
-            ret this.CompileCall(expr as *const CallNode, pointer);
-        } else if expr->node_type == ASTNodeType::TERNARY {
-            ret this.CompileTernary(expr as *const TernaryNode, pointer);
-        } else if expr->node_type == ASTNodeType::IDENTIFIER || expr->node_type == ASTNodeType::SCOPE_RESOLUTION {
-            let symbol: *const Symbol = this.scope_manager.Resolve(expr);
+        } else if expression->node_type == ASTNodeType::CALL {
+            ret this.CompileCall(expression as *const CallNode, pointer);
+        } else if expression->node_type == ASTNodeType::TERNARY {
+            ret this.CompileTernary(expression as *const TernaryNode, pointer);
+        } else if expression->node_type == ASTNodeType::IDENTIFIER || expression->node_type == ASTNodeType::SCOPE_RESOLUTION {
+            let symbol: *const Symbol = this.scope_manager.Resolve(expression);
 
             if (symbol->kind == SymbolKind::Variable || symbol->kind == SymbolKind::GlobalVariable || symbol->kind == SymbolKind::Constant || symbol->kind == SymbolKind::Parameter) && !pointer {
                 if symbol->value.Type().IsPointer() {
@@ -3457,34 +3611,34 @@ class Compiler {
             } else if symbol->kind == SymbolKind::Function || pointer {
                 ret symbol->value;
             } else {
-                this.Error((String("Invalid symbol kind '") + SymbolKindToString(symbol->kind) + "'.").Data(), expr);
+                this.Error((String("Invalid symbol kind '") + SymbolKindToString(symbol->kind) + "'.").Data(), expression);
                 ret QualifiedValue(null, null);
             }
-        } else if expr->node_type == ASTNodeType::NEW {
-            ret this.CompileNew(expr as *const NewNode);
-        } else if expr->node_type == ASTNodeType::DELETE {
-            ret this.CompileDelete(expr as *const DeleteNode);
-        } else if expr->node_type == ASTNodeType::CAST {
-            let value: QualifiedValue = this.CompileCast(expr as *const CastNode, pointer);
+        } else if expression->node_type == ASTNodeType::NEW {
+            ret this.CompileNew(expression as *const NewNode);
+        } else if expression->node_type == ASTNodeType::DELETE {
+            ret this.CompileDelete(expression as *const DeleteNode);
+        } else if expression->node_type == ASTNodeType::CAST {
+            let value: QualifiedValue = this.CompileCast(expression as *const CastNode, pointer);
 
             if !pointer || (pointer && value.Type().IsPointer()) {
                 ret value;
             } else {
-                this.Error("Invalid pointer cast expression.", expr);
+                this.Error("Invalid pointer cast expression.", expression);
                 ret QualifiedValue(null, null);
             }
-        } else if expr->node_type == ASTNodeType::INDEX_ACCESS {
-            ret this.CompileIndexAccess(expr as *const IndexAccessNode, pointer);
-        } else if expr->node_type == ASTNodeType::MEMBER_ACCESS {
-            ret this.CompileMemberAccess(expr as *const MemberAccessNode, pointer);
-        } else if expr->node_type == ASTNodeType::UNARY_OP {
-            ret this.CompileUnaryOperation(expr as *const UnaryOpNode, pointer);
-        } else if expr->node_type == ASTNodeType::BINARY_OP {
-            ret this.CompileBinaryOperation(expr as *const BinaryOpNode, pointer);
-        } else if expr->node_type == ASTNodeType::STRUCT_INIT {
-            ret this.CompileStructInit(expr as *const StructInitNode);
+        } else if expression->node_type == ASTNodeType::INDEX_ACCESS {
+            ret this.CompileIndexAccess(expression as *const IndexAccessNode, pointer);
+        } else if expression->node_type == ASTNodeType::MEMBER_ACCESS {
+            ret this.CompileMemberAccess(expression as *const MemberAccessNode, pointer);
+        } else if expression->node_type == ASTNodeType::UNARY_OP {
+            ret this.CompileUnaryOperation(expression as *const UnaryOpNode, pointer);
+        } else if expression->node_type == ASTNodeType::BINARY_OP {
+            ret this.CompileBinaryOperation(expression as *const BinaryOpNode, pointer);
+        } else if expression->node_type == ASTNodeType::STRUCT_INIT {
+            ret this.CompileStructInit(expression as *const StructInitNode);
         } else {
-            this.Error((String("Unknown expression '") + ASTNodeTypeToString(expr->node_type) + "'.").Data(), expr);
+            this.Error((String("Unknown expression '") + ASTNodeTypeToString(expression->node_type) + "'.").Data(), expression);
             ret QualifiedValue(null, null);
         }
     }
@@ -3684,10 +3838,31 @@ class Compiler {
                     ret QualifiedValue(null, null);
                 }
 
-                let value: QualifiedValue = this.CompileExpression(call->arguments[0u64], true);
-                let size: u64 = LLVMStoreSizeOfType(this.layout, value.Type().Pointee().Value());
-                let _type: &QualifiedType = this.type_manager.Primitive(LLVMInt64TypeInContext(this.context), false);
-                ret QualifiedValue(LLVMConstInt(_type.Value(), size, 0i32), _type);
+                let mut _type: *const QualifiedType;
+                let arg: *const ASTNode = call->arguments[0u64];
+
+                if arg->node_type == ASTNodeType::IDENTIFIER || arg->node_type == ASTNodeType::SCOPE_RESOLUTION {
+                    let symbol: *const Symbol = this.scope_manager.Resolve(arg);
+
+                    if symbol->kind == SymbolKind::Variable || symbol->kind == SymbolKind::GlobalVariable || symbol->kind == SymbolKind::Constant || symbol->kind == SymbolKind::Parameter {
+                        if symbol->kind == SymbolKind::Constant {
+                            _type = symbol->value.Type();
+                        } else {
+                            _type = symbol->value.Type().Pointee();
+                        }
+                    } else if symbol->kind == SymbolKind::Function {
+                        _type = symbol->value.Type();
+                    } else {
+                        this.Error((String("Invalid symbol kind '") + SymbolKindToString(symbol->kind) + "'.").Data(), arg);
+                        ret QualifiedValue(null, null);
+                    }
+                } else {
+                    _type = this.CompileType(arg);
+                }
+
+                let size: u64 = LLVMStoreSizeOfType(this.layout, _type->Value());
+                let size_type: &QualifiedType = this.type_manager.Primitive(LLVMInt64TypeInContext(this.context), false);
+                ret QualifiedValue(LLVMConstInt(size_type.Value(), size, 0i32), size_type);
             }
         }
 
@@ -3770,7 +3945,17 @@ class Compiler {
                 ret instance;
             }
         } else {
-            ret this.CompileCall2(this.CompileExpression(call->expression, true), values, pointer, false, call as *const ASTNode);
+            let mut state: bool = call->expression->node_type == ASTNodeType::SCOPE_RESOLUTION;
+
+            if call->expression->node_type == ASTNodeType::IDENTIFIER {
+                state |= !this.scope_manager.HasLocal((call->expression as *const IdentifierNode)->name);
+            }
+
+            if state {
+                ret this.CompileCall2(this.scope_manager.Resolve(call->expression, this.ValueToType(values))->value, values, pointer, false, call as *const ASTNode);
+            } else {
+                ret this.CompileCall2(this.CompileExpression(call->expression, true), values, pointer, false, call as *const ASTNode);
+            }
         }
     }
 

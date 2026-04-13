@@ -24,7 +24,7 @@ enum TokenType: i32 {
     INCLUDE, USE, MODULE, NEW, DELETE, ASYNC, AWAIT, AS,
     IF, ELSE, FOR, IN, WHILE, LOOP, MATCH, RETURN, BREAK, CONTINUE,
     FUNC, CLASS, ENUM, TYPE, IMPL, EXTERN, LET, MUT, CONST, STATIC,
-    PUBLIC, PRIVATE, OPERATOR,
+    PUBLIC, PRIVATE, OPERATOR, ASM, ASM_CODE,
 
     ASSIGN, PLUS_ASSIGN, MINUS_ASSIGN, MUL_ASSIGN, DIV_ASSIGN, MOD_ASSIGN,
     LSHIFT_ASSIGN, RSHIFT_ASSIGN, AND_ASSIGN, OR_ASSIGN, XOR_ASSIGN,
@@ -81,6 +81,7 @@ func TokenTypeToString(_type: TokenType) -> String {
     else if _type == TokenType::PUBLIC { ret { "PUBLIC" } as String; }
     else if _type == TokenType::PRIVATE { ret { "PRIVATE" } as String; }
     else if _type == TokenType::OPERATOR { ret { "OPERATOR" } as String; }
+    else if _type == TokenType::ASM { ret { "ASM" } as String; }
     else if _type == TokenType::ASSIGN { ret { "ASSIGN" } as String; }
     else if _type == TokenType::PLUS_ASSIGN { ret { "PLUS_ASSIGN" } as String; }
     else if _type == TokenType::MINUS_ASSIGN { ret { "MINUS_ASSIGN" } as String; }
@@ -215,6 +216,7 @@ func StringToKeyword(string: String) -> TokenType {
     else if string == "pub" { ret TokenType::PUBLIC; }
     else if string == "priv" { ret TokenType::PRIVATE; }
     else if string == "op" { ret TokenType::OPERATOR; }
+    else if string == "asm" { ret TokenType::ASM; }
     else if string == "endif" { ret TokenType::ENDIF; }
     else { ret TokenType::UNKNOWN; }
 }
@@ -735,6 +737,46 @@ class Lexer {
         } ret token;
     }
 
+    priv LexAsm(this: &mut Lexer) -> Token {
+        let mut token: Token;
+        (token.row, token.column, token._type) = (this.row, this.column, TokenType::ASM_CODE);
+
+        if this.CurrentChar() == '{' {
+            this.Advance(1u64);
+            let mut indent: i32 = 1i32;
+
+            while this.CurrentChar() != '\0' {
+                if this.CurrentChar() == '{' {
+                    indent += 1i32;
+                } else if this.CurrentChar() == '}' {
+                    indent -= 1i32;
+
+                    if indent == 0i32 {
+                        break;
+                    }
+                }
+
+                token.value += this.CurrentChar();
+                this.Advance(1u64);
+            }
+
+            if indent > 0i32 {
+                this.Error("Unterminated asm block.", token.row, token.column);
+            }
+
+            this.Advance(1u64);
+        } else {
+            while this.CurrentChar() != ';' && this.CurrentChar() != '\0' {
+                token.value += this.CurrentChar();
+                this.Advance(1u64);
+            }
+
+            if this.CurrentChar() == ';' {
+                this.Advance(1u64);
+            }
+        } ret token;
+    }
+
     pub Lex(this: &mut Lexer, text: String, file: String) -> Vector<Token> {
         (this.index, this.row, this.column) = (0u64, 1u64, 1u64);
         (this.file, this.text, this.length) = (file, text, text.Size());
@@ -763,7 +805,13 @@ class Lexer {
             } else if this.IsDigit(character) || (character == '.' && this.IsDigit(this.PeekChar(1u64))) {
                 tokens.PushBack(this.LexNumber());
             } else if this.IsAlpha(character) || (character as u8) > 0x7Fu8 {
-                tokens.PushBack(this.LexIdentifier());
+                let token: Token = this.LexIdentifier();
+                tokens.PushBack(token);
+
+                if token._type == TokenType::ASM {
+                    this.SkipWhitespace();
+                    tokens.PushBack(this.LexAsm());
+                }
             } else {
                 tokens.PushBack(this.LexOperator());
             }

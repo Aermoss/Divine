@@ -17,7 +17,7 @@
 include "divio", "divstr", "divvec", "divmap", "lexer.div", "preprocessor.div" : *;
 
 enum ASTNodeType: i32 {
-    ROOT,
+    ROOT, INLINE_ASM,
 
     VARIABLE_DECL, CONSTANT_DECL, STATIC_DECL,
     FUNCTION_DECL, CLASS_DECL, ENUM_DECL, TYPE_DECL,
@@ -548,6 +548,14 @@ class ExternBlockNode : ASTNode {
     }
 };
 
+class InlineAsmNode : ASTNode {
+    pub code: String
+} impl {
+    InlineAsmNode(this: &mut InlineAsmNode, code: String, row: u64, column: u64, file: String) : ASTNode(ASTNodeType::INLINE_ASM, row, column, file) {
+        this.code = code;
+    }
+};
+
 class RootNode : ASTNode {
     pub declarations: Vector<*const ASTNode>
 } impl {
@@ -972,6 +980,8 @@ class Parser {
             ret this.ParseBreakStatement(expression);
         } else if token._type == TokenType::CONTINUE {
             ret this.ParseContinueStatement(expression);
+        } else if token._type == TokenType::ASM {
+            ret this.ParseInlineAsm();
         } else {
             let index: u64 = this.index;
 
@@ -1384,6 +1394,11 @@ class Parser {
         ret block as *const ASTNode;
     }
 
+    priv ParseInlineAsm(this: &mut Parser) -> *const ASTNode {
+        let (token: Token, code: Token) = (this.Expect(TokenType::ASM), this.Expect(TokenType::ASM_CODE));
+        ret new InlineAsmNode(code.value, token.row, token.column, this.file) as *const ASTNode;
+    }
+
     priv ParseDeclaration(this: &mut Parser) -> *const ASTNode {
         let token: Token = this.Current();
 
@@ -1403,6 +1418,8 @@ class Parser {
             ret this.ParseStaticDeclaration();
         } else if token._type == TokenType::TYPE {
             ret this.ParseTypeDeclaration();
+        } else if token._type == TokenType::ASM {
+            ret this.ParseInlineAsm();
         } else {
             this.Error("Expected declaration.", token);
             ret null;

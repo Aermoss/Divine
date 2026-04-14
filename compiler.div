@@ -1800,8 +1800,15 @@ class Compiler {
 
                 while i < initializer_list->expressions.Size() {
                     let value: QualifiedValue = this.CompileExpression(initializer_list->expressions[i], false);
+                    let mut state: bool = false;
 
-                    if value.Type() != _type->Element() {
+                    if value.Type().IsPointer() && _type->Element()->IsPointer() {
+                        if LLVMGetTypeKind(value.Type().Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || LLVMGetTypeKind(_type->Element()->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind {
+                            state = true;
+                        }
+                    }
+
+                    if value.Type() != _type->Element() && !state {
                         this.Error((String("Incompatible initializer list element types. ('") + LLVMTypeToString(value.Type().Value()) + "' != '" + LLVMTypeToString(_type->Element().Value()) + "').").Data(), constant_decl as *const ASTNode);
                         ret;
                     }
@@ -1885,8 +1892,15 @@ class Compiler {
 
                     while i < initializer_list->expressions.Size() {
                         let value: QualifiedValue = this.CompileExpression(initializer_list->expressions[i], false);
+                        let mut state: bool = false;
 
-                        if value.Type() != _type->Element() {
+                        if value.Type().IsPointer() && _type->Element()->IsPointer() {
+                            if LLVMGetTypeKind(value.Type().Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || LLVMGetTypeKind(_type->Element()->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind {
+                                state = true;
+                            }
+                        }
+
+                        if value.Type() != _type->Element() && !state {
                             this.Error((String("Incompatible initializer list element types. ('") + LLVMTypeToString(value.Type().Value()) + "' != '" + LLVMTypeToString(_type->Element().Value()) + "').").Data(), static_decl as *const ASTNode);
                             ret;
                         }
@@ -2936,6 +2950,20 @@ class Compiler {
         }
     }
 
+    priv CompileCondition(this: &mut Compiler, condition: *const ASTNode) -> LLVMValueRef {
+        let mut condition: QualifiedValue = this.CompileExpression(if_stmt->condition, false);
+
+        if condition.Type().IsReference() {
+            condition = QualifiedValue(LLVMBuildLoad2(this.builder, condition.Type().Pointee().Value(), condition.Value(), ""), condition.Type().Pointee());
+        }
+
+        if LLVMGetTypeKind(condition.Type().Value()) != LLVMTypeKind::LLVMIntegerTypeKind || LLVMGetIntTypeWidth(condition.Type().Value()) != 1u32 {
+            this.Error((String("Invalid condition type '") + LLVMTypeToString(condition.Type().Value()) + "'.").Data(), if_stmt->condition as *const ASTNode);
+        }
+
+        ret condition.Value();
+    }
+
     priv CompileIf(this: &mut Compiler, if_stmt: *const IfStmtNode) {
         let function: LLVMValueRef = LLVMGetBasicBlockParent(LLVMGetInsertBlock(this.builder));
         let then_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "");
@@ -2949,8 +2977,7 @@ class Compiler {
             } else_block = end_block;
         }
 
-        let condition: QualifiedValue = this.CompileExpression(if_stmt->condition, false);
-        LLVMBuildCondBr(this.builder, condition.Value(), then_block, else_block);
+        LLVMBuildCondBr(this.builder, this.CompileCondition(if_stmt->condition), then_block, else_block);
 
         LLVMPositionBuilderAtEnd(this.builder, then_block);
         this.scope_manager.PushScope(String("then"), false);
@@ -3100,8 +3127,7 @@ class Compiler {
 
         if while_stmt->else_stmt != null {
             let else_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "");
-            let condition: QualifiedValue = this.CompileExpression(while_stmt->condition, false);
-            LLVMBuildCondBr(this.builder, condition.Value(), loop_block, else_block);
+            LLVMBuildCondBr(this.builder, this.CompileCondition(while_stmt->condition), loop_block, else_block);
 
             LLVMPositionBuilderAtStart(this.builder, else_block);
             this.scope_manager.PushScope(String("else"), false);
@@ -3116,8 +3142,7 @@ class Compiler {
         }
 
         LLVMPositionBuilderAtStart(this.builder, compare_block);
-        let condition: QualifiedValue = this.CompileExpression(while_stmt->condition, false);
-        LLVMBuildCondBr(this.builder, condition.Value(), loop_block, end_block);
+        LLVMBuildCondBr(this.builder, this.CompileCondition(while_stmt->condition), loop_block, end_block);
 
         LLVMPositionBuilderAtStart(this.builder, loop_block);
         this.blocks.PushBack(Pair<LLVMBasicBlockRef, LLVMBasicBlockRef>(compare_block, end_block));
@@ -4124,9 +4149,7 @@ class Compiler {
         let function: LLVMValueRef = LLVMGetBasicBlockParent(LLVMGetInsertBlock(this.builder));
         let mut then_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "");
         let mut else_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "");
-
-        let condition: QualifiedValue = this.CompileExpression(ternary->condition, false);
-        LLVMBuildCondBr(this.builder, condition.Value(), then_block, else_block);
+        LLVMBuildCondBr(this.builder, this.CompileCondition(ternary->condition), then_block, else_block);
 
         LLVMPositionBuilderAtEnd(this.builder, then_block);
         let then_value: QualifiedValue = this.CompileExpression(ternary->then_expr, pointer);
@@ -4135,8 +4158,15 @@ class Compiler {
         LLVMPositionBuilderAtEnd(this.builder, else_block);
         let else_value: QualifiedValue = this.CompileExpression(ternary->else_expr, pointer);
         else_block = LLVMGetInsertBlock(this.builder);
+        let mut state: bool = false;
 
-        if then_value.Type() != else_value.Type() {
+        if then_value.Type().IsPointer() && else_value.Type().IsPointer() {
+            if LLVMGetTypeKind(then_value.Type().Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || LLVMGetTypeKind(else_value.Type().Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind {
+                state = true;
+            }
+        }
+
+        if then_value.Type() != else_value.Type() && !state {
             this.Error((String("Incompatible ternary types. ('") + LLVMTypeToString(then_value.Type().Value()) + "' != '" + LLVMTypeToString(else_value.Type().Value()) + "').").Data(), ternary as *const ASTNode);
             ret QualifiedValue(null, null);
         }

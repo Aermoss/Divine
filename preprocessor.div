@@ -78,23 +78,62 @@ class Preprocessor {
         } ret true;
     }
 
+    priv ProcessPrimary(this: &mut Preprocessor) -> bool {
+        if this.Match(TokenType::LPAREN) {
+            let result: bool = this.ProcessExpr();
+            this.Expect(TokenType::RPAREN);
+            ret result;
+        } else {
+            let name: String = this.Expect(TokenType::IDENTIFIER).value;
+            ret this.defines.Contains(name);
+        }
+    }
+
+    priv ProcessNotExpression(this: &mut Preprocessor) -> bool {
+        if this.Match(TokenType::NOT) {
+            ret !this.ProcessNotExpression();
+        } ret this.ProcessPrimary();
+    }
+
+    priv ProcessAndExpression(this: &mut Preprocessor) -> bool {
+        let mut result: bool = this.ProcessNotExpression();
+
+        while this.Current()._type == TokenType::AND {
+            this.Advance();
+            let right: bool = this.ProcessNotExpression();
+            result = result && right;
+        } ret result;
+    }
+
+    priv ProcessOrExpression(this: &mut Preprocessor) -> bool {
+        let mut result: bool = this.ProcessAndExpression();
+
+        while this.Current()._type == TokenType::OR {
+            this.Advance();
+            let right: bool = this.ProcessAndExpression();
+            result = result || right;
+        } ret result;
+    }
+
+    priv ProcessExpression(this: &mut Preprocessor) -> bool {
+        ret this.ProcessOrExpression();
+    }
+
     pub ProcessDirective(this: &mut Preprocessor) {
         let token: Token = this.Current();
 
         if this.Match(TokenType::IF) {
-            let name: String = this.Expect(TokenType::IDENTIFIER).value;
-            let active: bool = this.defines.Contains(name);
+            let active: bool = this.ProcessExpression();
             this.conditions.PushBack(active);
             this.taken.PushBack(active);
         } else if this.Match(TokenType::ELIF) {
-            let name: String = this.Expect(TokenType::IDENTIFIER).value;
+            let active: bool = this.ProcessExpression();
 
             if this.conditions.Empty() {
                 this.Error("Unexpected 'elif' directive.", token);
             } else if this.taken[this.taken.Size() - 1u64] {
                 this.conditions[this.conditions.Size() - 1u64] = false;
             } else {
-                let active: bool = this.defines.Contains(name);
                 this.conditions[this.conditions.Size() - 1u64] = active;
                 this.taken[this.taken.Size() - 1u64] = active;
             }
@@ -114,6 +153,10 @@ class Preprocessor {
             } else {
                 this.Error("Unexpected 'endif' directive.", token);
             }
+        } else if this.Match(TokenType::ERROR) {
+            this.Error(this.Match(TokenType::STRING).value, token);
+        } else if this.Match(TokenType::WARNING) {
+            this.Warning(this.Match(TokenType::STRING).value, token);
         } else {
             this.Error((String("Unknown directive: '") + token.value + "'.").Data(), token);
         }
@@ -147,5 +190,9 @@ class Preprocessor {
     priv Error(this: &mut Preprocessor, message: *const i8, token: Token) {
         WriteLine(this.file + ":" + String(token.row as i64) + ":" + String(token.column as i64) + ": \x1b[31mError:\x1b[0m " + message);
         Exit(1i32);
+    }
+
+    priv Warning(this: &mut Preprocessor, message: *const i8, token: Token) {
+        WriteLine(this.file + ":" + String(token.row as i64) + ":" + String(token.column as i64) + ": \x1b[35mWarning:\x1b[0m " + message);
     }
 };

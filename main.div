@@ -16,7 +16,7 @@
 
 include "divio", "divfile", "divstd", "divllvm", "lexer.div", "preprocessor.div", "parser.div", "compiler.div" : *;
 
-const STARTF_USESTDHANDLES: u32 = 0x00000100u32;
+#[if WINDOWS]
 const INFINITE: u32 = 0xFFFFFFFFu32;
 
 class STARTUPINFOA {
@@ -77,16 +77,11 @@ class Timer {
     }
 };
 
-func Execute(command: *const i8, output: bool) -> u32 {
+func Execute(command: *const i8) -> u32 {
     let mut startup_info: STARTUPINFOA;
     memset(&startup_info as *const void, 0i32, sizeof(startup_info));
     startup_info.cb = sizeof(startup_info) as u32;
     let process_info: PROCESS_INFORMATION;
-
-    if output != true {
-        (startup_info.hStdOutput, startup_info.hStdError, startup_info.hStdInput) = (null, null, null);
-        startup_info.dwFlags |= STARTF_USESTDHANDLES;
-    }
 
     if CreateProcessA(null, command, null, null, 0i32, 0u32, null, null, &startup_info, &process_info) == 0i32 {
         WriteLine(String("\x1b[31mFailed to create process: ") + String(GetLastError() as i64) + ".\x1b[0m");
@@ -104,7 +99,104 @@ func Execute(command: *const i8, output: bool) -> u32 {
     CloseHandle(process_info.hThread);
     ret exit_code;
 }
+#[else]
+class _TimeSpec {
+    pub sec: i64,
+    pub nsec: i64
+};
 
+class _SHArgs {
+    pub sh: *const i8,
+    pub flag: *const i8,
+    pub cmd: *const i8,
+    pub end: *const i8
+};
+
+class _NullEnv {
+    pub end: *const i8
+};
+
+extern "C" {
+    func clock_gettime(clk_id: i32, tp: *mut _TimeSpec) -> i32 #[if DARWIN] ; #[else] {
+        let mut result: i64 = 0i64;
+        let _clk_id: i64 = clk_id as i64;
+
+        volatile asm : rax(228i64), rdi(_clk_id), rsi(tp) -> {
+            syscall
+        } -> rax(result) : memory, rcx, r11;
+
+        ret result as i32;
+    } #[endif]
+
+    func fork() -> i32 #[if DARWIN] ; #[else] {
+        let mut result: i64 = 0i64;
+
+        volatile asm : rax(57i64) -> {
+            syscall
+        } -> rax(result) : memory, rcx, r11;
+
+        ret result as i32;
+    } #[endif]
+
+    func execve(path: *const i8, argv: *const *const i8, envp: *const *const i8) -> i32 #[if DARWIN] ; #[else] {
+        let mut result: i64 = 0i64;
+
+        volatile asm : rax(59i64), rdi(path), rsi(argv), rdx(envp) -> {
+            syscall
+        } -> rax(result) : memory, rcx, r11;
+
+        ret result as i32;
+    } #[endif]
+
+    func waitpid(pid: i32, status: *mut i32, options: i32) -> i32 #[if DARWIN] ; #[else] {
+        let mut result: i64 = 0i64;
+        let _pid: i64 = pid as i64;
+        let _options: i64 = options as i64;
+
+        volatile asm : rax(61i64), rdi(_pid), rsi(status), rdx(_options) -> {
+            syscall
+        } -> rax(result) : memory, rcx, r11;
+
+        ret result as i32;
+    } #[endif]
+}
+
+class Timer {
+    priv dummy: i64
+} impl {
+    Timer(this: &mut Timer) { this.dummy = 0i64; }
+    ~Timer(this: &mut Timer) {}
+
+    pub Get(this: &Timer) -> f64 {
+        let mut ts: _TimeSpec;
+        (ts.sec, ts.nsec) = (0i64, 0i64);
+        clock_gettime(0i32, &ts);
+        ret (ts.sec as f64) + (ts.nsec as f64) / 1000000000.0f64;
+    }
+};
+
+func Execute(command: *const i8) -> u32 {
+    let mut shargs: _SHArgs;
+    shargs.sh = "/bin/sh";
+    shargs.flag = "-c";
+    shargs.cmd = command;
+    shargs.end = null;
+    let mut nullenv: _NullEnv;
+    nullenv.end = null;
+    let pid: i32 = fork();
+
+    if pid == 0i32 {
+        execve(shargs.sh, &shargs as *const *const i8, &nullenv as *const *const i8);
+        Exit(1i32);
+    }
+
+    let mut status: i32 = 0i32;
+    waitpid(pid, &status, 0i32);
+    ret ((status >> 8i32) & 0xFFi32) as u32;
+}
+#[endif]
+
+#[if WINDOWS]
 func GetWindowsSDKPath() -> String {
     let mut path: String = "C:\\Program Files (x86)\\Windows Kits\\10\\Lib";
 
@@ -278,6 +370,7 @@ func GetMSVCPath() -> String {
     FindClose(find_handle3);
     ret path;
 }
+#[endif]
 
 func PrintVersion(executable: String) {
     WriteLine(String("Unversioned build of ") + executable + " (" + LLVMGetDefaultTargetTriple() + ").");
@@ -330,10 +423,6 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
 
     include_paths.PushBack(String("."));
     include_paths.PushBack(String("include"));
-
-#[if WINDOWS]
-    defines.PushBack(String("WINDOWS"));
-#[endif]
 
     let mut opt_level: LLVMCodeGenOptLevel = LLVMCodeGenOptLevel::LLVMCodeGenLevelLess;
     let (mut triple: String, mut march: String) = (LLVMGetDefaultTargetTriple(), "generic");
@@ -475,6 +564,22 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
         ret 1i32;
     }
 
+    if output_file.Empty() {
+        output_file = SplitExtension(input_files[0u64]).left;
+        if triple.Contains("windows") { output_file += ".exe"; }
+    }
+
+    if triple.Contains("windows") {
+        defines.PushBack(String("WINDOWS"));
+    } else if triple.Contains("darwin") || triple.Contains("apple") {
+        defines.PushBack(String("DARWIN"));
+    } else if triple.Contains("linux") {
+        defines.PushBack(String("LINUX"));
+    } else {
+        WriteLine(executable + ": \x1b[31mError:\x1b[0m Invalid target: '" + triple + "'.");
+        ret 1i32;
+    }
+
     let timer: Timer;
     let start: f64 = timer.Get();
     let mut objects: Vector<String>;
@@ -551,7 +656,7 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
         }
 
         let message: *const i8 = null;
-        let mut object_name: String = name + ".obj";
+        let mut object_name: String = name + (triple.Contains("windows") ? ".obj" : ".o");
 
         if !emit_object {
             object_name = JoinPath(temp_path, SplitPath(object_name).right);
@@ -568,49 +673,64 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
         j += 1u64;
     }
 
-    let (sdk_path: String, msvc_path: String) = (GetWindowsSDKPath(), GetMSVCPath());
-    let mut command: String = String("\"") + msvc_path + "\\bin\\Hostx64\\x64\\link.exe\" /NOLOGO /SUBSYSTEM:CONSOLE /NODEFAULTLIB /ENTRY:_start";
-    if debug { command += " /DEBUG"; }
+#[if WINDOWS]
+    let lld_exe: String = "ld.lld.exe";
+    let lld64_exe: String = "ld64.lld.exe";
+    let lld_link_exe: String = "lld-link.exe";
+#[else]
+    let lld_exe: String = "ld.lld";
+    let lld64_exe: String = "ld64.lld";
+    let lld_link_exe: String = "lld-link";
+#[endif]
+    let mut command: String;
 
-    let mut final_output: String;
-    if output_file.Size() > 1u64 { final_output = output_file; }
-    else { final_output = SplitExtension(input_files[0u64]).left + ".exe"; }
-    command += String(" /OUT:") + final_output;
-    let mut k: u64 = 0u64;
-
-    while k < objects.Size() {
-        command += String(" ") + objects[k];
-        k += 1u64;
-    } k = 0u64;
-
-    command += String(" \"/LIBPATH:") + msvc_path + "\\lib\\x64\"";
-    command += String(" \"/LIBPATH:") + sdk_path + "\\um\\x64\"";
-    command += String(" \"/LIBPATH:") + sdk_path + "\\ucrt\\x64\"";
-
-    while k < lib_paths.Size() {
-        command += String(" \"/LIBPATH:") + lib_paths[k] + "\"";
-        k += 1u64;
-    } k = 0u64;
-
-    command += " user32.lib shell32.lib kernel32.lib";
-
-    while k < libs.Size() {
-        command += String(" ") + libs[k] + ".lib";
-        k += 1u64;
-    } k = 0u64;
+    if triple.Contains("windows") {
+#[if WINDOWS]
+        let (sdk_path: String, msvc_path: String) = (GetWindowsSDKPath(), GetMSVCPath());
+        command = String("\"") + msvc_path + "\\bin\\Hostx64\\x64\\link.exe\" /NOLOGO /SUBSYSTEM:CONSOLE /NODEFAULTLIB /ENTRY:_start";
+        if debug { command += " /DEBUG"; }
+        command += String(" /OUT:") + output_file;
+        let (mut i: u64, mut j: u64, mut k: u64) = (0u64, 0u64, 0u64);
+        while i < objects.Size() { command += String(" ") + objects[i]; i += 1u64; }
+        command += String(" \"/LIBPATH:") + msvc_path + "\\lib\\x64\"";
+        command += String(" \"/LIBPATH:") + sdk_path + "\\um\\x64\"";
+        command += String(" \"/LIBPATH:") + sdk_path + "\\ucrt\\x64\"";
+        while j < lib_paths.Size() { command += String(" \"/LIBPATH:") + lib_paths[j] + "\""; j += 1u64; }
+        command += " user32.lib shell32.lib kernel32.lib";
+        while k < libs.Size() { command += String(" ") + libs[k] + ".lib"; k += 1u64; }
+#[else]
+        WriteLine(executable + ": \x1b[31mError:\x1b[0m Cannot link to windows from another platform.");
+        ret 1i32;
+#[endif]
+    } else if triple.Contains("darwin") || triple.Contains("apple") {
+        WriteLine(executable + ": \x1b[31mError:\x1b[0m Cannot link to darwin.");
+        ret 1i32;
+    } else {
+        command = lld_exe + " --nostdlib --entry _start --dynamic-linker /lib64/ld-linux-x86-64.so.2";
+        command += String(" -o ") + output_file;
+        let (mut i: u64, mut j: u64, mut k: u64) = (0u64, 0u64, 0u64);
+        while i < objects.Size() { command += String(" ") + objects[i]; i += 1u64; }
+        while j < lib_paths.Size() { command += String(" -L") + lib_paths[j]; j += 1u64; }
+        while k < libs.Size() { command += String(" -l") + libs[k]; k += 1u64; }
+    }
 
     if verbose { WriteLine(String("Link: ") + command); }
-    Execute(command.Data(), true);
+    Execute(command.Data());
     WriteLine(String("Program compiled in ") + String(timer.Get() - start) + " seconds.");
 
     if !emit_object {
-        while k < objects.Size() {
-            RemoveFile(objects[k]);
-            k += 1u64;
+        let mut i: u64 = 0u64;
+
+        while i < objects.Size() {
+            RemoveFile(objects[i]);
+            i += 1u64;
         }
     }
 
     if run {
-        WriteLine(String("Program finished with exit code: ") + String(Execute(final_output.Data(), true) as i64) + ".");
+#[if !WINDOWS]
+        if SplitPath(output_file).left.Empty() { output_file = JoinPath(String("."), output_file); }
+#[endif]
+        WriteLine(String("Program finished with exit code: ") + String(Execute(output_file.Data()) as i64) + ".");
     } ret 0i32;
 }

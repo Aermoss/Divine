@@ -549,10 +549,13 @@ class ExternBlockNode : ASTNode {
 };
 
 class InlineAsmNode : ASTNode {
-    pub code: String
+    pub _volatile: bool, pub code: String,
+    pub inputs: Vector<Pair<String, *const ASTNode>>,
+    pub outputs: Vector<Pair<String, *const ASTNode>>,
+    pub clobbers: Vector<String>
 } impl {
-    InlineAsmNode(this: &mut InlineAsmNode, code: String, row: u64, column: u64, file: String) : ASTNode(ASTNodeType::INLINE_ASM, row, column, file) {
-        this.code = code;
+    InlineAsmNode(this: &mut InlineAsmNode, _volatile: bool, row: u64, column: u64, file: String) : ASTNode(ASTNodeType::INLINE_ASM, row, column, file) {
+        this._volatile = _volatile;
     }
 };
 
@@ -980,7 +983,7 @@ class Parser {
             ret this.ParseBreakStatement(expression);
         } else if token._type == TokenType::CONTINUE {
             ret this.ParseContinueStatement(expression);
-        } else if token._type == TokenType::ASM {
+        } else if token._type == TokenType::ASSEMBLY || token._type == TokenType::VOLATILE {
             ret this.ParseInlineAsm();
         } else {
             let index: u64 = this.index;
@@ -1395,8 +1398,45 @@ class Parser {
     }
 
     priv ParseInlineAsm(this: &mut Parser) -> *const ASTNode {
-        let (token: Token, code: Token) = (this.Expect(TokenType::ASM), this.Expect(TokenType::ASM_CODE));
-        ret new InlineAsmNode(code.value, token.row, token.column, this.file) as *const ASTNode;
+        let _volatile: bool = this.Match(TokenType::VOLATILE);
+        let token: Token = this.Expect(TokenType::ASSEMBLY);
+        let node: *mut InlineAsmNode = new InlineAsmNode(_volatile, token.row, token.column, this.file);
+
+        if this.Match(TokenType::COLON) {
+            while this.Current()._type == TokenType::IDENTIFIER {
+                let register: String = this.Advance().value;
+                this.Expect(TokenType::LPAREN);
+                let expression: *const ASTNode = this.ParseExpression();
+                this.Expect(TokenType::RPAREN);
+                node->inputs.PushBack(Pair<String, *const ASTNode>(register, expression));
+                if !this.Match(TokenType::COMMA) { break; }
+            }
+
+            this.Expect(TokenType::ARROW);
+        }
+
+        node->code = this.Expect(TokenType::ASSEMBLY_CODE).value;
+
+        if this.Match(TokenType::ARROW) {
+            while this.Current()._type == TokenType::IDENTIFIER {
+                let register: String = this.Advance().value;
+                this.Expect(TokenType::LPAREN);
+                let expression: *const ASTNode = this.ParseExpression();
+                this.Expect(TokenType::RPAREN);
+                node->outputs.PushBack(Pair<String, *const ASTNode>(register, expression));
+                if !this.Match(TokenType::COMMA) { break; }
+            }
+        }
+
+        if this.Match(TokenType::COLON) {
+            while this.Current()._type == TokenType::IDENTIFIER {
+                node->clobbers.PushBack(this.Advance().value);
+                if !this.Match(TokenType::COMMA) { break; }
+            }
+        }
+
+        this.Match(TokenType::SEMICOLON);
+        ret node as *const ASTNode;
     }
 
     priv ParseDeclaration(this: &mut Parser) -> *const ASTNode {
@@ -1418,7 +1458,7 @@ class Parser {
             ret this.ParseStaticDeclaration();
         } else if token._type == TokenType::TYPE {
             ret this.ParseTypeDeclaration();
-        } else if token._type == TokenType::ASM {
+        } else if token._type == TokenType::ASSEMBLY || token._type == TokenType::VOLATILE {
             ret this.ParseInlineAsm();
         } else {
             this.Error("Expected declaration.", token);
@@ -1804,18 +1844,25 @@ class Parser {
             let module: String = modules[i];
 
             while j < this.include_paths.Size() {
+#[if WINDOWS]
                 let mut path: String = this.include_paths[j] + "\\" + modules[i];
-                let attr: u32 = GetFileAttributesA(path.Data());
+#[else]
+                let mut path: String = this.include_paths[j] + "/" + modules[i];
+#[endif]
                 j += 1u64;
 
-                if attr == INVALID_FILE_ATTRIBUTES {
+                if !PathExists(path) {
                     continue;
                 }
 
-                if (attr & FILE_ATTRIBUTE_DIRECTORY) != 0u32 {
+                if FolderExists(path) {
+#[if WINDOWS]
                     path += "\\Entry.div";
+#[else]
+                    path += "/Entry.div";
+#[endif]
 
-                    if GetFileAttributesA(path.Data()) == INVALID_FILE_ATTRIBUTES {
+                    if !PathExists(path) {
                         this.Error((String("Module '") + module + "' entry point not found.").Data(), token);
                         ret null;
                     }

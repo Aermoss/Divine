@@ -1564,7 +1564,7 @@ class Compiler {
         this.module = LLVMModuleCreateWithNameInContext("divine", this.context);
         this.builder = LLVMCreateBuilderInContext(this.context);
         this.scope_manager.builder = this.builder;
-        LLVMSetSourceFileName(this.module, file_name.Data(), file_name.Size() - 1u64);
+        LLVMSetSourceFileName(this.module, file_name.Data(), file_name.Length());
         LLVMSetTarget(this.module, this.triple.Data());
         let layout: *const i8 = LLVMCopyStringRepOfTargetData(this.layout);
         LLVMSetDataLayout(this.module, layout);
@@ -2028,7 +2028,7 @@ class Compiler {
         }
 
         let attribute_name: String = "no-stack-arg-probe";
-        let attribute: LLVMAttributeRef = LLVMCreateStringAttribute(this.context, attribute_name.Data(), (attribute_name.Size() - 1u64) as u32, "", 0u32);
+        let attribute: LLVMAttributeRef = LLVMCreateStringAttribute(this.context, attribute_name.Data(), attribute_name.Length() as u32, "", 0u32);
         LLVMAddAttributeAtIndex(function, LLVMAttributeIndex::LLVMAttributeFunctionIndex, attribute);
 
         if this._class == null && !func_decl->constructors.Empty() {
@@ -4834,11 +4834,56 @@ class Compiler {
 
     priv CompileInlineAsm(this: &mut Compiler, inline_asm: *const InlineAsmNode) {
         if this.scope_manager.current->global {
+            if !inline_asm->inputs.Empty() {
+                this.Error("Cannot set inputs on module inline assembly.", inline_asm as *const ASTNode);
+            }
+
+            if !inline_asm->outputs.Empty() {
+                this.Error("Cannot set outputs on module inline assembly.", inline_asm as *const ASTNode);
+            }
+
+            if !inline_asm->clobbers.Empty() {
+                this.Error("Cannot set clobbers on module inline assembly.", inline_asm as *const ASTNode);
+            }
+
             LLVMSetModuleInlineAsm(this.module, inline_asm->code.Data());
         } else {
-            let func_type: LLVMTypeRef = LLVMFunctionType(LLVMVoidTypeInContext(this.context), null, 0u32, 0i32);
-            let _inline_asm: LLVMValueRef = LLVMGetInlineAsm(func_type, inline_asm->code.Data(), inline_asm->code.Size() - 1u64, "", 0u64, 1i32, 0i32, LLVMInlineAsmDialect::LLVMInlineAsmDialectIntel, 0i32);
-            LLVMBuildCall2(this.builder, func_type, _inline_asm, null, 0u32, "");
+            let mut types: Vector<LLVMTypeRef>;
+            let mut values: Vector<LLVMValueRef>;
+            let mut output: QualifiedValue;
+            let mut constraints: String;
+            let mut i: u64 = 0u64;
+
+            while i < inline_asm->outputs.Size() {
+                if !constraints.Empty() { constraints += ","; }
+                constraints += "={";
+                constraints += inline_asm->outputs[i].left;
+                constraints += "}";
+
+                if !output.Null() {
+                    this.Error("Output already set.", inline_asm->outputs[i].right);
+                }
+
+                output = this.CompileExpression(inline_asm->outputs[i].right, true);
+                i += 1u64;
+            }
+
+            let mut j: u64 = 0u64;
+
+            while j < inline_asm->inputs.Size() {
+                if !constraints.Empty() { constraints += ","; }
+                constraints += "{";
+                constraints += inline_asm->inputs[j].left;
+                constraints += "}";
+                let value: QualifiedValue = this.CompileExpression(inline_asm->inputs[j].right, false);
+                types.PushBack(value.Type().Value());
+                values.PushBack(value.Value());
+                j += 1u64;
+            }
+
+            let mut k: u64 = 0u64;
+
+            while k < inline_asm->clobbers.Size() {
         }
     }
 

@@ -24,7 +24,7 @@ enum TokenType: i32 {
     INCLUDE, USE, MODULE, NEW, DELETE, ASYNC, AWAIT, AS,
     IF, ELSE, FOR, IN, WHILE, LOOP, MATCH, RETURN, BREAK, CONTINUE,
     FUNC, CLASS, ENUM, TYPE, IMPL, EXTERN, LET, MUT, CONST, STATIC,
-    PUBLIC, PRIVATE, OPERATOR, ASM, ASM_CODE,
+    PUBLIC, PRIVATE, OPERATOR, ASSEMBLY, ASSEMBLY_CODE, VOLATILE,
 
     ASSIGN, PLUS_ASSIGN, MINUS_ASSIGN, MUL_ASSIGN, DIV_ASSIGN, MOD_ASSIGN,
     LSHIFT_ASSIGN, RSHIFT_ASSIGN, AND_ASSIGN, OR_ASSIGN, XOR_ASSIGN,
@@ -82,8 +82,9 @@ func TokenTypeToString(_type: TokenType) -> String {
     else if _type == TokenType::PUBLIC { ret { "PUBLIC" } as String; }
     else if _type == TokenType::PRIVATE { ret { "PRIVATE" } as String; }
     else if _type == TokenType::OPERATOR { ret { "OPERATOR" } as String; }
-    else if _type == TokenType::ASM { ret { "ASM" } as String; }
-    else if _type == TokenType::ASM_CODE { ret { "ASM_CODE" } as String; }
+    else if _type == TokenType::ASSEMBLY { ret { "ASSEMBLY" } as String; }
+    else if _type == TokenType::ASSEMBLY_CODE { ret { "ASSEMBLY_CODE" } as String; }
+    else if _type == TokenType::VOLATILE { ret { "VOLATILE" } as String; }
     else if _type == TokenType::ASSIGN { ret { "ASSIGN" } as String; }
     else if _type == TokenType::PLUS_ASSIGN { ret { "PLUS_ASSIGN" } as String; }
     else if _type == TokenType::MINUS_ASSIGN { ret { "MINUS_ASSIGN" } as String; }
@@ -221,7 +222,8 @@ func StringToKeyword(string: String) -> TokenType {
     else if string == "pub" { ret TokenType::PUBLIC; }
     else if string == "priv" { ret TokenType::PRIVATE; }
     else if string == "op" { ret TokenType::OPERATOR; }
-    else if string == "asm" { ret TokenType::ASM; }
+    else if string == "asm" { ret TokenType::ASSEMBLY; }
+    else if string == "volatile" { ret TokenType::VOLATILE; }
     else { ret TokenType::UNKNOWN; }
 }
 
@@ -246,7 +248,8 @@ class Lexer {
     priv row: u64, priv column: u64,
     priv text: String, priv file: String,
     priv length: u64, priv index: u64,
-    priv preprocessor: bool = false
+    priv preprocessor: bool = false,
+    priv assembly: bool = false
 } impl {
     priv IsDigit(this: &Lexer, character: i8) -> bool {
         ret character >= '0' && character <= '9';
@@ -535,6 +538,10 @@ class Lexer {
             token._type = StringToDirective(token.value);
         } else {
             token._type = StringToKeyword(token.value);
+
+            if token._type == TokenType::ASSEMBLY {
+                this.assembly = true;
+            }
         }
 
         if token._type == TokenType::UNKNOWN {
@@ -542,7 +549,7 @@ class Lexer {
         } ret token;
     }
 
-    priv LexOperator(this: &mut Lexer) -> Token {
+    priv LexSymbol(this: &mut Lexer) -> Token {
         let mut token: Token;
         (token.row, token.column) = (this.row, this.column);
         let current: i8 = this.CurrentChar();
@@ -722,6 +729,10 @@ class Lexer {
                 this.Advance(1u64);
             }
         } else if current == ';' {
+            if this.assembly {
+                this.Error("Expected an assembly block before the semicolon.", token.row, token.column);
+            }
+
             token._type = TokenType::SEMICOLON;
             this.Advance(1u64);
         } else if current == '(' {
@@ -752,49 +763,39 @@ class Lexer {
             token._type = TokenType::BACKSLASH;
             this.Advance(1u64);
         } else {
-            this.Error((String("Invalid operator '") + current + "'").Data(), this.row, this.column);
+            this.Error((String("Invalid symbol '") + current + "'").Data(), this.row, this.column);
             this.Advance(1u64);
         } ret token;
     }
 
-    priv LexAsm(this: &mut Lexer) -> Token {
+    priv LexAssembly(this: &mut Lexer) -> Token {
         let mut token: Token;
-        (token.row, token.column, token._type) = (this.row, this.column, TokenType::ASM_CODE);
+        (token.row, token.column, token._type) = (this.row, this.column, TokenType::ASSEMBLY_CODE);
+        let mut indent: i32 = 1i32;
+        this.Advance(1u64);
 
-        if this.CurrentChar() == '{' {
-            this.Advance(1u64);
-            let mut indent: i32 = 1i32;
+        while this.CurrentChar() != '\0' {
+            if this.CurrentChar() == '{' {
+                indent += 1i32;
+            } else if this.CurrentChar() == '}' {
+                indent -= 1i32;
 
-            while this.CurrentChar() != '\0' {
-                if this.CurrentChar() == '{' {
-                    indent += 1i32;
-                } else if this.CurrentChar() == '}' {
-                    indent -= 1i32;
-
-                    if indent == 0i32 {
-                        break;
-                    }
+                if indent == 0i32 {
+                    break;
                 }
-
-                token.value += this.CurrentChar();
-                this.Advance(1u64);
             }
 
-            if indent > 0i32 {
-                this.Error("Unterminated asm block.", token.row, token.column);
-            }
-
+            token.value += this.CurrentChar();
             this.Advance(1u64);
-        } else {
-            while this.CurrentChar() != ';' && this.CurrentChar() != '\0' {
-                token.value += this.CurrentChar();
-                this.Advance(1u64);
-            }
+        }
 
-            if this.CurrentChar() == ';' {
-                this.Advance(1u64);
-            }
-        } ret token;
+        if indent > 0i32 {
+            this.Error("Unterminated assembly block.", token.row, token.column);
+        }
+
+        this.Advance(1u64);
+        this.assembly = false;
+        ret token;
     }
 
     pub Lex(this: &mut Lexer, text: String, file: String) -> Vector<Token> {
@@ -825,15 +826,13 @@ class Lexer {
             } else if this.IsDigit(character) || (character == '.' && this.IsDigit(this.PeekChar(1u64))) {
                 tokens.PushBack(this.LexNumber());
             } else if this.IsAlpha(character) || (character as u8) > 0x7Fu8 {
-                let token: Token = this.LexIdentifier();
-                tokens.PushBack(token);
-
-                if token._type == TokenType::ASM {
-                    this.SkipWhitespace();
-                    tokens.PushBack(this.LexAsm());
-                }
+                tokens.PushBack(this.LexIdentifier());
             } else {
-                tokens.PushBack(this.LexOperator());
+                if this.assembly && character == '{' {
+                    tokens.PushBack(this.LexAssembly());
+                } else {
+                    tokens.PushBack(this.LexSymbol());
+                }
             }
         }
 

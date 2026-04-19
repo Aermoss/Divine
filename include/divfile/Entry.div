@@ -16,11 +16,7 @@
 
 include "divio", "divstd", "divstr", "divpair" : *;
 
-const INVALID_FILE_ATTRIBUTES: u32 = 0xFFFFFFFFu32;
-const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x00000010u32;
-
-const INVALID_HANDLE_VALUE: *mut void = -1i64 as *mut void;
-
+#[if WINDOWS]
 const MAX_PATH: u64 = 260u64;
 
 class FILETIME {
@@ -64,9 +60,23 @@ extern "C" {
     func CloseHandle(hObject: *mut void) -> i32;
 }
 
+const GENERIC_READ: u32 = 0x80000000u32;
+const FILE_SHARE_READ: u32 = 0x00000001u32;
+const OPEN_EXISTING: u32 = 0x00000003u32;
+
+const GENERIC_WRITE: u32 = 0x40000000u32;
+const FILE_SHARE_NONE: u32 = 0x00000000u32;
+const CREATE_ALWAYS: u32 = 0x00000002u32;
+
+const FILE_ATTRIBUTE_NORMAL: u32 = 0x00000080u32;
+const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x00000010u32;
+const INVALID_FILE_ATTRIBUTES: u32 = 0xFFFFFFFFu32;
+
+const INVALID_HANDLE_VALUE: *mut void = -1i64 as *mut void;
+
 func _ReadFile(path: &String) -> String {
     let mut content: String;
-    let handle: *mut void = CreateFileA(path.Data(), 0x80000000u32, 1u32, null, 3u32, 0x80u32, null);
+    let handle: *mut void = CreateFileA(path.Data(), GENERIC_READ, FILE_SHARE_READ, null, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, null);
 
     if handle == INVALID_HANDLE_VALUE {
         WriteLine(String("\x1b[31mFailed to open file for reading: '") + path + "'.\x1b[0m");
@@ -78,7 +88,7 @@ func _ReadFile(path: &String) -> String {
     if size > 0u32 {
         let string: *mut i8 = new i8[size as u64 + 1u64];
         let mut bytesRead: u32 = 0u32;
-        
+
         if ReadFile(handle, string, size, &bytesRead, null) != 0i32 {
             string[size as u64] = 0i8;
             content = string;
@@ -90,7 +100,7 @@ func _ReadFile(path: &String) -> String {
 }
 
 func _WriteFile(path: &String, content: &String) -> bool {
-    let handle: *mut void = CreateFileA(path.Data(), 0x40000000u32, 0u32, null, 2u32, 0x80u32, null);
+    let handle: *mut void = CreateFileA(path.Data(), GENERIC_WRITE, FILE_SHARE_NONE, null, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, null);
 
     if handle == INVALID_HANDLE_VALUE {
         WriteLine(String("\x1b[31mFailed to open file for writing: '") + path + "'.\x1b[0m");
@@ -98,7 +108,7 @@ func _WriteFile(path: &String, content: &String) -> bool {
     }
 
     let mut written: u32 = 0u32;
-    let success: i32 = WriteFile(handle, content.Data(), (content.Size() - 1u64) as u32, &written, null);
+    let success: i32 = WriteFile(handle, content.Data(), content.Length() as u32, &written, null);
     CloseHandle(handle);
     ret success != 0i32;
 }
@@ -112,18 +122,6 @@ func GetTemporaryPath() -> String {
     } else {
         WriteLine("\x1b[31mFailed to get temporary path.\x1b[0m");
         ret String();
-    }
-}
-
-func JoinPath(directory: &String, file: &String) -> String {
-    if directory.Empty() {
-        ret file;
-    }
-
-    if directory[directory.Size() - 2u64] == '/' || directory[directory.Size() - 2u64] == '\\' {
-        ret directory + file;
-    } else {
-        ret directory + '\\' + file;
     }
 }
 
@@ -155,6 +153,246 @@ func RemoveFile(path: &String) -> bool {
     ret DeleteFileA(path.Data()) != 0i32;
 }
 
+const PATH_SEPERATOR: i8 = '\\';
+#[else]
+const O_RDONLY: i32 = 0i32;
+const O_WRONLY: i32 = 1i32;
+
+#[if DARWIN]
+const O_CREAT: i32 = 512i32;
+const O_TRUNC: i32 = 1024i32;
+#[else]
+const O_CREAT: i32 = 64i32;
+const O_TRUNC: i32 = 512i32;
+#[endif]
+
+const S_IRUSR: u32 = 256u32;
+const S_IWUSR: u32 = 128u32;
+const S_IRGRP: u32 = 32u32;
+const S_IWGRP: u32 = 16u32;
+
+const S_IFMT: u32 = 0xF000u32;
+const S_IFDIR: u32 = 0x4000u32;
+const S_IFREG: u32 = 0x8000u32;
+
+const SEEK_SET: i32 = 0i32;
+const SEEK_END: i32 = 2i32;
+const F_OK: i32 = 0i32;
+
+class _stat {
+#[if DARWIN]
+    pub st_dev: i32,
+    pub st_mode: u16,
+    pub st_nlink: u16,
+    pub st_ino: u64,
+    pub st_uid: u32,
+    pub st_gid: u32,
+    pub st_rdev: i32,
+    pub pad0: i32,
+    pub st_atime_sec: i64,
+    pub st_atime_nsec: i64,
+    pub st_mtime_sec: i64,
+    pub st_mtime_nsec: i64,
+    pub st_ctime_sec: i64,
+    pub st_ctime_nsec: i64,
+    pub st_btime_sec: i64,
+    pub st_btime_nsec: i64,
+    pub st_size: i64,
+    pub st_blocks: i64,
+    pub st_blksize: i32,
+    pub st_flags: u32,
+    pub st_gen: u32,
+    pub st_lspare: i32,
+    pub st_qspare0: i64,
+    pub st_qspare1: i64
+#[else]
+    pub st_dev: u64,
+    pub st_ino: u64,
+    pub st_nlink: u64,
+    pub st_mode: u32,
+    pub st_uid: u32,
+    pub st_gid: u32,
+    pub pad0: u32,
+    pub st_rdev: u64,
+    pub st_size: i64,
+    pub rest[88u64]: i8
+#[endif]
+};
+
+extern "C" {
+    func open(pathname: *const i8, flags: i32, mode: u32) -> i32 #[if DARWIN] ; #[else] {
+        let result: i64 = 0i64;
+        let _flags: i64 = flags as i64;
+        let _mode: i64 = mode as i64;
+
+        volatile asm : rax(2i64), rdi(pathname), rsi(_flags), rdx(_mode) -> {
+            syscall
+        } -> rax(result) : memory, rcx, r11;
+
+        ret result as i32;
+    } #[endif]
+
+    func read(fd: i32, buf: *mut i8, count: u64) -> i64 #[if DARWIN] ; #[else] {
+        let result: i64 = 0i64;
+        let _fd: i64 = fd as i64;
+        let _count: i64 = count as i64;
+
+        volatile asm : rax(0i64), rdi(_fd), rsi(buf), rdx(_count) -> {
+            syscall
+        } -> rax(result) : memory, rcx, r11;
+
+        ret result;
+    } #[endif]
+
+    func close(fd: i32) #[if DARWIN] ; #[else] {
+        let _fd: i64 = fd as i64;
+
+        volatile asm : rax(3i64), rdi(_fd) -> {
+            syscall
+        } : memory, rcx, r11, rax;
+    } #[endif]
+
+    func lseek(fd: i32, offset: i64, whence: i32) -> i64 #[if DARWIN] ; #[else] {
+        let result: i64 = 0i64;
+        let _fd: i64 = fd as i64;
+        let _whence: i64 = whence as i64;
+
+        volatile asm : rax(8i64), rdi(_fd), rsi(offset), rdx(_whence) -> {
+            syscall
+        } -> rax(result) : memory, rcx, r11;
+
+        ret result;
+    } #[endif]
+
+    func stat(pathname: *const i8, statbuf: *mut _stat) -> i32 #[if DARWIN] ; #[else] {
+        let result: i64 = 0i64;
+
+        volatile asm : rax(4i64), rdi(pathname), rsi(statbuf) -> {
+            syscall
+        } -> rax(result) : memory, rcx, r11;
+
+        ret result as i32;
+    } #[endif]
+
+    func unlink(pathname: *const i8) -> i32 #[if DARWIN] ; #[else] {
+        let result: i64 = 0i64;
+
+        volatile asm : rax(87i64), rdi(pathname) -> {
+            syscall
+        } -> rax(result) : memory, rcx, r11;
+
+        ret result as i32;
+    } #[endif]
+
+    func access(pathname: *const i8, mode: i32) -> i32 #[if DARWIN] ; #[else] {
+        let result: i64 = 0i64;
+        let _mode: i64 = mode as i64;
+
+        volatile asm : rax(21i64), rdi(pathname), rsi(_mode) -> {
+            syscall
+        } -> rax(result) : memory, rcx, r11;
+
+        ret result as i32;
+    } #[endif]
+}
+
+func _ReadFile(path: &String) -> String {
+    let mut content: String;
+    let fd: i32 = open(path.Data(), O_RDONLY, 0u32);
+
+    if fd < 0i32 {
+        WriteLine(String("\x1b[31mFailed to open file for reading: '") + path + "'.\x1b[0m");
+        ret content;
+    }
+
+    let size: i64 = lseek(fd, 0i64, SEEK_END);
+
+    if size > 0i64 {
+        lseek(fd, 0i64, SEEK_SET);
+        let buffer: *mut i8 = new i8[size as u64 + 1u64];
+        let bytes_read: i64 = read(fd, buffer, size as u64);
+
+        if bytes_read > 0i64 {
+            buffer[bytes_read as u64] = 0i8;
+            content = buffer;
+        }
+
+        del[] buffer;
+    }
+
+    close(fd);
+    ret content;
+}
+
+func _WriteFile(path: &String, content: &String) -> bool {
+    let mode: u32 = S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP;
+    let fd: i32 = open(path.Data(), O_WRONLY | O_CREAT | O_TRUNC, mode);
+
+    if fd < 0i32 {
+        WriteLine(String("\x1b[31mFailed to open file for writing: '") + path + "'.\x1b[0m");
+        ret false;
+    }
+
+    write(fd, content.Data(), content.Length());
+    close(fd);
+    ret true;
+}
+
+func GetTemporaryPath() -> String {
+    ret String("/tmp/");
+}
+
+func PathExists(path: &String) -> bool {
+    ret access(path.Data(), F_OK) == 0i32;
+}
+
+func FileExists(path: &String) -> bool {
+    let mut st: _stat;
+
+    if stat(path.Data(), &mut st) != 0i32 {
+        ret false;
+    }
+
+#[if DARWIN]
+    ret (st.st_mode as u32 & S_IFMT) == S_IFREG;
+#[else]
+    ret (st.st_mode & S_IFMT) == S_IFREG;
+#[endif]
+}
+
+func FolderExists(path: &String) -> bool {
+    let mut st: _stat;
+
+    if stat(path.Data(), &mut st) != 0i32 {
+        ret false;
+    }
+
+#[if DARWIN]
+    ret (st.st_mode as u32 & S_IFMT) == S_IFDIR;
+#[else]
+    ret (st.st_mode & S_IFMT) == S_IFDIR;
+#[endif]
+}
+
+func RemoveFile(path: &String) -> bool {
+    ret unlink(path.Data()) == 0i32;
+}
+
+const PATH_SEPERATOR: i8 = '/';
+#[endif]
+
+func JoinPath(directory: &String, file: &String) -> String {
+    if directory.Empty() {
+        ret file;
+    }
+
+    if directory[directory.Length() - 1u64] == PATH_SEPERATOR {
+        ret directory + file;
+    } else {
+        ret directory + PATH_SEPERATOR + file;
+    }
+}
+
 func SplitExtension(path: &String) -> Pair<String, String> {
     let mut i: u64 = path.Size();
     let mut index: u64 = path.Size();
@@ -162,7 +400,7 @@ func SplitExtension(path: &String) -> Pair<String, String> {
     while i > 0u64 {
         i -= 1u64;
 
-        if path[i] == '/' || path[i] == '\\' {
+        if path[i] == PATH_SEPERATOR {
             break;
         }
 
@@ -188,14 +426,14 @@ func SplitPath(path: &String) -> Pair<String, String> {
     while i > 0u64 {
         i -= 1u64;
 
-        if path[i] == '/' || path[i] == '\\' {
+        if path[i] == PATH_SEPERATOR {
             index = i;
             break;
         }
     }
 
     if index == path.Size() {
-        ret Pair<String, String>(String(), path); 
+        ret Pair<String, String>(String(), path);
     }
 
     let directory: String = String(path, 0u64, index);

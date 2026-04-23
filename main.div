@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-include "divio", "divfile", "divstd", "divllvm", "lexer.div", "preprocessor.div", "parser.div", "compiler.div" : *;
+include "divio", "divfile", "divstd", "divllvm", "lexer.div", "preprocessor.div", "parser.div", "compiler.div", "logger.div" : *;
 
 #[if WINDOWS]
 const INFINITE: u32 = 0xFFFFFFFFu32;
@@ -393,6 +393,7 @@ func PrintUsage(executable: String) {
     WriteLine("  -c                       Emit object code (.obj) alongside the executable");
     WriteLine("  -S                       Emit assembly code (.s) alongside the executable");
     WriteLine("  -emit-llvm               Emit LLVM IR (.ll) alongside the executable");
+    WriteLine("  -check                   Only check for errors without emitting code");
     WriteLine("  -target <triple>         Generate code for the given target");
     WriteLine("  -march <arch>            Architecture to generate code for");
     WriteLine("  -r, --run                Run the program after compiling");
@@ -407,10 +408,12 @@ func ErrorHandler(reason: *const i8) {
 }
 
 func main(argc: i32, argv[]: *const i8) -> i32 {
+    let mut logger: Logger;
+
     LLVMEnablePrettyStackTrace();
     LLVMInstallFatalErrorHandler(ErrorHandler);
 
-    let executable: String = SplitPath(String(argv[0u64])).right;
+    let executable: String = SplitPath(String(argv[0u64])).right.Replace("\"", "");
 
     if argc < 2i32 {
         PrintUsage(executable);
@@ -427,7 +430,7 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
     let mut opt_level: LLVMCodeGenOptLevel = LLVMCodeGenOptLevel::LLVMCodeGenLevelLess;
     let (mut triple: String, mut march: String) = (LLVMGetDefaultTargetTriple(), "generic");
     let (mut emit_object: bool, mut emit_asm: bool, mut emit_llvm: bool) = (false, false, false);
-    let (mut run: bool, mut debug: bool, mut verbose: bool) = (false, false, false);
+    let (mut run: bool, mut debug: bool, mut verbose: bool, mut check: bool) = (false, false, false, false);
     let mut i: i32 = 1i32;
 
     while i < argc {
@@ -441,6 +444,8 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
             ret 0i32;
         } else if arg == "-v" || arg == "--verbose" {
             verbose = true;
+        } else if arg == "-check" {
+            check = true;
         } else if arg == "-g" || arg == "--debug" {
             debug = true;
         } else if arg == "-c" {
@@ -465,7 +470,7 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
             if i < argc {
                 output_file = argv[i as u64];
             } else {
-                WriteLine(executable + ": \x1b[31mError:\x1b[0m Missing argument to '-o'.");
+                Logger::Log(executable, "Missing argument to '-o'.", LogSeverity::Error);
                 ret 1i32;
             }
         } else if arg.StartsWith("-I") {
@@ -477,7 +482,7 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
                 if i < argc {
                     path = argv[i as u64];
                 } else {
-                    WriteLine(executable + ": \x1b[31mError:\x1b[0m Missing argument to '-I'.");
+                    Logger::Log(executable, "Missing argument to '-I'.", LogSeverity::Error);
                     ret 1i32;
                 }
             }
@@ -492,7 +497,7 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
                 if i < argc {
                     path = argv[i as u64];
                 } else {
-                    WriteLine(executable + ": \x1b[31mError:\x1b[0m Missing argument to '-L'.");
+                    Logger::Log(executable, "Missing argument to '-L'.", LogSeverity::Error);
                     ret 1i32;
                 }
             }
@@ -507,7 +512,7 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
                 if i < argc {
                     name = argv[i as u64];
                 } else {
-                    WriteLine(executable + ": \x1b[31mError:\x1b[0m Missing argument to '-l'.");
+                    Logger::Log(executable, "Missing argument to '-l'.", LogSeverity::Error);
                     ret 1i32;
                 }
             }
@@ -522,7 +527,7 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
                 if i < argc {
                     define = argv[i as u64];
                 } else {
-                    WriteLine(executable + ": \x1b[31mError:\x1b[0m Missing argument to '-D'.");
+                    Logger::Log(executable, "Missing argument to '-D'.", LogSeverity::Error);
                     ret 1i32;
                 }
             }
@@ -534,7 +539,7 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
             if i < argc {
                 triple = argv[i as u64];
             } else {
-                WriteLine(executable + ": \x1b[31mError:\x1b[0m Missing argument to '-target'.");
+                Logger::Log(executable, "Missing argument to '-target'.", LogSeverity::Error);
                 ret 1i32;
             }
         } else if arg == "-march" {
@@ -543,24 +548,24 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
             if i < argc {
                 march = argv[i as u64];
             } else {
-                WriteLine(executable + ": \x1b[31mError:\x1b[0m Missing argument to '-march'.");
+                Logger::Log(executable, "Missing argument to '-march'.", LogSeverity::Error);
                 ret 1i32;
             }
         } else if arg.StartsWith("-") {
-            WriteLine(executable + ": \x1b[31mError:\x1b[0m Unknown option '" + arg + "'.");
+            Logger::Log(executable, "Unknown option '" + arg + "'.", LogSeverity::Error);
             ret 1i32;
         } else {
             if FileExists(arg) {
                 input_files.PushBack(arg);
             } else {
-                WriteLine(executable + ": \x1b[31mError:\x1b[0m Cannot find '" + arg + "'.");
+                Logger::Log(executable, "Cannot find '" + arg + "'.", LogSeverity::Error);
                 ret 1i32;
             }
         } i += 1i32;
     }
 
     if input_files.Empty() {
-        WriteLine(executable + ": \x1b[31mError:\x1b[0m No input files.");
+        Logger::Log(executable, "No input files.", LogSeverity::Error);
         ret 1i32;
     }
 
@@ -576,7 +581,7 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
     } else if triple.Contains("linux") {
         defines.PushBack(String("LINUX"));
     } else {
-        WriteLine(executable + ": \x1b[31mError:\x1b[0m Invalid target: '" + triple + "'.");
+        Logger::Log(executable, "Invalid target: '" + triple + "'.", LogSeverity::Error);
         ret 1i32;
     }
 
@@ -589,13 +594,16 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
 
     while j < input_files.Size() {
         let input_file: String = input_files[j];
-        if verbose { WriteLine(String("Compiling: ") + input_file); }
-        let source: String = _ReadFile(input_file);
+
+        if verbose {
+            Logger::Log(executable, String("Compiling: '") + input_file + "'.", LogSeverity::Info);
+        }
 
         let mut lexer: Lexer;
         let mut preprocessor: Preprocessor;
         preprocessor.defines = defines;
 
+        let source: String = _ReadFile(input_file);
         let mut tokens: Vector<Token> = lexer.Lex(source, input_file);
         tokens = preprocessor.Process(tokens, input_file);
 
@@ -605,7 +613,15 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
 
         let mut compiler: Compiler = { triple, march, opt_level };
         let module: LLVMModuleRef = compiler.Compile(ast, input_file);
-        let name: String = SplitExtension(input_file).left;
+
+        if check {
+            j += 1u64;
+            continue;
+        }
+
+        if logger.has_error {
+            ret 1i32;
+        }
 
         if opt_level != LLVMCodeGenOptLevel::LLVMCodeGenLevelNone {
             let mut passes: String;
@@ -613,14 +629,11 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
             if opt_level == LLVMCodeGenOptLevel::LLVMCodeGenLevelLess {
                 passes = "default<O1>";
             } else if opt_level == LLVMCodeGenOptLevel::LLVMCodeGenLevelDefault {
-                WriteLine(input_file + ": \x1b[35mWarning:\x1b[0m Optimizing at default level which may break your program in this version. (\x1b[36m-O2\x1b[0m)");
                 passes = "default<O2>";
+                Logger::Log(input_file, "Optimizing at default level which may break your program in this version. (\x1b[36m-O2\x1b[0m)", LogSeverity::Warning);
             } else if opt_level == LLVMCodeGenOptLevel::LLVMCodeGenLevelAggressive {
-                WriteLine(input_file + ": \x1b[35mWarning:\x1b[0m Optimizing at aggressive level which may break your program in this version. (\x1b[36m-O3\x1b[0m)");
                 passes = "default<O3>";
-            } else {
-                WriteLine(input_file + ": \x1b[31mError:\x1b[0m Failed to optimize module, unknown optimization level. (\x1b[36m-O" + String(opt_level as i64) + "\x1b[0m)");
-                ret 1i32;
+                Logger::Log(input_file, "Optimizing at aggressive level which may break your program in this version. (\x1b[36m-O3\x1b[0m)", LogSeverity::Warning);
             }
 
             if passes.Size() > 1u64 {
@@ -630,12 +643,14 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
 
                 if error != LLVMErrorSuccess {
                     let message: *const i8 = LLVMGetErrorMessage(error);
-                    WriteLine(input_file + ": \x1b[31mError:\x1b[0m Failed to optimize module: " + message);
+                    Logger::Log(input_file, String("Failed to optimize module: ") + message, LogSeverity::Error);
                     LLVMDisposeErrorMessage(message);
                     ret 1i32;
                 }
             }
         }
+
+        let name: String = SplitExtension(input_file).left;
 
         if emit_llvm {
             let string: *const i8 = LLVMPrintModuleToString(module);
@@ -647,7 +662,7 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
             let message: *const i8 = null;
 
             if LLVMTargetMachineEmitToFile(compiler.target_machine, module, (name + ".s").Data(), LLVMCodeGenFileType::LLVMAssemblyFile, &message) != 0i32 {
-                WriteLine(input_file + ": \x1b[31mError:\x1b[0m Failed to emit assembly: " + message);
+                Logger::Log(input_file, String("Failed to emit assembly: ") + message, LogSeverity::Error);
                 LLVMDisposeMessage(message);
                 ret 1i32;
             }
@@ -663,7 +678,7 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
         }
 
         if LLVMTargetMachineEmitToFile(compiler.target_machine, module, object_name.Data(), LLVMCodeGenFileType::LLVMObjectFile, &message) != 0i32 {
-            WriteLine(input_file + ": \x1b[31mError:\x1b[0m Failed to emit object: " + message);
+            Logger::Log(input_file, String("Failed to emit object: ") + message, LogSeverity::Error);
             LLVMDisposeMessage(message);
             ret 1i32;
         }
@@ -671,6 +686,10 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
         LLVMDisposeMessage(message);
         objects.PushBack(object_name);
         j += 1u64;
+    }
+
+    if check {
+        ret 0i32;
     }
 
 #[if WINDOWS]
@@ -699,11 +718,11 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
         command += " user32.lib shell32.lib kernel32.lib";
         while k < libs.Size() { command += String(" ") + libs[k] + ".lib"; k += 1u64; }
 #[else]
-        WriteLine(executable + ": \x1b[31mError:\x1b[0m Cannot link to windows from another platform.");
+        Logger::Log(executable, String("Cannot link to windows from another platform."), LogSeverity::Error);
         ret 1i32;
 #[endif]
     } else if triple.Contains("darwin") || triple.Contains("apple") {
-        WriteLine(executable + ": \x1b[31mError:\x1b[0m Cannot link to darwin.");
+        Logger::Log(executable, String("Cannot link to darwin."), LogSeverity::Error);
         ret 1i32;
     } else {
         command = lld_exe + " --nostdlib --entry _start --dynamic-linker /lib64/ld-linux-x86-64.so.2";
@@ -714,7 +733,10 @@ func main(argc: i32, argv[]: *const i8) -> i32 {
         while k < libs.Size() { command += String(" -l") + libs[k]; k += 1u64; }
     }
 
-    if verbose { WriteLine(String("Link: ") + command); }
+    if verbose {
+        Logger::Log(executable, String("Link: '") + command.Replace("\"", "") + "'.", LogSeverity::Info);
+    }
+
     Execute(command.Data());
     WriteLine(String("Program compiled in ") + String(timer.Get() - start) + " seconds.");
 

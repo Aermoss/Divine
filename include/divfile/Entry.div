@@ -17,6 +17,7 @@
 include "divio", "divstd", "divstr", "divpair" : *;
 
 #[if WINDOWS]
+const PATH_SEPERATOR: i8 = '\\';
 const MAX_PATH: u64 = 260u64;
 
 class FILETIME {
@@ -52,6 +53,7 @@ extern "C" {
     func FindClose(hFindFile: *mut void) -> i32;
 
     func GetTempPathA(nBufferLength: u32, lpBuffer: *mut i8) -> u32;
+    func GetFullPathNameA(lpFileName: *const i8, nBufferLength: u32, lpBuffer: *mut i8, lpFilePart: *mut *mut i8) -> u32;
 
     func CreateFileA(lpFileName: *const i8, dwDesiredAccess: u32, dwShareMode: u32, lpSecurityAttributes: *mut void, dwCreationDisposition: u32, dwFlagsAndAttributes: u32, hTemplateFile: *mut void) -> *mut void;
     func DeleteFileA(lpFileName: *const i8) -> i32;
@@ -125,6 +127,16 @@ func GetTemporaryPath() -> String {
     }
 }
 
+func AbsolutePath(path: &String) -> String {
+    let buffer[MAX_PATH]: i8;
+    let mut filePart: *mut i8 = null;
+    let length: u32 = GetFullPathNameA(path.Data(), MAX_PATH as u32, buffer, &filePart);
+
+    if length > 0u32 && length < MAX_PATH as u32 {
+        ret String(buffer, 0u64, length as u64);
+    } ret path;
+}
+
 func PathExists(path: &String) -> bool {
     ret GetFileAttributesA(path.Data()) != INVALID_FILE_ATTRIBUTES;
 }
@@ -152,9 +164,10 @@ func FolderExists(path: &String) -> bool {
 func RemoveFile(path: &String) -> bool {
     ret DeleteFileA(path.Data()) != 0i32;
 }
-
-const PATH_SEPERATOR: i8 = '\\';
 #[else]
+const PATH_SEPERATOR: i8 = '/';
+const PATH_MAX: u64 = 4096u64;
+
 const O_RDONLY: i32 = 0i32;
 const O_WRONLY: i32 = 1i32;
 
@@ -294,6 +307,8 @@ extern "C" {
 
         ret result as i32;
     } #[endif]
+
+    func realpath(path: *const i8, resolved_path: *mut i8) -> *mut i8;
 }
 
 func _ReadFile(path: &String) -> String {
@@ -342,6 +357,15 @@ func GetTemporaryPath() -> String {
     ret String("/tmp/");
 }
 
+func AbsolutePath(path: &String) -> String {
+    let buffer[PATH_MAX]: i8;
+    let result: *mut i8 = realpath(path.Data(), buffer);
+
+    if result != null {
+        ret String(buffer);
+    } ret path;
+}
+
 func PathExists(path: &String) -> bool {
     ret access(path.Data(), F_OK) == 0i32;
 }
@@ -377,8 +401,6 @@ func FolderExists(path: &String) -> bool {
 func RemoveFile(path: &String) -> bool {
     ret unlink(path.Data()) == 0i32;
 }
-
-const PATH_SEPERATOR: i8 = '/';
 #[endif]
 
 func JoinPath(directory: &String, file: &String) -> String {

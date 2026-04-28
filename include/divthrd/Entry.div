@@ -25,7 +25,7 @@ const mtx_timed: i32 = 1i32;
 const mtx_recursive: i32 = 2i32;
 
 class timespec {
-    pub tv_sec: i64
+    pub tv_sec: i64,
     pub tv_nsec: i32
 };
 
@@ -64,7 +64,11 @@ extern "C" {
     func thrd_equal(thr0: thrd_t, thr1: thrd_t) -> i32;
     func thrd_exit(res: i32) -> void;
     func thrd_join(thr: thrd_t, res: *mut i32) -> i32;
+#[if WINDOWS]
+    func Sleep(dwMilliseconds: u32) -> void;
+#[else]
     func thrd_sleep(duration: *const timespec, remaining: *mut timespec) -> i32;
+#[endif]
     func thrd_yield() -> void;
 
     func mtx_init(mutex: *mut mtx_t, type_: i32) -> i32;
@@ -88,3 +92,121 @@ extern "C" {
 
     func call_once(flag: *mut once_flag, func_ptr: *mut void) -> void;
 }
+
+class Thread {
+    priv thread: thrd_t,
+    priv joined: bool = false
+} impl {
+    Thread(this: &mut Thread, func_ptr: thrd_start_t, arg: *mut void) {
+        thrd_create(&this.thread, func_ptr, arg);
+    }
+
+    ~Thread(this: &mut Thread) {
+        if !this.joined {
+            this.Detach();
+        }
+    }
+
+    pub Join(this: &mut Thread) -> i32 {
+        if !this.joined {
+            let mut res: i32 = 0i32;
+            let status: i32 = thrd_join(this.thread, &res);
+            this.joined = true;
+            ret res;
+        } ret 0i32;
+    }
+
+    pub Detach(this: &mut Thread) {
+        if !this.joined {
+            thrd_detach(this.thread);
+            this.joined = true;
+        }
+    }
+
+    pub GetId(this: &Thread) -> u32 {
+        ret this.thread._Tid;
+    }
+
+    pub Sleep(this: &Thread, seconds: i64, nanoseconds: i32) {
+#[if WINDOWS]
+        Sleep((seconds * 1000i64 + (nanoseconds / 1000000i32) as i64) as u32);
+#[else]
+        let mut ts: timespec;
+        (ts.tv_sec, ts.tv_nsec) = (seconds, nanoseconds);
+        thrd_sleep(&ts, null);
+#[endif]
+    }
+
+    pub Yield() {
+        thrd_yield();
+    }
+};
+
+class Mutex {
+    priv mutex: mtx_t
+} impl {
+    Mutex(this: &mut Mutex) {
+        mtx_init(&this.mutex, mtx_plain);
+    }
+
+    Mutex(this: &mut Mutex, _type: i32) {
+        mtx_init(&this.mutex, _type);
+    }
+
+    ~Mutex(this: &mut Mutex) {
+        mtx_destroy(&this.mutex);
+    }
+
+    pub Lock(this: &mut Mutex) {
+        mtx_lock(&this.mutex);
+    }
+
+    pub Unlock(this: &mut Mutex) {
+        mtx_unlock(&this.mutex);
+    }
+
+    pub TryLock(this: &mut Mutex) -> bool {
+        ret mtx_trylock(&this.mutex) == thrd_success;
+    }
+
+    pub Handle(this: &mut Mutex) -> *mut mtx_t {
+        ret &this.mutex;
+    }
+};
+
+class ScopedLock {
+    priv mutex: *mut Mutex
+} impl {
+    ScopedLock(this: &mut ScopedLock, mutex: *mut Mutex) {
+        this.mutex = mutex;
+        this.mutex->Lock();
+    }
+
+    ~ScopedLock(this: &mut ScopedLock) {
+        this.mutex->Unlock();
+    }
+};
+
+class ConditionVariable {
+    priv condition: cnd_t
+} impl {
+    ConditionVariable(this: &mut ConditionVariable) {
+        cnd_init(&this.condition);
+    }
+
+    ~ConditionVariable(this: &mut ConditionVariable) {
+        cnd_destroy(&this.condition);
+    }
+
+    pub Signal(this: &mut ConditionVariable) {
+        cnd_signal(&this.condition);
+    }
+
+    pub Broadcast(this: &mut ConditionVariable) {
+        cnd_broadcast(&this.condition);
+    }
+
+    pub Wait(this: &mut ConditionVariable, mtx: *mut Mutex) {
+        cnd_wait(&this.condition, mtx->Handle());
+    }
+};

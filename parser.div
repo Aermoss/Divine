@@ -983,30 +983,23 @@ class Parser {
             let func_type: *mut FunctionTypeNode = new FunctionTypeNode(token.row, token.column, this.file);
 
             if this.Current()._type != TokenType::RPAREN {
-                let mut has_instance: bool = true;
+                while this.Current()._type != TokenType::EOF {
+                    func_type->var_arg = this.Match(TokenType::THREE_DOT);
+                    if func_type->var_arg { break; }
 
-                if this.Match(TokenType::THIS) {
-                    func_type->instance_kind = InstanceKind::Copy;
-                } else if this.Current()._type == TokenType::BITWISE_AND && (this.Peek(1u64)._type == TokenType::THIS || this.Peek(2u64)._type == TokenType::THIS) {
-                    let token: Token = this.Advance();
-                    func_type->instance_kind = this.Match(TokenType::MUT) ? InstanceKind::MutRef : InstanceKind::ConstRef;
-                    this.Advance();
-                } else {
-                    has_instance = false;
-                }
-
-                if !has_instance || this.Match(TokenType::COMMA) {
-                    while this.Current()._type != TokenType::EOF {
-                        func_type->var_arg = this.Match(TokenType::THREE_DOT);
-                        if func_type->var_arg { break; }
-
+                    if (this.Peek(1u64)._type == TokenType::COLON || this.Peek(1u64)._type == TokenType::LBRACKET) || (this.Peek(1u64)._type == TokenType::MUT && (this.Peek(2u64)._type == TokenType::COLON || this.Peek(2u64)._type == TokenType::LBRACKET)) {
                         let param: *const ParameterNode = this.ParseParameter();
                         if param == null { ret null; }
                         func_type->parameters.PushBack(param);
+                    } else {
+                        let token: Token = this.Current();
+                        let _type: *const ASTNode = this.ParseType();
+                        if _type == null { ret null; }
+                        func_type->parameters.PushBack(new ParameterNode(String(""), _type, mutable, token.row, token.column, this.file));
+                    }
 
-                        if !this.Match(TokenType::COMMA) {
-                            break;
-                        }
+                    if !this.Match(TokenType::COMMA) {
+                        break;
                     }
                 }
             }
@@ -1729,19 +1722,15 @@ class Parser {
         if !this.Expect2(TokenType::LPAREN) { ret null; }
 
         if this.Current()._type != TokenType::RPAREN {
-            let mut has_instance: bool = true;
-
-            if this.Match(TokenType::THIS) {
+            if this.Match(TokenType::BITWISE_AND) {
+                let mutable: bool = this.Match(TokenType::MUT);
+                if !this.Expect2(TokenType::THIS) { ret null; }
+                func_type->instance_kind = mutable ? InstanceKind::MutRef : InstanceKind::ConstRef;
+            } else if this.Match(TokenType::THIS) {
                 func_type->instance_kind = InstanceKind::Copy;
-            } else if this.Current()._type == TokenType::BITWISE_AND && (this.Peek(1u64)._type == TokenType::THIS || this.Peek(2u64)._type == TokenType::THIS) {
-                let token: Token = this.Advance();
-                func_type->instance_kind = this.Match(TokenType::MUT) ? InstanceKind::MutRef : InstanceKind::ConstRef;
-                this.Advance();
-            } else {
-                has_instance = false;
             }
 
-            if !has_instance || this.Match(TokenType::COMMA) {
+            if this.Match(TokenType::COMMA) {
                 while this.Current()._type != TokenType::EOF {
                     func_type->var_arg = this.Match(TokenType::THREE_DOT);
                     if func_type->var_arg { break; }
@@ -1795,39 +1784,31 @@ class Parser {
 
     priv ParseParameter(this: &mut Parser) -> *const ParameterNode {
         let mutable: bool = this.Match(TokenType::MUT);
+        let token: Token = this.Expect(TokenType::IDENTIFIER);
+        if token._type == TokenType::UNKNOWN { ret null; }
+        let mut sizes: Vector<*const ASTNode>;
 
-        if this.Peek(1u64)._type == TokenType::COLON || this.Peek(1u64)._type == TokenType::LBRACKET {
-            let token: Token = this.Expect(TokenType::IDENTIFIER);
-            if token._type == TokenType::UNKNOWN { ret null; }
-            let mut sizes: Vector<*const ASTNode>;
-
-            while this.Match(TokenType::LBRACKET) {
-                if this.Match(TokenType::RBRACKET) {
-                    sizes.PushBack(null);
-                } else {
-                    let expression: *const ASTNode = this.ParseExpression();
-                    if expression == null || !this.Expect2(TokenType::RBRACKET) { ret null; }
-                    sizes.PushBack(expression);
-                }
+        while this.Match(TokenType::LBRACKET) {
+            if this.Match(TokenType::RBRACKET) {
+                sizes.PushBack(null);
+            } else {
+                let expression: *const ASTNode = this.ParseExpression();
+                if expression == null || !this.Expect2(TokenType::RBRACKET) { ret null; }
+                sizes.PushBack(expression);
             }
-
-            if !this.Expect2(TokenType::COLON) { ret null; }
-            let mut _type: *const ASTNode = this.ParseType();
-            if _type == null { ret null; }
-            let mut i: u64 = 0u64;
-
-            while i < sizes.Size() {
-                _type = new ArrayTypeNode(_type, sizes[i], token.row, token.column, this.file) as *const ASTNode;
-                i += 1u64;
-            }
-
-            ret new ParameterNode(token.value, _type, mutable, token.row, token.column, this.file);
-        } else {
-            let token: Token = this.Current();
-            let _type: *const ASTNode = this.ParseType();
-            if _type == null { ret null; }
-            ret new ParameterNode(String(""), _type, mutable, token.row, token.column, this.file);
         }
+
+        if !this.Expect2(TokenType::COLON) { ret null; }
+        let mut _type: *const ASTNode = this.ParseType();
+        if _type == null { ret null; }
+        let mut i: u64 = 0u64;
+
+        while i < sizes.Size() {
+            _type = new ArrayTypeNode(_type, sizes[i], token.row, token.column, this.file) as *const ASTNode;
+            i += 1u64;
+        }
+
+        ret new ParameterNode(token.value, _type, mutable, token.row, token.column, this.file);
     }
 
     priv ParseClassDeclaration(this: &mut Parser) -> *const ASTNode {

@@ -979,20 +979,16 @@ class Parser {
             let func_type: *mut FunctionTypeNode = new FunctionTypeNode(token.row, token.column, this.file);
 
             if this.Current()._type != TokenType::RPAREN {
-                func_type->var_arg = this.Match(TokenType::THREE_DOT);
+                while this.Current()._type != TokenType::EOF {
+                    func_type->var_arg = this.Match(TokenType::THREE_DOT);
+                    if func_type->var_arg { break; }
 
-                if !func_type->var_arg {
                     let param: *const ParameterNode = this.ParseParameter();
                     if param == null { ret null; }
                     func_type->parameters.PushBack(param);
 
-                    while this.Match(TokenType::COMMA) {
-                        func_type->var_arg = this.Match(TokenType::THREE_DOT);
-                        if func_type->var_arg { break; }
-
-                        let param: *const ParameterNode = this.ParseParameter();
-                        if param == null { ret null; }
-                        func_type->parameters.PushBack(param);
+                    if !this.Match(TokenType::COMMA) {
+                        break;
                     }
                 }
             }
@@ -1671,7 +1667,6 @@ class Parser {
 
     priv ParseFunctionDeclaration(this: &mut Parser) -> *const ASTNode {
         let token: Token = this.Current();
-        if token._type == TokenType::UNKNOWN { ret null; }
         let mut name: String;
 
         if token._type == TokenType::TILDE || token._type == TokenType::FUNC || token._type == TokenType::PUBLIC || token._type == TokenType::PRIVATE {
@@ -1716,20 +1711,16 @@ class Parser {
         if !this.Expect2(TokenType::LPAREN) { ret null; }
 
         if this.Current()._type != TokenType::RPAREN {
-            func_type->var_arg = this.Match(TokenType::THREE_DOT);
+            while this.Current()._type != TokenType::EOF {
+                func_type->var_arg = this.Match(TokenType::THREE_DOT);
+                if func_type->var_arg { break; }
 
-            if !func_type->var_arg {
                 let param: *const ParameterNode = this.ParseParameter();
                 if param == null { ret null; }
                 func_type->parameters.PushBack(param);
 
-                while this.Match(TokenType::COMMA) {
-                    func_type->var_arg = this.Match(TokenType::THREE_DOT);
-                    if func_type->var_arg { break; }
-
-                    let param: *const ParameterNode = this.ParseParameter();
-                    if param == null { ret null; }
-                    func_type->parameters.PushBack(param);
+                if !this.Match(TokenType::COMMA) {
+                    break;
                 }
             }
         }
@@ -1849,36 +1840,43 @@ class Parser {
         }
 
         if !this.Expect2(TokenType::LBRACE) { ret null; }
+        let mut state: bool = false;
 
-        while this.Current()._type != TokenType::RBRACE && this.Current()._type != TokenType::EOF {
-            let visibility: Token = this.Current();
-
-            if visibility._type == TokenType::PUBLIC || visibility._type == TokenType::PRIVATE {
-                this.Advance();
-            } else {
-                Logger::Log(this.file, "Expected visibility modifier.", visibility, LogSeverity::Error);
-                break;
-            }
-
-            if this.Current()._type == TokenType::IDENTIFIER {
-                let field: *const FieldNode = this.ParseField();
-                if field == null { ret null; }
-                class_decl->fields.PushBack(Pair<TokenType, *const FieldNode>(visibility._type, field));
-            } else {
-                Logger::Log(this.file, "Expected field declaration.", this.Current(), LogSeverity::Error);
-                break;
-            }
-
-            if !this.Match(TokenType::COMMA) {
-                break;
+        if this.Current()._type == TokenType::PUBLIC || this.Current()._type == TokenType::PRIVATE {
+            if this.Peek(1u64)._type == TokenType::IDENTIFIER {
+                if this.Peek(2u64)._type == TokenType::COLON || this.Peek(2u64)._type == TokenType::LBRACKET {
+                    state = true;
+                }
             }
         }
 
-        if !this.Expect2(TokenType::RBRACE) { ret null; }
+        if state {
+            while this.Current()._type != TokenType::SEMICOLON && this.Current()._type != TokenType::RBRACE && this.Current()._type != TokenType::EOF {
+                let visibility: Token = this.Current();
 
-        if this.Match(TokenType::IMPL) {
-            if !this.Expect2(TokenType::LBRACE) { ret null; }
+                if visibility._type == TokenType::PUBLIC || visibility._type == TokenType::PRIVATE {
+                    this.Advance();
+                } else {
+                    Logger::Log(this.file, "Expected visibility modifier.", visibility, LogSeverity::Error);
+                    ret null;
+                }
 
+                if this.Current()._type == TokenType::IDENTIFIER {
+                    let field: *const FieldNode = this.ParseField();
+                    if field == null { ret null; }
+                    class_decl->fields.PushBack(Pair<TokenType, *const FieldNode>(visibility._type, field));
+                } else {
+                    Logger::Log(this.file, "Expected field declaration.", this.Current(), LogSeverity::Error);
+                    ret null;
+                }
+
+                if !this.Match(TokenType::COMMA) {
+                    break;
+                }
+            }
+        }
+
+        if !state || this.Match(TokenType::SEMICOLON) {
             while this.Current()._type != TokenType::RBRACE && this.Current()._type != TokenType::EOF {
                 let visibility: Token = this.Current();
 
@@ -1890,7 +1888,7 @@ class Parser {
                     if this.Current()._type == TokenType::TILDE {
                         if class_decl->destructor != null {
                             Logger::Log(this.file, "Multiple destructor declarations are not allowed.", visibility, LogSeverity::Error);
-                            break;
+                            ret null;
                         }
 
                         let function: *const ASTNode = this.ParseFunctionDeclaration();
@@ -1903,11 +1901,9 @@ class Parser {
                     }
                 }
             }
-
-            if !this.Expect2(TokenType::RBRACE) { ret null; }
         }
 
-        if !this.Expect2(TokenType::SEMICOLON) { ret null; }
+        if !this.Expect2(TokenType::RBRACE) { ret null; }
         ret class_decl as *const ASTNode;
     }
 
@@ -1983,9 +1979,9 @@ class Parser {
 
         if !this.Expect2(TokenType::LBRACE) { ret null; }
 
-        while this.Current()._type != TokenType::RBRACE && this.Current()._type != TokenType::EOF {
+        while this.Current()._type != TokenType::SEMICOLON && this.Current()._type != TokenType::RBRACE && this.Current()._type != TokenType::EOF {
             let variant_name: Token = this.Expect(TokenType::IDENTIFIER);
-            if variant_name._type == TokenType::UNKNOWN { break; }
+            if variant_name._type == TokenType::UNKNOWN { ret null; }
             let variant: *mut VariantNode = new VariantNode(variant_name.value, variant_name.row, variant_name.column, this.file);
 
             if this.Match(TokenType::LBRACE) {
@@ -2025,11 +2021,7 @@ class Parser {
             }
         }
 
-        if !this.Expect2(TokenType::RBRACE) { ret null; }
-
-        if this.Match(TokenType::IMPL) {
-            if !this.Expect2(TokenType::LBRACE) { ret null; }
-
+        if this.Match(TokenType::SEMICOLON) {
             while this.Current()._type != TokenType::RBRACE && this.Current()._type != TokenType::EOF {
                 let visibility: Token = this.Current();
 
@@ -2039,14 +2031,12 @@ class Parser {
                     enum_decl->methods.PushBack(Pair<TokenType, *const FunctionDeclNode>(visibility._type, function as *const FunctionDeclNode));
                 } else {
                     Logger::Log(this.file, "Expected visibility modifier.", visibility, LogSeverity::Error);
-                    break;
+                    ret null;
                 }
             }
-
-            if !this.Expect2(TokenType::RBRACE) { ret null; }
         }
 
-        if !this.Expect2(TokenType::SEMICOLON) { ret null; }
+        if !this.Expect2(TokenType::RBRACE) { ret null; }
         ret enum_decl as *const ASTNode;
     }
 

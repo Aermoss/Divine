@@ -1593,6 +1593,7 @@ class Compiler {
         while i < this.forwards.Size() {
             let forward: &Forward = this.forwards[i];
             (this.function, this.function_ref) = (forward._type, forward.value);
+            let has_instance: bool = forward.decl->_type->instance_kind != InstanceKind::None;
             let params: Vector<*const QualifiedType> = this.function->Parameters();
             let scope: *const Scope = this.scope_manager.current;
             this._class = forward._class;
@@ -1614,15 +1615,24 @@ class Compiler {
             LLVMPositionBuilderAtEnd(this.builder, entry);
             let mut k: u64 = 0u64;
 
-            while k < forward.decl->_type->parameters.Size() {
-                let param: *const ParameterNode = forward.decl->_type->parameters[k];
+            while (has_instance && k == 0u64) || k < forward.decl->_type->parameters.Size() {
+                let (mut name: String, mut mutable: bool);
+
+                if has_instance && k == 0u64 {
+                    (name, mutable) = ("this", false);
+                } else {
+                    let index: u64 = has_instance ? k - 1u64 : k;
+                    let param: *const ParameterNode = forward.decl->_type->parameters[index];
+                    (name, mutable) = (param->name, param->mutable);
+                }
+
                 let index: u64 = params[0u64]->sret != null ? k + 1u64 : k;
                 let mut _type: *const QualifiedType = params[index];
 
                 if params[index]->byval != null && LLVMGetTypeKind(_type->Value()) == LLVMTypeKind::LLVMPointerTypeKind {
-                    _type = this.type_manager.Pointer(params[index]->byval, param->mutable);
+                    _type = this.type_manager.Pointer(params[index]->byval, mutable);
                     let instance: QualifiedValue = QualifiedValue(LLVMGetParam(this.function_ref, index as u32), _type, false, true);
-                    this.scope_manager.Set(param->name, SymbolKind::Parameter, instance, false, forward.decl as *const ASTNode);
+                    this.scope_manager.Set(name, SymbolKind::Parameter, instance, false, forward.decl as *const ASTNode);
                     if _type->Pointee().IsClass() { this.scope_manager.RegisterInstance(instance); }
                 } else {
                     if params[index]->byval != null { _type = params[index]->byval; }
@@ -1632,9 +1642,9 @@ class Compiler {
 
                     LLVMPositionBuilderAtEnd(this.builder, current);
                     LLVMBuildStore(this.builder, LLVMGetParam(this.function_ref, index as u32), pointer);
-                    let instance: QualifiedValue = QualifiedValue(pointer, this.type_manager.Pointer(_type, param->mutable), false, true);
+                    let instance: QualifiedValue = QualifiedValue(pointer, this.type_manager.Pointer(_type, mutable), false, true);
                     if params[index]->byval != null && _type->IsClass() { this.scope_manager.RegisterInstance(instance); }
-                    this.scope_manager.Set(param->name, SymbolKind::Parameter, instance, false, forward.decl as *const ASTNode);
+                    this.scope_manager.Set(name, SymbolKind::Parameter, instance, false, forward.decl as *const ASTNode);
                 } k += 1u64;
             }
 
@@ -2027,21 +2037,43 @@ class Compiler {
             }
         }
 
+        let mut instance: *const QualifiedType = null;
+
+        if func_decl->_type->instance_kind != InstanceKind::None {
+            if this._class == null {
+                Logger::Log("Instance parameters are only allowed in class and enum methods.", func_decl as *const ASTNode, LogSeverity::Error);
+                ret QualifiedValue(null, null);
+            }
+
+            if func_decl->_type->instance_kind == InstanceKind::Copy {
+                instance = this._class;
+            } else if func_decl->_type->instance_kind == InstanceKind::ConstRef || func_decl->_type->instance_kind == InstanceKind::MutRef {
+                instance = this.type_manager.Reference(this._class, func_decl->_type->instance_kind == InstanceKind::MutRef);
+            }
+        }
+
         let mut i: u64 = 0u64;
 
-        while i < func_decl->_type->parameters.Size() {
-            let param: *const ParameterNode = func_decl->_type->parameters[i];
-            let real_type: &QualifiedType = this.CompileType(param->param_type);
-            let processed_type: &mut QualifiedType = real_type.IsEnum() ? real_type : this.ProcessType(real_type);
+        while instance != null || i < func_decl->_type->parameters.Size() {
+            let mut real_type: *const QualifiedType;
+
+            if instance != null {
+                (real_type, instance) = (instance, null);
+            } else {
+                real_type = this.CompileType(func_decl->_type->parameters[i]->param_type);
+                i += 1u64;
+            }
+
+            let processed_type: &mut QualifiedType = real_type->IsEnum() ? real_type : this.ProcessType(real_type);
             param_types.PushBack(processed_type.Value());
             params.PushBack(processed_type);
 
-            if real_type != processed_type {
-                attributes.PushBack(LLVMGetTypeKind(processed_type.Value()) == LLVMTypeKind::LLVMPointerTypeKind ? real_type.Value() : null);
+            if (*real_type) != processed_type {
+                attributes.PushBack(LLVMGetTypeKind(processed_type.Value()) == LLVMTypeKind::LLVMPointerTypeKind ? real_type->Value() : null);
                 processed_type.byval = real_type;
             } else {
                 attributes.PushBack(null);
-            } i += 1u64;
+            }
         }
 
         let mut name: String = func_decl->name;

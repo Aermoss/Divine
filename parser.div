@@ -363,10 +363,14 @@ class ParameterNode : ASTNode {
     }
 }
 
+enum InstanceKind: i32 {
+    None, Copy, ConstRef, MutRef
+}
+
 class FunctionTypeNode : ASTNode {
     pub parameters: Vector<*const ParameterNode>,
-    pub return_type: *const ASTNode,
-    pub var_arg: bool = false;
+    pub return_type: *const ASTNode, pub var_arg: bool = false,
+    pub instance_kind: InstanceKind = InstanceKind::None;
 
     FunctionTypeNode(this: &mut FunctionTypeNode, row: u64, column: u64, file: String) : ASTNode(ASTNodeType::FUNCTION_TYPE, row, column, file) {}
 }
@@ -688,7 +692,7 @@ class Parser {
         if token._type == TokenType::INTEGER || token._type == TokenType::FLOAT || token._type == TokenType::STRING || token._type == TokenType::CHAR || token._type == TokenType::TRUE || token._type == TokenType::FALSE || token._type == TokenType::NULL {
             this.Advance();
             ret new LiteralNode(token.value, token._type, token.row, token.column, this.file) as *const ASTNode;
-        } else if token._type == TokenType::IDENTIFIER || token._type == TokenType::OPERATOR || token._type == TokenType::DOUBLE_COLON {
+        } else if token._type == TokenType::IDENTIFIER || token._type == TokenType::THIS || token._type == TokenType::OPERATOR || token._type == TokenType::DOUBLE_COLON {
             let mut node: *const ASTNode = null;
 
             if token._type != TokenType::DOUBLE_COLON {
@@ -706,7 +710,7 @@ class Parser {
 
                         node = new IdentifierNode(identifier, token.row, token.column, this.file) as *const ASTNode;
                     } else {
-                        let identifier: Token = this.Expect(TokenType::IDENTIFIER);
+                        let identifier: Token = this.Expect(this.Current()._type != TokenType::THIS ? TokenType::IDENTIFIER : TokenType::THIS);
                         if identifier._type == TokenType::UNKNOWN { ret null; }
                         node = new IdentifierNode(identifier.value, token.row, token.column, this.file) as *const ASTNode;
                     }
@@ -726,7 +730,7 @@ class Parser {
 
                     identifier = new IdentifierNode(_identifier, token.row, token.column, this.file);
                 } else {
-                    let _identifier: Token = this.Expect(TokenType::IDENTIFIER);
+                    let _identifier: Token = this.Expect(this.Current()._type != TokenType::THIS ? TokenType::IDENTIFIER : TokenType::THIS);
                     if _identifier._type == TokenType::UNKNOWN { ret null; }
                     identifier = new IdentifierNode(_identifier.value, token.row, token.column, this.file);
                 } node = new ScopeResolutionNode(node, identifier, token.row, token.column, this.file) as *const ASTNode;
@@ -979,16 +983,30 @@ class Parser {
             let func_type: *mut FunctionTypeNode = new FunctionTypeNode(token.row, token.column, this.file);
 
             if this.Current()._type != TokenType::RPAREN {
-                while this.Current()._type != TokenType::EOF {
-                    func_type->var_arg = this.Match(TokenType::THREE_DOT);
-                    if func_type->var_arg { break; }
+                let mut has_instance: bool = true;
 
-                    let param: *const ParameterNode = this.ParseParameter();
-                    if param == null { ret null; }
-                    func_type->parameters.PushBack(param);
+                if this.Match(TokenType::THIS) {
+                    func_type->instance_kind = InstanceKind::Copy;
+                } else if this.Current()._type == TokenType::BITWISE_AND && (this.Peek(1u64)._type == TokenType::THIS || this.Peek(2u64)._type == TokenType::THIS) {
+                    let token: Token = this.Advance();
+                    func_type->instance_kind = this.Match(TokenType::MUT) ? InstanceKind::MutRef : InstanceKind::ConstRef;
+                    this.Advance();
+                } else {
+                    has_instance = false;
+                }
 
-                    if !this.Match(TokenType::COMMA) {
-                        break;
+                if !has_instance || this.Match(TokenType::COMMA) {
+                    while this.Current()._type != TokenType::EOF {
+                        func_type->var_arg = this.Match(TokenType::THREE_DOT);
+                        if func_type->var_arg { break; }
+
+                        let param: *const ParameterNode = this.ParseParameter();
+                        if param == null { ret null; }
+                        func_type->parameters.PushBack(param);
+
+                        if !this.Match(TokenType::COMMA) {
+                            break;
+                        }
                     }
                 }
             }
@@ -1711,16 +1729,30 @@ class Parser {
         if !this.Expect2(TokenType::LPAREN) { ret null; }
 
         if this.Current()._type != TokenType::RPAREN {
-            while this.Current()._type != TokenType::EOF {
-                func_type->var_arg = this.Match(TokenType::THREE_DOT);
-                if func_type->var_arg { break; }
+            let mut has_instance: bool = true;
 
-                let param: *const ParameterNode = this.ParseParameter();
-                if param == null { ret null; }
-                func_type->parameters.PushBack(param);
+            if this.Match(TokenType::THIS) {
+                func_type->instance_kind = InstanceKind::Copy;
+            } else if this.Current()._type == TokenType::BITWISE_AND && (this.Peek(1u64)._type == TokenType::THIS || this.Peek(2u64)._type == TokenType::THIS) {
+                let token: Token = this.Advance();
+                func_type->instance_kind = this.Match(TokenType::MUT) ? InstanceKind::MutRef : InstanceKind::ConstRef;
+                this.Advance();
+            } else {
+                has_instance = false;
+            }
 
-                if !this.Match(TokenType::COMMA) {
-                    break;
+            if !has_instance || this.Match(TokenType::COMMA) {
+                while this.Current()._type != TokenType::EOF {
+                    func_type->var_arg = this.Match(TokenType::THREE_DOT);
+                    if func_type->var_arg { break; }
+
+                    let param: *const ParameterNode = this.ParseParameter();
+                    if param == null { ret null; }
+                    func_type->parameters.PushBack(param);
+
+                    if !this.Match(TokenType::COMMA) {
+                        break;
+                    }
                 }
             }
         }

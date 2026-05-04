@@ -116,22 +116,6 @@ func LLVMIsTypeEqual(left: LLVMTypeRef, right: LLVMTypeRef) -> bool {
     }
 }
 
-func LLVMTypeToString(_type: LLVMTypeRef) -> String {
-    let mut result: String;
-    let string: *const i8 = LLVMPrintTypeToString(_type);
-    result += string;
-    LLVMDisposeMessage(string);
-    ret result;
-}
-
-func LLVMValueToString(value: LLVMValueRef) -> String {
-    let mut result: String;
-    let string: *const i8 = LLVMPrintValueToString(value);
-    result += string;
-    LLVMDisposeMessage(string);
-    ret result;
-}
-
 func LLVMAddressOf(value: LLVMValueRef, builder: LLVMBuilderRef) -> LLVMValueRef {
     if LLVMGetInstructionOpcode(value) == LLVMOpcode::LLVMLoad {
         let operand: LLVMValueRef = LLVMGetOperand(value, 0u32);
@@ -155,8 +139,9 @@ func LLVMAddressOf(value: LLVMValueRef, builder: LLVMBuilderRef) -> LLVMValueRef
         LLVMPositionBuilderAtEnd(builder, current);
         ret result;
     } else {
-        WriteLine("\x1b[31mFailed to get address of '" + LLVMValueToString(value) + "'.\x1b[0m");
-        Exit(1i32);
+        let string: *const i8 = LLVMPrintValueToString(value);
+        WriteLine("\x1b[31mFailed to get address of '" + string.ToString() + "'.\x1b[0m");
+        LLVMDisposeMessage(string);
         ret null;
     }
 }
@@ -538,6 +523,19 @@ class QualifiedType {
     pub op!=(&this, other: &QualifiedType) -> bool {
         ret !(this == other);
     }
+
+    pub ToString(&this) -> String {
+        if this.value != null {
+            let mut result: String;
+            let string: *const i8 = LLVMPrintTypeToString(this.value);
+            result += string;
+            LLVMDisposeMessage(string);
+            ret result;
+        } else {
+            Logger::Log("QualifiedType", "Null type!", LogSeverity::Error);
+            ret String("");
+        }
+    }
 }
 
 class TypeManager {
@@ -670,6 +668,19 @@ class QualifiedValue {
         } else {
             Logger::Log("QualifiedValue", "Null type!", LogSeverity::Error);
             ret null;
+        }
+    }
+
+    pub ToString(&this) -> String {
+        if this.value != null {
+            let mut result: String;
+            let string: *const i8 = LLVMPrintValueToString(this.value);
+            result += string;
+            LLVMDisposeMessage(string);
+            ret result;
+        } else {
+            Logger::Log("QualifiedValue", "Null value!", LogSeverity::Error);
+            ret String("");
         }
     }
 }
@@ -1282,7 +1293,7 @@ class Mangler {
         } else if kind == LLVMTypeKind::LLVMFloatTypeKind {
             ret String("f");
         } else {
-            Logger::Log("Mangler", "Unknown type '" + LLVMTypeToString(_type->Value()) + "'.", LogSeverity::Error);
+            Logger::Log("Mangler", "Unknown type '" + _type->ToString() + "'.", LogSeverity::Error);
             ret String("");
         }
     }
@@ -1567,6 +1578,7 @@ class Compiler {
         }
 
         this.CompileForwardDeclarations();
+        this.scope_manager.builder = null;
         let mut j: u64 = 0u64;
 
         while j < this.generics.Size() {
@@ -1576,17 +1588,19 @@ class Compiler {
 
         this.generics.Clear();
         this.forwards.Clear();
-        let message: *const i8 = null;
 
-        if LLVMVerifyModule(this.module, LLVMVerifierFailureAction::LLVMAbortProcessAction, &message) != 0i32 {
-            WriteLine("\x1b[31mModule verification failed: " + message.ToString() + ".\x1b[0m");
+        if !Logger::HasError() {
+            let message: *const i8 = null;
+
+            if LLVMVerifyModule(this.module, LLVMVerifierFailureAction::LLVMAbortProcessAction, &message) != 0i32 {
+                WriteLine("\x1b[31mModule verification failed: " + message.ToString() + ".\x1b[0m");
+                LLVMDisposeMessage(message);
+                ret null;
+            }
+
             LLVMDisposeMessage(message);
-            ret null;
-        }
-
-        LLVMDisposeMessage(message);
-        this.scope_manager.builder = null;
-        ret this.module;
+            ret this.module;
+        } ret null;
     }
 
     priv CompileForwardDeclarations(&mut this) {
@@ -1822,7 +1836,7 @@ class Compiler {
                     }
 
                     if value.Type() != _type->Element() && !state {
-                        Logger::Log("Incompatible initializer list element types. ('" + LLVMTypeToString(value.Type().Value()) + "' != '" + LLVMTypeToString(_type->Element().Value()) + "').", constant_decl as *const ASTNode, LogSeverity::Error);
+                        Logger::Log("Incompatible initializer list element types. ('" + value.Type().ToString() + "' != '" + _type->Element().ToString() + "').", constant_decl as *const ASTNode, LogSeverity::Error);
                         has_error = true;
                         break;
                     }
@@ -1835,7 +1849,7 @@ class Compiler {
                     initializer = QualifiedValue(LLVMConstArray2(_type->Value(), values.Data(), values.Size()), _type);
                 }
             } else {
-                Logger::Log("Invalid type '" + LLVMTypeToString(_type->Value()) + "' for initializer list.", constant_decl as *const ASTNode, LogSeverity::Error);
+                Logger::Log("Invalid type '" + _type->ToString() + "' for initializer list.", constant_decl as *const ASTNode, LogSeverity::Error);
                 has_error = true;
             }
         }
@@ -1854,7 +1868,7 @@ class Compiler {
         }
 
         if initializer.Type() != *_type && !state {
-            Logger::Log("Incompatible constant initialization types. ('" + LLVMTypeToString(_type->Value()) + "' != '" + LLVMTypeToString(initializer.Type().Value()) + "').", constant_decl as *const ASTNode, LogSeverity::Error);
+            Logger::Log("Incompatible constant initialization types. ('" + _type->ToString() + "' != '" + initializer.Type().ToString() + "').", constant_decl as *const ASTNode, LogSeverity::Error);
             ret;
         }
 
@@ -1942,7 +1956,7 @@ class Compiler {
                         }
 
                         if value.Type() != _type->Element() && !state {
-                            Logger::Log("Incompatible initializer list element types. ('" + LLVMTypeToString(value.Type().Value()) + "' != '" + LLVMTypeToString(_type->Element().Value()) + "').", static_decl as *const ASTNode, LogSeverity::Error);
+                            Logger::Log("Incompatible initializer list element types. ('" + value.Type().ToString() + "' != '" + _type->Element().ToString() + "').", static_decl as *const ASTNode, LogSeverity::Error);
                             has_error = true;
                             break;
                         }
@@ -1955,7 +1969,7 @@ class Compiler {
                         initializer = QualifiedValue(LLVMConstArray2(_type->Value(), values.Data(), values.Size()), _type);
                     }
                 } else {
-                    Logger::Log("Invalid type '" + LLVMTypeToString(_type->Value()) + "' for initializer list.", static_decl as *const ASTNode, LogSeverity::Error);
+                    Logger::Log("Invalid type '" + _type->ToString() + "' for initializer list.", static_decl as *const ASTNode, LogSeverity::Error);
                     has_error = true;
                 }
             }
@@ -1970,7 +1984,7 @@ class Compiler {
                 }
 
                 if initializer.Type() != *_type && !state {
-                    Logger::Log("Incompatible constant initialization types. ('" + LLVMTypeToString(_type->Value()) + "' != '" + LLVMTypeToString(initializer.Type().Value()) + "').", static_decl as *const ASTNode, LogSeverity::Error);
+                    Logger::Log("Incompatible constant initialization types. ('" + _type->ToString() + "' != '" + initializer.Type().ToString() + "').", static_decl as *const ASTNode, LogSeverity::Error);
                     has_error = true;
                 }
             }
@@ -2492,7 +2506,7 @@ class Compiler {
                         if _value.Type() == underlying_type {
                             value = _value.Value();
                         } else {
-                            Logger::Log("Incompatible enum value types. ('" + LLVMTypeToString(_value.Type().Value()) + "' != '" + LLVMTypeToString(underlying_type.Value()) + "').", enum_decl as *const ASTNode, LogSeverity::Error);
+                            Logger::Log("Incompatible enum value types. ('" + _value.Type().ToString() + "' != '" + underlying_type.ToString() + "').", enum_decl as *const ASTNode, LogSeverity::Error);
                             has_error = true;
                         }
                     } else {
@@ -2987,7 +3001,7 @@ class Compiler {
 
                 if LLVMGetTypeKind(return.Value()) == LLVMTypeKind::LLVMIntegerTypeKind {
                     if *return.sret != value.Type().Pointee() {
-                        Logger::Log("Incompatible return types. ('" + LLVMTypeToString(return.sret->Value()) + "' != '" + LLVMTypeToString(value.Type().Pointee().Value()) + "').", ret_stmt as *const ASTNode, LogSeverity::Error);
+                        Logger::Log("Incompatible return types. ('" + return.sret->ToString() + "' != '" + value.Type().Pointee().ToString() + "').", ret_stmt as *const ASTNode, LogSeverity::Error);
                         ret;
                     }
 
@@ -2995,7 +3009,7 @@ class Compiler {
                     LLVMBuildRet(this.builder, LLVMBuildLoad2(this.builder, return.Value(), value.Value(), ""));
                 } else {
                     if *params[0u64]->sret != value.Type().Pointee() {
-                        Logger::Log("Incompatible return types. ('" + LLVMTypeToString(return.sret->Value()) + "' != '" + LLVMTypeToString(value.Type().Pointee().Value()) + "').", ret_stmt as *const ASTNode, LogSeverity::Error);
+                        Logger::Log("Incompatible return types. ('" + return.sret->ToString() + "' != '" + value.Type().Pointee().ToString() + "').", ret_stmt as *const ASTNode, LogSeverity::Error);
                         ret;
                     }
 
@@ -3033,7 +3047,7 @@ class Compiler {
                 }
 
                 if return != value.Type() && !state {
-                    Logger::Log("Incompatible return types. ('" + LLVMTypeToString(return.Value()) + "' != '" + LLVMTypeToString(value.Type().Value()) + "').", ret_stmt as *const ASTNode, LogSeverity::Error);
+                    Logger::Log("Incompatible return types. ('" + return.ToString() + "' != '" + value.Type().ToString() + "').", ret_stmt as *const ASTNode, LogSeverity::Error);
                     ret;
                 }
 
@@ -3058,7 +3072,7 @@ class Compiler {
         }
 
         if LLVMGetTypeKind(value.Type().Value()) != LLVMTypeKind::LLVMIntegerTypeKind || LLVMGetIntTypeWidth(value.Type().Value()) != 1u32 {
-            Logger::Log("Invalid condition type '" + LLVMTypeToString(value.Type().Value()) + "'.", condition, LogSeverity::Error);
+            Logger::Log("Invalid condition type '" + value.Type().ToString() + "'.", condition, LogSeverity::Error);
         }
 
         ret value.Value();
@@ -3433,7 +3447,7 @@ class Compiler {
                                 this.scope_manager.Set(variable->name, SymbolKind::Variable, QualifiedValue(LLVMAddressOf(value.Value(), this.builder), this.type_manager.Pointer(_type, variable->mutable), false, true), false, variable as *const ASTNode);
                                 skip = true;
                             } else {
-                                Logger::Log("Incompatible variable initialization types. ('" + LLVMTypeToString(_type->Value()) + "' != '" + LLVMTypeToString(value.Type().Value()) + "').", variable as *const ASTNode, LogSeverity::Error);
+                                Logger::Log("Incompatible variable initialization types. ('" + _type->ToString() + "' != '" + value.Type().ToString() + "').", variable as *const ASTNode, LogSeverity::Error);
                                 has_error = true;
                             }
                         }
@@ -3520,7 +3534,7 @@ class Compiler {
                         if *_type == initializer.Type() || state {
                             LLVMBuildStore(this.builder, initializer.Value(), pointer.Value());
                         } else {
-                            Logger::Log("Incompatible variable initialization types. ('" + LLVMTypeToString(_type->Value()) + "' != '" + LLVMTypeToString(initializer.Type().Value()) + "').", variable as *const ASTNode, LogSeverity::Error);
+                            Logger::Log("Incompatible variable initialization types. ('" + _type->ToString() + "' != '" + initializer.Type().ToString() + "').", variable as *const ASTNode, LogSeverity::Error);
                         }
                     }
                 } else {
@@ -3604,7 +3618,7 @@ class Compiler {
 
             if value.Type() == _class {
                 if operator != TokenType::ASSIGN {
-                    Logger::Log("Invalid class assignment operation '" + operator.ToString() + "' for type '" + LLVMTypeToString(_class.Value()) + "'.", node, LogSeverity::Error);
+                    Logger::Log("Invalid class assignment operation '" + operator.ToString() + "' for type '" + _class.ToString() + "'.", node, LogSeverity::Error);
                     ret QualifiedValue(null, null);
                 }
 
@@ -3626,7 +3640,7 @@ class Compiler {
                     i += 1u64;
                 }
             } else {
-                Logger::Log("Incompatible class assignment types. ('" + LLVMTypeToString(_class.Value()) + "' != '" + LLVMTypeToString(value.Type().Value()) + "').", node, LogSeverity::Error);
+                Logger::Log("Incompatible class assignment types. ('" + _class.ToString() + "' != '" + value.Type().ToString() + "').", node, LogSeverity::Error);
                 ret QualifiedValue(null, null);
             }
         } else {
@@ -3639,7 +3653,7 @@ class Compiler {
                         let _type: &QualifiedType = this.type_manager.Primitive(LLVMInt64TypeInContext(this.context), false);
                         value = QualifiedValue(LLVMBuildSub(this.builder, LLVMBuildPtrToInt(this.builder, other.Value(), _type.Value(), ""), LLVMBuildPtrToInt(this.builder, value.Value(), _type.Value(), ""), ""), _type);
                     } else {
-                        Logger::Log("Invalid pointer assignment operation '" + operator.ToString() + "' for type '" + LLVMTypeToString(value.Type().Value()) + "'.", node, LogSeverity::Error);
+                        Logger::Log("Invalid pointer assignment operation '" + operator.ToString() + "' for type '" + value.Type().ToString() + "'.", node, LogSeverity::Error);
                         ret QualifiedValue(null, null);
                     }
                 } else if (value.Type().IsPointer() && other_kind == LLVMTypeKind::LLVMIntegerTypeKind) || (value_kind == LLVMTypeKind::LLVMIntegerTypeKind && other.Type().IsPointer()) {
@@ -3655,16 +3669,16 @@ class Compiler {
                             let indices[]: LLVMValueRef = { LLVMBuildNeg(this.builder, index.Value(), "") };
                             value = QualifiedValue(LLVMBuildGEP2(this.builder, ptr.Type().Pointee().Value(), ptr.Value(), indices, 1u32, ""), ptr.Type());
                         } else {
-                            Logger::Log("Invalid pointer assignment operation '" + operator.ToString() + "' for type '" + LLVMTypeToString(ptr.Type().Value()) + "'.", node, LogSeverity::Error);
+                            Logger::Log("Invalid pointer assignment operation '" + operator.ToString() + "' for type '" + ptr.Type().ToString() + "'.", node, LogSeverity::Error);
                             ret QualifiedValue(null, null);
                         }
                     } else {
-                        Logger::Log("Invalid index type '" + LLVMTypeToString(index.Type().Value()) + "'.", node, LogSeverity::Error);
+                        Logger::Log("Invalid index type '" + index.Type().ToString() + "'.", node, LogSeverity::Error);
                         ret QualifiedValue(null, null);
                     }
                 } else if value_kind == LLVMTypeKind::LLVMIntegerTypeKind && other_kind == LLVMTypeKind::LLVMIntegerTypeKind {
                     if value.Type() != other.Type() {
-                        Logger::Log("Incompatible assignment operation types. ('" + LLVMTypeToString(value.Type().Value()) + "' != '" + LLVMTypeToString(other.Type().Value()) + "').", node, LogSeverity::Error);
+                        Logger::Log("Incompatible assignment operation types. ('" + value.Type().ToString() + "' != '" + other.Type().ToString() + "').", node, LogSeverity::Error);
                         ret QualifiedValue(null, null);
                     }
 
@@ -3701,12 +3715,12 @@ class Compiler {
                             value = QualifiedValue(LLVMBuildLShr(this.builder, other.Value(), value.Value(), ""), value.Type());
                         }
                     } else {
-                        Logger::Log("Invalid assignment operation '" + operator.ToString() + "' for type '" + LLVMTypeToString(value.Type().Value()) + "'.", node, LogSeverity::Error);
+                        Logger::Log("Invalid assignment operation '" + operator.ToString() + "' for type '" + value.Type().ToString() + "'.", node, LogSeverity::Error);
                         ret QualifiedValue(null, null);
                     }
                 } else if (value_kind == LLVMTypeKind::LLVMFloatTypeKind || value_kind == LLVMTypeKind::LLVMDoubleTypeKind) && (other_kind == LLVMTypeKind::LLVMFloatTypeKind || other_kind == LLVMTypeKind::LLVMDoubleTypeKind) {
                     if value.Type() != other.Type() {
-                        Logger::Log("Incompatible assignment operation types. ('" + LLVMTypeToString(value.Type().Value()) + "' != '" + LLVMTypeToString(other.Type().Value()) + "').", node, LogSeverity::Error);
+                        Logger::Log("Incompatible assignment operation types. ('" + value.Type().ToString() + "' != '" + other.Type().ToString() + "').", node, LogSeverity::Error);
                         ret QualifiedValue(null, null);
                     }
 
@@ -3721,11 +3735,11 @@ class Compiler {
                     } else if operator == TokenType::MOD_ASSIGN {
                         value = QualifiedValue(LLVMBuildFRem(this.builder, other.Value(), value.Value(), ""), value.Type());
                     } else {
-                        Logger::Log("Invalid assignment operation '" + operator.ToString() + "' for type '" + LLVMTypeToString(value.Type().Value()) + "'.", node, LogSeverity::Error);
+                        Logger::Log("Invalid assignment operation '" + operator.ToString() + "' for type '" + value.Type().ToString() + "'.", node, LogSeverity::Error);
                         ret QualifiedValue(null, null);
                     }
                 } else {
-                    Logger::Log("Invalid type '" + LLVMTypeToString(value.Type().Value()) + "' for assignment operation '" + operator.ToString() + "'.", node, LogSeverity::Error);
+                    Logger::Log("Invalid type '" + value.Type().ToString() + "' for assignment operation '" + operator.ToString() + "'.", node, LogSeverity::Error);
                     ret QualifiedValue(null, null);
                 }
             }
@@ -3750,7 +3764,7 @@ class Compiler {
             }
 
             if value.Type() != pointer.Type().Pointee() && !state {
-                Logger::Log("Incompatible assignment types. ('" + LLVMTypeToString(pointer.Type().Pointee().Value()) + "' != '" + LLVMTypeToString(value.Type().Value()) + "').", node, LogSeverity::Error);
+                Logger::Log("Incompatible assignment types. ('" + pointer.Type().Pointee().ToString() + "' != '" + value.Type().ToString() + "').", node, LogSeverity::Error);
                 ret QualifiedValue(null, null);
             }
 
@@ -4261,7 +4275,7 @@ class Compiler {
                     }
 
                     if *param.byval != value.Type() && !state {
-                        Logger::Log("Incompatible argument types for function '" + _func.Type().Pointee().name + "'. ('" + LLVMTypeToString(param.byval->Value()) + "' != '" + LLVMTypeToString(value.Type().Value()) + "').", node, LogSeverity::Error);
+                        Logger::Log("Incompatible argument types for function '" + _func.Type().Pointee().name + "'. ('" + param.byval->ToString() + "' != '" + value.Type().ToString() + "').", node, LogSeverity::Error);
                         ret QualifiedValue(null, null);
                     }
 
@@ -4319,7 +4333,7 @@ class Compiler {
                     }
 
                     if param != value.Type() && !state {
-                        Logger::Log("Incompatible argument types for function '" + _func.Type().Pointee().name + "'. ('" + LLVMTypeToString(param.Value()) + "' != '" + LLVMTypeToString(value.Type().Value()) + "').", node, LogSeverity::Error);
+                        Logger::Log("Incompatible argument types for function '" + _func.Type().Pointee().name + "'. ('" + param.ToString() + "' != '" + value.Type().ToString() + "').", node, LogSeverity::Error);
                         ret QualifiedValue(null, null);
                     }
 
@@ -4388,7 +4402,7 @@ class Compiler {
         }
 
         if then_value.Type() != else_value.Type() && !state {
-            Logger::Log("Incompatible ternary types. ('" + LLVMTypeToString(then_value.Type().Value()) + "' != '" + LLVMTypeToString(else_value.Type().Value()) + "').", ternary as *const ASTNode, LogSeverity::Error);
+            Logger::Log("Incompatible ternary types. ('" + then_value.Type().ToString() + "' != '" + else_value.Type().ToString() + "').", ternary as *const ASTNode, LogSeverity::Error);
             ret QualifiedValue(null, null);
         }
 
@@ -4708,7 +4722,7 @@ class Compiler {
         let value_kind: LLVMTypeKind = LLVMGetTypeKind(value.Type().Value());
 
         if value.Type() == target {
-            Logger::Log("Redundant cast. ('" + LLVMTypeToString(value.Type().Value()) + "' to '" + LLVMTypeToString(target.Value()) + "')", node, LogSeverity::Error);
+            Logger::Log("Redundant cast. ('" + value.Type().ToString() + "' to '" + target.ToString() + "')", node, LogSeverity::Error);
             ret QualifiedValue(null, null);
         }
 
@@ -4807,7 +4821,7 @@ class Compiler {
 
             ret QualifiedValue(LLVMBuildBitCast(this.builder, pointer, target.Value(), ""), target, false, value.binding);
         } else {
-            Logger::Log("Cannot cast '" + LLVMTypeToString(value.Type().Value()) + "' to '" + LLVMTypeToString(target.Value()) + "'.", node, LogSeverity::Error);
+            Logger::Log("Cannot cast '" + value.Type().ToString() + "' to '" + target.ToString() + "'.", node, LogSeverity::Error);
             ret QualifiedValue(null, null);
         }
     }
@@ -4820,12 +4834,12 @@ class Compiler {
                 ret QualifiedValue(null, null);
             }
 
-            if _pointer.Type().Pointee().IsReference() {
-                let _type: *const QualifiedType = this.type_manager.Pointer(_pointer.Type().Pointee().Pointee(), unary_op->mutable);
-                ret QualifiedValue(LLVMBuildLoad2(this.builder, _pointer.Type().Pointee().Value(), _pointer.Value(), ""), _type);
-            } else {
-                ret QualifiedValue(_pointer.Value(), this.type_manager.Copy(_pointer.Type(), unary_op->mutable));
+            if unary_op->mutable && !_pointer.Type().IsMutable() {
+                Logger::Log("Cannot take mutable reference to immutable value of type '" + _pointer.Type().Pointee().ToString() + "'.", unary_op as *const ASTNode, LogSeverity::Error);
+                ret QualifiedValue(null, null);
             }
+
+            ret QualifiedValue(_pointer.Value(), this.type_manager.Copy(_pointer.Type(), unary_op->mutable));
         } else {
             let mut value: QualifiedValue = this.CompileExpression(unary_op->operand, false);
 
@@ -4847,7 +4861,7 @@ class Compiler {
                         ret value;
                     }
                 } else {
-                    Logger::Log("Cannot dereference non-pointer type '" + LLVMTypeToString(value.Type().Value()) + "'.", unary_op as *const ASTNode, LogSeverity::Error);
+                    Logger::Log("Cannot dereference non-pointer type '" + value.Type().ToString() + "'.", unary_op as *const ASTNode, LogSeverity::Error);
                     ret QualifiedValue(null, null);
                 }
             } else if unary_op->operator == TokenType::MINUS {
@@ -4855,20 +4869,20 @@ class Compiler {
                     if value.Type().IsSigned() {
                         ret QualifiedValue(LLVMBuildNeg(this.builder, value.Value(), ""), value.Type());
                     } else {
-                        Logger::Log("Cannot negate unsigned type '" + LLVMTypeToString(value.Type().Value()) + "'.", unary_op as *const ASTNode, LogSeverity::Error);
+                        Logger::Log("Cannot negate unsigned type '" + value.Type().ToString() + "'.", unary_op as *const ASTNode, LogSeverity::Error);
                         ret QualifiedValue(null, null);
                     }
                 } else if kind == LLVMTypeKind::LLVMFloatTypeKind || kind == LLVMTypeKind::LLVMDoubleTypeKind {
                     ret QualifiedValue(LLVMBuildFNeg(this.builder, value.Value(), ""), value.Type());
                 } else {
-                    Logger::Log("Cannot negate type '" + LLVMTypeToString(value.Type().Value()) + "'.", unary_op as *const ASTNode, LogSeverity::Error);
+                    Logger::Log("Cannot negate type '" + value.Type().ToString() + "'.", unary_op as *const ASTNode, LogSeverity::Error);
                     ret QualifiedValue(null, null);
                 }
             } else if unary_op->operator == TokenType::NOT {
                 if kind == LLVMTypeKind::LLVMIntegerTypeKind {
                     ret QualifiedValue(LLVMBuildNot(this.builder, value.Value(), ""), value.Type());
                 } else {
-                    Logger::Log("Cannot invert type '" + LLVMTypeToString(value.Type().Value()) + "'.", unary_op as *const ASTNode, LogSeverity::Error);
+                    Logger::Log("Cannot invert type '" + value.Type().ToString() + "'.", unary_op as *const ASTNode, LogSeverity::Error);
                     ret QualifiedValue(null, null);
                 }
             } else {
@@ -4934,7 +4948,7 @@ class Compiler {
 
             if left.Type() == right.Type() {
                 if operator != TokenType::EQUAL && operator != TokenType::NOT_EQUAL {
-                    Logger::Log("Invalid class binary operation '" + operator.ToString() + "' for type '" + LLVMTypeToString(_class.Value()) + "'.", node, LogSeverity::Error);
+                    Logger::Log("Invalid class binary operation '" + operator.ToString() + "' for type '" + _class.ToString() + "'.", node, LogSeverity::Error);
                     ret QualifiedValue(null, null);
                 }
 
@@ -4963,7 +4977,7 @@ class Compiler {
 
                 ret QualifiedValue(result, this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
             } else {
-                Logger::Log("Incompatible class binary operation types. ('" + LLVMTypeToString(_class.Value()) + "' != '" + LLVMTypeToString(value.Type().Value()) + "').", node, LogSeverity::Error);
+                Logger::Log("Incompatible class binary operation types. ('" + _class.ToString() + "' != '" + value.Type().ToString() + "').", node, LogSeverity::Error);
                 ret QualifiedValue(null, null);
             }
         }
@@ -4987,7 +5001,7 @@ class Compiler {
             } else if operator == TokenType::LESS_EQUAL {
                 ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntULE, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
             } else {
-                Logger::Log("Invalid pointer binary operation '" + operator.ToString() + "' for type '" + LLVMTypeToString(left.Type().Value()) + "'.", node, LogSeverity::Error);
+                Logger::Log("Invalid pointer binary operation '" + operator.ToString() + "' for type '" + left.Type().ToString() + "'.", node, LogSeverity::Error);
                 ret QualifiedValue(null, null);
             }
         } else if (left.Type().IsPointer() && right_kind == LLVMTypeKind::LLVMIntegerTypeKind) || (left_kind == LLVMTypeKind::LLVMIntegerTypeKind && right.Type().IsPointer()) {
@@ -5003,16 +5017,16 @@ class Compiler {
                     let indices[]: LLVMValueRef = { LLVMBuildNeg(this.builder, index.Value(), "") };
                     ret QualifiedValue(LLVMBuildGEP2(this.builder, ptr.Type().Pointee().Value(), ptr.Value(), indices, 1u32, ""), ptr.Type());
                 } else {
-                    Logger::Log("Invalid pointer binary operation '" + operator.ToString() + "' for type '" + LLVMTypeToString(left.Type().Value()) + "'.", node, LogSeverity::Error);
+                    Logger::Log("Invalid pointer binary operation '" + operator.ToString() + "' for type '" + left.Type().ToString() + "'.", node, LogSeverity::Error);
                     ret QualifiedValue(null, null);
                 }
             } else {
-                Logger::Log("Invalid index type '" + LLVMTypeToString(index.Type().Value()) + "'.", node, LogSeverity::Error);
+                Logger::Log("Invalid index type '" + index.Type().ToString() + "'.", node, LogSeverity::Error);
                 ret QualifiedValue(null, null);
             }
         } else if left_kind == LLVMTypeKind::LLVMIntegerTypeKind && right_kind == LLVMTypeKind::LLVMIntegerTypeKind {
             if left.Type() != right.Type() {
-                Logger::Log("Incompatible binary operation types. ('" + LLVMTypeToString(left.Type().Value()) + "' != '" + LLVMTypeToString(right.Type().Value()) + "').", node, LogSeverity::Error);
+                Logger::Log("Incompatible binary operation types. ('" + left.Type().ToString() + "' != '" + right.Type().ToString() + "').", node, LogSeverity::Error);
                 ret QualifiedValue(null, null);
             }
 
@@ -5048,14 +5062,14 @@ class Compiler {
                 ret QualifiedValue(LLVMBuildICmp(this.builder, left.Type().IsSigned() ? LLVMIntPredicate::LLVMIntSLE : LLVMIntPredicate::LLVMIntULE, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
             } else if operator == TokenType::AND || operator == TokenType::BITWISE_AND {
                 if LLVMGetIntTypeWidth(left.Type().Value()) != 1u32 && operator == TokenType::AND {
-                    Logger::Log("Invalid type '" + LLVMTypeToString(left.Type().Value()) + "' for binary operation '" + operator.ToString() + "'.", node, LogSeverity::Error);
+                    Logger::Log("Invalid type '" + left.Type().ToString() + "' for binary operation '" + operator.ToString() + "'.", node, LogSeverity::Error);
                     ret QualifiedValue(null, null);
                 } else {
                     ret QualifiedValue(LLVMBuildAnd(this.builder, left.Value(), right.Value(), ""), left.Type());
                 }
             } else if operator == TokenType::OR || operator == TokenType::BITWISE_OR {
                 if LLVMGetIntTypeWidth(left.Type().Value()) != 1u32 && operator == TokenType::OR {
-                    Logger::Log("Invalid type '" + LLVMTypeToString(left.Type().Value()) + "' for binary operation '" + operator.ToString() + "'.", node, LogSeverity::Error);
+                    Logger::Log("Invalid type '" + left.Type().ToString() + "' for binary operation '" + operator.ToString() + "'.", node, LogSeverity::Error);
                     ret QualifiedValue(null, null);
                 } else {
                     ret QualifiedValue(LLVMBuildOr(this.builder, left.Value(), right.Value(), ""), left.Type());
@@ -5071,12 +5085,12 @@ class Compiler {
                     ret QualifiedValue(LLVMBuildLShr(this.builder, left.Value(), right.Value(), ""), left.Type());
                 }
             } else {
-                Logger::Log("Invalid binary operation '" + operator.ToString() + "' for type '" + LLVMTypeToString(left.Type().Value()) + "'.", node, LogSeverity::Error);
+                Logger::Log("Invalid binary operation '" + operator.ToString() + "' for type '" + left.Type().ToString() + "'.", node, LogSeverity::Error);
                 ret QualifiedValue(null, null);
             }
         } else if (left_kind == LLVMTypeKind::LLVMFloatTypeKind || left_kind == LLVMTypeKind::LLVMDoubleTypeKind) && (right_kind == LLVMTypeKind::LLVMFloatTypeKind || right_kind == LLVMTypeKind::LLVMDoubleTypeKind) {
             if left.Type() != right.Type() {
-                Logger::Log("Incompatible binary operation types. ('" + LLVMTypeToString(left.Type().Value()) + "' != '" + LLVMTypeToString(right.Type().Value()) + "').", node, LogSeverity::Error);
+                Logger::Log("Incompatible binary operation types. ('" + left.Type().ToString() + "' != '" + right.Type().ToString() + "').", node, LogSeverity::Error);
                 ret QualifiedValue(null, null);
             }
 
@@ -5103,11 +5117,11 @@ class Compiler {
             } else if operator == TokenType::LESS_EQUAL {
                 ret QualifiedValue(LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOLE, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));
             } else {
-                Logger::Log("Invalid binary operation '" + operator.ToString() + "' for type '" + LLVMTypeToString(left.Type().Value()) + "'.", node, LogSeverity::Error);
+                Logger::Log("Invalid binary operation '" + operator.ToString() + "' for type '" + left.Type().ToString() + "'.", node, LogSeverity::Error);
                 ret QualifiedValue(null, null);
             }
         } else {
-            Logger::Log("Invalid type '" + LLVMTypeToString(left.Type().Value()) + "' for binary operation '" + operator.ToString() + "'.", node, LogSeverity::Error);
+            Logger::Log("Invalid type '" + left.Type().ToString() + "' for binary operation '" + operator.ToString() + "'.", node, LogSeverity::Error);
             ret QualifiedValue(null, null);
         }
     }

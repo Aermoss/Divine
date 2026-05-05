@@ -125,19 +125,19 @@ func LLVMAddressOf(value: LLVMValueRef, builder: LLVMBuilderRef) -> LLVMValueRef
         let count: u32 = LLVMCountIncoming(value);
         let current: LLVMBasicBlockRef = LLVMGetInsertBlock(builder);
         LLVMPositionBuilderBefore(builder, value);
-        let result: LLVMValueRef = LLVMBuildPhi(builder, LLVMPointerType(LLVMTypeOf(value), 0u32), "");
+        let phi: LLVMValueRef = LLVMBuildPhi(builder, LLVMPointerType(LLVMTypeOf(value), 0u32), "");
         let mut i: u32 = 0u32;
 
         while i < count {
             let block: LLVMBasicBlockRef = LLVMGetIncomingBlock(value, i);
             let value: LLVMValueRef = LLVMAddressOf(LLVMGetIncomingValue(value, i), builder);
-            LLVMAddIncoming(result, &value, &block, 1u32);
+            LLVMAddIncoming(phi, &value, &block, 1u32);
             i += 1u32;
         }
 
         LLVMInstructionEraseFromParent(value);
         LLVMPositionBuilderAtEnd(builder, current);
-        ret result;
+        ret phi;
     } else {
         let string: *const i8 = LLVMPrintValueToString(value);
         WriteLine("\x1b[31mFailed to get address of '" + string.ToString() + "'.\x1b[0m");
@@ -4376,23 +4376,24 @@ class Compiler {
         let function: LLVMValueRef = LLVMGetBasicBlockParent(LLVMGetInsertBlock(this.builder));
         let mut then_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "");
         let mut else_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "");
+        let merge_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "");
         let condition: LLVMValueRef = this.CompileCondition(ternary->condition);
 
         if condition != null {
             LLVMBuildCondBr(this.builder, condition, then_block, else_block);
-        } else {
-            ret;
-        }
+        } else { ret; }
 
         LLVMPositionBuilderAtEnd(this.builder, then_block);
         let then_value: QualifiedValue = this.CompileExpression(ternary->then_expr, pointer);
         if then_value.Null() { ret QualifiedValue(null, null); }
         then_block = LLVMGetInsertBlock(this.builder);
+        LLVMBuildBr(this.builder, merge_block);
 
         LLVMPositionBuilderAtEnd(this.builder, else_block);
         let else_value: QualifiedValue = this.CompileExpression(ternary->else_expr, pointer);
         if else_value.Null() { ret QualifiedValue(null, null); }
         else_block = LLVMGetInsertBlock(this.builder);
+        LLVMBuildBr(this.builder, merge_block);
         let mut state: bool = false;
 
         if then_value.Type().IsPointer() && else_value.Type().IsPointer() {
@@ -4406,22 +4407,12 @@ class Compiler {
             ret QualifiedValue(null, null);
         }
 
-        let merge_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "");
-
-        LLVMPositionBuilderAtEnd(this.builder, then_block);
-        LLVMBuildBr(this.builder, merge_block);
-
-        LLVMPositionBuilderAtEnd(this.builder, else_block);
-        LLVMBuildBr(this.builder, merge_block);
-
         LLVMPositionBuilderAtEnd(this.builder, merge_block);
-        let value: LLVMValueRef = LLVMBuildPhi(this.builder, then_value.Type().Value(), "");
-
-        let blocks[]: LLVMBasicBlockRef = { then_block, else_block };
-        let values[]: LLVMValueRef = { then_value.Value(), else_value.Value() };
-        LLVMAddIncoming(value, values, blocks, 2u32);
-
-        ret QualifiedValue(value, then_value.Type());
+        let phi: LLVMValueRef = LLVMBuildPhi(this.builder, then_value.Type().Value(), "");
+        let incoming_blocks[]: LLVMBasicBlockRef = { then_block, else_block };
+        let incoming_values[]: LLVMValueRef = { then_value.Value(), else_value.Value() };
+        LLVMAddIncoming(phi, incoming_values, incoming_blocks, 2u32);
+        ret QualifiedValue(phi, then_value.Type());
     }
 
     priv CompileIndexAccess(&mut this, index_access: *const IndexAccessNode, pointer: bool) -> QualifiedValue {
@@ -4898,6 +4889,44 @@ class Compiler {
         if left.Null() {
             ret QualifiedValue(null, null);
         }
+
+#[if SHORT_CIRCUIT]
+        if binary_op->operator == TokenType::AND || binary_op->operator == TokenType::OR {
+            if LLVMGetTypeKind(left.Type().Value()) != LLVMTypeKind::LLVMIntegerTypeKind || LLVMGetIntTypeWidth(left.Type().Value()) != 1u32 {
+                Logger::Log("Invalid type '" + left.Type().ToString() + "' for binary operation '" + binary_op->operator.ToString() + "'.", binary_op as *const ASTNode, LogSeverity::Error);
+                ret QualifiedValue(null, null);
+            }
+
+            let function: LLVMValueRef = LLVMGetBasicBlockParent(LLVMGetInsertBlock(this.builder));
+            let mut right_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "");
+            let merge_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "");
+            let left_block: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
+
+            if binary_op->operator == TokenType::AND {
+                LLVMBuildCondBr(this.builder, left.Value(), right_block, merge_block);
+            } else {
+                LLVMBuildCondBr(this.builder, left.Value(), merge_block, right_block);
+            }
+
+            LLVMPositionBuilderAtEnd(this.builder, right_block);
+            let right: QualifiedValue = this.CompileExpression(binary_op->right, false);
+            if right.Null() { ret QualifiedValue(null, null); }
+            right_block = LLVMGetInsertBlock(this.builder);
+            LLVMBuildBr(this.builder, merge_block);
+
+            if LLVMGetTypeKind(right.Type().Value()) != LLVMTypeKind::LLVMIntegerTypeKind || LLVMGetIntTypeWidth(right.Type().Value()) != 1u32 {
+                Logger::Log("Invalid type '" + right.Type().ToString() + "' for binary operation '" + binary_op->operator.ToString() + "'.", binary_op as *const ASTNode, LogSeverity::Error);
+                ret QualifiedValue(null, null);
+            }
+
+            LLVMPositionBuilderAtEnd(this.builder, merge_block);
+            let phi: LLVMValueRef = LLVMBuildPhi(this.builder, left.Type().Value(), "");
+            let incoming_values[]: LLVMValueRef = { left.Value(), right.Value() };
+            let incoming_blocks[]: LLVMBasicBlockRef = { left_block, right_block };
+            LLVMAddIncoming(phi, incoming_values, incoming_blocks, 2u32);
+            ret QualifiedValue(phi, left.Type());
+        }
+#[endif]
 
         let right: QualifiedValue = this.CompileExpression(binary_op->right, false);
 

@@ -409,14 +409,12 @@ class FieldNode : ASTNode {
 }
 
 class ClassDeclNode : ASTNode {
-    pub name: String,
+    pub name: String, pub parents: Vector<*const ASTNode>,
     pub fields: Vector<Pair<TokenType, *const FieldNode>>,
-    pub methods: Vector<Pair<TokenType, *const FunctionDeclNode>>,
     pub constructors: Vector<*const FunctionDeclNode>,
     pub destructor: *const FunctionDeclNode = null,
-    pub parents: Vector<*const ASTNode>,
-    pub generic: bool = false,
-    pub types: Vector<String>;
+    pub methods: Vector<Pair<TokenType, *const FunctionDeclNode>>,
+    pub types: Vector<String>, pub generic: bool = false;
 
     ClassDeclNode(&mut this, name: String, row: u64, column: u64, file: String) : ASTNode(ASTNodeType::CLASS_DECL, row, column, file) {
         this.name = name;
@@ -435,12 +433,10 @@ class VariantNode : ASTNode {
 }
 
 class EnumDeclNode : ASTNode {
-    pub name: String,
-    pub variants: Vector<*const VariantNode>,
+    pub name: String, pub underlying_type: *const ASTNode = null,
+    pub variants: Vector<*const VariantNode>, pub variant: bool = false,
     pub methods: Vector<Pair<TokenType, *const FunctionDeclNode>>,
-    pub underlying_type: *const ASTNode = null,
-    pub generic: bool = false,
-    pub types: Vector<String>;
+    pub types: Vector<String>, pub generic: bool = false;
 
     EnumDeclNode(&mut this, name: String, row: u64, column: u64, file: String) : ASTNode(ASTNodeType::ENUM_DECL, row, column, file) {
         this.name = name;
@@ -1983,15 +1979,15 @@ class Parser {
             enum_decl->underlying_type = this.ParseType();
             if enum_decl->underlying_type == null { ret null; }
         } else {
-            enum_decl->underlying_type = new PrimitiveTypeNode({ "i32" } as String, token.row, token.column, this.file) as *const ASTNode;
+            enum_decl->variant = true;
         }
 
         if !this.Expect2(TokenType::LBRACE) { ret null; }
 
         while this.Current()._type != TokenType::SEMICOLON && this.Current()._type != TokenType::RBRACE && this.Current()._type != TokenType::EOF {
-            let variant_name: Token = this.Expect(TokenType::IDENTIFIER);
-            if variant_name._type == TokenType::UNKNOWN { ret null; }
-            let variant: *mut VariantNode = new VariantNode(variant_name.value, variant_name.row, variant_name.column, this.file);
+            let variant_identifier: Token = this.Expect(TokenType::IDENTIFIER);
+            if variant_identifier._type == TokenType::UNKNOWN { ret null; }
+            let variant: *mut VariantNode = new VariantNode(variant_identifier.value, variant_identifier.row, variant_identifier.column, this.file);
 
             if this.Match(TokenType::LBRACE) {
                 while this.Current()._type != TokenType::RBRACE && this.Current()._type != TokenType::EOF {
@@ -2019,8 +2015,18 @@ class Parser {
 
                 if !this.Expect2(TokenType::RPAREN) { ret null; }
             } else if this.Match(TokenType::ASSIGN) {
+                if enum_decl->variant {
+                    Logger::Log(this.file, "Explicit value assignment is not allowed for variant enums.", variant_identifier, LogSeverity::Error);
+                    ret null;
+                }
+
                 variant->value = this.ParseExpression();
                 if variant->value == null { ret null; }
+            }
+
+            if !enum_decl->variant && !variant->types.Empty() {
+                Logger::Log(this.file, "Data fields are only allowed in variant enums.", variant_identifier, LogSeverity::Error);
+                ret null;
             }
 
             enum_decl->variants.PushBack(variant);

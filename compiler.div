@@ -1400,11 +1400,14 @@ class Generic {
     }
 
     pub Get(&mut this, types: Vector<*const QualifiedType>) -> Pair<*const QualifiedType, *mut Scope> {
-        let prev_generic: *const Generic = *this.current_generic;
-        let prev_scope: *const Scope = this.scope_manager->current;
+        let (prev_mangling: bool, prev_unsafe: bool) = (this.compiler->mangling, this.compiler->_unsafe);
+        let (prev_scope: *const Scope, prev_generic: *const Generic) = (this.scope_manager->current, *this.current_generic);
+        let (prev_class: *const QualifiedType, prev_function: *const QualifiedType) = (this.compiler->_class, this.compiler->function);
+        let prev_function_ref: LLVMValueRef = this.compiler->function_ref;
+
         (this.scope_manager->current, *this.current_generic) = (this.scope, this);
-        let prev_unsafe: bool = this.compiler->_unsafe;
-        this.compiler->_unsafe = false;
+        (this.compiler->_class, this.compiler->function, this.compiler->function_ref) = (null, null, null);
+        (this.compiler->mangling, this.compiler->_unsafe) = (true, false);
 
         if this.current != "" {
             Logger::Log("Generic", "Nested generics are not supported.", LogSeverity::Error);
@@ -1417,9 +1420,10 @@ class Generic {
         let name: String = this.mangler->MangleClass(this.name, types);
 
         if this.cache.Has(name) {
-            this.compiler->_unsafe = prev_unsafe;
-            this.scope_manager->current = prev_scope;
-            *this.current_generic = prev_generic;
+            this.compiler->function_ref = prev_function_ref;
+            (this.compiler->_class, this.compiler->function) = (prev_class, prev_function);
+            (this.scope_manager->current, *this.current_generic) = (prev_scope, prev_generic);
+            (this.compiler->mangling, this.compiler->_unsafe) = (prev_mangling, prev_unsafe);
             ret this.cache[name];
         } else {
             this.current = name;
@@ -1448,7 +1452,10 @@ class Generic {
 
         this.types.Clear();
         this.symbols.Clear();
-        (this.scope_manager->current, *this.current_generic, this.compiler->_unsafe) = (prev_scope, prev_generic, prev_unsafe);
+        this.compiler->function_ref = prev_function_ref;
+        (this.compiler->_class, this.compiler->function) = (prev_class, prev_function);
+        (this.scope_manager->current, *this.current_generic) = (prev_scope, prev_generic);
+        (this.compiler->mangling, this.compiler->_unsafe) = (prev_mangling, prev_unsafe);
         ret Pair<*const QualifiedType, *mut Scope>(_class, this.last_scope);
     }
 }
@@ -1474,13 +1481,13 @@ class Forward {
 
 class Compiler {
     priv mangler: Mangler,
-    priv mangling: bool = true,
+    pub mangling: bool = true,
     priv type_manager: TypeManager,
     pub generics: Vector<*const Generic>,
     priv generic: *const Generic = null,
-    priv _class: *const QualifiedType = null,
-    priv function: *const QualifiedType = null,
-    priv function_ref: LLVMValueRef = null,
+    pub _class: *const QualifiedType = null,
+    pub function: *const QualifiedType = null,
+    pub function_ref: LLVMValueRef = null,
     priv scope_manager: ScopeManager,
     priv blocks: Vector<Pair<LLVMBasicBlockRef, LLVMBasicBlockRef>>,
     priv pass_cache: Map<*const ASTNode, Pair<*mut QualifiedType, *const Scope>>,

@@ -824,8 +824,9 @@ class Scope {
 }
 
 class ScopeManager {
-    pub compiler: *mut Compiler = null, pub builder: LLVMBuilderRef = null,
-    pub scopes: Vector<*const Scope>, pub current: *mut Scope = null;
+    pub builder: LLVMBuilderRef = null,
+    pub scopes: Vector<*const Scope>,
+    pub current: *mut Scope = null;
 
     ScopeManager(&mut this) {
         this.PushScope(String("global"), true);
@@ -863,7 +864,7 @@ class ScopeManager {
                     let instance: QualifiedValue = temp->instances[i];
 
                     if LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(this.builder)) == null {
-                        this.compiler->CompileDestructor(instance.Type().Pointee(), instance, null);
+                        compiler->CompileDestructor(instance.Type().Pointee(), instance, null);
                     } i += 1u64;
                 }
 
@@ -894,7 +895,7 @@ class ScopeManager {
                 let instance: QualifiedValue = scope->instances[i];
 
                 if instance != except {
-                    this.compiler->CompileDestructor(instance.Type().Pointee(), instance, null);
+                    compiler->CompileDestructor(instance.Type().Pointee(), instance, null);
                 } i += 1u64;
             } scope = scope->parent;
         }
@@ -908,7 +909,7 @@ class ScopeManager {
 
             while i < scope->instances.Size() {
                 let instance: QualifiedValue = scope->instances[i];
-                this.compiler->CompileDestructor(instance.Type().Pointee(), instance, null);
+                compiler->CompileDestructor(instance.Type().Pointee(), instance, null);
                 i += 1u64;
             } scope = scope->parent;
         }
@@ -1034,7 +1035,7 @@ class ScopeManager {
                 let mut i: u64 = 0u64;
 
                 while i < primitive_type->types.Size() {
-                    types.PushBack(this.compiler->CompileType(primitive_type->types[i]));
+                    types.PushBack(compiler->CompileType(primitive_type->types[i]));
                     i += 1u64;
                 }
 
@@ -1251,8 +1252,7 @@ class ScopeManager {
 }
 
 class Mangler {
-    pub prefix: *const i8 = "$d",
-    pub scope_manager: *const ScopeManager = null;
+    pub prefix: *const i8 = "$d";
 
     Mangler(&mut this) {}
     ~Mangler(&mut this) {}
@@ -1296,13 +1296,8 @@ class Mangler {
     }
 
     priv MangleName(&this, name: String) -> String {
-        if this.scope_manager == null {
-            Logger::Log("Mangler", "Scope manager not set!", LogSeverity::Error);
-            ret String("");
-        }
-
         let mut result: String = this.prefix;
-        let mut names: Vector<String> = this.scope_manager->Namespaces();
+        let mut names: Vector<String> = compiler->scope_manager.Namespaces();
         names.PushBack(name);
 
         if names.Size() > 1u64 {
@@ -1357,18 +1352,16 @@ class Mangler {
 }
 
 class Generic {
-    priv compiler: *mut Compiler, priv mangler: *const Mangler, priv scope_manager: *mut ScopeManager,
-    priv current_generic: *mut *const Generic, pub ast: *const ASTNode, pub scope: *mut Scope,
     priv cache: Map<String, Pair<*const QualifiedType, *mut Scope>>,
+    pub ast: *const ASTNode, pub scope: *mut Scope,
 
     pub name: String, pub type_names: Vector<String>,
     pub symbols: Vector<*const Symbol>, pub last_scope: *mut Scope = null,
     pub current: String, pub types: Vector<*const QualifiedType>;
 
-    Generic(&mut this, compiler: *mut Compiler, ast: *mut ASTNode, mangler: *const Mangler, scope_manager: *const ScopeManager, current_generic: *mut *const Generic) {
-        (this.compiler, this.mangler, this.scope_manager) = (compiler, mangler, scope_manager);
-        (this.current_generic, this.ast, this.scope) = (current_generic, ast, this.scope_manager->current);
-        this.compiler->generics.PushBack(this);
+    Generic(&mut this, ast: *mut ASTNode) {
+        (this.ast, this.scope) = (ast, compiler->scope_manager.current);
+        compiler->generics.PushBack(this);
 
         if ast->node_type != ASTNodeType::CLASS_DECL {
             let enum_decl: *const EnumDeclNode = ast as *const EnumDeclNode;
@@ -1386,11 +1379,11 @@ class Generic {
             let mut i: u64 = 0u64;
 
             while i < this.type_names.Size() {
-                this.symbols.PushBack(this.scope_manager->Set(this.type_names[i], SymbolKind::Type, QualifiedValue(null, this.types[i]), false, this.ast));
+                this.symbols.PushBack(compiler->scope_manager.Set(this.type_names[i], SymbolKind::Type, QualifiedValue(null, this.types[i]), false, this.ast));
                 i += 1u64;
             }
 
-            this.last_scope = this.scope_manager->current;
+            this.last_scope = compiler->scope_manager.current;
             this.cache[this.current] = Pair<*const QualifiedType, *mut Scope>(_class, this.last_scope);
             this.current = "";
         } else {
@@ -1400,14 +1393,14 @@ class Generic {
     }
 
     pub Get(&mut this, types: Vector<*const QualifiedType>) -> Pair<*const QualifiedType, *mut Scope> {
-        let (prev_mangling: bool, prev_unsafe: bool) = (this.compiler->mangling, this.compiler->_unsafe);
-        let (prev_scope: *const Scope, prev_generic: *const Generic) = (this.scope_manager->current, *this.current_generic);
-        let (prev_class: *const QualifiedType, prev_function: *const QualifiedType) = (this.compiler->_class, this.compiler->function);
-        let prev_function_ref: LLVMValueRef = this.compiler->function_ref;
+        let (prev_mangling: bool, prev_unsafe: bool) = (compiler->mangling, compiler->_unsafe);
+        let (prev_scope: *const Scope, prev_generic: *const Generic) = (compiler->scope_manager.current, compiler->generic);
+        let (prev_class: *const QualifiedType, prev_function: *const QualifiedType) = (compiler->_class, compiler->function);
+        let prev_function_ref: LLVMValueRef = compiler->function_ref;
 
-        (this.scope_manager->current, *this.current_generic) = (this.scope, this);
-        (this.compiler->_class, this.compiler->function, this.compiler->function_ref) = (null, null, null);
-        (this.compiler->mangling, this.compiler->_unsafe) = (true, false);
+        (compiler->scope_manager.current, compiler->generic) = (this.scope, this);
+        (compiler->_class, compiler->function, compiler->function_ref) = (null, null, null);
+        (compiler->mangling, compiler->_unsafe) = (true, false);
 
         if this.current != "" {
             Logger::Log("Generic", "Nested generics are not supported.", LogSeverity::Error);
@@ -1417,13 +1410,13 @@ class Generic {
             Logger::Log("Generic", "Generic type parameter count mismatch.", LogSeverity::Error);
         }
 
-        let name: String = this.mangler->MangleClass(this.name, types);
+        let name: String = compiler->mangler.MangleClass(this.name, types);
 
         if this.cache.Has(name) {
-            this.compiler->function_ref = prev_function_ref;
-            (this.compiler->_class, this.compiler->function) = (prev_class, prev_function);
-            (this.scope_manager->current, *this.current_generic) = (prev_scope, prev_generic);
-            (this.compiler->mangling, this.compiler->_unsafe) = (prev_mangling, prev_unsafe);
+            compiler->function_ref = prev_function_ref;
+            (compiler->_class, compiler->function) = (prev_class, prev_function);
+            (compiler->scope_manager.current, compiler->generic) = (prev_scope, prev_generic);
+            (compiler->mangling, compiler->_unsafe) = (prev_mangling, prev_unsafe);
             ret this.cache[name];
         } else {
             this.current = name;
@@ -1433,9 +1426,9 @@ class Generic {
         let mut _class: *const QualifiedType = null;
 
         if this.ast->node_type != ASTNodeType::CLASS_DECL {
-            _class = this.compiler->CompileVariant(this.ast as *const EnumDeclNode, this);
+            _class = compiler->CompileVariant(this.ast as *const EnumDeclNode, this);
         } else {
-            _class = this.compiler->CompileClass(this.ast as *const ClassDeclNode, this);
+            _class = compiler->CompileClass(this.ast as *const ClassDeclNode, this);
         }
 
         let mut i: u64 = 0u64;
@@ -1452,10 +1445,10 @@ class Generic {
 
         this.types.Clear();
         this.symbols.Clear();
-        this.compiler->function_ref = prev_function_ref;
-        (this.compiler->_class, this.compiler->function) = (prev_class, prev_function);
-        (this.scope_manager->current, *this.current_generic) = (prev_scope, prev_generic);
-        (this.compiler->mangling, this.compiler->_unsafe) = (prev_mangling, prev_unsafe);
+        compiler->function_ref = prev_function_ref;
+        (compiler->_class, compiler->function) = (prev_class, prev_function);
+        (compiler->scope_manager.current, compiler->generic) = (prev_scope, prev_generic);
+        (compiler->mangling, compiler->_unsafe) = (prev_mangling, prev_unsafe);
         ret Pair<*const QualifiedType, *mut Scope>(_class, this.last_scope);
     }
 }
@@ -1480,15 +1473,15 @@ class Forward {
 }
 
 class Compiler {
-    priv mangler: Mangler,
+    pub mangler: Mangler,
     pub mangling: bool = true,
     priv type_manager: TypeManager,
     pub generics: Vector<*const Generic>,
-    priv generic: *const Generic = null,
+    pub generic: *const Generic = null,
     pub _class: *const QualifiedType = null,
     pub function: *const QualifiedType = null,
     pub function_ref: LLVMValueRef = null,
-    priv scope_manager: ScopeManager,
+    pub scope_manager: ScopeManager,
     priv blocks: Vector<Pair<LLVMBasicBlockRef, LLVMBasicBlockRef>>,
     priv pass_cache: Map<*const ASTNode, Pair<*mut QualifiedType, *const Scope>>,
     priv enum_pass_cache: Map<*const ASTNode, *const QualifiedType>,
@@ -1504,6 +1497,12 @@ class Compiler {
     pub _unsafe: bool = false;
 
     Compiler(&mut this, triple: String, march: String, opt_level: LLVMCodeGenOptLevel) {
+        if compiler != null {
+            WriteLine("\x1b[31mDetected an another instance of compiler.\x1b[0m");
+            Exit(1i32);
+        }
+
+        compiler = this;
         LLVMInitializeNativeTarget();
         LLVMInitializeNativeAsmPrinter();
         LLVMInitializeNativeAsmParser();
@@ -1519,22 +1518,16 @@ class Compiler {
         if LLVMGetTargetFromTriple(this.triple.Data(), &this.target, &message) != 0i32 {
             WriteLine("\x1b[31mFailed to get target from triple: " + message.ToString() + ".\x1b[0m");
             LLVMDisposeMessage(message);
-            ret;
+            Exit(1i32);
         }
 
         LLVMDisposeMessage(message);
         this.target_machine = LLVMCreateTargetMachine(this.target, this.triple.Data(), this.march.Data(), "", opt_level, LLVMRelocMode::LLVMRelocDefault, LLVMCodeModel::LLVMCodeModelDefault);
         this.layout = LLVMCreateTargetDataLayout(this.target_machine);
         this.systemv = !this.triple.Contains("windows");
-
-        this.scope_manager.compiler = this;
-        this.mangler.scope_manager = &this.scope_manager;
     }
 
     ~Compiler(&mut this) {
-        this.mangler.scope_manager = null;
-        this.scope_manager.compiler = null;
-
         if this.builder != null {
             LLVMDisposeBuilder(this.builder);
             this.builder = null;
@@ -1547,6 +1540,7 @@ class Compiler {
 
         LLVMDisposeTargetMachine(this.target_machine);
         LLVMContextDispose(this.context);
+        compiler = null;
     }
 
     pub Forget(&mut this) {
@@ -2354,7 +2348,7 @@ class Compiler {
 
     priv CompileClassFirstPass(&mut this, class_decl: *const ClassDeclNode, generic: *mut Generic) -> Pair<*mut QualifiedType, *const Scope> {
         if class_decl->generic && generic == null {
-            let _generic: *mut Generic = new Generic(this, class_decl as *const ASTNode, &this.mangler, &this.scope_manager, &this.generic);
+            let _generic: *mut Generic = new Generic(class_decl as *const ASTNode);
             this.scope_manager.Set(class_decl->name, SymbolKind::Generic, _generic as *const void, false, class_decl as *const ASTNode);
             ret Pair<*mut QualifiedType, *const Scope>(null, null);
         }
@@ -2489,7 +2483,7 @@ class Compiler {
 
     priv CompileVariantFirstPass(&mut this, enum_decl: *mut EnumDeclNode, generic: *mut Generic) -> Pair<*mut QualifiedType, *const Scope> {
         if enum_decl->generic && generic == null {
-            let _generic: *mut Generic = new Generic(this, enum_decl as *const ASTNode, &this.mangler, &this.scope_manager, &this.generic);
+            let _generic: *mut Generic = new Generic(enum_decl as *const ASTNode);
             this.scope_manager.Set(enum_decl->name, SymbolKind::Generic, _generic as *const void, false, enum_decl as *const ASTNode);
             ret Pair<*mut QualifiedType, *const Scope>(null, null);
         }
@@ -5455,3 +5449,5 @@ class Compiler {
         }
     }
 }
+
+static mut compiler: *mut Compiler = null;

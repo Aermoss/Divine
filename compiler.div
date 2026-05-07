@@ -1401,9 +1401,11 @@ class Generic {
 
     pub Get(&mut this, types: Vector<*const QualifiedType>) -> Pair<*const QualifiedType, *mut Scope> {
         let prev_generic: *const Generic = *this.current_generic;
-        *this.current_generic = this;
-        let scope: *const Scope = this.scope_manager->current;
         this.scope_manager->current = this.scope;
+        let prev_scope: *const Scope = this.scope_manager->current;
+        (this.scope_manager->current, *this.current_generic) = (this.scope, this);
+        let prev_unsafe: bool = this.compiler->_unsafe;
+        this.compiler->_unsafe = false;
 
         if this.current != "" {
             Logger::Log("Generic", "Nested generics are not supported.", LogSeverity::Error);
@@ -1416,7 +1418,7 @@ class Generic {
         let name: String = this.mangler->MangleClass(this.name, types);
 
         if this.cache.Has(name) {
-            this.scope_manager->current = scope;
+            this.compiler->_unsafe = prev_unsafe;
             *this.current_generic = prev_generic;
             ret this.cache[name];
         } else {
@@ -1447,6 +1449,7 @@ class Generic {
         this.types.Clear();
         this.symbols.Clear();
         (this.scope_manager->current, *this.current_generic) = (scope, prev_generic);
+        (this.scope_manager->current, *this.current_generic, this.compiler->_unsafe) = (prev_scope, prev_generic, prev_unsafe);
         ret Pair<*const QualifiedType, *mut Scope>(_class, this.last_scope);
     }
 }
@@ -1492,6 +1495,7 @@ class Compiler {
     priv triple: String, priv march: String,
     priv target: LLVMTargetRef = null,
     priv systemv: bool = false;
+    priv systemv: bool = false,
 
     Compiler(&mut this, triple: String, march: String, opt_level: LLVMCodeGenOptLevel) {
         LLVMInitializeNativeTarget();
@@ -3055,6 +3059,7 @@ class Compiler {
             this.CompileLoop(stmt as *const LoopStmtNode);
         } else if stmt->node_type == ASTNodeType::MATCH_STMT {
             this.CompileMatch(stmt as *const MatchStmtNode);
+            this.CompileUnsafeStatement(stmt as *const UnsafeStmtNode);
         } else if stmt->node_type == ASTNodeType::BLOCK_STMT {
             this.CompileBlock(stmt as *const BlockStmtNode);
         } else if stmt->node_type == ASTNodeType::CONTINUE_STMT {
@@ -3070,6 +3075,16 @@ class Compiler {
         } else {
             Logger::Log("Unknown statement '" + stmt->node_type.ToString() + "'.", stmt, LogSeverity::Error);
         }
+    }
+
+        if this._unsafe {
+            Logger::Log("Already in an unsafe statement.", unsafe_stmt as *const ASTNode, LogSeverity::Error);
+            ret;
+        }
+
+        this._unsafe = true;
+        this.CompileBlock(unsafe_stmt->body);
+        this._unsafe = false;
     }
 
     priv CompileReturn(&mut this, ret_stmt: *const ReturnStmtNode) {

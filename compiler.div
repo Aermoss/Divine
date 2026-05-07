@@ -1252,35 +1252,30 @@ class ScopeManager {
 }
 
 class Mangler {
-    pub prefix: *const i8 = "$d";
-
-    Mangler(&mut this) {}
-    ~Mangler(&mut this) {}
-
-    priv MangleType(&this, _type: *const QualifiedType) -> String {
-        if _type->byval != null { ret this.MangleType(_type->byval); }
-        if _type->sret != null { ret this.MangleType(_type->sret); }
+    priv MangleType(_type: *const QualifiedType) -> String {
+        if _type->byval != null { ret Mangler::MangleType(_type->byval); }
+        if _type->sret != null { ret Mangler::MangleType(_type->sret); }
         let kind: LLVMTypeKind = LLVMGetTypeKind(_type->Value());
 
         if kind == LLVMTypeKind::LLVMVoidTypeKind {
             ret String("v");
         } else if kind == LLVMTypeKind::LLVMPointerTypeKind {
-            ret "P" + this.MangleType(_type->Pointee());
+            ret "P" + Mangler::MangleType(_type->Pointee());
         } else if kind == LLVMTypeKind::LLVMFunctionTypeKind {
             let mut result: String = "F";
-            result += this.MangleType(_type->Return());
+            result += Mangler::MangleType(_type->Return());
             let params: Vector<*const QualifiedType> = _type->Parameters();
             let mut i: u64 = 0u64;
 
             while i < params.Size() {
-                result += this.MangleType(params[i]);
+                result += Mangler::MangleType(params[i]);
                 i += 1u64;
             } ret result;
         } else if kind == LLVMTypeKind::LLVMStructTypeKind {
             let mut name: String = LLVMGetStructName(_type->Value());
 
             if name[0u64] != '$' || name[1u64] != 'd' {
-                name = this.MangleClass(name);
+                name = Mangler::MangleClass(name);
             } ret String(name.Data() + 2u64);
         } else if kind == LLVMTypeKind::LLVMIntegerTypeKind {
             let width: u32 = LLVMGetIntTypeWidth(_type->Value());
@@ -1295,8 +1290,8 @@ class Mangler {
         }
     }
 
-    priv MangleName(&this, name: String) -> String {
-        let mut result: String = this.prefix;
+    priv MangleName(name: String) -> String {
+        let mut result: String = "$d";
         let mut names: Vector<String> = compiler->scope_manager.Namespaces();
         names.PushBack(name);
 
@@ -1316,23 +1311,23 @@ class Mangler {
         } ret result;
     }
 
-    pub MangleFunction(&this, name: String, _type: *const QualifiedType) -> String {
-        let mut result: String = this.MangleName(name);
+    pub MangleFunction(name: String, _type: *const QualifiedType) -> String {
+        let mut result: String = Mangler::MangleName(name);
         let params: Vector<*const QualifiedType> = _type->Parameters();
         let mut i: u64 = 0u64;
 
         while i < params.Size() {
-            result += this.MangleType(params[i]);
+            result += Mangler::MangleType(params[i]);
             i += 1u64;
         } ret result;
     }
 
-    pub MangleClass(&this, name: String) -> String {
-        ret this.MangleName(name);
+    pub MangleClass(name: String) -> String {
+        ret Mangler::MangleName(name);
     }
 
-    pub MangleClass(&this, name: String, types: Vector<*const QualifiedType>) -> String {
-        let mut result: String = this.MangleName(name);
+    pub MangleClass(name: String, types: Vector<*const QualifiedType>) -> String {
+        let mut result: String = Mangler::MangleName(name);
 
         if !types.Empty() {
             result += "I";
@@ -1341,7 +1336,7 @@ class Mangler {
         let mut i: u64 = 0u64;
 
         while i < types.Size() {
-            result += this.MangleType(types[i]);
+            result += Mangler::MangleType(types[i]);
             i += 1u64;
         }
 
@@ -1410,7 +1405,7 @@ class Generic {
             Logger::Log("Generic", "Generic type parameter count mismatch.", LogSeverity::Error);
         }
 
-        let name: String = compiler->mangler.MangleClass(this.name, types);
+        let name: String = Mangler::MangleClass(this.name, types);
 
         if this.cache.Has(name) {
             compiler->function_ref = prev_function_ref;
@@ -1473,15 +1468,15 @@ class Forward {
 }
 
 class Compiler {
-    pub mangler: Mangler,
     pub mangling: bool = true,
-    priv type_manager: TypeManager,
+    pub _unsafe: bool = false,
     pub generics: Vector<*const Generic>,
     pub generic: *const Generic = null,
     pub _class: *const QualifiedType = null,
     pub function: *const QualifiedType = null,
     pub function_ref: LLVMValueRef = null,
     pub scope_manager: ScopeManager,
+    priv type_manager: TypeManager,
     priv blocks: Vector<Pair<LLVMBasicBlockRef, LLVMBasicBlockRef>>,
     priv pass_cache: Map<*const ASTNode, Pair<*mut QualifiedType, *const Scope>>,
     priv enum_pass_cache: Map<*const ASTNode, *const QualifiedType>,
@@ -1493,8 +1488,7 @@ class Compiler {
     priv builder: LLVMBuilderRef = null,
     priv triple: String, priv march: String,
     priv target: LLVMTargetRef = null,
-    priv systemv: bool = false,
-    pub _unsafe: bool = false;
+    priv systemv: bool = false;
 
     Compiler(&mut this, triple: String, march: String, opt_level: LLVMCodeGenOptLevel) {
         if compiler != null {
@@ -2170,7 +2164,7 @@ class Compiler {
         _type.name = name;
 
         if this.mangling {
-            name = this.mangler.MangleFunction(func_decl->name, _type);
+            name = Mangler::MangleFunction(func_decl->name, _type);
         }
 
         let function: LLVMValueRef = LLVMAddFunction(this.module, name.Data(), _type.Value());
@@ -2576,7 +2570,7 @@ class Compiler {
                 }
 
                 let func_type: LLVMTypeRef = LLVMFunctionType(struct_type, param_types.Data(), param_types.Size() as u32, 0i32);
-                let func_name: String = this.mangler.MangleFunction(variant->name, this.type_manager.Function(func_type, current_variant_types, _enum));
+                let func_name: String = Mangler::MangleFunction(variant->name, this.type_manager.Function(func_type, current_variant_types, _enum));
                 let function: LLVMValueRef = LLVMAddFunction(this.module, func_name.Data(), func_type);
 
                 let entry: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "entry");

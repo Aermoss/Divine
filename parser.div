@@ -17,7 +17,7 @@
 include "std/io", "std/str", "std/file", "std/vec", "std/map", "lexer.div", "preprocessor.div" : *;
 
 enum ASTNodeType: i32 {
-    ROOT, INLINE_ASM,
+    ROOT, INLINE_ASM, UNSAFE_STMT,
 
     VARIABLE_DECL, CONSTANT_DECL, STATIC_DECL,
     FUNCTION_DECL, CLASS_DECL, ENUM_DECL, TYPE_DECL,
@@ -36,6 +36,8 @@ enum ASTNodeType: i32 {
 
 func ToString(_type: ASTNodeType) -> String {
     if _type == ASTNodeType::ROOT { ret "ROOT".ToString(); }
+    else if _type == ASTNodeType::INLINE_ASM { ret "INLINE_ASM".ToString(); }
+    else if _type == ASTNodeType::UNSAFE_STMT { ret "UNSAFE_STMT".ToString(); }
     else if _type == ASTNodeType::VARIABLE_DECL { ret "VARIABLE_DECL".ToString(); }
     else if _type == ASTNodeType::CONSTANT_DECL { ret "CONSTANT_DECL".ToString(); }
     else if _type == ASTNodeType::STATIC_DECL { ret "STATIC_DECL".ToString(); }
@@ -537,6 +539,14 @@ class ExternBlockNode : ASTNode {
 
     ExternBlockNode(&mut this, linkage: String, row: u64, column: u64, file: String) : ASTNode(ASTNodeType::EXTERN_BLOCK, row, column, file) {
         this.linkage = linkage;
+    }
+}
+
+class UnsafeStmtNode : ASTNode {
+    pub body: *const BlockStmtNode;
+
+    UnsafeStmtNode(&mut this, body: *const BlockStmtNode, row: u64, column: u64, file: String) : ASTNode(ASTNodeType::UNSAFE_STMT, row, column, file) {
+        this.body = body;
     }
 }
 
@@ -1052,14 +1062,16 @@ class Parser {
             ret this.ParseLoopStatement();
         } else if token._type == TokenType::MATCH && !expression {
             ret this.ParseMatchStatement();
+        } else if token._type == TokenType::UNSAFE && !expression {
+            ret this.ParseUnsafeStatement();
+        } else if (token._type == TokenType::ASSEMBLY || token._type == TokenType::VOLATILE) && !expression {
+            ret this.ParseInlineAsm();
         } else if token._type == TokenType::RETURN {
             ret this.ParseReturnStatement(expression);
         } else if token._type == TokenType::BREAK {
             ret this.ParseBreakStatement(expression);
         } else if token._type == TokenType::CONTINUE {
             ret this.ParseContinueStatement(expression);
-        } else if token._type == TokenType::ASSEMBLY || token._type == TokenType::VOLATILE {
-            ret this.ParseInlineAsm();
         } else {
             let index: u64 = this.index;
 
@@ -1488,6 +1500,14 @@ class Parser {
         ret match_node as *const ASTNode;
     }
 
+    priv ParseUnsafeStatement(&mut this) -> *const ASTNode {
+        let token: Token = this.Expect(TokenType::UNSAFE);
+        if token._type == TokenType::UNKNOWN { ret null; }
+        let body: *const ASTNode = this.ParseBlockStatement();
+        if body == null { ret null; }
+        ret new UnsafeStmtNode(body as *const BlockStmtNode, token.row, token.column, this.file) as *const ASTNode;
+    }
+
     priv ParseReturnStatement(&mut this, expression: bool) -> *const ASTNode {
         let token: Token = this.Expect(TokenType::RETURN);
         if token._type == TokenType::UNKNOWN { ret null; }
@@ -1578,7 +1598,7 @@ class Parser {
             if !this.Expect2(TokenType::ARROW) { ret null; }
         }
 
-        let code: Token = this.Expect(TokenType::ASSEMBLY_CODE);
+        let code: Token = this.Expect(TokenType::ASM_CODE);
         if code._type == TokenType::UNKNOWN { ret null; }
         node->code = code.value;
 

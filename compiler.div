@@ -1401,7 +1401,6 @@ class Generic {
 
     pub Get(&mut this, types: Vector<*const QualifiedType>) -> Pair<*const QualifiedType, *mut Scope> {
         let prev_generic: *const Generic = *this.current_generic;
-        this.scope_manager->current = this.scope;
         let prev_scope: *const Scope = this.scope_manager->current;
         (this.scope_manager->current, *this.current_generic) = (this.scope, this);
         let prev_unsafe: bool = this.compiler->_unsafe;
@@ -1419,6 +1418,7 @@ class Generic {
 
         if this.cache.Has(name) {
             this.compiler->_unsafe = prev_unsafe;
+            this.scope_manager->current = prev_scope;
             *this.current_generic = prev_generic;
             ret this.cache[name];
         } else {
@@ -1448,7 +1448,6 @@ class Generic {
 
         this.types.Clear();
         this.symbols.Clear();
-        (this.scope_manager->current, *this.current_generic) = (scope, prev_generic);
         (this.scope_manager->current, *this.current_generic, this.compiler->_unsafe) = (prev_scope, prev_generic, prev_unsafe);
         ret Pair<*const QualifiedType, *mut Scope>(_class, this.last_scope);
     }
@@ -1494,8 +1493,8 @@ class Compiler {
     priv builder: LLVMBuilderRef = null,
     priv triple: String, priv march: String,
     priv target: LLVMTargetRef = null,
-    priv systemv: bool = false;
     priv systemv: bool = false,
+    pub _unsafe: bool = false;
 
     Compiler(&mut this, triple: String, march: String, opt_level: LLVMCodeGenOptLevel) {
         LLVMInitializeNativeTarget();
@@ -3059,6 +3058,7 @@ class Compiler {
             this.CompileLoop(stmt as *const LoopStmtNode);
         } else if stmt->node_type == ASTNodeType::MATCH_STMT {
             this.CompileMatch(stmt as *const MatchStmtNode);
+        } else if stmt->node_type == ASTNodeType::UNSAFE_STMT {
             this.CompileUnsafeStatement(stmt as *const UnsafeStmtNode);
         } else if stmt->node_type == ASTNodeType::BLOCK_STMT {
             this.CompileBlock(stmt as *const BlockStmtNode);
@@ -3077,6 +3077,7 @@ class Compiler {
         }
     }
 
+    priv CompileUnsafeStatement(&mut this, unsafe_stmt: *const UnsafeStmtNode) {
         if this._unsafe {
             Logger::Log("Already in an unsafe statement.", unsafe_stmt as *const ASTNode, LogSeverity::Error);
             ret;

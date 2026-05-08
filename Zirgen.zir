@@ -1,0 +1,705 @@
+/*
+ * Copyright 2025-2026 Yusuf Rençber
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+include "std/file", "std/io", "std/str", "std/map", "std/vec", "vendor/clang-c/Index.zir", "src/Lexer.zir", "src/Logger.zir" : *;
+
+enum TranspileState: i32 {
+    None, Declared, Defined
+}
+
+class FileState {
+    pub path: String,
+    pub name: String,
+    pub declarations: String,
+    pub extern_functions: String,
+    pub includes: Map<String, String>,
+    pub count: u64 = 0u64
+}
+
+class GlobalState {
+    pub files: Map<String, *mut FileState>,
+    pub transpile_states: Map<String, TranspileState>,
+    pub translation_unit: CXTranslationUnit = null,
+    pub output_directory: String,
+    pub last_anonymous_enum: CXCursor
+}
+
+func EnsureBlankLine(file_state: *mut FileState) {
+    let length: u64 = file_state->declarations.Length();
+
+    if length >= 2u64 && file_state->declarations[length - 1u64] == '\n' && file_state->declarations[length - 2u64] != '\n' {
+        file_state->declarations += "\n";
+    }
+}
+
+func GetFileState(state: *mut GlobalState, cursor: CXCursor) -> *mut FileState {
+    let location: CXSourceLocation = clang_getCursorLocation(cursor);
+    if clang_Location_isInSystemHeader(location) != 0i32 { ret null; }
+
+    let mut file: CXFile = null;
+    clang_getFileLocation(location, &mut file, null, null, null);
+    if file == null { ret null; }
+
+    let spelling: CXString = clang_getFileName(file);
+    let path: String = String(clang_getCString(spelling));
+    clang_disposeString(spelling);
+
+    if state->files.Has(path) { ret state->files[path]; }
+    let mut file_state: *mut FileState = new FileState();
+    file_state->name = SplitExtension(SplitPath(path).right).left;
+    (file_state->path, state->files[path]) = (path, file_state);
+    ret file_state;
+}
+
+func FuncTypeToString(_type: CXType) -> String {
+    let mut result: String = "func(";
+    let num_args: i32 = clang_getNumArgTypes(_type);
+    let mut i: i32 = 0i32;
+
+    while i < num_args {
+        result += TypeToString(clang_getArgType(_type, i as u32));
+
+        if i < num_args - 1i32 {
+            result += ", ";
+        } i += 1i32;
+    }
+
+    if clang_isFunctionTypeVariadic(_type) != 0u32 {
+        if num_args > 0i32 {
+            result += ", ";
+        } result += "...";
+    }
+
+    result += ")";
+    let ret_type: CXType = clang_getResultType(_type);
+
+    if ret_type.kind != CXTypeKind::CXType_Void {
+        result += " -> " + TypeToString(ret_type);
+    } ret result;
+}
+
+func TypeToString(_type: CXType) -> String {
+    if _type.kind == CXTypeKind::CXType_Void { ret String("void"); }
+    else if _type.kind == CXTypeKind::CXType_Bool { ret String("bool"); }
+    else if _type.kind == CXTypeKind::CXType_Char_U || _type.kind == CXTypeKind::CXType_UChar  { ret String("u8"); }
+    else if _type.kind == CXTypeKind::CXType_Char_S || _type.kind == CXTypeKind::CXType_SChar  { ret String("i8"); }
+    else if _type.kind == CXTypeKind::CXType_UShort { ret String("u16"); }
+    else if _type.kind == CXTypeKind::CXType_Short { ret String("i16"); }
+    else if _type.kind == CXTypeKind::CXType_UInt { ret String("u32"); }
+    else if _type.kind == CXTypeKind::CXType_Int { ret String("i32"); }
+    else if _type.kind == CXTypeKind::CXType_ULong || _type.kind == CXTypeKind::CXType_ULongLong { ret String("u64"); }
+    else if _type.kind == CXTypeKind::CXType_Long || _type.kind == CXTypeKind::CXType_LongLong  { ret String("i64"); }
+    else if _type.kind == CXTypeKind::CXType_Float { ret String("f32"); }
+    else if _type.kind == CXTypeKind::CXType_Double { ret String("f64"); }
+    else if _type.kind == CXTypeKind::CXType_WChar { ret String("u16"); }
+    else if _type.kind == CXTypeKind::CXType_Pointer {
+        let pointee: CXType = clang_getPointeeType(_type);
+
+        if pointee.kind == CXTypeKind::CXType_FunctionProto || pointee.kind == CXTypeKind::CXType_FunctionNoProto {
+            ret FuncTypeToString(pointee);
+        }
+
+        ret String(clang_isConstQualifiedType(pointee) != 0u32 ? "*const " : "*mut ") + TypeToString(pointee);
+    } else if _type.kind == CXTypeKind::CXType_Record || _type.kind == CXTypeKind::CXType_Enum || _type.kind == CXTypeKind::CXType_Typedef {
+        let spelling: CXString = clang_getTypeSpelling(_type);
+        let mut string: String = String(clang_getCString(spelling));
+        clang_disposeString(spelling);
+
+        if string.StartsWith("struct ") {
+            string = string.SubString(7u64);
+        } else if string.StartsWith("enum ") {
+            string = string.SubString(5u64);
+        } else if string.StartsWith("const ") {
+            string = string.SubString(6u64);
+        }
+
+        if string == "size_t" || string == "uintptr_t" || string == "uint64_t" { ret String("u64"); }
+        if string == "ssize_t" || string == "intptr_t" || string == "ptrdiff_t" || string == "int64_t" || string == "time_t" || string == "off_t" { ret String("i64"); }
+        if string == "uint32_t" { ret String("u32"); }
+        if string == "int32_t" { ret String("i32"); }
+        if string == "uint16_t" { ret String("u16"); }
+        if string == "int16_t" { ret String("i16"); }
+        if string == "uint8_t" { ret String("u8"); }
+        if string == "int8_t" { ret String("i8"); }
+        ret string;
+    } else if _type.kind == CXTypeKind::CXType_IncompleteArray {
+        ret "*mut " + TypeToString(clang_getArrayElementType(_type));
+    } else {
+        let spelling: CXString = clang_getTypeSpelling(_type);
+        let string: String = String(clang_getCString(spelling));
+        clang_disposeString(spelling);
+        ret "/* " + string + " */";
+    }
+}
+
+class EnumVisitorData {
+    pub file_state: *mut FileState,
+    pub type_name: String
+}
+
+func VisitEnumChild(cursor: CXCursor, parent: CXCursor, client_data: CXClientData) -> i32 {
+    if cursor.kind != CXCursorKind::CXCursor_EnumConstantDecl {
+        ret CXChildVisitResult::CXChildVisit_Continue;
+    }
+
+    let visitor_data: *mut EnumVisitorData = client_data as *mut EnumVisitorData;
+    let file_state: *mut FileState = visitor_data->file_state;
+    let type_name: String = visitor_data->type_name;
+
+    let spelling: CXString = clang_getCursorSpelling(cursor);
+    let name: String = String(clang_getCString(spelling));
+    clang_disposeString(spelling);
+
+    let value: i64 = clang_getEnumConstantDeclValue(cursor);
+
+    if type_name.Contains('u') && value < 0i64 {
+        file_state->declarations += "    " + name + " = " + String(value) + "i" + type_name.SubString(1u64) + " as " + type_name + ",\n";
+    } else {
+        file_state->declarations += "    " + name + " = " + String(value) + type_name + ",\n";
+    }
+
+    ret CXChildVisitResult::CXChildVisit_Continue;
+}
+
+func VisitStructChild(cursor: CXCursor, parent: CXCursor, client_data: CXClientData) -> i32 {
+    if cursor.kind != CXCursorKind::CXCursor_FieldDecl {
+        ret CXChildVisitResult::CXChildVisit_Continue;
+    }
+
+    let file_state: *mut FileState = client_data as *mut FileState;
+    let spelling: CXString = clang_getCursorSpelling(cursor);
+    let mut name: String = String(clang_getCString(spelling));
+    clang_disposeString(spelling);
+
+    if name.Empty() {
+        name = "_" + String(file_state->count as i64);
+        file_state->count += 1u64;
+    } else if StringToKeyword(name) != TokenType::UNKNOWN {
+        name = "_" + name;
+    }
+
+    let _type: CXType = clang_getCursorType(cursor);
+
+    if _type.kind == CXTypeKind::CXType_ConstantArray {
+        file_state->declarations += "    pub " + name + "[" + String(clang_getArraySize(_type)) + "u64]: " + TypeToString(clang_getArrayElementType(_type)) + ",\n";
+    } else {
+        file_state->declarations += "    pub " + name + ": " + TypeToString(_type) + ",\n";
+    }
+
+    ret CXChildVisitResult::CXChildVisit_Continue;
+}
+
+func EmitEnum(state: *mut GlobalState, file_state: *mut FileState, cursor: CXCursor, name: String, type_override: String) {
+    EnsureBlankLine(file_state);
+
+    let is_definition: bool = clang_isCursorDefinition(cursor) != 0u32;
+    let transpile_state: TranspileState = state->transpile_states.Get(name, TranspileState::None);
+    if transpile_state == TranspileState::Defined || (transpile_state == TranspileState::Declared && !is_definition) { ret; }
+    state->transpile_states[name] = is_definition ? TranspileState::Defined : TranspileState::Declared;
+
+    let mut type_name: String;
+
+    if !type_override.Empty() {
+        type_name = type_override;
+    } else {
+        type_name = TypeToString(clang_getEnumDeclIntegerType(cursor));
+    }
+
+    let length_before: u64 = file_state->declarations.Length();
+    file_state->declarations += "enum " + name + ": " + type_name + " {\n";
+    let length_header: u64 = file_state->declarations.Length();
+
+    let mut visitor_data: EnumVisitorData;
+    (visitor_data.file_state, visitor_data.type_name) = (file_state, type_name);
+    clang_visitChildren(cursor, VisitEnumChild, &mut visitor_data as CXClientData);
+
+    if file_state->declarations.Length() == length_header {
+        file_state->declarations = String(file_state->declarations, 0u64, length_before) + "enum " + name + ": " + type_name + " {}\n\n";
+    } else {
+        file_state->declarations += "}\n\n";
+    }
+}
+
+func EmitStruct(state: *mut GlobalState, file_state: *mut FileState, cursor: CXCursor, name: String) {
+    EnsureBlankLine(file_state);
+
+    let is_definition: bool = clang_isCursorDefinition(cursor) != 0u32;
+    let transpile_state: TranspileState = state->transpile_states.Get(name, TranspileState::None);
+    if transpile_state == TranspileState::Defined || (transpile_state == TranspileState::Declared && !is_definition) { ret; }
+    state->transpile_states[name] = is_definition ? TranspileState::Defined : TranspileState::Declared;
+
+    file_state->count = 0u64;
+    let length_before: u64 = file_state->declarations.Length();
+    file_state->declarations += "class " + name + " {\n";
+    let length_header: u64 = file_state->declarations.Length();
+    clang_visitChildren(cursor, VisitStructChild, file_state as CXClientData);
+
+    if file_state->declarations.Length() == length_header {
+        file_state->declarations = String(file_state->declarations, 0u64, length_before) + "class " + name + " {}\n\n";
+    } else {
+        file_state->declarations += "}\n\n";
+    }
+}
+
+func InferMacroType(value: &String) -> String {
+    if value.Empty() { ret String(); }
+    if value[0u64] == '"' { ret String("*const i8"); }
+    if value[0u64] == '\'' { ret String("i8"); }
+    let length: u64 = value.Length();
+
+    if !(length >= 2u64 && value[0u64] == '0' && (value[1u64] == 'x' || value[1u64] == 'X')) {
+        let mut i: u64 = 0u64;
+
+        while i < length {
+            if value[i] == '.' || value[i] == 'e' || value[i] == 'E' {
+                if value[length - 1u64] == 'f' || value[length - 1u64] == 'F' {
+                    ret String("f32");
+                } ret String("f64");
+            } i += 1u64;
+        }
+    }
+
+    if value[length - 1u64] == 'u' || value[length - 1u64] == 'U' {
+        ret String("u64");
+    } else if value[length - 1u64] == 'l' || value[length - 1u64] == 'L' {
+        if length >= 2u64 {
+            if value[length - 2u64] == 'u' || value[length - 2u64] == 'U' {
+                ret String("u64");
+            }
+        } ret String("i64");
+    } ret String("i32");
+}
+
+func StripCSuffix(value: &String, _type: &String) -> String {
+    let length: u64 = value.Length();
+
+    if _type == "f32" {
+        if length > 0u64 {
+            if value[length - 1u64] == 'f' || value[length - 1u64] == 'F' {
+                ret String(value, 0u64, length - 1u64);
+            }
+        } ret value;
+    }
+
+    if _type == "*const i8" || _type == "i8" || _type == "f64" {
+        ret value;
+    }
+
+    let mut end: u64 = length;
+
+    while end > 0u64 {
+        if value[end - 1u64] == 'u' || value[end - 1u64] == 'U' || value[end - 1u64] == 'l' || value[end - 1u64] == 'L' {
+            end -= 1u64;
+        } else {
+            break;
+        }
+    }
+
+    ret String(value, 0u64, end);
+}
+
+func TranslateMacro(state: *mut GlobalState, file_state: *mut FileState, cursor: CXCursor) {
+    if clang_Cursor_isMacroFunctionLike(cursor) != 0u32 { ret; }
+    if clang_Cursor_isMacroBuiltin(cursor) != 0u32 { ret; }
+
+    let name_spelling: CXString = clang_getCursorSpelling(cursor);
+    let name: String = String(clang_getCString(name_spelling));
+    clang_disposeString(name_spelling);
+    if name.Empty() { ret; }
+
+    if state->transpile_states.Has(name) { ret; }
+    state->transpile_states[name] = TranspileState::Defined;
+
+    let extent: CXSourceRange = clang_getCursorExtent(cursor);
+    let (mut tokens: *mut CXToken, mut num_tokens: u32) = (null, 0u32);
+    clang_tokenize(state->translation_unit, extent, &mut tokens, &mut num_tokens);
+
+    if num_tokens != 2u32 || tokens == null {
+        if tokens != null {
+            clang_disposeTokens(state->translation_unit, tokens, num_tokens);
+        } ret;
+    }
+
+    if clang_getTokenKind(tokens[1u64]) != CXTokenKind::CXToken_Literal {
+        clang_disposeTokens(state->translation_unit, tokens, num_tokens);
+        ret;
+    }
+
+    let value_spelling: CXString = clang_getTokenSpelling(state->translation_unit, tokens[1u64]);
+    let value: String = String(clang_getCString(value_spelling));
+    clang_disposeString(value_spelling);
+    clang_disposeTokens(state->translation_unit, tokens, num_tokens);
+
+    let _type: String = InferMacroType(value);
+    if _type.Empty() { ret; }
+
+    let stripped: String = StripCSuffix(value, _type);
+
+    if _type == "*const i8" || _type == "i8" {
+        file_state->declarations += "const " + name + ": " + _type + " = " + stripped + ";\n";
+    } else {
+        file_state->declarations += "const " + name + ": " + _type + " = " + stripped + _type + ";\n";
+    }
+}
+
+extern "C" {
+    func CreateDirectoryA(lpPathName: *const i8, lpSecurityAttributes: *mut void) -> i32;
+}
+
+func EnsureDirectory(path: &String) {
+    if path.Empty() || FolderExists(path) { ret; }
+    let directory: String = SplitPath(path).left;
+    if !directory.Empty() { EnsureDirectory(directory); }
+    CreateDirectoryA(path.Data(), null);
+}
+
+func FlushAnonymousEnum(state: *mut GlobalState, file_state: *mut FileState) {
+    if clang_Cursor_isNull(state->last_anonymous_enum) == 0i32 {
+        let mut target_file_state: *mut FileState = file_state;
+
+        if target_file_state == null {
+            target_file_state = GetFileState(state, state->last_anonymous_enum);
+        }
+
+        if target_file_state != null {
+            let mut name: String;
+
+            if clang_Cursor_isAnonymous(state->last_anonymous_enum) != 0u32 {
+                let _type: CXType = clang_getCursorType(state->last_anonymous_enum);
+                let type_spelling: CXString = clang_getTypeSpelling(_type);
+                name = String(clang_getCString(type_spelling));
+                clang_disposeString(type_spelling);
+            } else {
+                let spelling: CXString = clang_getCursorSpelling(state->last_anonymous_enum);
+                name = String(clang_getCString(spelling));
+                clang_disposeString(spelling);
+            }
+
+            EmitEnum(state, target_file_state, state->last_anonymous_enum, name, String(""));
+        }
+
+        state->last_anonymous_enum = clang_getNullCursor();
+    }
+}
+
+func VisitTopLevel(cursor: CXCursor, parent: CXCursor, client_data: CXClientData) -> i32 {
+    let location: CXSourceLocation = clang_getCursorLocation(cursor);
+
+    if clang_Location_isInSystemHeader(location) != 0i32 {
+        ret CXChildVisitResult::CXChildVisit_Continue;
+    }
+
+    let state: *mut GlobalState = client_data as *mut GlobalState;
+    let file_state: *mut FileState = GetFileState(state, cursor);
+
+    if file_state == null {
+        ret CXChildVisitResult::CXChildVisit_Continue;
+    }
+
+    if cursor.kind == CXCursorKind::CXCursor_InclusionDirective {
+        let file: CXFile = clang_getIncludedFile(cursor);
+
+        if file != null {
+            let spelling: CXString = clang_getFileName(file);
+            let path: String = String(clang_getCString(spelling));
+            clang_disposeString(spelling);
+
+            if !file_state->includes.Has(path) {
+                file_state->includes[path] = SplitPath(SplitPath(path).left).right + "/" + SplitExtension(SplitPath(path).right).left + "";
+            }
+        }
+    } else if cursor.kind == CXCursorKind::CXCursor_EnumDecl {
+        if clang_Cursor_isAnonymous(cursor) != 0u32 {
+            FlushAnonymousEnum(state, file_state);
+            state->last_anonymous_enum = cursor;
+        } else {
+            FlushAnonymousEnum(state, file_state);
+            let spelling: CXString = clang_getCursorSpelling(cursor);
+            let name: String = String(clang_getCString(spelling));
+            clang_disposeString(spelling);
+            EmitEnum(state, file_state, cursor, name, String(""));
+        }
+    } else if cursor.kind == CXCursorKind::CXCursor_StructDecl {
+        FlushAnonymousEnum(state, file_state);
+
+        if clang_Cursor_isAnonymous(cursor) == 0u32 {
+            let spelling: CXString = clang_getCursorSpelling(cursor);
+            let name: String = String(clang_getCString(spelling));
+            clang_disposeString(spelling);
+            EmitStruct(state, file_state, cursor, name);
+        }
+    } else if cursor.kind == CXCursorKind::CXCursor_TypedefDecl {
+        let spelling: CXString = clang_getCursorSpelling(cursor);
+        let name: String = String(clang_getCString(spelling));
+        clang_disposeString(spelling);
+
+        let transpile_state: TranspileState = state->transpile_states.Get(name, TranspileState::None);
+
+        if transpile_state == TranspileState::Defined {
+            FlushAnonymousEnum(state, file_state);
+            ret CXChildVisitResult::CXChildVisit_Continue;
+        }
+
+        let underlying: CXType = clang_getTypedefDeclUnderlyingType(cursor);
+
+        if underlying.kind == CXTypeKind::CXType_Record {
+            FlushAnonymousEnum(state, file_state);
+            let declaration: CXCursor = clang_getTypeDeclaration(underlying);
+            let declaration_spelling: CXString = clang_getCursorSpelling(declaration);
+            let declaration_name: String = String(clang_getCString(declaration_spelling));
+            clang_disposeString(declaration_spelling);
+
+            if declaration_name.Empty() || declaration_name == name {
+                EmitStruct(state, file_state, declaration, name);
+                ret CXChildVisitResult::CXChildVisit_Continue;
+            }
+        } else if underlying.kind == CXTypeKind::CXType_Enum {
+            FlushAnonymousEnum(state, file_state);
+            let declaration: CXCursor = clang_getTypeDeclaration(underlying);
+            let declaration_spelling: CXString = clang_getCursorSpelling(declaration);
+            let declaration_name: String = String(clang_getCString(declaration_spelling));
+            clang_disposeString(declaration_spelling);
+
+            if declaration_name.Empty() || declaration_name == name {
+                EmitEnum(state, file_state, declaration, name, String(""));
+                ret CXChildVisitResult::CXChildVisit_Continue;
+            }
+        } else if clang_Cursor_isNull(state->last_anonymous_enum) == 0i32 && (underlying.kind >= CXTypeKind::CXType_Char_U && underlying.kind <= CXTypeKind::CXType_Int128) {
+            let type_override: String = TypeToString(underlying);
+            EmitEnum(state, file_state, state->last_anonymous_enum, name, type_override);
+            state->last_anonymous_enum = clang_getNullCursor();
+            state->transpile_states[name] = TranspileState::Defined;
+            ret CXChildVisitResult::CXChildVisit_Continue;
+        }
+
+        if transpile_state != 0i32 {
+            FlushAnonymousEnum(state, file_state);
+            ret CXChildVisitResult::CXChildVisit_Continue;
+        }
+
+        FlushAnonymousEnum(state, file_state);
+        state->transpile_states[name] = TranspileState::Defined;
+        file_state->declarations += "type " + name + " = " + TypeToString(underlying) + ";\n";
+    } else if cursor.kind == CXCursorKind::CXCursor_MacroDefinition {
+        FlushAnonymousEnum(state, file_state);
+        TranslateMacro(state, file_state, cursor);
+    } else if cursor.kind == CXCursorKind::CXCursor_FunctionDecl {
+        FlushAnonymousEnum(state, file_state);
+        let spelling: CXString = clang_getCursorSpelling(cursor);
+        let name: String = String(clang_getCString(spelling));
+        clang_disposeString(spelling);
+
+        let transpile_state: TranspileState = state->transpile_states.Get(name, TranspileState::None);
+        if transpile_state == TranspileState::Defined { ret CXChildVisitResult::CXChildVisit_Continue; }
+        state->transpile_states[name] = TranspileState::Defined;
+
+        let num_args: i32 = clang_Cursor_getNumArguments(cursor);
+        let mut declaration: String = "    func " + name + "(";
+        let mut i: i32 = 0i32;
+
+        while i < num_args {
+            let argument: CXCursor = clang_Cursor_getArgument(cursor, i as u32);
+            let argument_spelling: CXString = clang_getCursorSpelling(argument);
+            let mut argument_name: String = String(clang_getCString(argument_spelling));
+            clang_disposeString(argument_spelling);
+
+            if argument_name.Empty() {
+                argument_name = "_p" + String(i as i64);
+            } else if StringToKeyword(argument_name) != TokenType::UNKNOWN {
+                argument_name = "_" + argument_name;
+            }
+
+            let _type: CXType = clang_getCursorType(argument);
+
+            if _type.kind == CXTypeKind::CXType_ConstantArray {
+                declaration += argument_name + "[" + String(clang_getArraySize(_type)) + "u64]: " + TypeToString(clang_getArrayElementType(_type));
+            } else {
+                declaration += argument_name + ": " + TypeToString(_type);
+            }
+
+            if i < num_args - 1i32 {
+                declaration += ", ";
+            } i += 1i32;
+        }
+
+        declaration += ")";
+        let ret_type: CXType = clang_getCursorResultType(cursor);
+
+        if ret_type.kind != CXTypeKind::CXType_Void {
+            declaration += " -> " + TypeToString(ret_type);
+        }
+
+        file_state->extern_functions += declaration + ";\n";
+    } else {
+        FlushAnonymousEnum(state, file_state);
+    }
+
+    ret CXChildVisitResult::CXChildVisit_Continue;
+}
+
+func main(args: &mut Vector<String>) -> i32 {
+    let executable: String = SplitPath(args[0u64]).right;
+
+    if args.Size() < 2u64 {
+        WriteLine("Usage: " + executable + " <header.h> [-o output_directory]");
+        ret 1i32;
+    }
+
+    let mut args2: Vector<*const i8>;
+    args2.PushBack("-x");
+    args2.PushBack("c");
+
+    let input: &String = args[1u64];
+    let mut output_directory: String;
+    let mut i: u64 = 2u64;
+
+    while i < args.Size() {
+        let arg: &String = args[i];
+
+        if arg == "-o" {
+            i += 1u64;
+
+            if i < args.Size() {
+                output_directory = args[i];
+            } else {
+                WriteLine(executable + ": \x1b[31mError:\x1b[0m Missing argument to '-o'.");
+                ret 1i32;
+            }
+        } else {
+            args2.PushBack(args[i].Data());
+        } i += 1u64;
+    }
+
+    if output_directory.Empty() {
+        output_directory = JoinPath(String("include"), SplitPath(SplitPath(input).left).right);
+    }
+
+    EnsureDirectory(&output_directory);
+    let index: CXIndex = clang_createIndex(0i32, 1i32);
+
+    if index == null {
+        WriteLine(executable + ": \x1b[31mError:\x1b[0m Failed to create clang index.");
+        ret 1i32;
+    }
+
+    let translation_unit: CXTranslationUnit = clang_parseTranslationUnit(index, input.Data(), args2.Data(), args2.Size() as i32, null, 0u32, (CXTranslationUnit_Flags::CXTranslationUnit_DetailedPreprocessingRecord | CXTranslationUnit_Flags::CXTranslationUnit_SkipFunctionBodies) as u32);
+
+    if translation_unit == null {
+        WriteLine(executable + ": \x1b[31mError:\x1b[0m Failed to parse '" + input + "'.");
+        clang_disposeIndex(index);
+        ret 1i32;
+    }
+
+    let mut state: GlobalState;
+    state.translation_unit = translation_unit;
+    state.output_directory = output_directory;
+    state.last_anonymous_enum = clang_getNullCursor();
+
+    let root: CXCursor = clang_getTranslationUnitCursor(translation_unit);
+    clang_visitChildren(root, VisitTopLevel, &mut state as CXClientData);
+    FlushAnonymousEnum(&mut state, null);
+
+    let files: Vector<*mut FileState> = state.files.Values();
+    let mut will_write: Map<String, bool>;
+    let mut j: u64 = 0u64;
+
+    while j < files.Size() {
+        let file_state: *mut FileState = files[j];
+        will_write[file_state->path] = !file_state->declarations.Empty() || !file_state->extern_functions.Empty();
+        j += 1u64;
+    }
+
+    let mut changed: bool = true;
+
+    while changed {
+        changed = false;
+        let mut i: u64 = 0u64;
+
+        while i < files.Size() {
+            let file_state: *mut FileState = files[i];
+
+            if will_write[file_state->path] {
+                i += 1u64;
+                continue;
+            }
+
+            let include_paths: Vector<String> = file_state->includes.Keys();
+            let mut j: u64 = 0u64;
+
+            while j < include_paths.Size() {
+                if will_write[include_paths[j]] {
+                    (will_write[file_state->path], changed) = (true, true);
+                    break;
+                } j += 1u64;
+            } i += 1u64;
+        }
+    }
+
+    let mut k: u64 = 0u64;
+
+    while k < files.Size() {
+        let file_state: *mut FileState = files[k];
+
+        if !will_write[file_state->path] {
+            k += 1u64;
+            continue;
+        }
+
+        let mut content: String;
+        let include_paths: Vector<String> = file_state->includes.Keys();
+        let (mut i: u64, mut first_include: bool) = (0u64, true);
+
+        while i < include_paths.Size() {
+            let include_path: String = include_paths[i];
+
+            if will_write[include_path] {
+                if first_include {
+                    content += "include ";
+                    first_include = false;
+                } else {
+                    content += ", ";
+                }
+
+                content += "\"" + file_state->includes[include_path] + "\"";
+            } i += 1u64;
+        }
+
+        if !first_include { content += " : *;\n\n"; }
+        content += file_state->declarations;
+
+        if !file_state->extern_functions.Empty() {
+            let length: u64 = content.Length();
+
+            if length >= 2u64 && content[length - 1u64] == '\n' && content[length - 2u64] != '\n' {
+                content += "\n";
+            }
+
+            content += "extern \"C\" {\n";
+            content += file_state->extern_functions;
+            content += "}\n";
+        }
+
+        let output_path: String = JoinPath(output_directory, file_state->name + "");
+
+        if _WriteFile(output_path, content) {
+            WriteLine(executable + ": \x1b[32mInfo:\x1b[0m Generated '" + output_path + "'.");
+        } k += 1u64;
+    }
+
+    clang_disposeTranslationUnit(translation_unit);
+    clang_disposeIndex(index);
+    ret 0i32;
+}

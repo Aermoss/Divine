@@ -14,7 +14,8 @@
  * limitations under the License.
  */
 
-include "std/io", "std/str", "std/vec", "std/map", "std/pair", "std/file", "vendor/llvm", "src/Parser.zir", "src/Logger.zir" : *;
+include "std/io", "std/str", "std/vec", "std/map", "std/pair", "std/file", "vendor/llvm",
+    "src/Logger.zir", "src/Context.zir", "src/Target.zir", "src/Parser.zir" : *;
 
 func LLVMPositionBuilderAtStart(builder: LLVMBuilderRef, block: LLVMBasicBlockRef) {
     let first_instr: LLVMValueRef = LLVMGetFirstInstruction(block);
@@ -1482,48 +1483,19 @@ class Compiler {
     priv enum_pass_cache: Map<*const ASTNode, *const QualifiedType>,
     priv forwards: Vector<Forward>,
 
-    priv context: LLVMContextRef, priv target: LLVMTargetRef,
-    pub target_machine: LLVMTargetMachineRef, priv layout: LLVMTargetDataRef,
+    priv context: LLVMContextRef, priv target: *const Target,
     priv module: LLVMModuleRef = null, priv builder: LLVMBuilderRef = null,
-    priv freestanding: bool, priv no_red_zone: bool, priv systemv: bool,
-    priv triple: String, priv arch: String, priv code_model: String;
+    priv freestanding: bool, priv no_red_zone: bool, priv systemv: bool;
 
-    Compiler(&mut this, triple: &String, arch: &String, code_model: &String, opt_level: LLVMCodeGenOptLevel, freestanding: bool, no_red_zone: bool) {
+    Compiler(&mut this, context: &Context, target: &Target, freestanding: bool, no_red_zone: bool) {
         if compiler != null {
             WriteLine("\x1b[31mDetected an another instance of compiler.\x1b[0m");
             Exit(1i32);
         }
 
-        (compiler, this.context) = (this, LLVMContextCreate());
+        (compiler, this.context) = (this, context.context);
+        (this.systemv, this.target) = (!target.triple.Contains("windows"), target);
         (this.freestanding, this.no_red_zone) = (freestanding, no_red_zone);
-        (this.triple, this.arch, this.code_model) = (triple, arch, code_model);
-        if this.triple.Empty() { this.triple = LLVMGetDefaultTargetTriple(); }
-        if this.arch == "native" { this.arch = LLVMGetHostCPUName(); }
-        if this.arch.Empty() { this.arch = "generic"; }
-        let message: *const i8 = null;
-
-        if LLVMGetTargetFromTriple(this.triple.Data(), &this.target, &message) != 0i32 {
-            WriteLine("\x1b[31mFailed to get target from triple: " + message.ToString() + ".\x1b[0m");
-            LLVMDisposeMessage(message);
-            Exit(1i32);
-        }
-
-        LLVMDisposeMessage(message);
-        let mut model: LLVMCodeModel = LLVMCodeModel::LLVMCodeModelDefault;
-
-        if code_model == "tiny" { model = LLVMCodeModel::LLVMCodeModelTiny; }
-        else if code_model == "small" { model = LLVMCodeModel::LLVMCodeModelSmall; }
-        else if code_model == "medium" { model = LLVMCodeModel::LLVMCodeModelMedium; }
-        else if code_model == "large" { model = LLVMCodeModel::LLVMCodeModelLarge; }
-        else if code_model == "kernel" { model = LLVMCodeModel::LLVMCodeModelKernel; }
-        else if code_model != "default" {
-            WriteLine("\x1b[31mInvalid code model: '" + code_model + "''.\x1b[0m");
-            Exit(1i32);
-        }
-
-        this.target_machine = LLVMCreateTargetMachine(this.target, this.triple.Data(), this.arch.Data(), "", opt_level, LLVMRelocMode::LLVMRelocDefault, model);
-        this.layout = LLVMCreateTargetDataLayout(this.target_machine);
-        this.systemv = !this.triple.Contains("windows");
     }
 
     ~Compiler(&mut this) {
@@ -1537,13 +1509,7 @@ class Compiler {
             this.module = null;
         }
 
-        LLVMDisposeTargetMachine(this.target_machine);
-        LLVMContextDispose(this.context);
         compiler = null;
-    }
-
-    pub Forget(&mut this) {
-        this.module = null;
     }
 
     pub Compile(&mut this, ast: *const RootNode, file_name: &String) -> LLVMModuleRef {
@@ -1561,10 +1527,8 @@ class Compiler {
         this.builder = LLVMCreateBuilderInContext(this.context);
         this.scope_manager.builder = this.builder;
         LLVMSetSourceFileName(this.module, file_name.Data(), file_name.Length());
-        LLVMSetTarget(this.module, this.triple.Data());
-        let layout: *const i8 = LLVMCopyStringRepOfTargetData(this.layout);
-        LLVMSetDataLayout(this.module, layout);
-        LLVMDisposeMessage(layout);
+        LLVMSetModuleDataLayout(this.module, this.target->layout);
+        LLVMSetTarget(this.module, this.target->triple.Data());
 
         let mut i: u64 = 0u64;
         let mut declared: Map<*const ASTNode, bool>;
@@ -1607,14 +1571,16 @@ class Compiler {
         if !Logger::HasError() {
             let message: *const i8 = null;
 
-            if LLVMVerifyModule(this.module, LLVMVerifierFailureAction::LLVMAbortProcessAction, &message) != 0i32 {
-                WriteLine("\x1b[31mModule verification failed: " + message.ToString() + ".\x1b[0m");
-                LLVMDisposeMessage(message);
+            if LLVMVerifyModule(this.module, LLVMVerifierFailureAction::LLVMReturnStatusAction, &message) != 0i32 {
+                let final_message: *const i8 = message != null ? message : "Unknown reason.";
+                Logger::Log(file_name, "Module verification failed: " + final_message.ToString(), LogSeverity::Error);
+                if message != null { LLVMDisposeMessage(message); }
                 ret null;
             }
 
-            LLVMDisposeMessage(message);
-            ret this.module;
+            if message != null {
+                LLVMDisposeMessage(message);
+            } ret this.module;
         } ret null;
     }
 
@@ -2080,7 +2046,7 @@ class Compiler {
         if LLVMGetTypeKind(_type->Value()) != LLVMTypeKind::LLVMStructTypeKind {
             ret _type;
         } else {
-            let size: u64 = LLVMABISizeOfType(this.layout, _type->Value());
+            let size: u64 = LLVMABISizeOfType(this.target->layout, _type->Value());
 
             if size > 8u64 {
                 ret this.type_manager.Pointer(_type, _type->IsMutable());
@@ -2528,7 +2494,7 @@ class Compiler {
             }
 
             variant_types.PushBack(Pair<String, Vector<*const QualifiedType>>(enum_decl->variants[i]->name, types));
-            let current_size: u64 = LLVMABISizeOfType(this.layout, this.CreateVariantPayloadType(types));
+            let current_size: u64 = LLVMABISizeOfType(this.target->layout, this.CreateVariantPayloadType(types));
 
             if current_size > max_size {
                 max_size = current_size;
@@ -4177,7 +4143,7 @@ class Compiler {
                     _type = this.CompileType(arg);
                 }
 
-                let size: u64 = LLVMStoreSizeOfType(this.layout, _type->Value());
+                let size: u64 = LLVMStoreSizeOfType(this.target->layout, _type->Value());
                 let size_type: &QualifiedType = this.type_manager.Primitive(LLVMInt64TypeInContext(this.context), false);
                 ret QualifiedValue(LLVMConstInt(size_type.Value(), size, 0i32), size_type);
             }
@@ -4656,7 +4622,7 @@ class Compiler {
                 ret QualifiedValue(null, null);
             }
 
-            let mut _size: LLVMValueRef = LLVMConstInt(LLVMInt64TypeInContext(this.context), LLVMABISizeOfType(this.layout, _type.Value()), 0i32);
+            let mut _size: LLVMValueRef = LLVMConstInt(LLVMInt64TypeInContext(this.context), LLVMABISizeOfType(this.target->layout, _type.Value()), 0i32);
             _size = LLVMBuildAdd(this.builder, LLVMBuildMul(this.builder, _size, size.Value(), ""), LLVMConstInt(LLVMInt64TypeInContext(this.context), 8u64, 0i32), "");
             pointer = LLVMBuildArrayMalloc(this.builder, LLVMInt8TypeInContext(this.context), _size, "");
             LLVMBuildStore(this.builder, size.Value(), LLVMBuildBitCast(this.builder, pointer, LLVMPointerType(LLVMInt64TypeInContext(this.context), 0u32), ""));

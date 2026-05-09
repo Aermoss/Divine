@@ -14,7 +14,8 @@
  * limitations under the License.
  */
 
-include "std/io", "std/file", "std/std", "vendor/llvm", "src/Lexer.zir", "src/Preprocessor.zir", "src/Parser.zir", "src/Compiler.zir", "src/Logger.zir" : *;
+include "std/io", "std/file", "std/std", "vendor/llvm", "src/Logger.zir", "src/Context.zir", "src/Target.zir",
+    "src/Lexer.zir", "src/Preprocessor.zir", "src/Parser.zir", "src/Compiler.zir", "src/Assembler.zir" : *;
 
 #[if WINDOWS]
 const INFINITE: u32 = 0xFFFFFFFFu32;
@@ -609,33 +610,120 @@ func main(args: &mut Vector<String>) -> i32 {
     let timer: Timer;
     let start: f64 = timer.Get();
     let mut objects: Vector<String>;
+    let mut temp_files: Vector<String>;
     let temp_path: String = GetTemporaryPath();
     if temp_path.Empty() { ret 1i32; }
     let mut failed: bool = false;
+
+    let context: Context;
+    let target: Target = { triple, arch, code_model, opt_level };
     let mut j: u64 = 0u64;
 
     while j < input_files.Size() {
         let input_file: String = input_files[j];
+        let parts: Pair<String, String> = SplitExtension(input_file);
+        let extension: &String = parts.right;
+        let name: &String = parts.left;
 
-        if verbose {
-            Logger::Log(executable, "Compiling: '" + input_file + "'.", LogSeverity::Info);
+        let mut module: LLVMModuleRef = null;
+        let mut compiler: Compiler = { context, target, freestanding, no_red_zone };
+        let mut assembler: Assembler = { context, target };
+
+        if extension == ".zir" {
+            if verbose {
+                Logger::Log(executable, "Compiling: '" + input_file + "'.", LogSeverity::Info);
+            }
+
+            let mut lexer: Lexer;
+            let mut preprocessor: Preprocessor;
+            preprocessor.defines = defines;
+
+            let mut source: String = _ReadFile(input_file);
+            if j == 0u64 && !freestanding { source += "\ninclude \"src/Start.zir\" : *;\n"; }
+            let mut tokens: Vector<Token> = lexer.Lex(source, input_file);
+            tokens = preprocessor.Process(tokens, input_file);
+
+            let mut parser: Parser;
+            (parser.defines, parser.include_paths) = (defines, include_paths);
+            let ast: *const RootNode = parser.Parse(tokens, input_file);
+            module = compiler.Compile(ast, input_file);
+        } else if extension == ".ll" || extension == ".bc" {
+            if verbose {
+                Logger::Log(executable, "Compiling: '" + input_file + "'.", LogSeverity::Info);
+            }
+
+            let mut buffer: LLVMMemoryBufferRef = null;
+            let mut message: *mut i8 = null;
+
+            if LLVMCreateMemoryBufferWithContentsOfFile(input_file.Data(), &mut buffer, &mut message) != 0i32 {
+                let final_message: *const i8 = message != null ? message : "Unknown reason.";
+                Logger::Log(input_file, "Failed to read file: " + final_message.ToString(), LogSeverity::Error);
+            }
+
+            if message != null {
+                LLVMDisposeMessage(message);
+                message = null;
+            }
+
+            if buffer != null {
+                if extension == ".ll" {
+                    if LLVMParseIRInContext(context.context, buffer, &mut module, &mut message) != 0i32 {
+                        let final_message: *const i8 = message != null ? message : "Unknown reason.";
+                        Logger::Log(input_file, "Failed to parse LLVM IR: " + final_message.ToString(), LogSeverity::Error);
+                    }
+                } else {
+                    if LLVMParseBitcodeInContext(context.context, buffer, &mut module, &mut message) != 0i32 {
+                        let final_message: *const i8 = message != null ? message : "Unknown reason.";
+                        Logger::Log(input_file, "Failed to parse bitcode: " + final_message.ToString(), LogSeverity::Error);
+                    }
+                }
+
+                if message != null {
+                    LLVMDisposeMessage(message);
+                    message = null;
+                }
+            }
+
+            if module != null {
+                LLVMSetSourceFileName(module, input_file.Data(), input_file.Length());
+                LLVMSetModuleDataLayout(module, target.layout);
+                LLVMSetTarget(module, target.triple.Data());
+                let mut message: *const i8 = null;
+
+                if LLVMVerifyModule(module, LLVMVerifierFailureAction::LLVMReturnStatusAction, &mut message) != 0i32 {
+                    let final_message: *const i8 = message != null ? message : "Unknown reason.";
+                    Logger::Log(input_file, "Module verification failed: " + final_message.ToString(), LogSeverity::Error);
+                    LLVMDisposeModule(module);
+                    module = null;
+                }
+
+                if message != null {
+                    LLVMDisposeMessage(message);
+                    message = null;
+                }
+            }
+        } else if extension == ".asm" || extension == ".s" {
+            if emit_asm {
+                Logger::Log(executable, "Skipping input: '" + input_file + "'.", LogSeverity::Warning);
+                j += 1u64;
+                continue;
+            }
+
+            if verbose {
+                Logger::Log(executable, "Assembling: '" + input_file + "'.", LogSeverity::Info);
+            } module = assembler.Assemble(_ReadFile(input_file), input_file);
+        } else if extension == ".obj" || extension == ".o" {
+            j += 1u64;
+
+            if emit_object {
+                Logger::Log(executable, "Skipping input: '" + input_file + "'.", LogSeverity::Warning);
+            } else {
+                objects.PushBack(input_file);
+            } continue;
+        } else {
+            Logger::Log(input_file, "Unsupported file extension '" + extension + "'.", LogSeverity::Error);
         }
 
-        let mut lexer: Lexer;
-        let mut preprocessor: Preprocessor;
-        preprocessor.defines = defines;
-
-        let mut source: String = _ReadFile(input_file);
-        if j == 0u64 && !freestanding { source += "\ninclude \"src/Start.zir\" : *;\n"; }
-        let mut tokens: Vector<Token> = lexer.Lex(source, input_file);
-        tokens = preprocessor.Process(tokens, input_file);
-
-        let mut parser: Parser;
-        (parser.defines, parser.include_paths) = (defines, include_paths);
-        let ast: *const RootNode = parser.Parse(tokens, input_file);
-
-        let mut compiler: Compiler = { triple, arch, code_model, opt_level, freestanding, no_red_zone };
-        let module: LLVMModuleRef = compiler.Compile(ast, input_file);
         failed |= module == null;
 
         if check || failed {
@@ -646,7 +734,7 @@ func main(args: &mut Vector<String>) -> i32 {
             } continue;
         }
 
-        if opt_level != LLVMCodeGenOptLevel::LLVMCodeGenLevelNone {
+        if opt_level != LLVMCodeGenOptLevel::LLVMCodeGenLevelNone && extension == ".zir" {
             let mut passes: String;
 
             if opt_level == LLVMCodeGenOptLevel::LLVMCodeGenLevelLess {
@@ -661,7 +749,7 @@ func main(args: &mut Vector<String>) -> i32 {
 
             if passes.Size() > 1u64 {
                 let pass_options: LLVMPassBuilderOptionsRef = LLVMCreatePassBuilderOptions();
-                let error: LLVMErrorRef = LLVMRunPasses(module, passes.Data(), compiler.target_machine, pass_options);
+                let error: LLVMErrorRef = LLVMRunPasses(module, passes.Data(), target.target_machine, pass_options);
                 LLVMDisposePassBuilderOptions(pass_options);
 
                 if error != LLVMErrorSuccess {
@@ -673,27 +761,22 @@ func main(args: &mut Vector<String>) -> i32 {
             }
         }
 
-        let name: String = SplitExtension(input_file).left;
-
-        if emit_llvm {
+        if emit_llvm && extension != ".ll" {
             let string: *const i8 = LLVMPrintModuleToString(module);
             _WriteFile(name + ".ll", String(string));
             LLVMDisposeMessage(string);
         }
 
         if emit_asm {
-            let asm_name: String = !output_file.Empty() ? output_file : (name + ".s");
-            let message: *const i8 = null;
-
-            if LLVMTargetMachineEmitToFile(compiler.target_machine, module, asm_name.Data(), LLVMCodeGenFileType::LLVMAssemblyFile, &message) != 0i32 {
-                Logger::Log(input_file, "Failed to emit assembly: " + message.ToString(), LogSeverity::Error);
-                LLVMDisposeMessage(message);
-                ret 1i32;
-            }
-
-            LLVMDisposeMessage(message);
+            let mut asm_name: String = name + ".s";
+            if !output_file.Empty() { asm_name = output_file; }
+            let result: String = target.Emit(module, asm_name, LLVMCodeGenFileType::LLVMAssemblyFile);
             j += 1u64;
-            continue;
+
+            if !result.Empty() {
+                Logger::Log(input_file, "Failed to emit assembly: " + result, LogSeverity::Error);
+                ret 1i32;
+            } continue;
         }
 
         let mut object_name: String = name + (triple.Contains("windows") ? ".obj" : ".o");
@@ -704,27 +787,26 @@ func main(args: &mut Vector<String>) -> i32 {
             object_name = output_file;
         }
 
-        let message: *const i8 = null;
+        let result: String = target.Emit(module, object_name, LLVMCodeGenFileType::LLVMObjectFile);
 
-        if LLVMTargetMachineEmitToFile(compiler.target_machine, module, object_name.Data(), LLVMCodeGenFileType::LLVMObjectFile, &message) != 0i32 {
-            Logger::Log(input_file, "Failed to emit object: " + message.ToString(), LogSeverity::Error);
-            LLVMDisposeMessage(message);
+        if !result.Empty() {
+            Logger::Log(input_file, "Failed to emit object: " + result, LogSeverity::Error);
             ret 1i32;
         }
 
-        LLVMDisposeMessage(message);
         objects.PushBack(object_name);
-        j += 1u64;
+
+        if !emit_object {
+            temp_files.PushBack(object_name);
+        } j += 1u64;
     }
 
     if check || failed || emit_object || emit_asm {
-        if !emit_object && !emit_asm {
-            let mut i: u64 = 0u64;
+        let mut i: u64 = 0u64;
 
-            while i < objects.Size() {
-                RemoveFile(objects[i]);
-                i += 1u64;
-            }
+        while i < temp_files.Size() {
+            RemoveFile(temp_files[i]);
+            i += 1u64;
         }
 
         ret failed ? 1i32 : 0i32;
@@ -789,14 +871,11 @@ func main(args: &mut Vector<String>) -> i32 {
 
     Execute(command.Data());
     WriteLine("Program compiled in " + String(timer.Get() - start) + " seconds.");
+    let mut k: u64 = 0u64;
 
-    if !emit_object && !emit_asm {
-        let mut i: u64 = 0u64;
-
-        while i < objects.Size() {
-            RemoveFile(objects[i]);
-            i += 1u64;
-        }
+    while k < temp_files.Size() {
+        RemoveFile(temp_files[k]);
+        k += 1u64;
     }
 
     if run {

@@ -396,6 +396,9 @@ func PrintUsage(executable: String) {
     WriteLine("  -check                   Only check for errors without emitting code");
     WriteLine("  -target <triple>         Generate code for the given target");
     WriteLine("  -march <arch>            Architecture to generate code for");
+    WriteLine("  -mcmodel <model>         Code model (tiny, small, medium, large, kernel)");
+    WriteLine("  -ffreestanding           Generate code for a freestanding environment");
+    WriteLine("  -mno-red-zone            Disable the use of the red zone");
     WriteLine("  -r, --run                Run the program after compiling");
     WriteLine("  -v, --verbose            Show verbose output");
     WriteLine("  --version                Display compiler version");
@@ -428,9 +431,10 @@ func main(args: &mut Vector<String>) -> i32 {
     include_paths.PushBack(String("include"));
 
     let mut opt_level: LLVMCodeGenOptLevel = LLVMCodeGenOptLevel::LLVMCodeGenLevelLess;
-    let (mut triple: String, mut march: String) = (LLVMGetDefaultTargetTriple(), "generic");
+    let (mut triple: String, mut arch: String, mut code_model: String) = (LLVMGetDefaultTargetTriple(), "generic", "default");
     let (mut emit_object: bool, mut emit_asm: bool, mut emit_llvm: bool) = (false, false, false);
     let (mut run: bool, mut debug: bool, mut verbose: bool, mut check: bool) = (false, false, false, false);
+    let (mut freestanding: bool, mut no_red_zone: bool) = (false, false);
     let mut i: u64 = 1u64;
 
     while i < args.Size() {
@@ -454,6 +458,10 @@ func main(args: &mut Vector<String>) -> i32 {
             emit_asm = true;
         } else if arg == "-emit-llvm" {
             emit_llvm = true;
+        } else if arg == "-ffreestanding" {
+            freestanding = true;
+        } else if arg == "-mno-red-zone" {
+            no_red_zone = true;
         } else if arg == "-r" || arg == "--run" {
             run = true;
         } else if arg == "-O0" {
@@ -546,9 +554,18 @@ func main(args: &mut Vector<String>) -> i32 {
             i += 1u64;
 
             if i < args.Size() {
-                march = args[i];
+                arch = args[i];
             } else {
                 Logger::Log(executable, "Missing argument to '-march'.", LogSeverity::Error);
+                ret 1i32;
+            }
+        } else if arg == "-mcmodel" {
+            i += 1u64;
+
+            if i < args.Size() {
+                code_model = args[i];
+            } else {
+                Logger::Log(executable, "Missing argument to '-mcmodel'.", LogSeverity::Error);
                 ret 1i32;
             }
         } else if arg.StartsWith("-") {
@@ -605,7 +622,7 @@ func main(args: &mut Vector<String>) -> i32 {
         preprocessor.defines = defines;
 
         let mut source: String = _ReadFile(input_file);
-        if j == 0u64 { source += "\ninclude \"src/Start.zir\" : *;\n"; }
+        if j == 0u64 && !freestanding { source += "\ninclude \"src/Start.zir\" : *;\n"; }
         let mut tokens: Vector<Token> = lexer.Lex(source, input_file);
         tokens = preprocessor.Process(tokens, input_file);
 
@@ -613,7 +630,7 @@ func main(args: &mut Vector<String>) -> i32 {
         (parser.defines, parser.include_paths) = (defines, include_paths);
         let ast: *const RootNode = parser.Parse(tokens, input_file);
 
-        let mut compiler: Compiler = { triple, march, opt_level };
+        let mut compiler: Compiler = { triple, arch, code_model, opt_level, freestanding, no_red_zone };
         let module: LLVMModuleRef = compiler.Compile(ast, input_file);
         failed |= module == null;
 
@@ -722,12 +739,15 @@ func main(args: &mut Vector<String>) -> i32 {
         command += " /OUT:" + output_file;
         let (mut i: u64, mut j: u64, mut k: u64) = (0u64, 0u64, 0u64);
         while i < objects.Size() { command += " " + objects[i]; i += 1u64; }
-        command += " \"/LIBPATH:" + msvc_path + "\\lib\\x64\"";
-        command += " \"/LIBPATH:" + sdk_path + "\\um\\x64\"";
-        command += " \"/LIBPATH:" + sdk_path + "\\ucrt\\x64\"";
-        while j < lib_paths.Size() { command += " \"/LIBPATH:" + lib_paths[j] + "\""; j += 1u64; }
-        command += " user32.lib shell32.lib kernel32.lib";
-        while k < libs.Size() { command += " " + libs[k] + ".lib"; k += 1u64; }
+
+        if !freestanding {
+            command += " \"/LIBPATH:" + msvc_path + "\\lib\\x64\"";
+            command += " \"/LIBPATH:" + sdk_path + "\\um\\x64\"";
+            command += " \"/LIBPATH:" + sdk_path + "\\ucrt\\x64\"";
+            while j < lib_paths.Size() { command += " \"/LIBPATH:" + lib_paths[j] + "\""; j += 1u64; }
+            command += " user32.lib shell32.lib kernel32.lib";
+            while k < libs.Size() { command += " " + libs[k] + ".lib"; k += 1u64; }
+        }
 #[else]
         Logger::Log(executable, "Cannot link to windows from another platform.", LogSeverity::Error);
         ret 1i32;
@@ -736,7 +756,8 @@ func main(args: &mut Vector<String>) -> i32 {
         Logger::Log(executable, "Cannot link to darwin.", LogSeverity::Error);
         ret 1i32;
     } else {
-        command = lld_exe + " --nostdlib --entry _start --dynamic-linker /lib64/ld-linux-x86-64.so.2";
+        command = lld_exe + " --nostdlib --entry _start";
+        if !freestanding { command += " --dynamic-linker /lib64/ld-linux-x86-64.so.2"; }
         command += " -o " + output_file;
         let (mut i: u64, mut j: u64, mut k: u64) = (0u64, 0u64, 0u64);
         while i < objects.Size() { command += " " + objects[i]; i += 1u64; }

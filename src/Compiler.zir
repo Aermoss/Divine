@@ -1468,29 +1468,27 @@ class Forward {
 }
 
 class Compiler {
-    pub mangling: bool = true,
-    pub _unsafe: bool = false,
+    pub scope_manager: ScopeManager,
+    priv type_manager: TypeManager,
+
     pub generics: Vector<*const Generic>,
     pub generic: *const Generic = null,
     pub _class: *const QualifiedType = null,
     pub function: *const QualifiedType = null,
     pub function_ref: LLVMValueRef = null,
-    pub scope_manager: ScopeManager,
-    priv type_manager: TypeManager,
+    pub mangling: bool = true, pub _unsafe: bool = false,
     priv blocks: Vector<Pair<LLVMBasicBlockRef, LLVMBasicBlockRef>>,
     priv pass_cache: Map<*const ASTNode, Pair<*mut QualifiedType, *const Scope>>,
     priv enum_pass_cache: Map<*const ASTNode, *const QualifiedType>,
     priv forwards: Vector<Forward>,
-    pub target_machine: LLVMTargetMachineRef = null,
-    priv layout: LLVMTargetDataRef = null,
-    priv context: LLVMContextRef = null,
-    priv module: LLVMModuleRef = null,
-    priv builder: LLVMBuilderRef = null,
-    priv triple: String, priv march: String,
-    priv target: LLVMTargetRef = null,
-    priv systemv: bool = false;
 
-    Compiler(&mut this, triple: String, march: String, opt_level: LLVMCodeGenOptLevel) {
+    priv context: LLVMContextRef, priv target: LLVMTargetRef,
+    pub target_machine: LLVMTargetMachineRef, priv layout: LLVMTargetDataRef,
+    priv module: LLVMModuleRef = null, priv builder: LLVMBuilderRef = null,
+    priv freestanding: bool, priv no_red_zone: bool, priv systemv: bool,
+    priv triple: String, priv arch: String, priv code_model: String;
+
+    Compiler(&mut this, triple: &String, arch: &String, code_model: &String, opt_level: LLVMCodeGenOptLevel, freestanding: bool, no_red_zone: bool) {
         if compiler != null {
             WriteLine("\x1b[31mDetected an another instance of compiler.\x1b[0m");
             Exit(1i32);
@@ -1503,10 +1501,11 @@ class Compiler {
         LLVMInitializeNativeDisassembler();
         this.context = LLVMContextCreate();
 
-        (this.triple, this.march) = (triple, march);
+        (this.freestanding, this.no_red_zone) = (freestanding, no_red_zone);
+        (this.triple, this.arch, this.code_model) = (triple, arch, code_model);
         if this.triple.Empty() { this.triple = LLVMGetDefaultTargetTriple(); }
-        if this.march == "native" { this.march = LLVMGetHostCPUName(); }
-        if this.march.Empty() { this.march = "generic"; }
+        if this.arch == "native" { this.arch = LLVMGetHostCPUName(); }
+        if this.arch.Empty() { this.arch = "generic"; }
         let message: *const i8 = null;
 
         if LLVMGetTargetFromTriple(this.triple.Data(), &this.target, &message) != 0i32 {
@@ -1516,7 +1515,19 @@ class Compiler {
         }
 
         LLVMDisposeMessage(message);
-        this.target_machine = LLVMCreateTargetMachine(this.target, this.triple.Data(), this.march.Data(), "", opt_level, LLVMRelocMode::LLVMRelocDefault, LLVMCodeModel::LLVMCodeModelDefault);
+        let mut model: LLVMCodeModel = LLVMCodeModel::LLVMCodeModelDefault;
+
+        if code_model == "tiny" { model = LLVMCodeModel::LLVMCodeModelTiny; }
+        else if code_model == "small" { model = LLVMCodeModel::LLVMCodeModelSmall; }
+        else if code_model == "medium" { model = LLVMCodeModel::LLVMCodeModelMedium; }
+        else if code_model == "large" { model = LLVMCodeModel::LLVMCodeModelLarge; }
+        else if code_model == "kernel" { model = LLVMCodeModel::LLVMCodeModelKernel; }
+        else if code_model != "default" {
+            WriteLine("\x1b[31mInvalid code model: '" + code_model + "''.\x1b[0m");
+            Exit(1i32);
+        }
+
+        this.target_machine = LLVMCreateTargetMachine(this.target, this.triple.Data(), this.arch.Data(), "", opt_level, LLVMRelocMode::LLVMRelocDefault, model);
         this.layout = LLVMCreateTargetDataLayout(this.target_machine);
         this.systemv = !this.triple.Contains("windows");
     }
@@ -2182,6 +2193,11 @@ class Compiler {
         let attribute_name: String = "no-stack-arg-probe";
         let attribute: LLVMAttributeRef = LLVMCreateStringAttribute(this.context, attribute_name.Data(), attribute_name.Length() as u32, "", 0u32);
         LLVMAddAttributeAtIndex(function, LLVMAttributeIndex::LLVMAttributeFunctionIndex, attribute);
+
+        if this.no_red_zone {
+            let noredzone_kind: u32 = LLVMGetEnumAttributeKindForName("noredzone", 9u64);
+            LLVMAddAttributeAtIndex(function, LLVMAttributeIndex::LLVMAttributeFunctionIndex, LLVMCreateEnumAttribute(this.context, noredzone_kind, 0u64));
+        }
 
         if this._class == null && !func_decl->constructors.Empty() {
             Logger::Log("Constructors can only be declared inside classes.", func_decl as *const ASTNode, LogSeverity::Error);

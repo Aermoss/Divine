@@ -389,18 +389,18 @@ func PrintUsage(executable: String) {
     WriteLine("  -l <name>                Link against library <name>");
     WriteLine("  -D <macro>               Define a macro");
     WriteLine("  -O<level>, -O            Optimization level (0, 1, 2, 3) [-O defaults to -O2]");
-    WriteLine("  -g, --debug              Enable debug information");
-    WriteLine("  -c                       Emit object code (.obj) alongside the executable");
-    WriteLine("  -S                       Emit assembly code (.s) alongside the executable");
-    WriteLine("  -emit-llvm               Emit LLVM IR (.ll) alongside the executable");
-    WriteLine("  -check                   Only check for errors without emitting code");
+    WriteLine("  -g                       Enable debug information");
+    WriteLine("  -c                       Only run preprocess, compile, and assemble steps");
+    WriteLine("  -S                       Only run preprocess and compilation steps");
+    WriteLine("  -emit-llvm               Emit LLVM intermediate representation");
+    WriteLine("  -check, -fsyntax-only    Check code for errors, but do not emit code");
     WriteLine("  -target <triple>         Generate code for the given target");
     WriteLine("  -march <arch>            Architecture to generate code for");
     WriteLine("  -mcmodel <model>         Code model (tiny, small, medium, large, kernel)");
-    WriteLine("  -ffreestanding           Generate code for a freestanding environment");
-    WriteLine("  -mno-red-zone            Disable the use of the red zone");
+    WriteLine("  -ffreestanding           Assert that the compilation takes place in a freestanding environment");
+    WriteLine("  -mno-red-zone            Do not use the red-zone for x86-64 code");
     WriteLine("  -r, --run                Run the program after compiling");
-    WriteLine("  -v, --verbose            Show verbose output");
+    WriteLine("  -v, --verbose            Show commands to run and use verbose output");
     WriteLine("  --version                Display compiler version");
     WriteLine("  -h, --help               Display this help message");
 }
@@ -448,7 +448,7 @@ func main(args: &mut Vector<String>) -> i32 {
             ret 0i32;
         } else if arg == "-v" || arg == "--verbose" {
             verbose = true;
-        } else if arg == "-check" {
+        } else if arg == "-check" || arg == "-fsyntax-only" {
             check = true;
         } else if arg == "-g" || arg == "--debug" {
             debug = true;
@@ -586,9 +586,9 @@ func main(args: &mut Vector<String>) -> i32 {
         ret 1i32;
     }
 
-    if output_file.Empty() {
-        output_file = SplitExtension(input_files[0u64]).left;
-        if triple.Contains("windows") { output_file += ".exe"; }
+    if !output_file.Empty() && input_files.Size() > 1u64 && (emit_object || emit_asm) {
+        Logger::Log(executable, "Cannot specify '-o' when generating multiple output files.", LogSeverity::Error);
+        ret 1i32;
     }
 
     if triple.Contains("windows") {
@@ -597,9 +597,6 @@ func main(args: &mut Vector<String>) -> i32 {
         defines.PushBack(String("DARWIN"));
     } else if triple.Contains("linux") {
         defines.PushBack(String("LINUX"));
-    } else {
-        Logger::Log(executable, "Invalid target: '" + triple + "'.", LogSeverity::Error);
-        ret 1i32;
     }
 
     let timer: Timer;
@@ -678,23 +675,29 @@ func main(args: &mut Vector<String>) -> i32 {
         }
 
         if emit_asm {
+            let asm_name: String = !output_file.Empty() ? output_file : (name + ".s");
             let message: *const i8 = null;
 
-            if LLVMTargetMachineEmitToFile(compiler.target_machine, module, (name + ".s").Data(), LLVMCodeGenFileType::LLVMAssemblyFile, &message) != 0i32 {
+            if LLVMTargetMachineEmitToFile(compiler.target_machine, module, asm_name.Data(), LLVMCodeGenFileType::LLVMAssemblyFile, &message) != 0i32 {
                 Logger::Log(input_file, "Failed to emit assembly: " + message.ToString(), LogSeverity::Error);
                 LLVMDisposeMessage(message);
                 ret 1i32;
             }
 
             LLVMDisposeMessage(message);
+            j += 1u64;
+            continue;
         }
 
-        let message: *const i8 = null;
         let mut object_name: String = name + (triple.Contains("windows") ? ".obj" : ".o");
 
         if !emit_object {
             object_name = JoinPath(temp_path, SplitPath(object_name).right);
+        } else if !output_file.Empty() {
+            object_name = output_file;
         }
+
+        let message: *const i8 = null;
 
         if LLVMTargetMachineEmitToFile(compiler.target_machine, module, object_name.Data(), LLVMCodeGenFileType::LLVMObjectFile, &message) != 0i32 {
             Logger::Log(input_file, "Failed to emit object: " + message.ToString(), LogSeverity::Error);
@@ -707,8 +710,8 @@ func main(args: &mut Vector<String>) -> i32 {
         j += 1u64;
     }
 
-    if check || failed {
-        if !emit_object {
+    if check || failed || emit_object || emit_asm {
+        if !emit_object && !emit_asm {
             let mut i: u64 = 0u64;
 
             while i < objects.Size() {
@@ -718,6 +721,11 @@ func main(args: &mut Vector<String>) -> i32 {
         }
 
         ret failed ? 1i32 : 0i32;
+    }
+
+    if output_file.Empty() {
+        output_file = SplitExtension(input_files[0u64]).left;
+        if triple.Contains("windows") { output_file += ".exe"; }
     }
 
 #[if WINDOWS]
@@ -734,7 +742,9 @@ func main(args: &mut Vector<String>) -> i32 {
     if triple.Contains("windows") {
 #[if WINDOWS]
         let (sdk_path: String, msvc_path: String) = (GetWindowsSDKPath(), GetMSVCPath());
-        command = "\"" + msvc_path + "\\bin\\Hostx64\\x64\\link.exe\" /NOLOGO /SUBSYSTEM:CONSOLE /NODEFAULTLIB /ENTRY:_start";
+        command = "\"" + msvc_path + "\\bin\\Hostx64\\x64\\link.exe\" /NOLOGO /NODEFAULTLIB /ENTRY:_start";
+        if !freestanding { command += " /SUBSYSTEM:CONSOLE"; }
+        else { command += " /SUBSYSTEM:NATIVE"; }
         if debug { command += " /DEBUG"; }
         command += " /OUT:" + output_file;
         let (mut i: u64, mut j: u64, mut k: u64) = (0u64, 0u64, 0u64);
@@ -755,7 +765,7 @@ func main(args: &mut Vector<String>) -> i32 {
     } else if triple.Contains("darwin") || triple.Contains("apple") {
         Logger::Log(executable, "Cannot link to darwin.", LogSeverity::Error);
         ret 1i32;
-    } else {
+    } else if triple.Contains("linux") {
         command = lld_exe + " --nostdlib --entry _start";
         if !freestanding { command += " --dynamic-linker /lib64/ld-linux-x86-64.so.2"; }
         command += " -o " + output_file;
@@ -763,6 +773,9 @@ func main(args: &mut Vector<String>) -> i32 {
         while i < objects.Size() { command += " " + objects[i]; i += 1u64; }
         while j < lib_paths.Size() { command += " -L" + lib_paths[j]; j += 1u64; }
         while k < libs.Size() { command += " -l" + libs[k]; k += 1u64; }
+    } else {
+        Logger::Log(executable, "Invalid target: '" + triple + "'.", LogSeverity::Error);
+        ret 1i32;
     }
 
     if verbose {
@@ -772,7 +785,7 @@ func main(args: &mut Vector<String>) -> i32 {
     Execute(command.Data());
     WriteLine("Program compiled in " + String(timer.Get() - start) + " seconds.");
 
-    if !emit_object {
+    if !emit_object && !emit_asm {
         let mut i: u64 = 0u64;
 
         while i < objects.Size() {

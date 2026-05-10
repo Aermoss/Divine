@@ -171,27 +171,48 @@ class Method {
     ~Method(&this) {}
 }
 
+class ParameterType {
+    pub _type: *const QualifiedType,
+    pub byval: *const QualifiedType = null,
+    pub sret: *const QualifiedType = null;
+
+    ParameterType(&mut this, _type: *const QualifiedType) {
+        this._type = _type;
+    }
+
+    ~ParameterType(&this) {}
+}
+
+class ReturnType {
+    pub _type: *const QualifiedType,
+    pub sret: *const QualifiedType = null;
+
+    ReturnType(&mut this, _type: *const QualifiedType) {
+        this._type = _type;
+    }
+
+    ~ReturnType(&this) {}
+}
+
 class QualifiedType {
     priv value: LLVMTypeRef, priv pointee: *const QualifiedType = null,
     priv reference: bool = false, priv mutable: bool = false, priv signed: bool = false,
     priv array: bool = false, priv size: u64 = 0u64, pub _null: bool = false,
 
+    pub name: String,
     pub constructed: Vector<*const QualifiedType>,
     pub fields: Map<String, Pair<Field, *const QualifiedType>>,
     pub methods: Vector<Pair<Method, *const QualifiedType>>,
     pub variants: Vector<Pair<String, Vector<*const QualifiedType>>>,
     pub variant_field_names: Vector<Vector<String>>,
-    pub name: String, priv _class: bool = false, pub _enum: bool = false,
-
-    pub sret: *const QualifiedType = null, pub byval: *const QualifiedType = null,
-    priv params: Vector<*const QualifiedType>, priv return: *const QualifiedType = null,
-    priv _function: bool = false;
+    priv params: Vector<ParameterType>, priv return: ReturnType,
+    priv _function: bool = false, priv _class: bool = false, pub _enum: bool = false;
 
     QualifiedType(&mut this, value: LLVMTypeRef, signed: bool) {
         (this.value, this.signed) = (value, signed);
     }
 
-    QualifiedType(&mut this, value: LLVMTypeRef, params: Vector<*const QualifiedType>, return: *const QualifiedType) {
+    QualifiedType(&mut this, value: LLVMTypeRef, params: &Vector<ParameterType>, return: &ReturnType) {
         (this.value, this.params, this.return, this._function) = (value, params, return, true);
     }
 
@@ -265,7 +286,7 @@ class QualifiedType {
         }
     }
 
-    pub Parameters(&this) -> &mut Vector<*const QualifiedType> {
+    pub Parameters(&this) -> &Vector<ParameterType> {
         if this._function {
             ret this.params;
         } else {
@@ -274,7 +295,7 @@ class QualifiedType {
         }
     }
 
-    pub Return(&this) -> &QualifiedType {
+    pub Return(&this) -> &ReturnType {
         if this._function {
             ret this.return;
         } else {
@@ -292,7 +313,7 @@ class QualifiedType {
         }
     }
 
-    pub Methods(&this) -> &mut Vector<Pair<Method, *const QualifiedType>> {
+    pub Methods(&this) -> &Vector<Pair<Method, *const QualifiedType>> {
         if this._class || this._enum {
             ret this.methods;
         } else {
@@ -302,7 +323,7 @@ class QualifiedType {
     }
 
     pub Index(&this, name: &String) -> i64 {
-        let fields: &mut Map<String, Pair<Field, *const QualifiedType>> = this.Fields();
+        let fields: &Map<String, Pair<Field, *const QualifiedType>> = this.Fields();
         let mut i: u64 = 0u64;
 
         while i < fields.Size() {
@@ -313,7 +334,7 @@ class QualifiedType {
     }
 
     pub Has(&this, name: &String, current_class: *const QualifiedType) -> bool {
-        let methods: &mut Vector<Pair<Method, *const QualifiedType>> = this.Methods();
+        let methods: &Vector<Pair<Method, *const QualifiedType>> = this.Methods();
         let mut i: u64 = 0u64;
 
         while i < methods.Size() {
@@ -332,7 +353,7 @@ class QualifiedType {
     }
 
     pub Has(&this, name: &String, params: &Vector<*const QualifiedType>, current_class: *const QualifiedType) -> bool {
-        let methods: &mut Vector<Pair<Method, *const QualifiedType>> = this.Methods();
+        let methods: &Vector<Pair<Method, *const QualifiedType>> = this.Methods();
         let mut i: u64 = 0u64;
 
         while i < methods.Size() {
@@ -345,8 +366,8 @@ class QualifiedType {
 
                 if methods[i].left.visibility == TokenType::PUBLIC || state {
                     let (mut _match: bool, mut j: u64) = (true, 0u64);
-                    let _params: &Vector<*const QualifiedType> = methods[i].right->Pointee().Parameters();
-                    let offset: u64 = _params[0u64]->sret != null ? 2u64 : 1u64;
+                    let _params: &Vector<ParameterType> = methods[i].right->Pointee().Parameters();
+                    let offset: u64 = _params[0u64].sret != null ? 2u64 : 1u64;
 
                     if params.Size() != _params.Size() - offset {
                         i += 1u64;
@@ -354,10 +375,11 @@ class QualifiedType {
                     }
 
                     while params.Size() > j {
-                        let mut _type: *const QualifiedType = _params[j + offset];
+                        let param_type: &ParameterType = _params[j + offset];
+                        let mut _type: *const QualifiedType = param_type._type;
 
-                        if _type->byval != null {
-                            _type = _type->byval;
+                        if param_type.byval != null {
+                            _type = param_type.byval;
                         }
 
                         if _type->IsReference() && *_type != *(params[j]) {
@@ -396,8 +418,8 @@ class QualifiedType {
         } ret false;
     }
 
-    pub Get(&this, name: &String, current_class: *const QualifiedType, node: *const ASTNode) -> &mut Pair<Method, *const QualifiedType> {
-        let methods: &mut Vector<Pair<Method, *const QualifiedType>> = this.Methods();
+    pub Get(&this, name: &String, current_class: *const QualifiedType, node: *const ASTNode) -> &Pair<Method, *const QualifiedType> {
+        let methods: &Vector<Pair<Method, *const QualifiedType>> = this.Methods();
         let (mut state: u64, mut i: u64) = (0u64, 0u64);
 
         while i < methods.Size() {
@@ -425,9 +447,9 @@ class QualifiedType {
         }
     }
 
-    pub Get(&this, name: &String, params: &Vector<*const QualifiedType>, current_class: *const QualifiedType, node: *const ASTNode) -> &mut Pair<Method, *const QualifiedType> {
+    pub Get(&this, name: &String, params: &Vector<*const QualifiedType>, current_class: *const QualifiedType, node: *const ASTNode) -> &Pair<Method, *const QualifiedType> {
         let (mut index: u64, mut best: u64) = (0u64, 0u64);
-        let methods: &mut Vector<Pair<Method, *const QualifiedType>> = this.Methods();
+        let methods: &Vector<Pair<Method, *const QualifiedType>> = this.Methods();
         let (mut state: u64, mut i: u64) = (0u64, 0u64);
 
         while i < methods.Size() {
@@ -442,8 +464,8 @@ class QualifiedType {
                     if state < 1u64 { state = 1u64; }
                 } else {
                     let (mut _match: bool, mut score: u64, mut j: u64) = (true, 1u64, 0u64);
-                    let _params: &Vector<*const QualifiedType> = methods[i].right->Pointee().Parameters();
-                    let offset: u64 = _params[0u64]->sret != null ? 2u64 : 1u64;
+                    let _params: &Vector<ParameterType> = methods[i].right->Pointee().Parameters();
+                    let offset: u64 = _params[0u64].sret != null ? 2u64 : 1u64;
 
                     if params.Size() != _params.Size() - offset {
                         i += 1u64;
@@ -452,10 +474,11 @@ class QualifiedType {
                     }
 
                     while params.Size() > j {
-                        let mut _type: *const QualifiedType = _params[j + offset];
+                        let param_type: &ParameterType = _params[j + offset];
+                        let mut _type: *const QualifiedType = param_type._type;
 
-                        if _type->byval != null {
-                            _type = _type->byval;
+                        if param_type.byval != null {
+                            _type = param_type.byval;
                         }
 
                         if _type->IsReference() && *_type != *(params[j]) {
@@ -562,19 +585,19 @@ class TypeManager {
         ret _type;
     }
 
-    pub Function(&mut this, value: LLVMTypeRef, params: Vector<*const QualifiedType>, return: *const QualifiedType) -> *const QualifiedType {
+    pub Function(&mut this, value: LLVMTypeRef, params: &Vector<ParameterType>, return: &ReturnType) -> *mut QualifiedType {
         let _type: *const QualifiedType = new QualifiedType(value, params, return);
         this.types.PushBack(_type);
         ret _type;
     }
 
-    pub Class(&mut this, value: LLVMTypeRef, name: String) -> *const QualifiedType {
+    pub Class(&mut this, value: LLVMTypeRef, name: String) -> *mut QualifiedType {
         let _type: *const QualifiedType = new QualifiedType(value, false, name, true);
         this.types.PushBack(_type);
         ret _type;
     }
 
-    pub Enum(&mut this, value: LLVMTypeRef, name: String) -> *const QualifiedType {
+    pub Enum(&mut this, value: LLVMTypeRef, name: String) -> *mut QualifiedType {
         let _type: *const QualifiedType = new QualifiedType(value, false, name, false);
         this.types.PushBack(_type);
         ret _type;
@@ -613,7 +636,6 @@ class TypeManager {
 
             if _type->IsPointer() {
                 copy = new QualifiedType(_type->Value(), mutable, _type->IsReference(), false, _type->Pointee());
-                (copy->byval, copy->sret) = (_type->byval, _type->sret);
             } else {
                 Logger::Log("TypeManager", "Cannot copy non-pointer type.", LogSeverity::Error);
                 ret null;
@@ -1144,11 +1166,11 @@ class ScopeManager {
 
         while i < symbols.Size() {
             let (mut _match: bool, mut score: u64, mut j: u64) = (true, 1u64, 0u64);
-            let _params: &Vector<*const QualifiedType> = symbols[i]->value.Type().Pointee().Parameters();
+            let _params: &Vector<ParameterType> = symbols[i]->value.Type().Pointee().Parameters();
             let mut offset: u64 = 0u64;
 
             if _params.Size() != 0u64 {
-                offset = _params[0u64]->sret != null ? 1u64 : 0u64;
+                offset = _params[0u64].sret != null ? 1u64 : 0u64;
             }
 
             if params.Size() != _params.Size() - offset {
@@ -1157,10 +1179,11 @@ class ScopeManager {
             }
 
             while params.Size() > j {
-                let mut _type: *const QualifiedType = _params[j + offset];
+                let param_type: &ParameterType = _params[j + offset];
+                let mut _type: *const QualifiedType = param_type._type;
 
-                if _type->byval != null {
-                    _type = _type->byval;
+                if param_type.byval != null {
+                    _type = param_type.byval;
                 }
 
                 if _type->IsReference() && *_type != *(params[j]) {
@@ -1254,8 +1277,6 @@ class ScopeManager {
 
 class Mangler {
     priv MangleType(_type: *const QualifiedType) -> String {
-        if _type->byval != null { ret Mangler::MangleType(_type->byval); }
-        if _type->sret != null { ret Mangler::MangleType(_type->sret); }
         let kind: LLVMTypeKind = LLVMGetTypeKind(_type->Value());
 
         if kind == LLVMTypeKind::LLVMVoidTypeKind {
@@ -1264,12 +1285,14 @@ class Mangler {
             ret "P" + Mangler::MangleType(_type->Pointee());
         } else if kind == LLVMTypeKind::LLVMFunctionTypeKind {
             let mut result: String = "F";
-            result += Mangler::MangleType(_type->Return());
-            let params: Vector<*const QualifiedType> = _type->Parameters();
+            let return: &ReturnType = _type->Return();
+            result += Mangler::MangleType(return.sret != null ? return.sret : return._type);
+            let params: &Vector<ParameterType> = _type->Parameters();
             let mut i: u64 = 0u64;
 
             while i < params.Size() {
-                result += Mangler::MangleType(params[i]);
+                let param: &ParameterType = params[i];
+                result += Mangler::MangleType(param.sret != null ? param.sret : param.byval != null ? param.byval : param._type);
                 i += 1u64;
             } ret result;
         } else if kind == LLVMTypeKind::LLVMStructTypeKind {
@@ -1314,11 +1337,12 @@ class Mangler {
 
     pub MangleFunction(name: String, _type: *const QualifiedType) -> String {
         let mut result: String = Mangler::MangleName(name);
-        let params: Vector<*const QualifiedType> = _type->Parameters();
+        let params: &Vector<ParameterType> = _type->Parameters();
         let mut i: u64 = 0u64;
 
         while i < params.Size() {
-            result += Mangler::MangleType(params[i]);
+            let param: &ParameterType = params[i];
+            result += Mangler::MangleType(param.sret != null ? param.sret : param.byval != null ? param.byval : param._type);
             i += 1u64;
         } ret result;
     }
@@ -1479,7 +1503,7 @@ class Compiler {
     pub function_ref: LLVMValueRef = null,
     pub mangling: bool = true, pub _unsafe: bool = false,
     priv blocks: Vector<Pair<LLVMBasicBlockRef, LLVMBasicBlockRef>>,
-    priv pass_cache: Map<*const ASTNode, Pair<*mut QualifiedType, *const Scope>>,
+    priv pass_cache: Map<*const ASTNode, Pair<*mut QualifiedType, *mut Scope>>,
     priv enum_pass_cache: Map<*const ASTNode, *const QualifiedType>,
     priv forwards: Vector<Forward>,
 
@@ -1591,7 +1615,7 @@ class Compiler {
             let forward: Forward = this.forwards[i];
             (this.function, this.function_ref) = (forward._type, forward.value);
             let has_instance: bool = forward.declaration->_type->instance_kind != InstanceKind::None;
-            let params: Vector<*const QualifiedType> = this.function->Parameters();
+            let params: &Vector<ParameterType> = this.function->Parameters();
             let scope: *mut Scope = this.scope_manager.current;
             this._class = forward._class;
 
@@ -1623,16 +1647,16 @@ class Compiler {
                     (name, mutable) = (param->name, param->mutable);
                 }
 
-                let index: u64 = params[0u64]->sret != null ? k + 1u64 : k;
-                let mut _type: *const QualifiedType = params[index];
+                let index: u64 = params[0u64].sret != null ? k + 1u64 : k;
+                let mut _type: *const QualifiedType = params[index]._type;
 
-                if params[index]->byval != null && LLVMGetTypeKind(_type->Value()) == LLVMTypeKind::LLVMPointerTypeKind {
-                    _type = this.type_manager.Pointer(params[index]->byval, mutable);
+                if params[index].byval != null && LLVMGetTypeKind(_type->Value()) == LLVMTypeKind::LLVMPointerTypeKind {
+                    _type = this.type_manager.Pointer(params[index].byval, mutable);
                     let instance: QualifiedValue = QualifiedValue(LLVMGetParam(this.function_ref, index as u32), _type, false, true);
                     this.scope_manager.Set(name, SymbolKind::Parameter, instance, false, forward.declaration as *const ASTNode);
                     if _type->Pointee().IsClass() { this.scope_manager.RegisterInstance(instance); }
                 } else {
-                    if params[index]->byval != null { _type = params[index]->byval; }
+                    if params[index].byval != null { _type = params[index].byval; }
                     let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
                     LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
                     let pointer: LLVMValueRef = LLVMBuildAlloca(this.builder, _type->Value(), "");
@@ -1640,7 +1664,7 @@ class Compiler {
                     LLVMPositionBuilderAtEnd(this.builder, current);
                     LLVMBuildStore(this.builder, LLVMGetParam(this.function_ref, index as u32), pointer);
                     let instance: QualifiedValue = QualifiedValue(pointer, this.type_manager.Pointer(_type, mutable), false, true);
-                    if params[index]->byval != null && _type->IsClass() { this.scope_manager.RegisterInstance(instance); }
+                    if params[index].byval != null && _type->IsClass() { this.scope_manager.RegisterInstance(instance); }
                     this.scope_manager.Set(name, SymbolKind::Parameter, instance, false, forward.declaration as *const ASTNode);
                 } k += 1u64;
             }
@@ -1668,8 +1692,8 @@ class Compiler {
                     } m += 1u64;
                 }
 
-                let index: u64 = params[0u64]->sret != null ? 1u64 : 0u64;
-                let instance: QualifiedValue = QualifiedValue(LLVMGetParam(this.function_ref, index as u32), params[index]);
+                let index: u64 = params[0u64].sret != null ? 1u64 : 0u64;
+                let instance: QualifiedValue = QualifiedValue(LLVMGetParam(this.function_ref, index as u32), params[index]._type);
                 this.CompileConstructor(_class, this.CompileCast2(instance, this.type_manager.Pointer(_class, _class.IsMutable()), forward.declaration as *const ASTNode), values, forward.declaration as *const ASTNode);
                 l += 1u64;
             }
@@ -1680,9 +1704,9 @@ class Compiler {
             if LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(this.builder)) == null {
                 let mut state: bool = true;
 
-                if LLVMGetTypeKind(this.function->Return().Value()) == LLVMTypeKind::LLVMVoidTypeKind {
+                if LLVMGetTypeKind(this.function->Return()._type->Value()) == LLVMTypeKind::LLVMVoidTypeKind {
                     if !params.Empty() {
-                        state = params[0u64]->sret != null;
+                        state = params[0u64].sret != null;
                     } else {
                         state = false;
                     }
@@ -1721,13 +1745,13 @@ class Compiler {
     priv CompileDeclarationFirstPass(&mut this, declaration: *const ASTNode) -> bool {
         if declaration->node_type == ASTNodeType::CLASS_DECL {
             let class_decl: *const ClassDeclNode = declaration as *const ClassDeclNode;
-            let cache: Pair<*mut QualifiedType, *const Scope> = this.CompileClassFirstPass(class_decl, null);
+            let cache: Pair<*mut QualifiedType, *mut Scope> = this.CompileClassFirstPass(class_decl, null);
             if !class_decl->generic && cache.left != null && cache.right != null { this.pass_cache[declaration] = cache; }
         } else if declaration->node_type == ASTNodeType::ENUM_DECL {
             let enum_decl: *const EnumDeclNode = declaration as *const EnumDeclNode;
 
             if enum_decl->variant {
-                let cache: Pair<*mut QualifiedType, *const Scope> = this.CompileVariantFirstPass(enum_decl, null);
+                let cache: Pair<*mut QualifiedType, *mut Scope> = this.CompileVariantFirstPass(enum_decl, null);
                 if !enum_decl->generic && cache.left != null && cache.right != null { this.pass_cache[declaration] = cache; }
             } else {
                 let cache: *const QualifiedType = this.CompileEnumerationFirstPass(enum_decl);
@@ -1748,7 +1772,7 @@ class Compiler {
             let class_decl: *const ClassDeclNode = declaration as *const ClassDeclNode;
 
             if !class_decl->generic && this.pass_cache.Has(declaration) {
-                let cache: Pair<*mut QualifiedType, *const Scope> = this.pass_cache[declaration];
+                let cache: Pair<*mut QualifiedType, *mut Scope> = this.pass_cache[declaration];
                 this.CompileClassSecondPass(cache.left, class_decl, cache.right);
             }
         } else if declaration->node_type == ASTNodeType::ENUM_DECL {
@@ -1756,7 +1780,7 @@ class Compiler {
 
             if enum_decl->variant {
                 if !enum_decl->generic && this.pass_cache.Has(declaration) {
-                    let cache: Pair<*mut QualifiedType, *const Scope> = this.pass_cache[declaration];
+                    let cache: Pair<*mut QualifiedType, *mut Scope> = this.pass_cache[declaration];
                     this.CompileVariantSecondPass(cache.left, enum_decl, cache.right);
                 }
             } else {
@@ -1778,14 +1802,14 @@ class Compiler {
             let class_decl: *const ClassDeclNode = declaration as *const ClassDeclNode;
 
             if !class_decl->generic && this.pass_cache.Has(declaration) {
-                let cache: Pair<*mut QualifiedType, *const Scope> = this.pass_cache[declaration];
+                let cache: Pair<*mut QualifiedType, *mut Scope> = this.pass_cache[declaration];
                 this.CompileClassThirdPass(cache.left, class_decl, cache.right);
             }
         } else if declaration->node_type == ASTNodeType::ENUM_DECL {
             let enum_decl: *const EnumDeclNode = declaration as *const EnumDeclNode;
 
             if enum_decl->variant && !enum_decl->generic && this.pass_cache.Has(declaration) {
-                let cache: Pair<*mut QualifiedType, *const Scope> = this.pass_cache[declaration];
+                let cache: Pair<*mut QualifiedType, *mut Scope> = this.pass_cache[declaration];
                 this.CompileVariantThirdPass(cache.left, enum_decl, cache.right);
             }
         } else if declaration->node_type == ASTNodeType::EXTERN_BLOCK {
@@ -1814,7 +1838,7 @@ class Compiler {
             }
 
             if _type->IsClass() {
-                let fields: &mut Map<String, Pair<Field, *const QualifiedType>> = _type->Fields();
+                let fields: &Map<String, Pair<Field, *const QualifiedType>> = _type->Fields();
                 let mut i: u64 = 0u64;
 
                 while i < fields.Size() {
@@ -1934,7 +1958,7 @@ class Compiler {
                 }
 
                 if _type->IsClass() {
-                    let fields: &mut Map<String, Pair<Field, *const QualifiedType>> = _type->Fields();
+                    let fields: &Map<String, Pair<Field, *const QualifiedType>> = _type->Fields();
                     let mut i: u64 = 0u64;
 
                     while i < fields.Size() {
@@ -2105,23 +2129,23 @@ class Compiler {
             ret QualifiedValue(null, null);
         }
 
-        let (mut params: Vector<*const QualifiedType>, mut param_types: Vector<LLVMTypeRef>);
-        let mut return_type: *const QualifiedType = this.CompileType(func_decl->_type->return_type);
+        let (mut params: Vector<ParameterType>, mut param_types: Vector<LLVMTypeRef>);
+        let mut return_type: ReturnType = this.CompileType(func_decl->_type->return_type);
         let mut attributes: Vector<LLVMTypeRef>;
         let mut sret: bool = false;
 
-        if LLVMGetTypeKind(return_type->Value()) == LLVMTypeKind::LLVMStructTypeKind && !return_type->IsEnum() {
-            let processed_type: &mut QualifiedType = this.ProcessType(return_type) as &mut QualifiedType;
-            processed_type.sret = return_type;
+        if LLVMGetTypeKind(return_type._type->Value()) == LLVMTypeKind::LLVMStructTypeKind && !return_type._type->IsEnum() {
+            let processed_type: *const QualifiedType = this.ProcessType(return_type._type);
 
-            if LLVMGetTypeKind(processed_type.Value()) != LLVMTypeKind::LLVMPointerTypeKind {
-                return_type = processed_type;
+            if LLVMGetTypeKind(processed_type->Value()) != LLVMTypeKind::LLVMPointerTypeKind {
+                (return_type.sret, return_type._type) = (return_type._type, processed_type);
             } else {
-                params.PushBack(processed_type);
-                param_types.PushBack(processed_type.Value());
-                attributes.PushBack(return_type->Value());
-                return_type = this.type_manager.Primitive(LLVMVoidTypeInContext(this.context), false);
-                sret = true;
+                let mut param_type: ParameterType = processed_type;
+                (param_type.sret, sret) = (return_type._type, true);
+                return_type._type = this.type_manager.Primitive(LLVMVoidTypeInContext(this.context), false);
+                attributes.PushBack(return_type._type->Value());
+                param_types.PushBack(processed_type->Value());
+                params.PushBack(param_type);
             }
         }
 
@@ -2152,21 +2176,22 @@ class Compiler {
                 i += 1u64;
             }
 
-            let processed_type: &mut QualifiedType = (real_type->IsEnum() ? real_type : this.ProcessType(real_type)) as &mut QualifiedType;
-            param_types.PushBack(processed_type.Value());
-            params.PushBack(processed_type);
+            let mut param_type: ParameterType = real_type->IsEnum() ? real_type : this.ProcessType(real_type);
 
-            if (*real_type) != processed_type {
-                attributes.PushBack(LLVMGetTypeKind(processed_type.Value()) == LLVMTypeKind::LLVMPointerTypeKind ? real_type->Value() : null);
-                processed_type.byval = real_type;
+            if (*real_type) != (*param_type._type) {
+                attributes.PushBack(LLVMGetTypeKind(param_type._type->Value()) == LLVMTypeKind::LLVMPointerTypeKind ? real_type->Value() : null);
+                param_type.byval = real_type;
             } else {
                 attributes.PushBack(null);
             }
+
+            param_types.PushBack(param_type._type->Value());
+            params.PushBack(param_type);
         }
 
         let mut name: String = func_decl->name;
-        let type_ref: LLVMTypeRef = LLVMFunctionType(return_type->Value(), param_types.Data(), param_types.Size() as u32, func_decl->_type->var_arg ? 1i32 : 0i32);
-        let _type: &mut QualifiedType = this.type_manager.Function(type_ref, params, return_type) as &mut QualifiedType;
+        let type_ref: LLVMTypeRef = LLVMFunctionType(return_type._type->Value(), param_types.Data(), param_types.Size() as u32, func_decl->_type->var_arg ? 1i32 : 0i32);
+        let _type: &mut QualifiedType = this.type_manager.Function(type_ref, params, return_type);
         _type.name = name;
 
         if func_decl->no_mangle {
@@ -2198,7 +2223,7 @@ class Compiler {
         let mut k: u64 = 0u64;
 
         while func_decl->constructors.Size() > k {
-            let _class: &mut QualifiedType = this.CompileType(func_decl->constructors[k]->expression) as &mut QualifiedType;
+            let _class: &mut QualifiedType = this.CompileType(func_decl->constructors[k]->expression);
 
             if !_class.IsClass() {
                 Logger::Log("Constructor type must be a class.", func_decl as *const ASTNode, LogSeverity::Error);
@@ -2253,7 +2278,7 @@ class Compiler {
         }
 
         let mut j: u64 = 0u64;
-        let fields: &mut Map<String, Pair<Field, *const QualifiedType>> = _class.Fields();
+        let fields: &Map<String, Pair<Field, *const QualifiedType>> = _class.Fields();
 
         while j < fields.Size() {
             let field: &mut Pair<String, Pair<Field, *const QualifiedType>> = fields[j];
@@ -2335,7 +2360,7 @@ class Compiler {
             this.CompileCall2(QualifiedValue(method.left.value, method.right, pointer), params, false, true, node);
         }
 
-        let fields: &mut Map<String, Pair<Field, *const QualifiedType>> = _class.Fields();
+        let fields: &Map<String, Pair<Field, *const QualifiedType>> = _class.Fields();
         let mut i: u64 = 0u64;
 
         while i < fields.Size() {
@@ -2347,7 +2372,7 @@ class Compiler {
         }
     }
 
-    priv CompileClassFirstPass(&mut this, class_decl: *const ClassDeclNode, generic: *mut Generic) -> Pair<*mut QualifiedType, *const Scope> {
+    priv CompileClassFirstPass(&mut this, class_decl: *const ClassDeclNode, generic: *mut Generic) -> Pair<*mut QualifiedType, *mut Scope> {
         if class_decl->generic && generic == null {
             let _generic: *mut Generic = new Generic(class_decl as *const ASTNode);
             this.scope_manager.Set(class_decl->name, SymbolKind::Generic, _generic as *const void, false, class_decl as *const ASTNode);
@@ -2355,7 +2380,7 @@ class Compiler {
         }
 
         let struct_name: *const i8 = generic != null ? generic->current.Data() : class_decl->name.Data();
-        let _class: *mut QualifiedType = this.type_manager.Class(LLVMStructCreateNamed(this.context, struct_name), class_decl->name) as *mut QualifiedType;
+        let _class: *mut QualifiedType = this.type_manager.Class(LLVMStructCreateNamed(this.context, struct_name), class_decl->name);
 
         if generic != null {
             this.scope_manager.PushScope(generic->current, true);
@@ -2365,9 +2390,9 @@ class Compiler {
             this.scope_manager.PushScope(class_decl->name, true);
         }
 
-        let scope: *const Scope = this.scope_manager.current;
+        let scope: *mut Scope = this.scope_manager.current;
         this.scope_manager.PopScope();
-        ret Pair<*mut QualifiedType, *const Scope>(_class, scope);
+        ret Pair<*mut QualifiedType, *mut Scope>(_class, scope);
     }
 
     priv CompileClassSecondPass(&mut this, _class: *mut QualifiedType, class_decl: *const ClassDeclNode, scope: *mut Scope) {
@@ -2426,7 +2451,7 @@ class Compiler {
     }
 
     pub CompileClass(&mut this, class_decl: *const ClassDeclNode, generic: *mut Generic) -> *const QualifiedType {
-        let cache: Pair<*mut QualifiedType, *const Scope> = this.CompileClassFirstPass(class_decl, generic);
+        let cache: Pair<*mut QualifiedType, *mut Scope> = this.CompileClassFirstPass(class_decl, generic);
 
         if cache.left != null {
             this.CompileClassSecondPass(cache.left, class_decl, cache.right);
@@ -2482,7 +2507,7 @@ class Compiler {
         this.scope_manager.PopScope();
     }
 
-    priv CompileVariantFirstPass(&mut this, enum_decl: *mut EnumDeclNode, generic: *mut Generic) -> Pair<*mut QualifiedType, *const Scope> {
+    priv CompileVariantFirstPass(&mut this, enum_decl: *mut EnumDeclNode, generic: *mut Generic) -> Pair<*mut QualifiedType, *mut Scope> {
         if enum_decl->generic && generic == null {
             let _generic: *mut Generic = new Generic(enum_decl as *const ASTNode);
             this.scope_manager.Set(enum_decl->name, SymbolKind::Generic, _generic as *const void, false, enum_decl as *const ASTNode);
@@ -2490,7 +2515,7 @@ class Compiler {
         }
 
         let struct_name: *const i8 = generic != null ? generic->current.Data() : enum_decl->name.Data();
-        let _enum: *mut QualifiedType = this.type_manager.Enum(LLVMStructCreateNamed(this.context, struct_name), enum_decl->name) as *mut QualifiedType;
+        let _enum: *mut QualifiedType = this.type_manager.Enum(LLVMStructCreateNamed(this.context, struct_name), enum_decl->name);
 
         if generic != null {
             this.scope_manager.PushScope(generic->current, true);
@@ -2500,9 +2525,9 @@ class Compiler {
             this.scope_manager.PushScope(enum_decl->name, true);
         }
 
-        let scope: *const Scope = this.scope_manager.current;
+        let scope: *mut Scope = this.scope_manager.current;
         this.scope_manager.PopScope();
-        ret Pair<*mut QualifiedType, *const Scope>(_enum, scope);
+        ret Pair<*mut QualifiedType, *mut Scope>(_enum, scope);
     }
 
     priv CompileVariantSecondPass(&mut this, _enum: *mut QualifiedType, enum_decl: *mut EnumDeclNode, scope: *mut Scope) {
@@ -2568,16 +2593,18 @@ class Compiler {
                 let const_val: LLVMValueRef = LLVMConstNamedStruct(struct_type, values, 2u32);
                 this.scope_manager.Set(variant->name, SymbolKind::Constant, QualifiedValue(const_val, _enum), false, enum_decl as *const ASTNode);
             } else {
+                let mut params: Vector<ParameterType>;
                 let mut param_types: Vector<LLVMTypeRef>;
                 let mut l: u64 = 0u64;
 
                 while l < current_variant_types.Size() {
                     param_types.PushBack(current_variant_types[l]->Value());
+                    params.PushBack(ParameterType(current_variant_types[l]));
                     l += 1u64;
                 }
 
                 let func_type: LLVMTypeRef = LLVMFunctionType(struct_type, param_types.Data(), param_types.Size() as u32, 0i32);
-                let func_name: String = Mangler::MangleFunction(variant->name, this.type_manager.Function(func_type, current_variant_types, _enum));
+                let func_name: String = Mangler::MangleFunction(variant->name, this.type_manager.Function(func_type, params, ReturnType(_enum)));
                 let function: LLVMValueRef = LLVMAddFunction(this.module, func_name.Data(), func_type);
                 this.AddAttributes(function);
 
@@ -2604,7 +2631,7 @@ class Compiler {
                 LLVMBuildRet(temp_builder, LLVMBuildLoad2(temp_builder, struct_type, alloca, ""));
                 LLVMDisposeBuilder(temp_builder);
 
-                this.scope_manager.Set(variant->name, SymbolKind::Function, QualifiedValue(function, this.type_manager.Pointer(this.type_manager.Function(func_type, current_variant_types, _enum), false)), false, enum_decl as *const ASTNode);
+                this.scope_manager.Set(variant->name, SymbolKind::Function, QualifiedValue(function, this.type_manager.Pointer(this.type_manager.Function(func_type, params, ReturnType(_enum)), false)), false, enum_decl as *const ASTNode);
             } k += 1u64;
         }
 
@@ -3093,12 +3120,12 @@ class Compiler {
 
     priv CompileReturn(&mut this, ret_stmt: *const ReturnStmtNode) {
         if ret_stmt->expression != null {
-            let return: &QualifiedType = this.function->Return();
-            let params: Vector<*const QualifiedType> = this.function->Parameters();
+            let return: &ReturnType = this.function->Return();
+            let params: &Vector<ParameterType> = this.function->Parameters();
             let mut state: bool = false;
 
             if !params.Empty() {
-                state = params[0u64]->sret != null;
+                state = params[0u64].sret != null;
             }
 
             if return.sret != null || state {
@@ -3112,23 +3139,23 @@ class Compiler {
                     value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
                 }
 
-                if LLVMGetTypeKind(return.Value()) == LLVMTypeKind::LLVMIntegerTypeKind {
+                if LLVMGetTypeKind(return._type->Value()) == LLVMTypeKind::LLVMIntegerTypeKind {
                     if *return.sret != value.Type().Pointee() {
                         Logger::Log("Incompatible return types. ('" + return.sret->ToString() + "' != '" + value.Type().Pointee().ToString() + "').", ret_stmt as *const ASTNode, LogSeverity::Error);
                         ret;
                     }
 
                     this.scope_manager.InvokeDestructors(value);
-                    LLVMBuildRet(this.builder, LLVMBuildLoad2(this.builder, return.Value(), value.Value(), ""));
+                    LLVMBuildRet(this.builder, LLVMBuildLoad2(this.builder, return._type->Value(), value.Value(), ""));
                 } else {
-                    if *params[0u64]->sret != value.Type().Pointee() {
+                    if *params[0u64].sret != value.Type().Pointee() {
                         Logger::Log("Incompatible return types. ('" + return.sret->ToString() + "' != '" + value.Type().Pointee().ToString() + "').", ret_stmt as *const ASTNode, LogSeverity::Error);
                         ret;
                     }
 
                     let mut _params: Vector<QualifiedValue>;
                     _params.PushBack(value);
-                    this.CompileConstructor(value.Type().Pointee(), QualifiedValue(LLVMGetParam(this.function_ref, 0u32), params[0u64]), _params, ret_stmt as *const ASTNode);
+                    this.CompileConstructor(value.Type().Pointee(), QualifiedValue(LLVMGetParam(this.function_ref, 0u32), params[0u64]._type), _params, ret_stmt as *const ASTNode);
                     this.scope_manager.InvokeDestructors(value);
                     LLVMBuildRetVoid(this.builder);
                 }
@@ -3140,27 +3167,27 @@ class Compiler {
                 }
 
                 if value.Type().IsReference() {
-                    if return == value.Type().Pointee() {
+                    if (*return._type) == value.Type().Pointee() {
                         value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
                     }
                 }
 
-                if return.IsReference() {
-                    if return.Pointee() == value.Type() {
+                if return._type->IsReference() {
+                    if return._type->Pointee() == value.Type() {
                         value = QualifiedValue(LLVMAddressOf(value.Value(), this.builder), this.type_manager.Pointer(value.Type(), value.Type().IsMutable()));
                     }
                 }
 
                 let mut state: bool = false;
 
-                if return.IsPointer() && value.Type().IsPointer() {
-                    if LLVMGetTypeKind(return.Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || value.Type().Pointee()._null {
+                if return._type->IsPointer() && value.Type().IsPointer() {
+                    if LLVMGetTypeKind(return._type->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || value.Type().Pointee()._null {
                         state = true;
                     }
                 }
 
-                if return != value.Type() && !state {
-                    Logger::Log("Incompatible return types. ('" + return.ToString() + "' != '" + value.Type().ToString() + "').", ret_stmt as *const ASTNode, LogSeverity::Error);
+                if (*return._type) != value.Type() && !state {
+                    Logger::Log("Incompatible return types. ('" + return._type->ToString() + "' != '" + value.Type().ToString() + "').", ret_stmt as *const ASTNode, LogSeverity::Error);
                     ret;
                 }
 
@@ -3751,7 +3778,7 @@ class Compiler {
                     ret QualifiedValue(null, null);
                 }
 
-                let fields: &mut Map<String, Pair<Field, *const QualifiedType>> = _class.Fields();
+                let fields: &Map<String, Pair<Field, *const QualifiedType>> = _class.Fields();
                 value = QualifiedValue(LLVMAddressOf(value.Value(), this.builder), this.type_manager.Pointer(value.Type(), true));
                 let mut i: u64 = 0u64;
 
@@ -4006,7 +4033,7 @@ class Compiler {
         let mut enum_type: *const QualifiedType = null;
 
         if variant_symbol->value.Type().IsPointer() {
-            enum_type = variant_symbol->value.Type().Pointee().Return();
+            enum_type = variant_symbol->value.Type().Pointee().Return()._type;
         } else {
             enum_type = variant_symbol->value.Type().Pointee();
         }
@@ -4359,32 +4386,28 @@ class Compiler {
         }
 
         let mut args: Vector<LLVMValueRef>;
-        let ret_type: &QualifiedType = _func.Type().Pointee().Return();
-        let params: Vector<*const QualifiedType> = _func.Type().Pointee().Parameters();
+        let ret_type: &ReturnType = _func.Type().Pointee().Return();
+        let params: &Vector<ParameterType> = _func.Type().Pointee().Parameters();
         let mut return: QualifiedValue = QualifiedValue(null, null);
         let mut i: u64 = 0u64;
 
         if !params.Empty() {
-            if params[0u64]->sret != null {
+            if params[0u64].sret != null {
                 let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
                 LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
-                let _pointer: LLVMValueRef = LLVMBuildAlloca(this.builder, params[0u64]->sret->Value(), "");
-                return = QualifiedValue(_pointer, this.type_manager.Pointer(params[0u64]->sret, true), true, true);
+                let _pointer: LLVMValueRef = LLVMBuildAlloca(this.builder, params[0u64].sret->Value(), "");
+                return = QualifiedValue(_pointer, this.type_manager.Pointer(params[0u64].sret, true), true, true);
                 LLVMPositionBuilderAtEnd(this.builder, current);
                 args.PushBack(return.Value());
 
-                if params[0u64]->sret->IsClass() {
+                if params[0u64].sret->IsClass() {
                     this.scope_manager.RegisterInstance(return);
                 }
             }
         }
 
         if _func.instance != null {
-            let mut param: *const QualifiedType = params[0u64];
-
-            if param->sret != null {
-                param = params[1u64];
-            }
+            let mut param: *const QualifiedType = params[params[0u64].sret != null ? 1u64 : 0u64]._type;
 
             if param->IsMutable() && !_func.instance_type->IsMutable() && !ignore {
                 Logger::Log("Cannot call mutable method '" + _func.Type().Pointee().name + "' on immutable instance.", node, LogSeverity::Error);
@@ -4396,14 +4419,14 @@ class Compiler {
 
         while i < values.Size() {
             let mut value: QualifiedValue = values[i];
-            let mut index: u64 = params[0u64]->sret != null ? i + 1u64 : i;
+            let mut index: u64 = params[0u64].sret != null ? i + 1u64 : i;
 
             if _func.instance != null {
                 index += 1u64;
             }
 
             if index < params.Size() {
-                let param: &QualifiedType = params[index];
+                let param: &ParameterType = params[index];
 
                 if param.byval != null {
                     if value.Type().IsReference() {
@@ -4450,34 +4473,34 @@ class Compiler {
                         LLVMBuildStore(this.builder, LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), _params[0u64].Value(), ""), value.Value());
                     }
 
-                    if LLVMGetTypeKind(param.Value()) != LLVMTypeKind::LLVMPointerTypeKind {
-                        args.PushBack(LLVMBuildLoad2(this.builder, param.Value(), value.Value(), ""));
+                    if LLVMGetTypeKind(param._type->Value()) != LLVMTypeKind::LLVMPointerTypeKind {
+                        args.PushBack(LLVMBuildLoad2(this.builder, param._type->Value(), value.Value(), ""));
                     } else {
                         args.PushBack(value.Value());
                     }
                 } else {
                     if value.Type().IsReference() {
-                        if param == value.Type().Pointee() {
+                        if (*param._type) == value.Type().Pointee() {
                             value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
                         }
                     }
 
-                    if param.IsReference() {
-                        if param.Pointee() == value.Type() {
+                    if param._type->IsReference() {
+                        if param._type->Pointee() == value.Type() {
                             value = QualifiedValue(LLVMAddressOf(value.Value(), this.builder), this.type_manager.Pointer(value.Type(), value.Type().IsMutable()));
                         }
                     }
 
                     let mut state: bool = false;
 
-                    if param.IsPointer() && value.Type().IsPointer() {
-                        if LLVMGetTypeKind(param.Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || value.Type().Pointee()._null {
+                    if param._type->IsPointer() && value.Type().IsPointer() {
+                        if LLVMGetTypeKind(param._type->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || value.Type().Pointee()._null {
                             state = true;
                         }
                     }
 
-                    if param != value.Type() && !state {
-                        Logger::Log("Incompatible argument types for function '" + _func.Type().Pointee().name + "'. ('" + param.ToString() + "' != '" + value.Type().ToString() + "').", node, LogSeverity::Error);
+                    if (*param._type) != value.Type() && !state {
+                        Logger::Log("Incompatible argument types for function '" + _func.Type().Pointee().name + "'. ('" + param._type->ToString() + "' != '" + value.Type().ToString() + "').", node, LogSeverity::Error);
                         ret QualifiedValue(null, null);
                     }
 
@@ -4498,7 +4521,7 @@ class Compiler {
             let _pointer: LLVMValueRef = LLVMBuildAlloca(this.builder, ret_type.sret->Value(), "");
             return = QualifiedValue(_pointer, this.type_manager.Pointer(ret_type.sret, true), true, true);
             LLVMPositionBuilderAtEnd(this.builder, current);
-            LLVMBuildStore(this.builder, value, LLVMBuildBitCast(this.builder, _pointer, LLVMPointerType(ret_type.Value(), 0u32), ""));
+            LLVMBuildStore(this.builder, value, LLVMBuildBitCast(this.builder, _pointer, LLVMPointerType(ret_type._type->Value(), 0u32), ""));
 
             if ret_type.sret->IsClass() {
                 this.scope_manager.RegisterInstance(return);
@@ -4506,7 +4529,7 @@ class Compiler {
         }
 
         if return.Null() {
-            ret QualifiedValue(value, ret_type);
+            ret QualifiedValue(value, ret_type._type);
         } else {
             if !pointer {
                 ret QualifiedValue(LLVMBuildLoad2(this.builder, return.Type().Pointee().Value(), return.Value(), ""), return.Type().Pointee(), true);
@@ -4948,8 +4971,8 @@ class Compiler {
                 let value_class: &QualifiedType = value.Type().Pointee();
                 let target_class: &QualifiedType = target.Pointee();
 
-                let value_fields: &mut Map<String, Pair<Field, *const QualifiedType>> = value_class.Fields();
-                let target_fields: &mut Map<String, Pair<Field, *const QualifiedType>> = target_class.Fields();
+                let value_fields: &Map<String, Pair<Field, *const QualifiedType>> = value_class.Fields();
+                let target_fields: &Map<String, Pair<Field, *const QualifiedType>> = target_class.Fields();
                 let (mut related: bool, mut index: u32) = (false, 0u32);
                 let (mut i: u64, mut j: u64) = (0u64, 0u64);
 
@@ -5148,7 +5171,7 @@ class Compiler {
                     ret QualifiedValue(null, null);
                 }
 
-                let fields: &mut Map<String, Pair<Field, *const QualifiedType>> = _class.Fields();
+                let fields: &Map<String, Pair<Field, *const QualifiedType>> = _class.Fields();
                 left = QualifiedValue(LLVMAddressOf(left.Value(), this.builder), this.type_manager.Pointer(left.Type(), true));
                 right = QualifiedValue(LLVMAddressOf(right.Value(), this.builder), this.type_manager.Pointer(right.Type(), true));
                 let mut result: LLVMValueRef = null;
@@ -5468,19 +5491,20 @@ class Compiler {
             }
         } else if type_node->node_type == ASTNodeType::FUNCTION_TYPE {
             let function_type: *const FunctionTypeNode = type_node as *const FunctionTypeNode;
-            let (mut params: Vector<*const QualifiedType>, mut param_types: Vector<LLVMTypeRef>);
-            let mut return_type: *const QualifiedType = this.CompileType(function_type->return_type);
+            let (mut params: Vector<ParameterType>, mut param_types: Vector<LLVMTypeRef>);
+            let mut return_type: ReturnType = this.CompileType(function_type->return_type);
 
-            if LLVMGetTypeKind(return_type->Value()) == LLVMTypeKind::LLVMStructTypeKind && !return_type->IsEnum() {
-                let processed_type: &mut QualifiedType = this.ProcessType(return_type) as &mut QualifiedType;
+            if LLVMGetTypeKind(return_type._type->Value()) == LLVMTypeKind::LLVMStructTypeKind && !return_type._type->IsEnum() {
+                let processed_type: *const QualifiedType = this.ProcessType(return_type._type);
 
-                if LLVMGetTypeKind(processed_type.Value()) != LLVMTypeKind::LLVMPointerTypeKind {
-                    return_type = processed_type;
+                if LLVMGetTypeKind(processed_type->Value()) != LLVMTypeKind::LLVMPointerTypeKind {
+                    (return_type.sret, return_type._type) = (return_type._type, processed_type);
                 } else {
-                    params.PushBack(processed_type);
-                    param_types.PushBack(processed_type.Value());
-                    return_type = this.type_manager.Primitive(LLVMVoidTypeInContext(this.context), false);
-                    processed_type.sret = return_type;
+                    let mut param_type: ParameterType = processed_type;
+                    param_type.sret = return_type._type;
+                    return_type._type = this.type_manager.Primitive(LLVMVoidTypeInContext(this.context), false);
+                    param_types.PushBack(processed_type->Value());
+                    params.PushBack(param_type);
                 }
             }
 
@@ -5489,16 +5513,18 @@ class Compiler {
             while i < function_type->parameters.Size() {
                 let param: *const ParameterNode = function_type->parameters[i];
                 let real_type: &QualifiedType = this.CompileType(param->param_type);
-                let processed_type: &mut QualifiedType = (real_type.IsEnum() ? real_type : this.ProcessType(real_type)) as &mut QualifiedType;
-                param_types.PushBack(processed_type.Value());
-                params.PushBack(processed_type);
+                let mut param_type: ParameterType = real_type.IsEnum() ? real_type : this.ProcessType(real_type);
 
-                if real_type != processed_type {
-                    processed_type.byval = real_type;
-                } i += 1u64;
+                if real_type != (*param_type._type) {
+                    param_type.byval = real_type;
+                }
+
+                param_types.PushBack(param_type._type->Value());
+                params.PushBack(param_type);
+                i += 1u64;
             }
 
-            ret this.type_manager.Pointer(this.type_manager.Function(LLVMFunctionType(return_type->Value(), param_types.Data(), param_types.Size() as u32, function_type->var_arg ? 1i32 : 0i32), params, return_type), false);
+            ret this.type_manager.Pointer(this.type_manager.Function(LLVMFunctionType(return_type._type->Value(), param_types.Data(), param_types.Size() as u32, function_type->var_arg ? 1i32 : 0i32), params, return_type), false);
         } else {
             Logger::Log("Unknown type '" + type_node->node_type.ToString() + "'.", type_node, LogSeverity::Error);
             ret null;

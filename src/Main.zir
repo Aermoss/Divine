@@ -400,6 +400,7 @@ func PrintUsage(executable: String) {
     WriteLine("  -mcmodel <model>         Code model (tiny, small, medium, large, kernel)");
     WriteLine("  -ffreestanding           Assert that the compilation takes place in a freestanding environment");
     WriteLine("  -mno-red-zone            Do not use the red-zone for x86-64 code");
+    WriteLine("  -mgeneral-regs-only      Generate code which only uses the general-purpose registers");
     WriteLine("  -r, --run                Run the program after compiling");
     WriteLine("  -v, --verbose            Show commands to run and use verbose output");
     WriteLine("  --version                Display compiler version");
@@ -439,7 +440,7 @@ func main(args: &mut Vector<String>) -> i32 {
     include_paths.PushBack(String("include"));
 
     let mut opt_level: LLVMCodeGenOptLevel = LLVMCodeGenOptLevel::LLVMCodeGenLevelLess;
-    let (mut triple: String, mut arch: String, mut code_model: String) = (LLVMGetDefaultTargetTriple(), "generic", "default");
+    let (mut triple: String, mut arch: String, mut code_model: String, mut features: String) = (LLVMGetDefaultTargetTriple(), "generic", "default", "");
     let (mut emit_object: bool, mut emit_asm: bool, mut emit_llvm: bool) = (false, false, false);
     let (mut run: bool, mut debug: bool, mut verbose: bool, mut check: bool) = (false, false, false, false);
     let (mut freestanding: bool, mut no_red_zone: bool) = (false, false);
@@ -470,6 +471,13 @@ func main(args: &mut Vector<String>) -> i32 {
             freestanding = true;
         } else if arg == "-mno-red-zone" {
             no_red_zone = true;
+        } else if arg == "-mgeneral-regs-only" {
+            if !features.Empty() { features += ","; }
+            features += "+nofp,+nosimd";
+
+            if triple.Contains("aarch64") || triple.Contains("arm64") {
+                features += ",+fixed-x18";
+            }
         } else if arg == "-r" || arg == "--run" {
             run = true;
         } else if arg == "-O0" {
@@ -607,6 +615,12 @@ func main(args: &mut Vector<String>) -> i32 {
         defines.PushBack(String("LINUX"));
     }
 
+    if triple.Contains("x86_64") {
+        defines.PushBack(String("AMD64"));
+    } else if triple.Contains("aarch64") || triple.Contains("arm64") {
+        defines.PushBack(String("ARM64"));
+    }
+
     let timer: Timer;
     let start: f64 = timer.Get();
     let mut objects: Vector<String>;
@@ -616,7 +630,7 @@ func main(args: &mut Vector<String>) -> i32 {
     let mut failed: bool = false;
 
     let context: Context;
-    let target: Target = { triple, arch, code_model, opt_level };
+    let target: Target = { triple, arch, code_model, features, opt_level };
     let mut j: u64 = 0u64;
 
     while j < input_files.Size() {

@@ -2025,6 +2025,8 @@ class Compiler {
                     has_error = true;
                 }
             }
+        } else if static_decl->zero_initializer {
+            initializer = QualifiedValue(LLVMConstNull(_type->Value()), _type);
         }
 
         if has_error {
@@ -2039,6 +2041,21 @@ class Compiler {
 
         if !initializer.Null() {
             LLVMSetInitializer(global, initializer.Value());
+        }
+
+        if static_decl->alignment != null {
+            let alignment: QualifiedValue = this.CompileExpression(static_decl->alignment, false);
+
+            if alignment.Null() {
+                ret;
+            }
+
+            if LLVMGetTypeKind(alignment.Type().Value()) != LLVMTypeKind::LLVMIntegerTypeKind || LLVMGetIntTypeWidth(alignment.Type().Value()) != 64u32 || alignment.Type().IsSigned() {
+                Logger::Log("Static alignment must be of type 'u64'.", static_decl as *const ASTNode, LogSeverity::Error);
+                ret;
+            }
+
+            LLVMSetAlignment(global, LLVMConstIntGetZExtValue(alignment.Value()) as u32);
         }
     }
 
@@ -2061,6 +2078,24 @@ class Compiler {
                     ret this.type_manager.Primitive(LLVMInt8TypeInContext(this.context), true);
                 }
             }
+        }
+    }
+
+    priv AddAttributes(&mut this, function: LLVMValueRef) {
+        let attribute: LLVMAttributeRef = LLVMCreateStringAttribute(this.context, "no-stack-arg-probe", 18u32, "", 0u32);
+        LLVMAddAttributeAtIndex(function, LLVMAttributeIndex::LLVMAttributeFunctionIndex, attribute);
+
+        if this.no_red_zone {
+            let noredzone_kind: u32 = LLVMGetEnumAttributeKindForName("noredzone", 9u64);
+            LLVMAddAttributeAtIndex(function, LLVMAttributeIndex::LLVMAttributeFunctionIndex, LLVMCreateEnumAttribute(this.context, noredzone_kind, 0u64));
+        }
+
+        /* let align_attr: LLVMAttributeRef = LLVMCreateStringAttribute(this.context, "align-stack", 11u32, "16", 2u32);
+        LLVMAddAttributeAtIndex(function, LLVMAttributeIndex::LLVMAttributeFunctionIndex, align_attr); */
+
+        if !this.target->features.Empty() {
+            let attribute: LLVMAttributeRef = LLVMCreateStringAttribute(this.context, "target-features", 15u32, this.target->features.Data(), this.target->features.Length() as u32);
+            LLVMAddAttributeAtIndex(function, LLVMAttributeIndex::LLVMAttributeFunctionIndex, attribute);
         }
     }
 
@@ -2134,13 +2169,18 @@ class Compiler {
         let _type: &mut QualifiedType = this.type_manager.Function(type_ref, params, return_type);
         _type.name = name;
 
-        if this.mangling {
+        if func_decl->no_mangle {
+            if !this.mangling {
+                Logger::Log("Mangling was already disabled.", func_decl as *const ASTNode, LogSeverity::Error);
+            }
+        } else if this.mangling {
             name = Mangler::MangleFunction(func_decl->name, _type);
         }
 
         let function: LLVMValueRef = LLVMAddFunction(this.module, name.Data(), _type.Value());
         let value: QualifiedValue = QualifiedValue(function, this.type_manager.Pointer(_type, false));
-        this.scope_manager.Set(func_decl->name, SymbolKind::Function, value, this.mangling, func_decl as *const ASTNode);
+        this.scope_manager.Set(func_decl->name, SymbolKind::Function, value, this.mangling && !func_decl->no_mangle, func_decl as *const ASTNode);
+        this.AddAttributes(function);
         let mut j: u64 = 0u64;
 
         while j < attributes.Size() {
@@ -2148,15 +2188,6 @@ class Compiler {
                 let attribute_kind: u32 = sret && j == 0u64 ? LLVMGetEnumAttributeKindForName("sret", 4u64) : LLVMGetEnumAttributeKindForName("byval", 5u64);
                 LLVMAddAttributeAtIndex(function, (j + 1u64) as u32, LLVMCreateTypeAttribute(this.context, attribute_kind, attributes[j]));
             } j += 1u64;
-        }
-
-        let attribute_name: String = "no-stack-arg-probe";
-        let attribute: LLVMAttributeRef = LLVMCreateStringAttribute(this.context, attribute_name.Data(), attribute_name.Length() as u32, "", 0u32);
-        LLVMAddAttributeAtIndex(function, LLVMAttributeIndex::LLVMAttributeFunctionIndex, attribute);
-
-        if this.no_red_zone {
-            let noredzone_kind: u32 = LLVMGetEnumAttributeKindForName("noredzone", 9u64);
-            LLVMAddAttributeAtIndex(function, LLVMAttributeIndex::LLVMAttributeFunctionIndex, LLVMCreateEnumAttribute(this.context, noredzone_kind, 0u64));
         }
 
         if this._class == null && !func_decl->constructors.Empty() {
@@ -2548,6 +2579,7 @@ class Compiler {
                 let func_type: LLVMTypeRef = LLVMFunctionType(struct_type, param_types.Data(), param_types.Size() as u32, 0i32);
                 let func_name: String = Mangler::MangleFunction(variant->name, this.type_manager.Function(func_type, current_variant_types, _enum));
                 let function: LLVMValueRef = LLVMAddFunction(this.module, func_name.Data(), func_type);
+                this.AddAttributes(function);
 
                 let entry: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "entry");
                 let temp_builder: LLVMBuilderRef = LLVMCreateBuilderInContext(this.context);

@@ -720,13 +720,13 @@ class Symbol {
 }
 
 class Scope {
-    pub parent: *const Scope,
+    pub parent: *mut Scope,
     pub children: Vector<*const Scope>,
     pub name: String, pub global: bool,
     pub symbols: Vector<*const Symbol>,
     pub instances: Vector<QualifiedValue>;
 
-    Scope(&mut this, parent: *const Scope, name: &String, global: bool) {
+    Scope(&mut this, parent: *mut Scope, name: &String, global: bool) {
         (this.parent, this.name, this.global) = (parent, name, global);
     }
 
@@ -1390,7 +1390,7 @@ class Generic {
 
     pub Get(&mut this, types: Vector<*const QualifiedType>) -> Pair<*const QualifiedType, *mut Scope> {
         let (prev_mangling: bool, prev_unsafe: bool) = (compiler->mangling, compiler->_unsafe);
-        let (prev_scope: *const Scope, prev_generic: *const Generic) = (compiler->scope_manager.current, compiler->generic);
+        let (prev_scope: *mut Scope, prev_generic: *const Generic) = (compiler->scope_manager.current, compiler->generic);
         let (prev_class: *const QualifiedType, prev_function: *const QualifiedType) = (compiler->_class, compiler->function);
         let prev_function_ref: LLVMValueRef = compiler->function_ref;
 
@@ -1592,7 +1592,7 @@ class Compiler {
             (this.function, this.function_ref) = (forward._type, forward.value);
             let has_instance: bool = forward.declaration->_type->instance_kind != InstanceKind::None;
             let params: Vector<*const QualifiedType> = this.function->Parameters();
-            let scope: *const Scope = this.scope_manager.current;
+            let scope: *mut Scope = this.scope_manager.current;
             this._class = forward._class;
 
             if forward.generic != null {
@@ -1799,7 +1799,7 @@ class Compiler {
 
     priv CompileConstant(&mut this, constant_decl: *const ConstantDeclNode) {
         let mut initializer: QualifiedValue;
-        let mut _type: *mut QualifiedType = this.CompileType(constant_decl->_type);
+        let mut _type: *const QualifiedType = this.CompileType(constant_decl->_type);
         let mut has_error: bool = false;
 
         if constant_decl->initializer->node_type != ASTNodeType::INITIALIZER_LIST {
@@ -1918,7 +1918,7 @@ class Compiler {
 
     priv CompileStatic(&mut this, static_decl: *const StaticDeclNode) {
         let mut initializer: QualifiedValue;
-        let mut _type: *mut QualifiedType = this.CompileType(static_decl->_type);
+        let mut _type: *const QualifiedType = this.CompileType(static_decl->_type);
         let mut has_error: bool = false;
 
         if static_decl->initializer != null {
@@ -2111,7 +2111,7 @@ class Compiler {
         let mut sret: bool = false;
 
         if LLVMGetTypeKind(return_type->Value()) == LLVMTypeKind::LLVMStructTypeKind && !return_type->IsEnum() {
-            let processed_type: &mut QualifiedType = this.ProcessType(return_type);
+            let processed_type: &mut QualifiedType = this.ProcessType(return_type) as &mut QualifiedType;
             processed_type.sret = return_type;
 
             if LLVMGetTypeKind(processed_type.Value()) != LLVMTypeKind::LLVMPointerTypeKind {
@@ -2152,7 +2152,7 @@ class Compiler {
                 i += 1u64;
             }
 
-            let processed_type: &mut QualifiedType = real_type->IsEnum() ? real_type : this.ProcessType(real_type);
+            let processed_type: &mut QualifiedType = (real_type->IsEnum() ? real_type : this.ProcessType(real_type)) as &mut QualifiedType;
             param_types.PushBack(processed_type.Value());
             params.PushBack(processed_type);
 
@@ -2166,7 +2166,7 @@ class Compiler {
 
         let mut name: String = func_decl->name;
         let type_ref: LLVMTypeRef = LLVMFunctionType(return_type->Value(), param_types.Data(), param_types.Size() as u32, func_decl->_type->var_arg ? 1i32 : 0i32);
-        let _type: &mut QualifiedType = this.type_manager.Function(type_ref, params, return_type);
+        let _type: &mut QualifiedType = this.type_manager.Function(type_ref, params, return_type) as &mut QualifiedType;
         _type.name = name;
 
         if func_decl->no_mangle {
@@ -2198,7 +2198,7 @@ class Compiler {
         let mut k: u64 = 0u64;
 
         while func_decl->constructors.Size() > k {
-            let _class: &mut QualifiedType = this.CompileType(func_decl->constructors[k]->expression);
+            let _class: &mut QualifiedType = this.CompileType(func_decl->constructors[k]->expression) as &mut QualifiedType;
 
             if !_class.IsClass() {
                 Logger::Log("Constructor type must be a class.", func_decl as *const ASTNode, LogSeverity::Error);
@@ -2355,7 +2355,7 @@ class Compiler {
         }
 
         let struct_name: *const i8 = generic != null ? generic->current.Data() : class_decl->name.Data();
-        let _class: *mut QualifiedType = this.type_manager.Class(LLVMStructCreateNamed(this.context, struct_name), class_decl->name);
+        let _class: *mut QualifiedType = this.type_manager.Class(LLVMStructCreateNamed(this.context, struct_name), class_decl->name) as *mut QualifiedType;
 
         if generic != null {
             this.scope_manager.PushScope(generic->current, true);
@@ -2370,9 +2370,9 @@ class Compiler {
         ret Pair<*mut QualifiedType, *const Scope>(_class, scope);
     }
 
-    priv CompileClassSecondPass(&mut this, _class: *mut QualifiedType, class_decl: *const ClassDeclNode, scope: *const Scope) {
+    priv CompileClassSecondPass(&mut this, _class: *mut QualifiedType, class_decl: *const ClassDeclNode, scope: *mut Scope) {
         let prev_class: *const QualifiedType = this._class;
-        let prev_scope: *const Scope = this.scope_manager.current;
+        let prev_scope: *mut Scope = this.scope_manager.current;
         (this._class, this.scope_manager.current) = (_class, scope);
         let (mut i: u64, mut j: u64) = (0u64, 0u64);
         let mut field_types: Vector<LLVMTypeRef>;
@@ -2399,9 +2399,9 @@ class Compiler {
         (this._class, this.scope_manager.current) = (prev_class, prev_scope);
     }
 
-    priv CompileClassThirdPass(&mut this, _class: *mut QualifiedType, class_decl: *const ClassDeclNode, scope: *const Scope) {
+    priv CompileClassThirdPass(&mut this, _class: *mut QualifiedType, class_decl: *const ClassDeclNode, scope: *mut Scope) {
         let prev_class: *const QualifiedType = this._class;
-        let prev_scope: *const Scope = this.scope_manager.current;
+        let prev_scope: *mut Scope = this.scope_manager.current;
         (this._class, this.scope_manager.current) = (_class, scope);
         let (mut i: u64, mut j: u64) = (0u64, 0u64);
 
@@ -2490,7 +2490,7 @@ class Compiler {
         }
 
         let struct_name: *const i8 = generic != null ? generic->current.Data() : enum_decl->name.Data();
-        let _enum: *mut QualifiedType = this.type_manager.Enum(LLVMStructCreateNamed(this.context, struct_name), enum_decl->name);
+        let _enum: *mut QualifiedType = this.type_manager.Enum(LLVMStructCreateNamed(this.context, struct_name), enum_decl->name) as *mut QualifiedType;
 
         if generic != null {
             this.scope_manager.PushScope(generic->current, true);
@@ -2505,9 +2505,9 @@ class Compiler {
         ret Pair<*mut QualifiedType, *const Scope>(_enum, scope);
     }
 
-    priv CompileVariantSecondPass(&mut this, _enum: *mut QualifiedType, enum_decl: *mut EnumDeclNode, scope: *const Scope) {
+    priv CompileVariantSecondPass(&mut this, _enum: *mut QualifiedType, enum_decl: *mut EnumDeclNode, scope: *mut Scope) {
         let prev_class: *const QualifiedType = this._class;
-        let prev_scope: *const Scope = this.scope_manager.current;
+        let prev_scope: *mut Scope = this.scope_manager.current;
         (this._class, this.scope_manager.current) = (_enum, scope);
 
         let mut max_size: u64 = 0u64;
@@ -2547,9 +2547,9 @@ class Compiler {
         (this._class, this.scope_manager.current) = (prev_class, prev_scope);
     }
 
-    priv CompileVariantThirdPass(&mut this, _enum: *mut QualifiedType, enum_decl: *mut EnumDeclNode, scope: *const Scope) {
+    priv CompileVariantThirdPass(&mut this, _enum: *mut QualifiedType, enum_decl: *mut EnumDeclNode, scope: *mut Scope) {
         let prev_class: *const QualifiedType = this._class;
-        let prev_scope: *const Scope = this.scope_manager.current;
+        let prev_scope: *mut Scope = this.scope_manager.current;
         (this._class, this.scope_manager.current) = (_enum, scope);
 
         let tag_type: LLVMTypeRef = LLVMInt32TypeInContext(this.context);
@@ -3636,18 +3636,34 @@ class Compiler {
                             }
                         }
 
-                        let mut state: bool = false;
+                        let mut left: *const QualifiedType = _type;
+                        let mut right: *const QualifiedType = initializer.Type();
+                        let mut failed: bool = false;
 
-                        if _type->IsPointer() && initializer.Type().IsPointer() {
-                            if LLVMGetTypeKind(_type->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || initializer.Type().Pointee()._null {
-                                state = true;
+                        while left->IsPointer() && right->IsPointer() {
+                            if left->IsMutable() && !right->IsMutable() && !right->Pointee()._null {
+                                Logger::Log("Cannot assign immutable pointer to mutable pointer.", variable as *const ASTNode, LogSeverity::Error);
+                                failed = true;
+                                break;
                             }
+
+                            (left, right) = (left->Pointee(), right->Pointee());
                         }
 
-                        if *_type == initializer.Type() || state {
-                            LLVMBuildStore(this.builder, initializer.Value(), pointer.Value());
-                        } else {
-                            Logger::Log("Incompatible variable initialization types. ('" + _type->ToString() + "' != '" + initializer.Type().ToString() + "').", variable as *const ASTNode, LogSeverity::Error);
+                        if !failed {
+                            let mut state: bool = false;
+
+                            if _type->IsPointer() && initializer.Type().IsPointer() {
+                                if LLVMGetTypeKind(_type->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || initializer.Type().Pointee()._null {
+                                    state = true;
+                                }
+                            }
+
+                            if *_type == initializer.Type() || state {
+                                LLVMBuildStore(this.builder, initializer.Value(), pointer.Value());
+                            } else {
+                                Logger::Log("Incompatible variable initialization types. ('" + _type->ToString() + "' != '" + initializer.Type().ToString() + "').", variable as *const ASTNode, LogSeverity::Error);
+                            }
                         }
                     }
                 } else {
@@ -3868,20 +3884,35 @@ class Compiler {
                 }
             }
 
-            let mut state: bool = false;
+            let mut failed: bool = false;
+            let mut left: *const QualifiedType = pointer.Type().Pointee();
+            let mut right: *const QualifiedType = value.Type();
 
-            if pointer.Type().Pointee().IsPointer() && value.Type().IsPointer() {
-                if LLVMGetTypeKind(pointer.Type().Pointee().Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || value.Type().Pointee()._null {
-                    state = true;
+            while left->IsPointer() && right->IsPointer() {
+                if left->IsMutable() && !right->IsMutable() && !right->Pointee()._null {
+                    Logger::Log("Cannot assign immutable pointer to mutable pointer.", node, LogSeverity::Error);
+                    failed = true;
+                    break;
+                }
+
+                (left, right) = (left->Pointee(), right->Pointee());
+            }
+
+            if !failed {
+                let mut state: bool = false;
+
+                if pointer.Type().Pointee().IsPointer() && value.Type().IsPointer() {
+                    if LLVMGetTypeKind(pointer.Type().Pointee().Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || value.Type().Pointee()._null {
+                        state = true;
+                    }
+                }
+
+                if value.Type() == pointer.Type().Pointee() || state {
+                    LLVMBuildStore(this.builder, value.Value(), pointer.Value());
+                } else {
+                    Logger::Log("Incompatible assignment types. ('" + pointer.Type().Pointee().ToString() + "' != '" + value.Type().ToString() + "').", node, LogSeverity::Error);
                 }
             }
-
-            if value.Type() != pointer.Type().Pointee() && !state {
-                Logger::Log("Incompatible assignment types. ('" + pointer.Type().Pointee().ToString() + "' != '" + value.Type().ToString() + "').", node, LogSeverity::Error);
-                ret QualifiedValue(null, null);
-            }
-
-            LLVMBuildStore(this.builder, value.Value(), pointer.Value());
         } ret pointer;
     }
 
@@ -4822,13 +4853,36 @@ class Compiler {
     }
 
     priv CompileCast2(&mut this, value: QualifiedValue, target: &QualifiedType, node: *const ASTNode) -> QualifiedValue {
-        let target_kind: LLVMTypeKind = LLVMGetTypeKind(target.Value());
-        let value_kind: LLVMTypeKind = LLVMGetTypeKind(value.Type().Value());
+        let mut left: *const QualifiedType = target;
+        let mut right: *const QualifiedType = value.Type();
+        let (mut state: bool, mut failed: bool) = (false, false);
+
+        while left->IsPointer() && right->IsPointer() {
+            if left->IsMutable() != right->IsMutable() {
+                if left->IsMutable() && !right->Pointee()._null {
+                    failed = true;
+                } state = true;
+            }
+
+            (left, right) = (left->Pointee(), right->Pointee());
+        }
 
         if value.Type() == target {
-            Logger::Log("Redundant cast. ('" + value.Type().ToString() + "' to '" + target.ToString() + "')", node, LogSeverity::Error);
-            ret QualifiedValue(null, null);
+            if state {
+                if !failed || this._unsafe {
+                    ret QualifiedValue(value.Value(), target);
+                } else {
+                    Logger::Log("Cannot cast immutable pointer to mutable pointer.", node, LogSeverity::Error);
+                    ret QualifiedValue(null, null);
+                }
+            } else {
+                Logger::Log("Redundant cast. ('" + value.Type().ToString() + "' to '" + target.ToString() + "')", node, LogSeverity::Error);
+                ret QualifiedValue(null, null);
+            }
         }
+
+        let target_kind: LLVMTypeKind = LLVMGetTypeKind(target.Value());
+        let value_kind: LLVMTypeKind = LLVMGetTypeKind(value.Type().Value());
 
         if value.Type().IsPointer() && target_kind == LLVMTypeKind::LLVMIntegerTypeKind {
             ret QualifiedValue(LLVMBuildPtrToInt(this.builder, value.Value(), target.Value(), ""), target);
@@ -5418,7 +5472,7 @@ class Compiler {
             let mut return_type: *const QualifiedType = this.CompileType(function_type->return_type);
 
             if LLVMGetTypeKind(return_type->Value()) == LLVMTypeKind::LLVMStructTypeKind && !return_type->IsEnum() {
-                let processed_type: &mut QualifiedType = this.ProcessType(return_type);
+                let processed_type: &mut QualifiedType = this.ProcessType(return_type) as &mut QualifiedType;
 
                 if LLVMGetTypeKind(processed_type.Value()) != LLVMTypeKind::LLVMPointerTypeKind {
                     return_type = processed_type;
@@ -5435,7 +5489,7 @@ class Compiler {
             while i < function_type->parameters.Size() {
                 let param: *const ParameterNode = function_type->parameters[i];
                 let real_type: &QualifiedType = this.CompileType(param->param_type);
-                let processed_type: &mut QualifiedType = real_type.IsEnum() ? real_type : this.ProcessType(real_type);
+                let processed_type: &mut QualifiedType = (real_type.IsEnum() ? real_type : this.ProcessType(real_type)) as &mut QualifiedType;
                 param_types.PushBack(processed_type.Value());
                 params.PushBack(processed_type);
 

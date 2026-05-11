@@ -1276,15 +1276,21 @@ class ScopeManager {
 }
 
 class Mangler {
+    pub IsMangled(name: &String) -> bool {
+        ret name.StartsWith("$z");
+    }
+
     priv MangleType(_type: *const QualifiedType) -> String {
+        let mut result: String;
+        if _type->IsMutable() { result += "M"; }
         let kind: LLVMTypeKind = LLVMGetTypeKind(_type->Value());
 
         if kind == LLVMTypeKind::LLVMVoidTypeKind {
-            ret String("v");
+            result += "v";
         } else if kind == LLVMTypeKind::LLVMPointerTypeKind {
-            ret "P" + Mangler::MangleType(_type->Pointee());
+            result += (_type->IsReference() ? "R" : "P") + Mangler::MangleType(_type->Pointee());
         } else if kind == LLVMTypeKind::LLVMFunctionTypeKind {
-            let mut result: String = "F";
+            result += "F";
             let return: &ReturnType = _type->Return();
             result += Mangler::MangleType(return.sret != null ? return.sret : return._type);
             let params: &Vector<ParameterType> = _type->Parameters();
@@ -1294,24 +1300,52 @@ class Mangler {
                 let param: &ParameterType = params[i];
                 result += Mangler::MangleType(param.sret != null ? param.sret : param.byval != null ? param.byval : param._type);
                 i += 1u64;
-            } ret result;
+            }
         } else if kind == LLVMTypeKind::LLVMStructTypeKind {
             let mut name: String = LLVMGetStructName(_type->Value());
 
-            if name[0u64] != '$' || name[1u64] != 'z' {
+            if !Mangler::IsMangled(name) {
                 name = Mangler::MangleClass(name);
-            } ret String(name.Data() + 2u64);
+            } result += name.SubString(2u64);
         } else if kind == LLVMTypeKind::LLVMIntegerTypeKind {
             let width: u32 = LLVMGetIntTypeWidth(_type->Value());
-            ret String(width == 1u32 ? "b" : (width == 8u32 ? "c" : (width == 16u32 ? "s" : (width == 32u32 ? "i" : "l"))));
+            result += width == 1u32 ? "b" : (width == 8u32 ? "c" : (width == 16u32 ? "s" : (width == 32u32 ? "i" : "l")));
         } else if kind == LLVMTypeKind::LLVMDoubleTypeKind {
-            ret String("d");
+            result += "d";
         } else if kind == LLVMTypeKind::LLVMFloatTypeKind {
-            ret String("f");
+            result += "f";
         } else {
             Logger::Log("Mangler", "Unknown type '" + _type->ToString() + "'.", LogSeverity::Error);
-            ret String("");
+        } ret result;
+    }
+
+    priv MangleTypeSubstituted(_type: *const QualifiedType, substitution_table: &mut Map<*const QualifiedType, String>) -> String {
+        let mut i: u64 = 0u64;
+
+        while i < substitution_table.Size() {
+            let pair: &Pair<*const QualifiedType, String> = substitution_table[i];
+
+            if *_type == (*pair.left) {
+                let mut left: *const QualifiedType = _type;
+                let mut right: *const QualifiedType = pair.left;
+                let mut equal: bool = true;
+
+                while left->IsPointer() {
+                    if left->IsMutable() != right->IsMutable() { equal = false; }
+                    (left, right) = (left->Pointee(), right->Pointee());
+                }
+
+                if equal {
+                    ret "S" + String(i) + "_";
+                }
+            } i += 1u64;
         }
+
+        let result: String = Mangler::MangleType(_type);
+
+        if result.Length() >= String(i).Length() + 2u64 {
+            substitution_table[_type] = result;
+        } ret result;
     }
 
     priv MangleName(name: String) -> String {
@@ -1326,8 +1360,13 @@ class Mangler {
         let mut i: u64 = 0u64;
 
         while i < names.Size() {
-            result += String(names[i].Size() as i64) + names[i];
-            i += 1u64;
+            let mut name: &String = names[i];
+
+            if Mangler::IsMangled(name) {
+                result += name.SubString(2u64);
+            } else {
+                result += String(name.Length()) + name;
+            } i += 1u64;
         }
 
         if names.Size() > 1u64 {
@@ -1338,11 +1377,12 @@ class Mangler {
     pub MangleFunction(name: String, _type: *const QualifiedType) -> String {
         let mut result: String = Mangler::MangleName(name);
         let params: &Vector<ParameterType> = _type->Parameters();
+        let mut substitution_table: Map<*const QualifiedType, String>;
         let mut i: u64 = 0u64;
 
         while i < params.Size() {
             let param: &ParameterType = params[i];
-            result += Mangler::MangleType(param.sret != null ? param.sret : param.byval != null ? param.byval : param._type);
+            result += Mangler::MangleTypeSubstituted(param.sret != null ? param.sret : param.byval != null ? param.byval : param._type, substitution_table);
             i += 1u64;
         } ret result;
     }
@@ -2376,7 +2416,7 @@ class Compiler {
         if class_decl->generic && generic == null {
             let _generic: *mut Generic = new Generic(class_decl as *const ASTNode);
             this.scope_manager.Set(class_decl->name, SymbolKind::Generic, _generic as *const void, false, class_decl as *const ASTNode);
-            ret Pair<*mut QualifiedType, *const Scope>(null, null);
+            ret Pair<*mut QualifiedType, *mut Scope>(null, null);
         }
 
         let struct_name: *const i8 = generic != null ? generic->current.Data() : class_decl->name.Data();
@@ -2511,7 +2551,7 @@ class Compiler {
         if enum_decl->generic && generic == null {
             let _generic: *mut Generic = new Generic(enum_decl as *const ASTNode);
             this.scope_manager.Set(enum_decl->name, SymbolKind::Generic, _generic as *const void, false, enum_decl as *const ASTNode);
-            ret Pair<*mut QualifiedType, *const Scope>(null, null);
+            ret Pair<*mut QualifiedType, *mut Scope>(null, null);
         }
 
         let struct_name: *const i8 = generic != null ? generic->current.Data() : enum_decl->name.Data();
@@ -2647,7 +2687,7 @@ class Compiler {
     }
 
     pub CompileVariant(&mut this, enum_decl: *mut EnumDeclNode, generic: *mut Generic) -> *const QualifiedType {
-        let cache: Pair<*mut QualifiedType, *const Scope> = this.CompileVariantFirstPass(enum_decl, generic);
+        let cache: Pair<*mut QualifiedType, *mut Scope> = this.CompileVariantFirstPass(enum_decl, generic);
 
         if cache.left != null {
             this.CompileVariantSecondPass(cache.left, enum_decl, cache.right);
@@ -3148,8 +3188,8 @@ class Compiler {
                     this.scope_manager.InvokeDestructors(value);
                     LLVMBuildRet(this.builder, LLVMBuildLoad2(this.builder, return._type->Value(), value.Value(), ""));
                 } else {
-                    if *params[0u64].sret != value.Type().Pointee() {
-                        Logger::Log("Incompatible return types. ('" + return.sret->ToString() + "' != '" + value.Type().Pointee().ToString() + "').", ret_stmt as *const ASTNode, LogSeverity::Error);
+                    if (*params[0u64].sret) != value.Type().Pointee() {
+                        Logger::Log("Incompatible return types. ('" + params[0u64].sret->ToString() + "' != '" + value.Type().Pointee().ToString() + "').", ret_stmt as *const ASTNode, LogSeverity::Error);
                         ret;
                     }
 
@@ -5416,7 +5456,7 @@ class Compiler {
         }
     }
 
-    pub CompileType(&mut this, type_node: *const ASTNode) -> &QualifiedType {
+    pub CompileType(&mut this, type_node: *const ASTNode) -> &mut QualifiedType {
         if type_node->node_type == ASTNodeType::PRIMITIVE_TYPE {
             let primitive_type: *const PrimitiveTypeNode = type_node as *const PrimitiveTypeNode;
 

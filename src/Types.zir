@@ -1,0 +1,522 @@
+/*
+ * Copyright 2025-2026 Yusuf Rençber
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+include "std/str", "std/vec", "std/map", "vendor/llvm", "src/Nodes.zir" : *;
+
+func LLVMIsTypeEqual(left: LLVMTypeRef, right: LLVMTypeRef) -> bool {
+    if left == right {
+        ret true;
+    }
+
+    let left_kind: LLVMTypeKind = LLVMGetTypeKind(left);
+    let right_kind: LLVMTypeKind = LLVMGetTypeKind(right);
+
+    if left_kind != right_kind {
+        ret false;
+    } else if left_kind == LLVMTypeKind::LLVMVoidTypeKind || left_kind == LLVMTypeKind::LLVMPointerTypeKind || left_kind == LLVMTypeKind::LLVMHalfTypeKind || left_kind == LLVMTypeKind::LLVMFloatTypeKind || left_kind == LLVMTypeKind::LLVMDoubleTypeKind || left_kind == LLVMTypeKind::LLVMX86_FP80TypeKind || left_kind == LLVMTypeKind::LLVMFP128TypeKind || left_kind == LLVMTypeKind::LLVMPPC_FP128TypeKind || left_kind == LLVMTypeKind::LLVMLabelTypeKind {
+        ret true;
+    } else if left_kind == LLVMTypeKind::LLVMIntegerTypeKind {
+        ret LLVMGetIntTypeWidth(left) == LLVMGetIntTypeWidth(right);
+    } else if left_kind == LLVMTypeKind::LLVMFunctionTypeKind {
+        if !LLVMIsTypeEqual(LLVMGetReturnType(left), LLVMGetReturnType(right)) {
+            ret false;
+        }
+
+        let left_param_count: u32 = LLVMCountParamTypes(left);
+        let right_param_count: u32 = LLVMCountParamTypes(right);
+
+        if (left_param_count != right_param_count) {
+            ret false;
+        }
+
+        let left_params: *const LLVMTypeRef = new LLVMTypeRef[left_param_count as u64];
+        let right_params: *const LLVMTypeRef = new LLVMTypeRef[right_param_count as u64];
+
+        LLVMGetParamTypes(left, left_params);
+        LLVMGetParamTypes(right, right_params);
+        let mut i: u32 = 0u32;
+
+        while i < left_param_count {
+            if !LLVMIsTypeEqual(left_params[i], right_params[i]) {
+                del[] left_params;
+                del[] right_params;
+                ret false;
+            } i += 1u32;
+        }
+
+        del[] left_params;
+        del[] right_params;
+        ret true;
+    } else if left_kind == LLVMTypeKind::LLVMArrayTypeKind {
+        ret LLVMGetArrayLength(left) == LLVMGetArrayLength(right) && LLVMIsTypeEqual(LLVMGetElementType(left), LLVMGetElementType(right));
+    } else if left_kind == LLVMTypeKind::LLVMStructTypeKind {
+        let left_name: *const i8 = LLVMGetStructName(left);
+        let right_name: *const i8 = LLVMGetStructName(right);
+            
+        if left_name != null && right_name != null {
+            ret String(left_name) == right_name;
+        }
+
+        let left_elem_count: u32 = LLVMCountStructElementTypes(left);
+        let right_elem_count: u32 = LLVMCountStructElementTypes(right);
+        
+        if left_elem_count != right_elem_count {
+            ret false;
+        }
+
+        if LLVMIsPackedStruct(left) != LLVMIsPackedStruct(right) {
+            ret false;
+        }
+
+        let left_elems: *const LLVMTypeRef = new LLVMTypeRef[left_elem_count as u64];
+        let right_elems: *const LLVMTypeRef = new LLVMTypeRef[right_elem_count as u64];
+
+        LLVMGetStructElementTypes(left, left_elems);
+        LLVMGetStructElementTypes(right, right_elems);
+        let mut i: u32 = 0u32;
+
+        while i < left_elem_count {
+            if !LLVMIsTypeEqual(left_elems[i], right_elems[i]) {
+                del[] left_elems;
+                del[] right_elems;
+                ret false;
+            } i += 1u32;
+        }
+        
+        del[] left_elems;
+        del[] right_elems;
+        ret true;
+    } else if left_kind == LLVMTypeKind::LLVMVectorTypeKind {
+        ret LLVMGetVectorSize(left) == LLVMGetVectorSize(right) && LLVMIsTypeEqual(LLVMGetElementType(left), LLVMGetElementType(right));
+    } else {
+        ret false;
+    }
+}
+
+class Field {
+    pub initializer: *const ASTNode,
+    pub visibility: TokenType,
+    pub index: u64 = 0u64;
+
+    Field(&mut this, initializer: *const ASTNode, visibility: TokenType, index: u64) {
+        (this.initializer, this.visibility, this.index) = (initializer, visibility, index);
+    }
+
+    ~Field(&this) {}
+}
+
+class Method {
+    pub name: String,
+    pub value: LLVMValueRef,
+    pub visibility: TokenType;
+
+    Method(&mut this, name: String, value: LLVMValueRef, visibility: TokenType) {
+        (this.name, this.value, this.visibility) = (name, value, visibility);
+    }
+
+    ~Method(&this) {}
+}
+
+class ParameterType {
+    pub _type: *const QualifiedType,
+    pub byval: *const QualifiedType = null,
+    pub sret: *const QualifiedType = null;
+
+    ParameterType(&mut this, _type: *const QualifiedType) {
+        this._type = _type;
+    }
+
+    ~ParameterType(&this) {}
+}
+
+class ReturnType {
+    pub _type: *const QualifiedType,
+    pub sret: *const QualifiedType = null;
+
+    ReturnType(&mut this, _type: *const QualifiedType) {
+        this._type = _type;
+    }
+
+    ~ReturnType(&this) {}
+}
+
+class QualifiedType {
+    priv value: LLVMTypeRef, priv pointee: *const QualifiedType = null,
+    priv reference: bool = false, priv mutable: bool = false, priv signed: bool = false,
+    priv array: bool = false, priv size: u64 = 0u64, pub _null: bool = false,
+
+    pub name: String,
+    pub constructed: Vector<*const QualifiedType>,
+    pub fields: Map<String, Pair<Field, *const QualifiedType>>,
+    pub methods: Vector<Pair<Method, *const QualifiedType>>,
+    pub variants: Vector<Pair<String, Vector<*const QualifiedType>>>,
+    pub variant_field_names: Vector<Vector<String>>,
+    priv params: Vector<ParameterType>, priv return: ReturnType,
+    priv _function: bool = false, priv _class: bool = false, pub _enum: bool = false;
+
+    QualifiedType(&mut this, value: LLVMTypeRef, signed: bool) {
+        (this.value, this.signed) = (value, signed);
+    }
+
+    QualifiedType(&mut this, value: LLVMTypeRef, params: &Vector<ParameterType>, return: &ReturnType) {
+        (this.value, this.params, this.return, this._function) = (value, params, return, true);
+    }
+
+    QualifiedType(&mut this, value: LLVMTypeRef, mutable: bool, name: String, _class: bool) {
+        (this.value, this.mutable, this.name, this._class, this._enum) = (value, mutable, name, _class, !_class);
+    }
+
+    QualifiedType(&mut this, value: LLVMTypeRef, mutable: bool, reference: bool, _class: bool, pointee: *const QualifiedType) {
+        (this.value, this.mutable, this.reference, this._class, this.pointee) = (value, mutable, reference, _class, pointee);
+    }
+
+    QualifiedType(&mut this, value: LLVMTypeRef, mutable: bool, size: u64, _class: bool, pointee: *const QualifiedType) {
+        (this.value, this.mutable, this.size, this._class, this.pointee, this.array) = (value, mutable, size, _class, pointee, true);
+    }
+
+    ~QualifiedType(&this) {}
+
+    pub IsMutable(&this) -> bool { ret this.mutable; }
+    pub IsSigned(&this) -> bool { ret this.signed; }
+    pub IsPointer(&this) -> bool { ret this.pointee != null && !this.array; }
+    pub IsReference(&this) -> bool { ret this.reference; }
+    pub IsArray(&this) -> bool { ret this.array; }
+    pub IsPrimitive(&this) -> bool { ret !this.IsPointer() && !this.IsClass(); }
+    pub IsFunction(&this) -> bool { ret this._function; }
+    pub IsClass(&this) -> bool { ret this._class; }
+    pub IsEnum(&this) -> bool { ret this._enum; }
+
+    pub Value(&this) -> LLVMTypeRef {
+        if this.value != null {
+            ret this.value;
+        } else {
+            Logger::Log("QualifiedType", "Null type!", LogSeverity::Error);
+            ret null;
+        }
+    }
+
+    pub Pointee(&this) -> &QualifiedType {
+        if this.pointee != null {
+            if !this.array {
+                ret this.pointee;
+            } else {
+                Logger::Log("QualifiedType", "Not a pointer!", LogSeverity::Error);
+                ret null;
+            }
+        } else {
+            Logger::Log("QualifiedType", "Null pointee!", LogSeverity::Error);
+            ret null;
+        }
+    }
+
+    pub Size(&this) -> u64 {
+        if this.array {
+            ret this.size;
+        } else {
+            Logger::Log("QualifiedType", "Not an array!", LogSeverity::Error);
+            ret 0u64;
+        }
+    }
+
+    pub Element(&this) -> &QualifiedType {
+        if this.pointee != null {
+            if this.array {
+                ret this.pointee;
+            } else {
+                Logger::Log("QualifiedType", "Not an array!", LogSeverity::Error);
+                ret null;
+            }
+        } else {
+            Logger::Log("QualifiedType", "Null pointee!", LogSeverity::Error);
+            ret null;
+        }
+    }
+
+    pub Parameters(&this) -> &Vector<ParameterType> {
+        if this._function {
+            ret this.params;
+        } else {
+            Logger::Log("QualifiedType", "Not a function!", LogSeverity::Error);
+            ret null;
+        }
+    }
+
+    pub Return(&this) -> &ReturnType {
+        if this._function {
+            ret this.return;
+        } else {
+            Logger::Log("QualifiedType", "Not a function!", LogSeverity::Error);
+            ret null;
+        }
+    }
+
+    pub Fields(&this) -> &mut Map<String, Pair<Field, *const QualifiedType>> {
+        if this._class {
+            ret this.fields;
+        } else {
+            Logger::Log("QualifiedType", "Not a class!", LogSeverity::Error);
+            ret null;
+        }
+    }
+
+    pub Methods(&this) -> &Vector<Pair<Method, *const QualifiedType>> {
+        if this._class || this._enum {
+            ret this.methods;
+        } else {
+            Logger::Log("QualifiedType", "Not a class!", LogSeverity::Error);
+            ret null;
+        }
+    }
+
+    pub Index(&this, name: &String) -> i64 {
+        let fields: &Map<String, Pair<Field, *const QualifiedType>> = this.Fields();
+        let mut i: u64 = 0u64;
+
+        while i < fields.Size() {
+            if fields[i].left == name {
+                ret fields[i].right.left.index as i64;
+            } i += 1u64;
+        } ret -1i64;
+    }
+
+    pub Has(&this, name: &String, current_class: *const QualifiedType) -> bool {
+        let methods: &Vector<Pair<Method, *const QualifiedType>> = this.Methods();
+        let mut i: u64 = 0u64;
+
+        while i < methods.Size() {
+            if methods[i].left.name == name {
+                if methods[i].left.visibility == TokenType::PUBLIC {
+                    ret true;
+                }
+
+                if current_class != null {
+                    if *current_class == this {
+                        ret true;
+                    }
+                }
+            } i += 1u64;
+        } ret false;
+    }
+
+    pub Has(&this, name: &String, params: &Vector<*const QualifiedType>, current_class: *const QualifiedType) -> bool {
+        let methods: &Vector<Pair<Method, *const QualifiedType>> = this.Methods();
+        let mut i: u64 = 0u64;
+
+        while i < methods.Size() {
+            if methods[i].left.name == name {
+                let mut state: bool = false;
+
+                if current_class != null {
+                    state = *current_class == this;
+                }
+
+                if methods[i].left.visibility == TokenType::PUBLIC || state {
+                    let (mut _match: bool, mut j: u64) = (true, 0u64);
+                    let _params: &Vector<ParameterType> = methods[i].right->Pointee().Parameters();
+                    let offset: u64 = _params[0u64].sret != null ? 2u64 : 1u64;
+
+                    if params.Size() != _params.Size() - offset {
+                        i += 1u64;
+                        continue;
+                    }
+
+                    while params.Size() > j {
+                        let param_type: &ParameterType = _params[j + offset];
+                        let mut _type: *const QualifiedType = param_type._type;
+
+                        if param_type.byval != null {
+                            _type = param_type.byval;
+                        }
+
+                        if _type->IsReference() && *_type != *(params[j]) {
+                            _type = _type->Pointee();
+                        }
+
+                        let mut _state: bool = false;
+
+                        if params[j]->IsReference() {
+                            if *_type == params[j]->Pointee() {
+                                _state = true;
+                            } else if _type->IsPointer() && params[j]->Pointee().IsPointer() {
+                                if LLVMGetTypeKind(_type->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || params[j]->Pointee().Pointee()._null {
+                                    _state = true;
+                                }
+                            }
+                        }
+
+                        if _type->IsPointer() && params[j]->IsPointer() {
+                            if LLVMGetTypeKind(_type->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || params[j]->Pointee()._null {
+                                _state = true;
+                            }
+                        }
+
+                        if *_type != *(params[j]) && !_state {
+                            _match = false;
+                            break;
+                        } j += 1u64;
+                    }
+
+                    if _match {
+                        ret true;
+                    }
+                }
+            } i += 1u64;
+        } ret false;
+    }
+
+    pub Get(&this, name: &String, current_class: *const QualifiedType, node: *const ASTNode) -> &Pair<Method, *const QualifiedType> {
+        let methods: &Vector<Pair<Method, *const QualifiedType>> = this.Methods();
+        let (mut state: u64, mut i: u64) = (0u64, 0u64);
+
+        while i < methods.Size() {
+            if methods[i].left.name == name {
+                let mut _state: bool = false;
+
+                if current_class != null {
+                    _state = *current_class == this;
+                }
+
+                if methods[i].left.visibility != TokenType::PUBLIC && !_state {
+                    if state < 1u64 { state = 1u64; }
+                } else {
+                    ret methods[i];
+                }
+            } i += 1u64;
+        }
+
+        if state == 0u64 {
+            Logger::Log("Class '" + this.name + "' doesn't contain any member named '" + name + "'.", node, LogSeverity::Error);
+            ret null;
+        } else {
+            Logger::Log("Function '" + name + "' is not accessible.", node, LogSeverity::Error);
+            ret null;
+        }
+    }
+
+    pub Get(&this, name: &String, params: &Vector<*const QualifiedType>, current_class: *const QualifiedType, node: *const ASTNode) -> &Pair<Method, *const QualifiedType> {
+        let (mut index: u64, mut best: u64) = (0u64, 0u64);
+        let methods: &Vector<Pair<Method, *const QualifiedType>> = this.Methods();
+        let (mut state: u64, mut i: u64) = (0u64, 0u64);
+
+        while i < methods.Size() {
+            if methods[i].left.name == name {
+                let mut _state: bool = false;
+
+                if current_class != null {
+                    _state = *current_class == this;
+                }
+
+                if methods[i].left.visibility != TokenType::PUBLIC && !_state {
+                    if state < 1u64 { state = 1u64; }
+                } else {
+                    let (mut _match: bool, mut score: u64, mut j: u64) = (true, 1u64, 0u64);
+                    let _params: &Vector<ParameterType> = methods[i].right->Pointee().Parameters();
+                    let offset: u64 = _params[0u64].sret != null ? 2u64 : 1u64;
+
+                    if params.Size() != _params.Size() - offset {
+                        i += 1u64;
+                        state = 2u64;
+                        continue;
+                    }
+
+                    while params.Size() > j {
+                        let param_type: &ParameterType = _params[j + offset];
+                        let mut _type: *const QualifiedType = param_type._type;
+
+                        if param_type.byval != null {
+                            _type = param_type.byval;
+                        }
+
+                        if _type->IsReference() && *_type != *(params[j]) {
+                            _type = _type->Pointee();
+                        }
+
+                        let (mut _state: bool, mut state_: bool) = (false, false);
+
+                        if params[j]->IsReference() {
+                            if *_type == params[j]->Pointee() {
+                                _state = true;
+                            } else if _type->IsPointer() && params[j]->Pointee().IsPointer() {
+                                if LLVMGetTypeKind(_type->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || params[j]->Pointee().Pointee()._null {
+                                    state_ = true;
+                                }
+                            }
+                        }
+
+                        if _type->IsPointer() && params[j]->IsPointer() {
+                            if LLVMGetTypeKind(_type->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || params[j]->Pointee()._null {
+                                state_ = true;
+                            }
+                        }
+
+                        if *_type == *(params[j]) || _state || state_ {
+                            score += _state ? 3u64 : (state_ ? 1u64 : 2u64);
+                        } else {
+                            _match = false;
+                            break;
+                        } j += 1u64;
+                    }
+
+                    if !_match {
+                        state = 2u64;
+                    } else if score > best {
+                        (index, best) = (i, score);
+                    }
+                }
+            } i += 1u64;
+        }
+
+        if best != 0u64 {
+            ret methods[index];
+        } else {
+            if state == 0u64 {
+                Logger::Log("Class '" + this.name + "' doesn't contain any member named '" + name + "'.", node, LogSeverity::Error);
+                ret null;
+            } else if state == 1u64 {
+                Logger::Log("Function '" + name + "' is not accessible.", node, LogSeverity::Error);
+                ret null;
+            } else {
+                Logger::Log("Invalid arguments for: '" + name + "'.", node, LogSeverity::Error);
+                ret null;
+            }
+        }
+    }
+
+    pub op==(&this, other: &QualifiedType) -> bool {
+        if this.pointee != null && other.pointee != null {
+            ret this.signed == other.signed && LLVMIsTypeEqual(this.value, other.value) && (*this.pointee) == (*other.pointee);
+        } else {
+            ret this.signed == other.signed && LLVMIsTypeEqual(this.value, other.value) && this.pointee == other.pointee;
+        }
+    }
+
+    pub op!=(&this, other: &QualifiedType) -> bool {
+        ret !(this == other);
+    }
+
+    pub ToString(&this) -> String {
+        if this.value != null {
+            let mut result: String;
+            let string: *const i8 = LLVMPrintTypeToString(this.value);
+            result += string;
+            LLVMDisposeMessage(string);
+            ret result;
+        } else {
+            Logger::Log("QualifiedType", "Null type!", LogSeverity::Error);
+            ret String("");
+        }
+    }
+}

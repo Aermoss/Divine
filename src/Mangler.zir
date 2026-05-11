@@ -1,0 +1,155 @@
+/*
+ * Copyright 2025-2026 Yusuf Rençber
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+include "std/str", "std/vec", "std/map", "src/Types.zir" : *;
+
+class Mangler {
+    pub IsMangled(name: &String) -> bool {
+        ret name.StartsWith("$z");
+    }
+
+    priv MangleType(_type: *const QualifiedType) -> String {
+        let mut result: String;
+        if _type->IsMutable() { result += "M"; }
+        let kind: LLVMTypeKind = LLVMGetTypeKind(_type->Value());
+
+        if kind == LLVMTypeKind::LLVMVoidTypeKind {
+            result += "v";
+        } else if kind == LLVMTypeKind::LLVMPointerTypeKind {
+            result += (_type->IsReference() ? "R" : "P") + Mangler::MangleType(_type->Pointee());
+        } else if kind == LLVMTypeKind::LLVMFunctionTypeKind {
+            result += "F";
+            let return: &ReturnType = _type->Return();
+            result += Mangler::MangleType(return.sret != null ? return.sret : return._type);
+            let params: &Vector<ParameterType> = _type->Parameters();
+            let mut i: u64 = 0u64;
+
+            while i < params.Size() {
+                let param: &ParameterType = params[i];
+                result += Mangler::MangleType(param.sret != null ? param.sret : param.byval != null ? param.byval : param._type);
+                i += 1u64;
+            }
+        } else if kind == LLVMTypeKind::LLVMStructTypeKind {
+            let mut name: String = LLVMGetStructName(_type->Value());
+
+            if !Mangler::IsMangled(name) {
+                name = Mangler::MangleClass(name);
+            } result += name.SubString(2u64);
+        } else if kind == LLVMTypeKind::LLVMIntegerTypeKind {
+            let width: u32 = LLVMGetIntTypeWidth(_type->Value());
+            result += width == 1u32 ? "b" : (width == 8u32 ? "c" : (width == 16u32 ? "s" : (width == 32u32 ? "i" : "l")));
+        } else if kind == LLVMTypeKind::LLVMDoubleTypeKind {
+            result += "d";
+        } else if kind == LLVMTypeKind::LLVMFloatTypeKind {
+            result += "f";
+        } else {
+            Logger::Log("Mangler", "Unknown type '" + _type->ToString() + "'.", LogSeverity::Error);
+        } ret result;
+    }
+
+    priv MangleTypeSubstituted(_type: *const QualifiedType, substitution_table: &mut Map<*const QualifiedType, String>) -> String {
+        let mut i: u64 = 0u64;
+
+        while i < substitution_table.Size() {
+            let pair: &Pair<*const QualifiedType, String> = substitution_table[i];
+
+            if *_type == (*pair.left) {
+                let mut left: *const QualifiedType = _type;
+                let mut right: *const QualifiedType = pair.left;
+                let mut equal: bool = true;
+
+                while left->IsPointer() {
+                    if left->IsMutable() != right->IsMutable() { equal = false; }
+                    (left, right) = (left->Pointee(), right->Pointee());
+                }
+
+                if equal {
+                    ret "S" + String(i) + "_";
+                }
+            } i += 1u64;
+        }
+
+        let result: String = Mangler::MangleType(_type);
+
+        if result.Length() >= String(i).Length() + 2u64 {
+            substitution_table[_type] = result;
+        } ret result;
+    }
+
+    priv MangleName(name: String) -> String {
+        let mut result: String = "$z";
+        let mut names: Vector<String> = compiler->scope_manager.Namespaces();
+        names.PushBack(name);
+
+        if names.Size() > 1u64 {
+            result += "N";
+        }
+
+        let mut i: u64 = 0u64;
+
+        while i < names.Size() {
+            let mut name: &String = names[i];
+
+            if Mangler::IsMangled(name) {
+                result += name.SubString(2u64);
+            } else {
+                result += String(name.Length()) + name;
+            } i += 1u64;
+        }
+
+        if names.Size() > 1u64 {
+            result += "E";
+        } ret result;
+    }
+
+    pub MangleFunction(name: String, _type: *const QualifiedType) -> String {
+        let mut result: String = Mangler::MangleName(name);
+        let params: &Vector<ParameterType> = _type->Parameters();
+        let mut substitution_table: Map<*const QualifiedType, String>;
+        let mut i: u64 = 0u64;
+
+        while i < params.Size() {
+            let param: &ParameterType = params[i];
+            result += Mangler::MangleTypeSubstituted(param.sret != null ? param.sret : param.byval != null ? param.byval : param._type, substitution_table);
+            i += 1u64;
+        } ret result;
+    }
+
+    pub MangleClass(name: String) -> String {
+        ret Mangler::MangleName(name);
+    }
+
+    pub MangleClass(name: String, types: Vector<*const QualifiedType>) -> String {
+        let mut result: String = Mangler::MangleName(name);
+
+        if !types.Empty() {
+            result += "I";
+        }
+
+        let mut i: u64 = 0u64;
+
+        while i < types.Size() {
+            result += Mangler::MangleType(types[i]);
+            i += 1u64;
+        }
+
+        if !types.Empty() {
+            result += "E";
+        } ret result;
+    }
+}
+
+include "src/Compiler.zir" : *;

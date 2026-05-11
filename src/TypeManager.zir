@@ -1,0 +1,104 @@
+/*
+ * Copyright 2025-2026 Yusuf Rençber
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+include "std/io", "std/str", "std/vec", "src/Types.zir" : *;
+
+class TypeManager {
+    priv types: Vector<*const QualifiedType>;
+
+    TypeManager(&this) {}
+
+    ~TypeManager(&mut this) {
+        WriteLine("Disposing " + String(this.types.Size() as i64) + " types (" + String((this.types.Size() * sizeof(QualifiedType)) as f64 / 1024.0f64 / 1024.0f64) + " MB)...");
+        let mut i: u64 = 0u64;
+
+        while i < this.types.Size() {
+            del this.types[i];
+            i += 1u64;
+        }
+
+        this.types.Clear();
+    }
+
+    pub Primitive(&mut this, value: LLVMTypeRef, signed: bool) -> *const QualifiedType {
+        let _type: *const QualifiedType = new QualifiedType(value, signed);
+        this.types.PushBack(_type);
+        ret _type;
+    }
+
+    pub Function(&mut this, value: LLVMTypeRef, params: &Vector<ParameterType>, return: &ReturnType) -> *mut QualifiedType {
+        let _type: *const QualifiedType = new QualifiedType(value, params, return);
+        this.types.PushBack(_type);
+        ret _type;
+    }
+
+    pub Class(&mut this, value: LLVMTypeRef, name: String) -> *mut QualifiedType {
+        let _type: *const QualifiedType = new QualifiedType(value, false, name, true);
+        this.types.PushBack(_type);
+        ret _type;
+    }
+
+    pub Enum(&mut this, value: LLVMTypeRef, name: String) -> *mut QualifiedType {
+        let _type: *const QualifiedType = new QualifiedType(value, false, name, false);
+        this.types.PushBack(_type);
+        ret _type;
+    }
+
+    pub Pointer(&mut this, pointee: *const QualifiedType, mutable: bool) -> *const QualifiedType {
+        let _type: *const QualifiedType = new QualifiedType(LLVMPointerType(pointee->Value(), 0u32), mutable, false, false, pointee);
+        this.types.PushBack(_type);
+        ret _type;
+    }
+
+    pub NullPointer(&mut this, value: LLVMTypeRef) -> *const QualifiedType {
+        let pointee: *mut QualifiedType = new QualifiedType(value, false);
+        pointee->_null = true;
+        this.types.PushBack(pointee);
+        let _type: *const QualifiedType = new QualifiedType(LLVMPointerType(value, 0u32), false, false, false, pointee);
+        this.types.PushBack(_type);
+        ret _type;
+    }
+
+    pub Reference(&mut this, pointee: *const QualifiedType, mutable: bool) -> *const QualifiedType {
+        let _type: *const QualifiedType = new QualifiedType(LLVMPointerType(pointee->Value(), 0u32), mutable, true, false, pointee);
+        this.types.PushBack(_type);
+        ret _type;
+    }
+
+    pub Array(&mut this, pointee: *const QualifiedType, size: u64, mutable: bool) -> *const QualifiedType {
+        let _type: *const QualifiedType = new QualifiedType(LLVMArrayType2(pointee->Value(), size), mutable, size, false, pointee);
+        this.types.PushBack(_type);
+        ret _type;
+    }
+
+    pub Copy(&mut this, _type: *mut QualifiedType, mutable: bool) -> *const QualifiedType {
+        if mutable != _type->IsMutable() {
+            let mut copy: *mut QualifiedType = null;
+
+            if _type->IsPointer() {
+                copy = new QualifiedType(_type->Value(), mutable, _type->IsReference(), false, _type->Pointee());
+            } else {
+                Logger::Log("TypeManager", "Cannot copy non-pointer type.", LogSeverity::Error);
+                ret null;
+            }
+
+            this.types.PushBack(copy);
+            ret copy;
+        } else {
+            ret _type;
+        }
+    }
+}

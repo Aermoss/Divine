@@ -1,0 +1,448 @@
+/*
+ * Copyright 2025-2026 Yusuf Rençber
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+include "std/str", "std/vec", "src/Scope.zir", "src/Symbol.zir", "src/Value.zir", "src/Types.zir", "src/Nodes.zir" : *;
+
+class ScopeManager {
+    pub builder: LLVMBuilderRef = null,
+    pub scopes: Vector<*const Scope>,
+    pub current: *mut Scope = null;
+
+    ScopeManager(&mut this) {
+        this.PushScope(String("global"), true);
+    }
+
+    ~ScopeManager(&mut this) {
+        this.PopScope();
+    }
+
+    pub PushScope(&mut this, name: String, global: bool) {
+        let scope: *mut Scope = new Scope(this.current, name, global);
+
+        if global {
+            this.scopes.PushBack(scope);
+        }
+
+        if this.current != null {
+            this.current->children.PushBack(scope);
+        } this.current = scope;
+    }
+
+    pub PopScope(&mut this) {
+        if this.current != null {
+            let temp: *const Scope = this.current;
+            this.current = this.current->parent;
+            let mut i: u64 = 0u64;
+
+            if this.current == null {
+                while i < this.scopes.Size() {
+                    del this.scopes[i];
+                    i += 1u64;
+                }
+            } else if !temp->global {
+                while i < temp->instances.Size() {
+                    let instance: QualifiedValue = temp->instances[i];
+
+                    if LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(this.builder)) == null {
+                        compiler->CompileDestructor(instance.Type().Pointee(), instance, null);
+                    } i += 1u64;
+                }
+
+                this.current->children.Remove(temp);
+                del temp;
+            }
+        } else {
+            Logger::Log("ScopeManager", "No scope to pop.", LogSeverity::Error);
+        }
+    }
+
+    pub RegisterInstance(&mut this, instance: QualifiedValue) {
+        if !this.current->global {
+            this.current->instances.PushBack(instance);
+        } else {
+            Logger::Log("ScopeManager", "Cannot register instance in global scope.", LogSeverity::Error);
+            ret;
+        }
+    }
+
+    pub InvokeDestructors(&this, except: QualifiedValue) {
+        let mut scope: *const Scope = this.current;
+
+        while !scope->global {
+            let mut i: u64 = 0u64;
+
+            while i < scope->instances.Size() {
+                let instance: QualifiedValue = scope->instances[i];
+
+                if instance != except {
+                    compiler->CompileDestructor(instance.Type().Pointee(), instance, null);
+                } i += 1u64;
+            } scope = scope->parent;
+        }
+    }
+
+    pub InvokeDestructors(&this) {
+        let mut scope: *const Scope = this.current;
+
+        while !scope->global {
+            let mut i: u64 = 0u64;
+
+            while i < scope->instances.Size() {
+                let instance: QualifiedValue = scope->instances[i];
+                compiler->CompileDestructor(instance.Type().Pointee(), instance, null);
+                i += 1u64;
+            } scope = scope->parent;
+        }
+    }
+
+    pub Has(&this, name: String) -> bool {
+        let mut scope: *const Scope = this.current;
+
+        while scope != null {
+            if scope->Has(name) {
+                ret true;
+            } else {
+                scope = scope->parent;
+            }
+        } ret false;
+    }
+
+    pub Has(&this, name: String, kind: SymbolKind) -> bool {
+        let mut scope: *const Scope = this.current;
+
+        while scope != null {
+            if scope->Has(name, kind) {
+                ret true;
+            } else {
+                scope = scope->parent;
+            }
+        } ret false;
+    }
+
+    pub Set(&mut this, name: String, kind: SymbolKind, value: QualifiedValue, overload: bool, node: *const ASTNode) -> *const Symbol {
+        ret this.current->Set(name, kind, value, overload, node);
+    }
+
+    pub Set(&mut this, name: String, kind: SymbolKind, pointer: *const void, overload: bool, node: *const ASTNode) -> *const Symbol {
+        ret this.current->Set(name, kind, pointer, overload, node);
+    }
+
+    pub Get(&this, name: String) -> *const Symbol {
+        let mut scope: *const Scope = this.current;
+
+        while scope != null {
+            if scope->Has(name) {
+                ret scope->Get(name);
+            } else {
+                scope = scope->parent;
+            }
+        } ret null;
+    }
+
+    pub Get(&this, name: String, kind: SymbolKind) -> *const Symbol {
+        let mut scope: *const Scope = this.current;
+
+        while scope != null {
+            if scope->Has(name, kind) {
+                ret scope->Get(name, kind);
+            } else {
+                scope = scope->parent;
+            }
+        } ret null;
+    }
+
+    pub GetAll(&this, name: String) -> Vector<*const Symbol> {
+        let mut result: Vector<*const Symbol>;
+        let mut scope: *const Scope = this.current;
+
+        while scope != null {
+            if scope->Has(name) {
+                result += scope->GetAll(name);
+            } scope = scope->parent;
+        } ret result;
+    }
+
+    pub GetAll(&this, name: String, kind: SymbolKind) -> Vector<*const Symbol> {
+        let mut result: Vector<*const Symbol>;
+        let mut scope: *const Scope = this.current;
+
+        while scope != null {
+            if scope->Has(name, kind) {
+                result += scope->GetAll(name, kind);
+            } scope = scope->parent;
+        } ret result;
+    }
+
+    pub Namespaces(&this) -> Vector<String> {
+        let mut scope: *const Scope = this.current;
+        let mut inverse: Vector<String>;
+
+        while scope->parent != null {
+            if scope->global {
+                inverse.PushBack(scope->name);
+            } scope = scope->parent;
+        }
+
+        let mut result: Vector<String>;
+        let mut i: u64 = inverse.Size();
+
+        while i > 0u64 {
+            result.PushBack(inverse[i - 1u64]);
+            i -= 1u64;
+        } ret result;
+    }
+
+    pub ResolveChild(&this, scope: *const Scope, identifier: *const IdentifierNode, test: bool) -> *const Scope {
+        let mut i: u64 = 0u64;
+
+        while i < scope->children.Size() {
+            if scope->children[i]->name == identifier->name {
+                ret scope->children[i];
+            } else {
+                i += 1u64;
+            }
+        }
+
+        if !test {
+            Logger::Log("Scope '" + identifier->name + "' not found.", identifier as *const ASTNode, LogSeverity::Error);
+        } ret null;
+    }
+
+    pub ResolveChild(&this, scope: *const Scope, primitive_type: *const PrimitiveTypeNode, test: bool) -> *const Scope {
+        if primitive_type->generic {
+            if scope->Has(primitive_type->name) {
+                let mut types: Vector<*const QualifiedType>;
+                let mut i: u64 = 0u64;
+
+                while i < primitive_type->types.Size() {
+                    types.PushBack(compiler->CompileType(primitive_type->types[i]));
+                    i += 1u64;
+                }
+
+                ret (scope->Get(primitive_type->name)->pointer as *mut Generic)->Get(types).right;
+            } else if !test {
+                Logger::Log("Generic '" + primitive_type->name + "' not found.", primitive_type as *const ASTNode, LogSeverity::Error);
+            } ret null;
+        } else {
+            let mut i: u64 = 0u64;
+
+            while i < scope->children.Size() {
+                if scope->children[i]->name == primitive_type->name {
+                    ret scope->children[i];
+                } else {
+                    i += 1u64;
+                }
+            }
+
+            if !test {
+                Logger::Log("Scope '" + primitive_type->name + "' not found.", primitive_type as *const ASTNode, LogSeverity::Error);
+            } ret null;
+        }
+    }
+
+    pub ResolveScopeHalf(&this, resolution: *const ScopeResolutionNode, test: bool) -> *const Scope {
+        let mut scope: *const Scope = this.current;
+
+        while !scope->global {
+            scope = scope->parent;
+        }
+
+        if resolution->scope != null {
+            if resolution->scope->node_type == ASTNodeType::SCOPE_RESOLUTION {
+                scope = this.ResolveScopeFull(resolution->scope as *const ScopeResolutionNode, test);
+            } else if resolution->scope->node_type == ASTNodeType::PRIMITIVE_TYPE {
+                scope = this.ResolveChild(scope, resolution->scope as *const PrimitiveTypeNode, test);
+            } else if resolution->scope->node_type == ASTNodeType::IDENTIFIER {
+                scope = this.ResolveChild(scope, resolution->scope as *const IdentifierNode, test);
+            } else {
+                if !test {
+                    Logger::Log("Unknown resolution '" + resolution->scope->node_type.ToString() + "'.", resolution->scope, LogSeverity::Error);
+                } ret null;
+            }
+        } else {
+            while scope->parent != null {
+                scope = scope->parent;
+            }
+        } ret scope;
+    }
+
+    pub ResolveScopeFull(&this, resolution: *const ScopeResolutionNode, test: bool) -> *const Scope {
+        ret this.ResolveChild(this.ResolveScopeHalf(resolution, test), resolution->identifier, test);
+    }
+
+    pub Resolve(&this, resolution: *const ScopeResolutionNode, test: bool) -> *const Symbol {
+        let scope: *const Scope = this.ResolveScopeHalf(resolution, test);
+
+        if scope == null {
+            ret null;
+        }
+
+        if scope->Has(resolution->identifier->name) {
+            ret scope->Get(resolution->identifier->name);
+        } else {
+            if !test {
+                Logger::Log("Symbol '" + resolution->identifier->name + "' not found.", resolution as *const ASTNode, LogSeverity::Error);
+            } ret null;
+        }
+    }
+
+    pub Resolve(&this, identifier: *const IdentifierNode, test: bool) -> *const Symbol {
+        if this.Has(identifier->name) {
+            ret this.Get(identifier->name);
+        } else {
+            if !test {
+                Logger::Log("Symbol '" + identifier->name + "' not found.", identifier as *const ASTNode, LogSeverity::Error);
+            } ret null;
+        }
+    }
+
+    pub Resolve(&this, node: *const ASTNode, test: bool) -> *const Symbol {
+        if node->node_type == ASTNodeType::SCOPE_RESOLUTION {
+            ret this.Resolve(node as *const ScopeResolutionNode, test);
+        } else if node->node_type == ASTNodeType::IDENTIFIER {
+            ret this.Resolve(node as *const IdentifierNode, test);
+        } else {
+            if !test {
+                Logger::Log("Unknown resolution '" + node->node_type.ToString() + "'.", node, LogSeverity::Error);
+            } ret null;
+        }
+    }
+
+    pub Resolve(&this, name: &String, node: *const ASTNode, test: bool) -> *const Symbol {
+        if this.Has(name) {
+            ret this.Get(name);
+        } else {
+            if !test {
+                Logger::Log("Symbol '" + name + "' not found.", node, LogSeverity::Error);
+            } ret null;
+        }
+    }
+
+    pub Resolve(&this, symbols: &Vector<*const Symbol>, params: &Vector<*const QualifiedType>, node: *const ASTNode, test: bool) -> *const Symbol {
+        let (mut index: u64, mut best: u64, mut i: u64) = (0u64, 0u64, 0u64);
+
+        while i < symbols.Size() {
+            let (mut _match: bool, mut score: u64, mut j: u64) = (true, 1u64, 0u64);
+            let _params: &Vector<ParameterType> = symbols[i]->value.Type().Pointee().Parameters();
+            let mut offset: u64 = 0u64;
+
+            if _params.Size() != 0u64 {
+                offset = _params[0u64].sret != null ? 1u64 : 0u64;
+            }
+
+            if params.Size() != _params.Size() - offset {
+                i += 1u64;
+                continue;
+            }
+
+            while params.Size() > j {
+                let param_type: &ParameterType = _params[j + offset];
+                let mut _type: *const QualifiedType = param_type._type;
+
+                if param_type.byval != null {
+                    _type = param_type.byval;
+                }
+
+                if _type->IsReference() && *_type != *(params[j]) {
+                    _type = _type->Pointee();
+                }
+
+                let (mut _state: bool, mut state_: bool) = (false, false);
+
+                if params[j]->IsReference() {
+                    if *_type == params[j]->Pointee() {
+                        _state = true;
+                    } else if _type->IsPointer() && params[j]->Pointee().IsPointer() {
+                        if LLVMGetTypeKind(_type->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || params[j]->Pointee().Pointee()._null {
+                            state_ = true;
+                        }
+                    }
+                }
+
+                if _type->IsPointer() && params[j]->IsPointer() {
+                    if LLVMGetTypeKind(_type->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || params[j]->Pointee()._null {
+                        state_ = true;
+                    }
+                }
+
+                if *_type == *(params[j]) || _state || state_ {
+                    score += _state ? 3u64 : (state_ ? 1u64 : 2u64);
+                } else {
+                    _match = false;
+                    break;
+                } j += 1u64;
+            }
+
+            if _match && score > best {
+                (index, best) = (i, score);
+            } i += 1u64;
+        }
+
+        if best != 0u64 {
+            ret symbols[index];
+        } else {
+            if !test {
+                Logger::Log("Invalid arguments for: '" + symbols[0u64]->name + "'.", node, LogSeverity::Error);
+            } ret null;
+        }
+    }
+
+    pub Resolve(&this, resolution: *const ScopeResolutionNode, params: &Vector<*const QualifiedType>, test: bool) -> *const Symbol {
+        let scope: *const Scope = this.ResolveScopeHalf(resolution, test);
+
+        if scope->Has(resolution->identifier->name, SymbolKind::Function) {
+            ret this.Resolve(scope->GetAll(resolution->identifier->name, SymbolKind::Function), params, resolution as *const ASTNode, test);
+        } else {
+            if !test {
+                Logger::Log("Symbol '" + resolution->identifier->name + "' not found.", resolution as *const ASTNode, LogSeverity::Error);
+            } ret null;
+        }
+    }
+
+    pub Resolve(&this, identifier: *const IdentifierNode, params: &Vector<*const QualifiedType>, test: bool) -> *const Symbol {
+        if this.Has(identifier->name, SymbolKind::Function) {
+            ret this.Resolve(this.GetAll(identifier->name, SymbolKind::Function), params, identifier as *const ASTNode, test);
+        } else {
+            if !test {
+                Logger::Log("Symbol '" + identifier->name + "' not found.", identifier as *const ASTNode, LogSeverity::Error);
+            } ret null;
+        }
+    }
+
+    pub Resolve(&this, node: *const ASTNode, params: &Vector<*const QualifiedType>, test: bool) -> *const Symbol {
+        if node->node_type == ASTNodeType::SCOPE_RESOLUTION {
+            ret this.Resolve(node as *const ScopeResolutionNode, params, test);
+        } else if node->node_type == ASTNodeType::IDENTIFIER {
+            ret this.Resolve(node as *const IdentifierNode, params, test);
+        } else {
+            if !test {
+                Logger::Log("Unknown resolution '" + node->node_type.ToString() + "'.", node, LogSeverity::Error);
+            } ret null;
+        }
+    }
+
+    pub Resolve(&this, name: &String, params: &Vector<*const QualifiedType>, node: *const ASTNode, test: bool) -> *const Symbol {
+        if this.Has(name, SymbolKind::Function) {
+            ret this.Resolve(this.GetAll(name, SymbolKind::Function), params, node, test);
+        } else {
+            if !test {
+                Logger::Log("Symbol '" + name + "' not found.", node, LogSeverity::Error);
+            } ret null;
+        }
+    }
+}
+
+include "src/Compiler.zir" : *;

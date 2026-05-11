@@ -1,0 +1,122 @@
+/*
+ * Copyright 2025-2026 Yusuf Rençber
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+include "std/str", "std/vec", "std/map", "std/pair",
+    "src/Mangler.zir", "src/Scope.zir", "src/Symbol.zir", "src/Value.zir", "src/Types.zir" : *;
+
+class Generic {
+    priv cache: Map<String, Pair<*const QualifiedType, *mut Scope>>,
+    pub ast: *const ASTNode, pub scope: *mut Scope,
+
+    pub name: String, pub type_names: Vector<String>,
+    pub symbols: Vector<*const Symbol>, pub last_scope: *mut Scope = null,
+    pub current: String, pub types: Vector<*const QualifiedType>;
+
+    Generic(&mut this, ast: *mut ASTNode) {
+        (this.ast, this.scope) = (ast, compiler->scope_manager.current);
+        compiler->generics.PushBack(this);
+
+        if ast->node_type != ASTNodeType::CLASS_DECL {
+            let enum_decl: *const EnumDeclNode = ast as *const EnumDeclNode;
+            (this.name, this.type_names) = (enum_decl->name, enum_decl->types);
+        } else {
+            let class_decl: *const ClassDeclNode = ast as *const ClassDeclNode;
+            (this.name, this.type_names) = (class_decl->name, class_decl->types);
+        }
+    }
+
+    ~Generic(&this) {}
+
+    pub Set(&mut this, _class: *const QualifiedType) {
+        if this.current != "" {
+            let mut i: u64 = 0u64;
+
+            while i < this.type_names.Size() {
+                this.symbols.PushBack(compiler->scope_manager.Set(this.type_names[i], SymbolKind::Type, QualifiedValue(null, this.types[i]), false, this.ast));
+                i += 1u64;
+            }
+
+            this.last_scope = compiler->scope_manager.current;
+            this.cache[this.current] = Pair<*const QualifiedType, *mut Scope>(_class, this.last_scope);
+            this.current = "";
+        } else {
+            Logger::Log("Generic", "Not in a generic compilation.", LogSeverity::Error);
+            ret;
+        }
+    }
+
+    pub Get(&mut this, types: Vector<*const QualifiedType>) -> Pair<*const QualifiedType, *mut Scope> {
+        let (prev_mangling: bool, prev_unsafe: bool) = (compiler->mangling, compiler->_unsafe);
+        let (prev_scope: *mut Scope, prev_generic: *const Generic) = (compiler->scope_manager.current, compiler->generic);
+        let (prev_class: *const QualifiedType, prev_function: *const QualifiedType) = (compiler->_class, compiler->function);
+        let prev_function_ref: LLVMValueRef = compiler->function_ref;
+
+        (compiler->scope_manager.current, compiler->generic) = (this.scope, this);
+        (compiler->_class, compiler->function, compiler->function_ref) = (null, null, null);
+        (compiler->mangling, compiler->_unsafe) = (true, false);
+
+        if this.current != "" {
+            Logger::Log("Generic", "Nested generics are not supported.", LogSeverity::Error);
+        }
+
+        if types.Size() != this.type_names.Size() {
+            Logger::Log("Generic", "Generic type parameter count mismatch.", LogSeverity::Error);
+        }
+
+        let name: String = Mangler::MangleClass(this.name, types);
+
+        if this.cache.Has(name) {
+            compiler->function_ref = prev_function_ref;
+            (compiler->_class, compiler->function) = (prev_class, prev_function);
+            (compiler->scope_manager.current, compiler->generic) = (prev_scope, prev_generic);
+            (compiler->mangling, compiler->_unsafe) = (prev_mangling, prev_unsafe);
+            ret this.cache[name];
+        } else {
+            this.current = name;
+            this.types = types;
+        }
+
+        let mut _class: *const QualifiedType = null;
+
+        if this.ast->node_type != ASTNodeType::CLASS_DECL {
+            _class = compiler->CompileVariant(this.ast as *const EnumDeclNode, this);
+        } else {
+            _class = compiler->CompileClass(this.ast as *const ClassDeclNode, this);
+        }
+
+        let mut i: u64 = 0u64;
+
+        while i < this.symbols.Size() {
+            let index: i64 = this.last_scope->symbols.Index(this.symbols[i]);
+
+            if index != -1i64 {
+                this.last_scope->symbols.RemoveAt(index as u64);
+            } else {
+                Logger::Log("Generic", "Failed to remove temporary generic type '" + this.symbols[i]->name + "' from scope.", LogSeverity::Error);
+            } i += 1u64;
+        }
+
+        this.types.Clear();
+        this.symbols.Clear();
+        compiler->function_ref = prev_function_ref;
+        (compiler->_class, compiler->function) = (prev_class, prev_function);
+        (compiler->scope_manager.current, compiler->generic) = (prev_scope, prev_generic);
+        (compiler->mangling, compiler->_unsafe) = (prev_mangling, prev_unsafe);
+        ret Pair<*const QualifiedType, *mut Scope>(_class, this.last_scope);
+    }
+}
+
+include "src/Compiler.zir" : *;

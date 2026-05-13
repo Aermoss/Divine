@@ -14,10 +14,12 @@
  * limitations under the License.
  */
 
-include "std/str", "std/vec", "src/Lexer.zir", "src/Logger.zir" : *;
+include "std/str", "std/vec", "std/file", "src/Lexer.zir", "src/Logger.zir" : *;
 
 class Preprocessor {
     pub defines: Vector<String>,
+    pub include_paths: Vector<String>,
+    priv included_paths: Vector<String>,
     priv file: String, priv index: u64,
     priv conditions: Vector<bool>,
     priv taken: Vector<bool>,
@@ -62,7 +64,7 @@ class Preprocessor {
         let token: Token = this.Current();
 
         if token._type != _type {
-            Logger::Log(this.file, token.row, token.column, "Expected '" + _type.ToString() + "' but got '" + token._type.ToString() + "'.", LogSeverity::Error);
+            Logger::Log("Expected '" + _type.ToString() + "' but got '" + token._type.ToString() + "'.", token, LogSeverity::Error);
         } else {
             this.Advance();
         } ret token;
@@ -123,10 +125,67 @@ class Preprocessor {
         ret this.ProcessOrExpression();
     }
 
-    pub ProcessDirective(&mut this) {
+    priv ProcessInclude(&mut this, result: &mut Vector<Token>) {
+        let mut modules: Vector<String>;
+
+        while this.Match(TokenType::COMMA) || modules.Empty() {
+            modules.PushBack(this.Expect(TokenType::STRING).value);
+        }
+
+        this.Expect(TokenType::COLON);
+        this.Expect(TokenType::MUL);
+        let mut i: u64 = 0u64;
+
+        while i < modules.Size() {
+            let (mut found: bool, mut j: u64) = (false, 0u64);
+            let module: String = modules[i];
+
+            while j < this.include_paths.Size() {
+                let mut path: String = JoinPath(this.include_paths[j], modules[i]);
+                j += 1u64;
+
+                if !PathExists(path) {
+                    continue;
+                }
+
+                if FolderExists(path) {
+                    path = JoinPath(path, String("Entry.zir"));
+
+                    if !PathExists(path) {
+                        Logger::Log("Module '" + module + "' entry point not found.", token, LogSeverity::Error);
+                        ret;
+                    }
+                }
+
+                path = AbsolutePath(path);
+
+                if this.included_paths.Index(path #[if WINDOWS || DARWIN] .ToLower() #[endif]) != -1i64 {
+                    found = true;
+                    break;
+                }
+
+                let mut lexer: Lexer;
+                let (tokens: Vector<Token>, index: u64, file: String) = (this.tokens, this.index, this.file);
+                this.Process(lexer.Lex(_ReadFile(path), path), path);
+                (this.tokens, this.index, this.file, found) = (tokens, index, file, true);
+                break;
+            }
+
+            if found {
+                i += 1u64;
+            } else {
+                Logger::Log("Module '" + module + "' not found.", token, LogSeverity::Error);
+                ret;
+            }
+        }
+    }
+
+    pub ProcessDirective(&mut this, result: &mut Vector<Token>) {
         let token: Token = this.Current();
 
-        if this.Match(TokenType::IF) {
+        if this.Match(TokenType::INCLUDE) {
+            this.ProcessInclude(result);
+        } else if this.Match(TokenType::IF) {
             let active: bool = this.ProcessExpression();
             this.conditions.PushBack(active);
             this.taken.PushBack(active);
@@ -134,7 +193,7 @@ class Preprocessor {
             let active: bool = this.ProcessExpression();
 
             if this.conditions.Empty() {
-                Logger::Log(this.file, token.row, token.column, "Unexpected 'elif' directive.", LogSeverity::Error);
+                Logger::Log("Unexpected 'elif' directive.", token, LogSeverity::Error);
             } else if this.taken[this.taken.Size() - 1u64] {
                 this.conditions[this.conditions.Size() - 1u64] = false;
             } else {
@@ -143,7 +202,7 @@ class Preprocessor {
             }
         } else if this.Match(TokenType::ELSE) {
             if this.conditions.Empty() {
-                Logger::Log(this.file, token.row, token.column, "Unexpected 'else' directive.", LogSeverity::Error);
+                Logger::Log("Unexpected 'else' directive.", token, LogSeverity::Error);
             } else if this.taken[this.taken.Size() - 1u64] {
                 this.conditions[this.conditions.Size() - 1u64] = false;
             } else {
@@ -155,26 +214,27 @@ class Preprocessor {
                 this.conditions.PopBack();
                 this.taken.PopBack();
             } else {
-                Logger::Log(this.file, token.row, token.column, "Unexpected 'endif' directive.", LogSeverity::Error);
+                Logger::Log("Unexpected 'endif' directive.", token, LogSeverity::Error);
             }
         } else if this.Match(TokenType::ERROR) {
-            Logger::Log(this.file, token.row, token.column, this.Expect(TokenType::STRING).value, LogSeverity::Error);
+            Logger::Log(this.Expect(TokenType::STRING).value, token, LogSeverity::Error);
         } else if this.Match(TokenType::WARNING) {
-            Logger::Log(this.file, token.row, token.column, this.Expect(TokenType::STRING).value, LogSeverity::Warning);
+            Logger::Log(this.Expect(TokenType::STRING).value, token, LogSeverity::Warning);
         } else {
-            Logger::Log(this.file, token.row, token.column, ("Unknown directive: '" + token.value + "'."), LogSeverity::Error);
+            Logger::Log("Unknown directive: '" + token.value + "'.", token, LogSeverity::Error);
         }
     }
 
     pub Process(&mut this, tokens: &Vector<Token>, file: &String) -> Vector<Token> {
-        let mut result: Vector<Token>;
         (this.tokens, this.file, this.index) = (tokens, file, 0u64);
+        this.included_paths.PushBack(AbsolutePath(file) #[if WINDOWS || DARWIN] .ToLower() #[endif]);
+        let mut result: Vector<Token>;
 
         loop {
             let token: Token = this.Current();
 
             if this.Match(TokenType::PREPROCESSOR_START) {
-                this.ProcessDirective();
+                this.ProcessDirective(result);
                 this.Expect(TokenType::PREPROCESSOR_END);
             } else if token._type != TokenType::EOF {
                 if this.Condition() {
@@ -182,7 +242,7 @@ class Preprocessor {
                 } this.Advance();
             } else {
                 if !this.conditions.Empty() {
-                    Logger::Log(this.file, token.row, token.column, "Expected 'endif' directive.", LogSeverity::Error);
+                    Logger::Log("Expected 'endif' directive.", token, LogSeverity::Error);
                 }
 
                 result.PushBack(token);

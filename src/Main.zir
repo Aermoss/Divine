@@ -650,6 +650,7 @@ func main(args: &mut Vector<String>) -> i32 {
 
             let mut lexer: Lexer;
             let mut preprocessor: Preprocessor;
+            preprocessor.include_paths = include_paths;
             preprocessor.defines = defines;
 
             let mut source: String = _ReadFile(input_file);
@@ -658,7 +659,6 @@ func main(args: &mut Vector<String>) -> i32 {
             tokens = preprocessor.Process(tokens, input_file);
 
             let mut parser: Parser;
-            (parser.defines, parser.include_paths) = (defines, include_paths);
             let ast: *const RootNode = parser.Parse(tokens, input_file);
             module = compiler.Compile(ast, input_file);
         } else if extension == ".ll" || extension == ".bc" {
@@ -702,7 +702,6 @@ func main(args: &mut Vector<String>) -> i32 {
                 LLVMSetSourceFileName(module, input_file.Data(), input_file.Length());
                 LLVMSetModuleDataLayout(module, target.layout);
                 LLVMSetTarget(module, target.triple.Data());
-                let mut message: *const i8 = null;
 
                 if LLVMVerifyModule(module, LLVMVerifierFailureAction::LLVMReturnStatusAction, &mut message) != 0i32 {
                     let final_message: *const i8 = message != null ? message : "Unknown reason.";
@@ -713,7 +712,6 @@ func main(args: &mut Vector<String>) -> i32 {
 
                 if message != null {
                     LLVMDisposeMessage(message);
-                    message = null;
                 }
             }
         } else if extension == ".asm" || extension == ".s" {
@@ -776,9 +774,22 @@ func main(args: &mut Vector<String>) -> i32 {
         }
 
         if emit_llvm && extension != ".ll" {
-            let string: *const i8 = LLVMPrintModuleToString(module);
-            _WriteFile(name + ".ll", String(string));
-            LLVMDisposeMessage(string);
+            let mut message: *mut i8 = null;
+
+            if LLVMPrintModuleToFile(module, (output + ".ll").Data(), &mut message) != 0i32 {
+                let final_message: *const i8 = message != null ? message : "Unknown reason.";
+                Logger::Log(input_file, "Failed to emit LLVM IR: " + final_message.ToString(), LogSeverity::Error);
+            }
+
+            if message != null {
+                LLVMDisposeMessage(message);
+            }
+        }
+
+        if emit_bc && extension != ".bc" {
+            if LLVMWriteBitcodeToFile(module, (output + ".bc").Data()) != 0i32 {
+                Logger::Log(input_file, "Failed to emit LLVM bitcode.", LogSeverity::Error);
+            }
         }
 
         if emit_asm {

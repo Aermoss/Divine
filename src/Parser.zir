@@ -14,15 +14,12 @@
  * limitations under the License.
  */
 
-include "std/str", "std/vec", "std/map", "std/pair", "std/file",
+include "std/str", "std/vec", "std/map", "std/pair",
     "src/Logger.zir", "src/Lexer.zir", "src/Preprocessor.zir", "src/Nodes.zir" : *;
 
 class Parser {
     priv root: *mut RootNode,
     priv types: Vector<String>,
-    pub defines: Vector<String>,
-    pub include_paths: Vector<String>,
-    priv included_paths: Vector<String>,
     priv file: String, priv index: u64,
     priv tokens: Vector<Token>;
 
@@ -68,10 +65,10 @@ class Parser {
             ret this.Advance();
         }
 
-        Logger::Log(this.file, "Expected '" + _type.ToString() + "' but got '" + token._type.ToString() + "'.", token, LogSeverity::Error);
+        Logger::Log("Expected '" + _type.ToString() + "' but got '" + token._type.ToString() + "'.", token, LogSeverity::Error);
 
         let mut error: Token;
-        (error._type, error.row, error.column) = (TokenType::UNKNOWN, token.row, token.column);
+        (error._type, error.row, error.column, error.file) = (TokenType::UNKNOWN, token.row, token.column, token.file);
         ret error;
     }
 
@@ -83,7 +80,7 @@ class Parser {
             ret true;
         }
 
-        Logger::Log(this.file, "Expected '" + _type.ToString() + "' but got '" + token._type.ToString() + "'.", token, LogSeverity::Error);
+        Logger::Log("Expected '" + _type.ToString() + "' but got '" + token._type.ToString() + "'.", token, LogSeverity::Error);
         ret false;
     }
 
@@ -207,7 +204,7 @@ class Parser {
             ret expression;
         } else {
             this.Advance();
-            Logger::Log(this.file, "Unexpected token '" + token.value + "'.", token, LogSeverity::Error);
+            Logger::Log("Unexpected token '" + token.value + "'.", token, LogSeverity::Error);
             ret null;
         }
     }
@@ -461,8 +458,8 @@ class Parser {
                 func_type->return_type = new PrimitiveTypeNode({ "void" } as String, token.row, token.column, this.file) as *const ASTNode;
             } node = func_type as *const ASTNode;
         } else {
-            if token._type != TokenType::IDENTIFIER {
-                Logger::Log(this.file, "Expected type name.", token, LogSeverity::Error);
+            if type_token._type != TokenType::IDENTIFIER {
+                Logger::Log("Expected type name.", type_token, LogSeverity::Error);
                 ret null;
             }
 
@@ -1067,7 +1064,7 @@ class Parser {
             ret this.ParseIncludeStatement();
         } else {
             this.Advance();
-            Logger::Log(this.file, "Expected declaration.", token, LogSeverity::Error);
+            Logger::Log("Expected declaration.", token, LogSeverity::Error);
             ret null;
         }
     }
@@ -1082,18 +1079,18 @@ class Parser {
 
             if attribute.left == "nomangle" {
                 if attribute.right.Size() != 0u64 {
-                    Logger::Log(this.file, "Invalid number of arguments for attribute '" + attribute.left + "'.", token, LogSeverity::Error);
+                    Logger::Log("Invalid number of arguments for attribute '" + attribute.left + "'.", token, LogSeverity::Error);
                     ret null;
                 }
 
                 if no_mangle {
-                    Logger::Log(this.file, "Attribute '" + attribute.left + "' already set.", token, LogSeverity::Error);
+                    Logger::Log("Attribute '" + attribute.left + "' already set.", token, LogSeverity::Error);
                     ret null;
                 }
 
                 no_mangle = true;
             } else {
-                Logger::Log(this.file, "Invalid attribute '" + attribute.left + "'.", token, LogSeverity::Error);
+                Logger::Log("Invalid attribute '" + attribute.left + "'.", token, LogSeverity::Error);
                 ret null;
             } i += 1u64;
         }
@@ -1190,7 +1187,7 @@ class Parser {
                     if expression->node_type == ASTNodeType::CALL {
                         func_decl->constructors.PushBack(expression as *const CallNode);
                     } else {
-                        Logger::Log(this.file, "Expected a function call.", token, LogSeverity::Error);
+                        Logger::Log("Expected a function call.", token, LogSeverity::Error);
                         break;
                     }
                 }
@@ -1242,7 +1239,7 @@ class Parser {
 
         while i < attributes.Size() {
             let attribute: &Pair<String, Vector<*const ASTNode>> = attributes[i];
-            Logger::Log(this.file, "Invalid attribute '" + attribute.left + "'.", token, LogSeverity::Error);
+            Logger::Log("Invalid attribute '" + attribute.left + "'.", token, LogSeverity::Error);
             ret null;
         }
 
@@ -1250,7 +1247,7 @@ class Parser {
         if identifier._type == TokenType::UNKNOWN { ret null; }
 
         if this.types.Index(identifier.value) != -1i64 {
-            Logger::Log(this.file, "Type '" + identifier.value + "' is overloaded.", token, LogSeverity::Error);
+            Logger::Log("Type '" + identifier.value + "' is overloaded.", identifier, LogSeverity::Error);
             ret null;
         }
 
@@ -1302,7 +1299,7 @@ class Parser {
                 if visibility._type == TokenType::PUBLIC || visibility._type == TokenType::PRIVATE {
                     this.Advance();
                 } else {
-                    Logger::Log(this.file, "Expected visibility modifier.", visibility, LogSeverity::Error);
+                    Logger::Log("Expected visibility modifier.", visibility, LogSeverity::Error);
                     ret null;
                 }
 
@@ -1311,7 +1308,7 @@ class Parser {
                     if field == null { ret null; }
                     class_decl->fields.PushBack(Pair<TokenType, *const FieldNode>(visibility._type, field));
                 } else {
-                    Logger::Log(this.file, "Expected field declaration.", this.Current(), LogSeverity::Error);
+                    Logger::Log("Expected field declaration.", this.Current(), LogSeverity::Error);
                     ret null;
                 }
 
@@ -1333,7 +1330,7 @@ class Parser {
                 } else {
                     if this.Current()._type == TokenType::TILDE {
                         if class_decl->destructor != null {
-                            Logger::Log(this.file, "Multiple destructor declarations are not allowed.", visibility, LogSeverity::Error);
+                            Logger::Log("Multiple destructor declarations are not allowed.", visibility, LogSeverity::Error);
                             ret null;
                         }
 
@@ -1394,7 +1391,7 @@ class Parser {
 
         while i < attributes.Size() {
             let attribute: &Pair<String, Vector<*const ASTNode>> = attributes[i];
-            Logger::Log(this.file, "Invalid attribute '" + attribute.left + "'.", token, LogSeverity::Error);
+            Logger::Log("Invalid attribute '" + attribute.left + "'.", token, LogSeverity::Error);
             ret null;
         }
 
@@ -1402,7 +1399,7 @@ class Parser {
         if identifier._type == TokenType::UNKNOWN { ret null; }
 
         if this.types.Index(identifier.value) != -1i64 {
-            Logger::Log(this.file, "Type '" + identifier.value + "' is overloaded.", token, LogSeverity::Error);
+            Logger::Log("Type '" + identifier.value + "' is overloaded.", identifier, LogSeverity::Error);
             ret null;
         }
 
@@ -1465,7 +1462,7 @@ class Parser {
                 if !this.Expect2(TokenType::RPAREN) { ret null; }
             } else if this.Match(TokenType::ASSIGN) {
                 if enum_decl->variant {
-                    Logger::Log(this.file, "Explicit value assignment is not allowed for variant enums.", variant_identifier, LogSeverity::Error);
+                    Logger::Log("Explicit value assignment is not allowed for variant enums.", variant_identifier, LogSeverity::Error);
                     ret null;
                 }
 
@@ -1474,7 +1471,7 @@ class Parser {
             }
 
             if !enum_decl->variant && !variant->types.Empty() {
-                Logger::Log(this.file, "Data fields are only allowed in variant enums.", variant_identifier, LogSeverity::Error);
+                Logger::Log("Data fields are only allowed in variant enums.", variant_identifier, LogSeverity::Error);
                 ret null;
             }
 
@@ -1495,7 +1492,7 @@ class Parser {
                     if function == null { ret null; }
                     enum_decl->methods.PushBack(Pair<TokenType, *const FunctionDeclNode>(visibility._type, function as *const FunctionDeclNode));
                 } else {
-                    Logger::Log(this.file, "Expected visibility modifier.", visibility, LogSeverity::Error);
+                    Logger::Log("Expected visibility modifier.", visibility, LogSeverity::Error);
                     ret null;
                 }
             }
@@ -1535,7 +1532,7 @@ class Parser {
 
                 extern_block->declarations.PushBack(_static);
             } else {
-                Logger::Log(this.file, "Only function and static declarations allowed in extern block.", this.Current(), LogSeverity::Error);
+                Logger::Log("Only function and static declarations allowed in extern block.", this.Current(), LogSeverity::Error);
                 this.Advance();
                 this.SynchronizeDeclaration();
             }
@@ -1600,7 +1597,7 @@ class Parser {
 
                 alignment = attribute.right[0u64];
             } else {
-                Logger::Log(this.file, "Invalid attribute '" + attribute.left + "'.", token, LogSeverity::Error);
+                Logger::Log("Invalid attribute '" + attribute.left + "'.", token, LogSeverity::Error);
                 ret null;
             } i += 1u64;
         }
@@ -1652,7 +1649,7 @@ class Parser {
         if identifier._type == TokenType::UNKNOWN { ret null; }
 
         if this.types.Index(identifier.value) != -1i64 {
-            Logger::Log(this.file, "Type '" + identifier.value + "' is overloaded.", token, LogSeverity::Error);
+            Logger::Log("Type '" + identifier.value + "' is overloaded.", identifier, LogSeverity::Error);
             ret null;
         }
 
@@ -1665,83 +1662,8 @@ class Parser {
         ret type_decl as *const ASTNode;
     }
 
-    priv ParseIncludeStatement(&mut this) -> *const ASTNode {
-        let token: Token = this.Expect(TokenType::INCLUDE);
-        let mut modules: Vector<String>;
-
-        while this.Match(TokenType::COMMA) || modules.Empty() {
-            let module: Token = this.Expect(TokenType::STRING);
-            if module._type == TokenType::UNKNOWN { ret null; }
-            modules.PushBack(module.value);
-        }
-
-        if !this.Expect2(TokenType::COLON) { ret null; }
-        if !this.Expect2(TokenType::MUL) { ret null; }
-        if !this.Expect2(TokenType::SEMICOLON) { ret null; }
-        let mut i: u64 = 0u64;
-
-        while i < modules.Size() {
-            let (mut found: bool, mut j: u64) = (false, 0u64);
-            let module: String = modules[i];
-
-            while j < this.include_paths.Size() {
-                let mut path: String = JoinPath(this.include_paths[j], modules[i]);
-                j += 1u64;
-
-                if !PathExists(path) {
-                    continue;
-                }
-
-                if FolderExists(path) {
-                    path = JoinPath(path, String("Entry.zir"));
-
-                    if !PathExists(path) {
-                        Logger::Log(this.file, "Module '" + module + "' entry point not found.", token, LogSeverity::Error);
-                        ret null;
-                    }
-                }
-
-                path = AbsolutePath(path);
-
-                if this.included_paths.Index(path #[if WINDOWS || DARWIN] .ToLower() #[endif]) != -1i64 {
-                    found = true;
-                    break;
-                }
-
-                let mut lexer: Lexer;
-                let mut preprocessor: Preprocessor;
-                preprocessor.defines = this.defines;
-
-                let (tokens: Vector<Token>, current: u64, file: String) = (this.tokens, this.index, this.file);
-                (this.tokens, this.index, this.file) = (preprocessor.Process(lexer.Lex(_ReadFile(path), path), path), 0u64, path);
-                this.included_paths.PushBack(path #[if WINDOWS || DARWIN] .ToLower() #[endif]);
-
-                while this.Current()._type != TokenType::EOF {
-                    let declaration: *const ASTNode = this.ParseDeclaration();
-
-                    if declaration != null {
-                        this.root->declarations.PushBack(declaration);
-                    } else {
-                        this.SynchronizeDeclaration();
-                    }
-                }
-
-                (this.tokens, this.index, this.file, found) = (tokens, current, file, true);
-                break;
-            }
-
-            if found {
-                i += 1u64;
-            } else {
-                Logger::Log(this.file, "Module '" + module + "' not found.", token, LogSeverity::Error);
-                ret null;
-            }
-        } ret null;
-    }
-
     pub Parse(&mut this, tokens: &Vector<Token>, file: &String) -> *const RootNode {
         (this.tokens, this.index) = (tokens, 0u64);
-        (this.file, this.root) = (file, new RootNode());
 
         this.types.Clear();
         this.types.PushBack(String("bool"));
@@ -1758,8 +1680,7 @@ class Parser {
         this.types.PushBack(String("f32"));
         this.types.PushBack(String("f64"));
         this.types.PushBack(String("void"));
-        this.included_paths.Clear();
-        this.included_paths.PushBack(AbsolutePath(file) #[if WINDOWS || DARWIN] .ToLower() #[endif]);
+        this.root = new RootNode();
 
         while this.Current()._type != TokenType::EOF {
             let declaration: *const ASTNode = this.ParseDeclaration();

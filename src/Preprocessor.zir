@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-include "std/str", "std/vec", "std/file", "src/Lexer.zir", "src/Logger.zir" : *;
+include "std/str", "std/vec", "std/file", "src/Tokens.zir", "src/Logger.zir" : *;
 
 class Preprocessor {
     pub defines: Vector<String>,
@@ -126,23 +126,13 @@ class Preprocessor {
     }
 
     priv ProcessInclude(&mut this, result: &mut Vector<Token>) {
-        let mut modules: Vector<String>;
+        loop {
+            let token: Token = this.Expect(TokenType::STRING);
+            let (mut found: bool, mut i: u64) = (false, 0u64);
 
-        while this.Match(TokenType::COMMA) || modules.Empty() {
-            modules.PushBack(this.Expect(TokenType::STRING).value);
-        }
-
-        this.Expect(TokenType::COLON);
-        this.Expect(TokenType::MUL);
-        let mut i: u64 = 0u64;
-
-        while i < modules.Size() {
-            let (mut found: bool, mut j: u64) = (false, 0u64);
-            let module: String = modules[i];
-
-            while j < this.include_paths.Size() {
-                let mut path: String = JoinPath(this.include_paths[j], modules[i]);
-                j += 1u64;
+            while i < this.include_paths.Size() {
+                let mut path: String = JoinPath(this.include_paths[i], token.value);
+                i += 1u64;
 
                 if !PathExists(path) {
                     continue;
@@ -152,7 +142,7 @@ class Preprocessor {
                     path = JoinPath(path, String("Entry.zir"));
 
                     if !PathExists(path) {
-                        Logger::Log("Module '" + module + "' entry point not found.", token, LogSeverity::Error);
+                        Logger::Log("Module '" + token.value + "' entry point not found.", token, LogSeverity::Error);
                         ret;
                     }
                 }
@@ -171,13 +161,18 @@ class Preprocessor {
                 break;
             }
 
-            if found {
-                i += 1u64;
-            } else {
-                Logger::Log("Module '" + module + "' not found.", token, LogSeverity::Error);
+            if !found {
+                Logger::Log("Module '" + token.value + "' not found.", token, LogSeverity::Error);
                 ret;
             }
+
+            if !this.Match(TokenType::COMMA) {
+                break;
+            }
         }
+
+        this.Expect(TokenType::COLON);
+        this.Expect(TokenType::MUL);
     }
 
     pub ProcessDirective(&mut this, result: &mut Vector<Token>) {

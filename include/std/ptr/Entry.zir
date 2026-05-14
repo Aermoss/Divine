@@ -14,58 +14,187 @@
  * limitations under the License.
  */
 
-class SharedPtr<T> {
-    priv ptr: *mut T = null,
-    priv count: *mut u64 = null;
+class SharedControlBlock<T> {
+    pub ptr: *mut T = null,
+    pub strong: u64 = 1u64,
+    pub weak: u64 = 0u64;
 
-    SharedPtr(&mut this) {
-        this.SharedPtr(new T);
-    }
-
-    SharedPtr(&mut this, ptr: *mut T) {
+    SharedControlBlock(&mut this, ptr: *mut T) {
         this.ptr = ptr;
+    }
+}
 
+class Shared<T> {
+    pub control: *mut SharedControlBlock<T> = null;
+
+    Shared(&mut this) {}
+
+    /* Shared(&mut this, args...) {
+        this.control = new SharedControlBlock<T>(new T(args...));
+    } */
+
+    Shared(&mut this, ptr: *mut T) {
         if ptr != null {
-            this.count = new u64;
-            *this.count = 1u64;
-        } else {
-            this.count = null;
+            this.control = new SharedControlBlock<T>(ptr);
         }
     }
 
-    SharedPtr(&mut this, other: &SharedPtr<T>) {
-        (this.ptr, this.count) = (other.ptr, other.count);
+    Shared(&mut this, other: &Shared<T>) {
+        this.control = other.control;
 
-        if this.count != null {
-            *this.count += 1u64;
+        if this.control != null {
+            this.control->strong += 1u64;
         }
     }
 
-    ~SharedPtr(&mut this) {
+    ~Shared(&mut this) {
         this.Release();
     }
 
-    pub Ptr(&this) -> *mut T { ret this.ptr; }
-    pub Count(&this) -> u64 { ret (this.count != null) ? (*this.count) : 0u64; }
-
     priv Release(&mut this) {
-        if (this.count != null) {
-            *this.count -= 1u64;
+        if this.control == null { ret; }
+        this.control->strong -= 1u64;
 
-            if (*this.count == 0u64) {
-                del this.ptr;
-                del this.count;
+        if this.control->strong == 0u64 {
+            del this.control->ptr;
+            this.control->ptr = null;
+
+            if this.control->weak == 0u64 {
+                del this.control;
             }
+        }
 
-            (this.ptr, this.count) = (null, null);
+        this.control = null;
+    }
+
+    pub Ptr(&this) -> *mut T {
+        if this.control == null { ret null; }
+        ret this.control->ptr;
+    }
+
+    pub StrongCount(&this) -> u64 {
+        if this.control == null { ret 0u64; }
+        ret this.control->strong;
+    }
+
+    pub WeakCount(&this) -> u64 {
+        if this.control == null { ret 0u64; }
+        ret this.control->weak;
+    }
+
+    pub Valid(&this) -> bool {
+        ret this.Ptr() != null;
+    }
+
+    pub op->(&this) -> *mut T {
+        ret this.Ptr();
+    }
+
+    pub op*(&this) -> &T {
+        ret *this.Ptr();
+    }
+
+    pub op=(&mut this, other: &Shared<T>) -> &mut Shared<T> {
+        if &this != &other {
+            this.Release();
+            this.control = other.control;
+
+            if this.control != null {
+                this.control->strong += 1u64;
+            }
+        } ret this;
+    }
+
+    pub op!=(&this, other: &Shared<T>) -> bool {
+        ret this.Ptr() != other.Ptr();
+    }
+
+    pub op==(&this, other: &Shared<T>) -> bool {
+        ret this.Ptr() == other.Ptr();
+    }
+
+    pub op!=(&this, other: *const T) -> bool {
+        ret this.Ptr() != other;
+    }
+
+    pub op==(&this, other: *const T) -> bool {
+        ret this.Ptr() == other;
+    }
+
+    /* pub ToWeak(&this) -> Weak<T> {
+        ret Weak<T>(this);
+    } */
+}
+
+class Weak<T> {
+    priv control: *mut SharedControlBlock<T> = null;
+
+    Weak(&mut this) {}
+
+    Weak(&mut this, shared: &Shared<T>) {
+        this.control = shared.control;
+
+        if this.control != null {
+            this.control->weak += 1u64;
         }
     }
 
-    pub op=(&mut this, other: &SharedPtr<T>) -> &mut SharedPtr<T>{
-        if this != other {
+    Weak(&mut this, other: &Weak<T>) {
+        this.control = other.control;
+
+        if this.control != null {
+            this.control->weak += 1u64;
+        }
+    }
+
+    ~Weak(&mut this) {
+        this.Release();
+    }
+
+    priv Release(&mut this) {
+        if this.control == null { ret; }
+        this.control->weak -= 1u64;
+
+        if this.control->weak == 0u64 &&
+            this.control->strong == 0u64 {
+            del this.control;
+        }
+
+        this.control = null;
+    }
+
+    pub Expired(&this) -> bool {
+        if this.control == null { ret true; }
+        ret this.control->strong == 0u64;
+    }
+
+    pub Lock(&this) -> Shared<T> {
+        let mut result: Shared<T>;
+
+        if !this.Expired() {
+            result.control = this.control;
+            result.control->strong += 1u64;
+        } ret result;
+    }
+
+    pub StrongCount(&this) -> u64 {
+        if this.control == null { ret 0u64; }
+        ret this.control->strong;
+    }
+
+    pub WeakCount(&this) -> u64 {
+        if this.control == null { ret 0u64; }
+        ret this.control->weak;
+    }
+
+    pub op=(&mut this, other: &Weak<T>) -> &mut Weak<T> {
+        if &this != &other {
             this.Release();
-            (this.ptr, this.count) = (other.ptr, other.count);
-            if this.count != null { *this.count += 1u64; }
+            this.control = other.control;
+
+            if this.control != null {
+                this.control->weak += 1u64;
+            }
         } ret this;
     }
 }

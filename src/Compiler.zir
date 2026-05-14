@@ -2854,7 +2854,17 @@ class Compiler {
                     instance = QualifiedValue(LLVMBuildLoad2(this.builder, instance.Type().Pointee().Value(), instance.Value(), ""), instance.Type().Pointee(), false, instance.binding);
                 }
 
-                if instance.binding || instance.Type().IsReference() {
+                if member_access->arrow && instance.Type().Pointee().IsClass() {
+                    let values: Vector<QualifiedValue>;
+                    let param_types: Vector<*const QualifiedType>;
+                    let _class: &QualifiedType = instance.Type().Pointee();
+                    let method_name: String = "op->";
+
+                    if _class.Has(method_name, param_types, this._class) {
+                        let method: &Pair<Method, *const QualifiedType> = _class.Get(method_name, param_types, this._class, member_access as *const ASTNode);
+                        instance = this.CompileCall2(QualifiedValue(method.left.value, method.right, instance), values, pointer, false, member_access as *const ASTNode);
+                    }
+                } else if instance.binding || instance.Type().IsReference() {
                     if member_access->arrow {
                         instance = QualifiedValue(LLVMBuildLoad2(this.builder, instance.Type().Pointee().Value(), instance.Value(), ""), instance.Type().Pointee(), false, instance.binding);
                     }
@@ -3237,7 +3247,17 @@ class Compiler {
                 instance = QualifiedValue(LLVMBuildLoad2(this.builder, instance.Type().Pointee().Value(), instance.Value(), ""), instance.Type().Pointee(), false, instance.binding);
             }
 
-            if instance.binding || instance.Type().IsReference() {
+            if member_access->arrow && instance.Type().Pointee().IsClass() {
+                let values: Vector<QualifiedValue>;
+                let param_types: Vector<*const QualifiedType>;
+                let _class: &QualifiedType = instance.Type().Pointee();
+                let method_name: String = "op->";
+
+                if _class.Has(method_name, param_types, this._class) {
+                    let method: &Pair<Method, *const QualifiedType> = _class.Get(method_name, param_types, this._class, member_access as *const ASTNode);
+                    instance = this.CompileCall2(QualifiedValue(method.left.value, method.right, instance), values, pointer, false, member_access as *const ASTNode);
+                }
+            } else if instance.binding || instance.Type().IsReference() {
                 if member_access->arrow {
                     instance = QualifiedValue(LLVMBuildLoad2(this.builder, instance.Type().Pointee().Value(), instance.Value(), ""), instance.Type().Pointee(), false, instance.binding);
                 }
@@ -3617,6 +3637,31 @@ class Compiler {
                 ret QualifiedValue(null, null);
             }
 
+            let mut method_name: String = "op";
+            method_name += unary_op->operator.ToUnaryOperatorString();
+
+            let mut param_types: Vector<*const QualifiedType>;
+            param_types.PushBack(_pointer.Type().Pointee());
+
+            let symbol: *const Symbol = this.scope_manager.Resolve(method_name, param_types, unary_op as *const ASTNode, true);
+
+            if symbol != null {
+                let mut values: Vector<QualifiedValue>;
+                values.PushBack(QualifiedValue(LLVMBuildLoad2(this.builder, _pointer.Type().Pointee().Value(), _pointer.Value(), ""), _pointer.Type().Pointee()));
+                ret this.CompileCall2(symbol->value, values, pointer, false, unary_op as *const ASTNode);
+            }
+
+            if _pointer.Type().Pointee().IsClass() {
+                let values: Vector<QualifiedValue>;
+                let _class: &QualifiedType = _pointer.Type().Pointee();
+                let param_types: Vector<*const QualifiedType>;
+
+                if _class.Has(method_name, param_types, this._class) {
+                    let method: &Pair<Method, *const QualifiedType> = _class.Get(method_name, param_types, this._class, unary_op as *const ASTNode);
+                    ret this.CompileCall2(QualifiedValue(method.left.value, method.right, _pointer), values, pointer, false, unary_op as *const ASTNode);
+                }
+            }
+
             if unary_op->mutable && !_pointer.Type().IsMutable() {
                 Logger::Log("Cannot take mutable reference to immutable value of type '" + _pointer.Type().Pointee().ToString() + "'.", unary_op as *const ASTNode, LogSeverity::Error);
                 ret QualifiedValue(null, null);
@@ -3632,6 +3677,30 @@ class Compiler {
 
             if value.Type().IsReference() {
                 value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
+            }
+
+            let mut method_name: String = "op";
+            method_name += unary_op->operator.ToUnaryOperatorString();
+
+            let mut values: Vector<QualifiedValue>;
+            values.PushBack(value);
+
+            let symbol: *const Symbol = this.scope_manager.Resolve(method_name, this.ValueToType(values), unary_op as *const ASTNode, true);
+
+            if symbol != null {
+                ret this.CompileCall2(symbol->value, values, pointer, false, unary_op as *const ASTNode);
+            }
+
+            if value.Type().IsClass() {
+                let values: Vector<QualifiedValue>;
+                let param_types: Vector<*const QualifiedType>;
+                let _class: &QualifiedType = value.Type();
+
+                if _class.Has(method_name, param_types, this._class) {
+                    let method: &Pair<Method, *const QualifiedType> = _class.Get(method_name, param_types, this._class, unary_op as *const ASTNode);
+                    let _instance: QualifiedValue = QualifiedValue(LLVMAddressOf(value.Value(), this.builder), this.type_manager.Pointer(_class, _class.IsMutable()));
+                    ret this.CompileCall2(QualifiedValue(method.left.value, method.right, _instance), values, pointer, false, unary_op as *const ASTNode);
+                }
             }
 
             let kind: LLVMTypeKind = LLVMGetTypeKind(value.Type().Value());

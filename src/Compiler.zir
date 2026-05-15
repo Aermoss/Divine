@@ -382,7 +382,7 @@ class Compiler {
         if declaration->node_type == ASTNodeType::STATIC_DECL {
             this.CompileStatic(declaration as *const StaticDeclNode);
         } else if declaration->node_type == ASTNodeType::FUNCTION_DECL {
-            this.CompileFunction(declaration as *const FunctionDeclNode);
+            this.CompileFunction(declaration as *const FunctionDeclNode, null);
         } else if declaration->node_type == ASTNodeType::CLASS_DECL {
             let class_decl: *const ClassDeclNode = declaration as *const ClassDeclNode;
 
@@ -710,9 +710,10 @@ class Compiler {
         }
     }
 
-    priv CompileFunction(&mut this, func_decl: *const FunctionDeclNode) -> QualifiedValue {
-        if func_decl->generic {
-            Logger::Log("Generic functions are not supported yet.", func_decl as *const ASTNode, LogSeverity::Error);
+    pub CompileFunction(&mut this, func_decl: *const FunctionDeclNode, generic: *mut Generic) -> QualifiedValue {
+        if func_decl->generic && generic == null {
+            let _generic: *mut Generic = new Generic(func_decl as *const ASTNode);
+            this.scope_manager.Set(func_decl->name, SymbolKind::Generic, _generic as *const void, false, func_decl as *const ASTNode);
             ret QualifiedValue(null, null);
         }
 
@@ -778,21 +779,28 @@ class Compiler {
 
         let mut name: String = func_decl->name;
         let type_ref: LLVMTypeRef = LLVMFunctionType(return_type._type->Value(), param_types.Data(), param_types.Size() as u32, func_decl->_type->var_arg ? 1i32 : 0i32);
-        let _type: &mut QualifiedType = this.type_manager.Function(type_ref, params, return_type);
-        _type.name = name;
+        let _type: &mut QualifiedType = this.type_manager.Function(type_ref, params, return_type, func_decl->name);
 
         if func_decl->no_mangle {
             if !this.mangling {
                 Logger::Log("Mangling was already disabled.", func_decl as *const ASTNode, LogSeverity::Error);
             }
         } else if this.mangling {
-            name = Mangler::MangleFunction(func_decl->name, _type);
+            let mut types: Vector<*const QualifiedType>;
+            if generic != null { types += generic->types; }
+            name = Mangler::MangleFunction(func_decl->name, _type, types);
         }
 
         let function: LLVMValueRef = LLVMAddFunction(this.module, name.Data(), _type.Value());
         let value: QualifiedValue = QualifiedValue(function, this.type_manager.Pointer(_type, false));
-        this.scope_manager.Set(func_decl->name, SymbolKind::Function, value, this.mangling && !func_decl->no_mangle, func_decl as *const ASTNode);
         this.AddAttributes(function);
+
+        if generic != null {
+            generic->Set(value);
+        } else {
+            this.scope_manager.Set(func_decl->name, SymbolKind::Function, value, this.mangling && !func_decl->no_mangle, func_decl as *const ASTNode);
+        }
+
         let mut j: u64 = 0u64;
 
         while j < attributes.Size() {
@@ -971,7 +979,7 @@ class Compiler {
 
         if generic != null {
             this.scope_manager.PushScope(generic->current, true);
-            generic->Set(_class);
+            generic->Set(QualifiedValue(null, _class));
         } else {
             this.scope_manager.Set(class_decl->name, SymbolKind::Class, QualifiedValue(null, _class), false, class_decl as *const ASTNode);
             this.scope_manager.PushScope(class_decl->name, true);
@@ -1018,18 +1026,18 @@ class Compiler {
         let (mut i: u64, mut j: u64) = (0u64, 0u64);
 
         while i < class_decl->constructors.Size() {
-            let method: QualifiedValue = this.CompileFunction(class_decl->constructors[i]);
+            let method: QualifiedValue = this.CompileFunction(class_decl->constructors[i], null);
             _class->methods.PushBack(Pair<Method, *const QualifiedType>(Method(class_decl->constructors[i]->name, method.Value(), TokenType::PUBLIC), method.Type()));
             i += 1u64;
         }
 
         if class_decl->destructor != null {
-            let method: QualifiedValue = this.CompileFunction(class_decl->destructor);
+            let method: QualifiedValue = this.CompileFunction(class_decl->destructor, null);
             _class->methods.PushBack(Pair<Method, *const QualifiedType>(Method(class_decl->destructor->name, method.Value(), TokenType::PUBLIC), method.Type()));
         }
 
         while j < class_decl->methods.Size() {
-            let method: QualifiedValue = this.CompileFunction(class_decl->methods[j].right);
+            let method: QualifiedValue = this.CompileFunction(class_decl->methods[j].right, null);
             _class->methods.PushBack(Pair<Method, *const QualifiedType>(Method(class_decl->methods[j].right->name, method.Value(), class_decl->methods[j].left), method.Type()));
             j += 1u64;
         }
@@ -1106,7 +1114,7 @@ class Compiler {
 
         if generic != null {
             this.scope_manager.PushScope(generic->current, true);
-            generic->Set(_enum);
+            generic->Set(QualifiedValue(null, _enum));
         } else {
             this.scope_manager.Set(enum_decl->name, SymbolKind::Class, QualifiedValue(null, _enum), false, enum_decl as *const ASTNode);
             this.scope_manager.PushScope(enum_decl->name, true);
@@ -1191,7 +1199,8 @@ class Compiler {
                 }
 
                 let func_type: LLVMTypeRef = LLVMFunctionType(struct_type, param_types.Data(), param_types.Size() as u32, 0i32);
-                let func_name: String = Mangler::MangleFunction(variant->name, this.type_manager.Function(func_type, params, ReturnType(_enum)));
+                let types: Vector<*const QualifiedType>;
+                let func_name: String = Mangler::MangleFunction(variant->name, this.type_manager.Function(func_type, params, ReturnType(_enum)), types);
                 let function: LLVMValueRef = LLVMAddFunction(this.module, func_name.Data(), func_type);
                 this.AddAttributes(function);
 
@@ -1225,7 +1234,7 @@ class Compiler {
         let mut l: u64 = 0u64;
 
         while l < enum_decl->methods.Size() {
-            let method: QualifiedValue = this.CompileFunction(enum_decl->methods[l].right);
+            let method: QualifiedValue = this.CompileFunction(enum_decl->methods[l].right, null);
             _enum->methods.PushBack(Pair<Method, *const QualifiedType>(Method(enum_decl->methods[l].right->name, method.Value(), enum_decl->methods[l].left), method.Type()));
             l += 1u64;
         }
@@ -2930,6 +2939,24 @@ class Compiler {
                 }
             }
         } else if call->expression->node_type == ASTNodeType::PRIMITIVE_TYPE {
+            let primitive_type: *const PrimitiveTypeNode = call->expression as *const PrimitiveTypeNode;
+
+            if this.scope_manager.Has(primitive_type->name, SymbolKind::Generic) {
+                let generic: *mut Generic = this.scope_manager.Get(primitive_type->name, SymbolKind::Generic)->pointer as *mut Generic;
+
+                if generic->ast->node_type == ASTNodeType::FUNCTION_DECL {
+                    let mut types: Vector<*const QualifiedType>;
+                    let mut i: u64 = 0u64;
+
+                    while i < primitive_type->types.Size() {
+                        types.PushBack(this.CompileType(primitive_type->types[i]));
+                        i += 1u64;
+                    }
+
+                    ret this.CompileCall2(generic->Get(types).left, values, pointer, false, call as *const ASTNode);
+                }
+            }
+
             let _class: &QualifiedType = this.CompileType(call->expression);
             let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
             LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
@@ -4128,7 +4155,7 @@ class Compiler {
                             i += 1u64;
                         }
 
-                        ret (this.scope_manager.Get(primitive_type->name, SymbolKind::Generic)->pointer as *mut Generic)->Get(types).left;
+                        ret (this.scope_manager.Get(primitive_type->name, SymbolKind::Generic)->pointer as *mut Generic)->Get(types).left.Type();
                     } else {
                         Logger::Log("Generic type '" + primitive_type->name + "' requires parameters.", type_node, LogSeverity::Error);
                         ret null;

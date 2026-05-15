@@ -153,51 +153,44 @@ class ReturnType {
     ~ReturnType(&this) {}
 }
 
-class QualifiedType {
-    priv value: LLVMTypeRef, priv pointee: *const QualifiedType = null,
-    priv reference: bool = false, priv mutable: bool = false, priv signed: bool = false,
-    priv array: bool = false, priv size: u64 = 0u64, pub _null: bool = false,
+enum TypeKind: i32 {
+    Null, Primitive, Pointer, Reference, Array, Function, Class, Enum
+}
 
-    pub name: String,
+class QualifiedType {
+    pub kind: TypeKind, pub name: String,
+    pub signed: bool = false, pub mutable: bool = false, pub size: u64 = 0u64,
+    pub value: LLVMTypeRef, pub pointee: *const QualifiedType = null,
+
     pub constructed: Vector<*const QualifiedType>,
     pub fields: Map<String, Pair<Field, *const QualifiedType>>,
     pub methods: Vector<Pair<Method, *const QualifiedType>>,
+
     pub variants: Vector<Pair<String, Vector<*const QualifiedType>>>,
     pub variant_field_names: Vector<Vector<String>>,
-    priv params: Vector<ParameterType>, priv return: ReturnType,
-    priv _function: bool = false, priv _class: bool = false, pub _enum: bool = false;
 
-    QualifiedType(&mut this, value: LLVMTypeRef, signed: bool) {
-        (this.value, this.signed) = (value, signed);
-    }
+    pub params: Vector<ParameterType>,
+    pub return: ReturnType;
 
-    QualifiedType(&mut this, value: LLVMTypeRef, params: &Vector<ParameterType>, return: &ReturnType) {
-        (this.value, this.params, this.return, this._function) = (value, params, return, true);
-    }
-
-    QualifiedType(&mut this, value: LLVMTypeRef, mutable: bool, name: String, _class: bool) {
-        (this.value, this.mutable, this.name, this._class, this._enum) = (value, mutable, name, _class, !_class);
-    }
-
-    QualifiedType(&mut this, value: LLVMTypeRef, mutable: bool, reference: bool, _class: bool, pointee: *const QualifiedType) {
-        (this.value, this.mutable, this.reference, this._class, this.pointee) = (value, mutable, reference, _class, pointee);
-    }
-
-    QualifiedType(&mut this, value: LLVMTypeRef, mutable: bool, size: u64, _class: bool, pointee: *const QualifiedType) {
-        (this.value, this.mutable, this.size, this._class, this.pointee, this.array) = (value, mutable, size, _class, pointee, true);
+    QualifiedType(&mut this, kind: TypeKind, value: LLVMTypeRef) {
+        (this.kind, this.value) = (kind, value);
     }
 
     ~QualifiedType(&this) {}
 
     pub IsMutable(&this) -> bool { ret this.mutable; }
     pub IsSigned(&this) -> bool { ret this.signed; }
-    pub IsPointer(&this) -> bool { ret this.pointee != null && !this.array; }
-    pub IsReference(&this) -> bool { ret this.reference; }
-    pub IsArray(&this) -> bool { ret this.array; }
-    pub IsPrimitive(&this) -> bool { ret !this.IsPointer() && !this.IsClass(); }
-    pub IsFunction(&this) -> bool { ret this._function; }
-    pub IsClass(&this) -> bool { ret this._class; }
-    pub IsEnum(&this) -> bool { ret this._enum; }
+
+    pub IsNull(&this) -> bool { ret this.kind == TypeKind::Null; }
+    pub IsPrimitive(&this) -> bool { ret this.kind == TypeKind::Primitive; }
+    pub IsPointer(&this) -> bool { ret this.kind == TypeKind::Pointer || this.kind == TypeKind::Reference; }
+    pub IsNullPointer(&this) -> bool { if this.kind == TypeKind::Pointer { ret this.pointee->kind == TypeKind::Null; } else { ret false; } }
+    // pub IsNullPointer(&this) -> bool { ret this.kind == TypeKind::Pointer || this.pointee->kind == TypeKind::Null; }
+    pub IsReference(&this) -> bool { ret this.kind == TypeKind::Reference; }
+    pub IsArray(&this) -> bool { ret this.kind == TypeKind::Array; }
+    pub IsFunction(&this) -> bool { ret this.kind == TypeKind::Function; }
+    pub IsClass(&this) -> bool { ret this.kind == TypeKind::Class; }
+    pub IsEnum(&this) -> bool { ret this.kind == TypeKind::Enum; }
 
     pub Value(&this) -> LLVMTypeRef {
         if this.value != null {
@@ -209,21 +202,21 @@ class QualifiedType {
     }
 
     pub Pointee(&this) -> &QualifiedType {
-        if this.pointee != null {
-            if !this.array {
+        if this.kind == TypeKind::Pointer || this.kind == TypeKind::Reference {
+            if this.pointee != null {
                 ret this.pointee;
             } else {
-                Logger::Log("QualifiedType", "Not a pointer!", LogSeverity::Error);
+                Logger::Log("QualifiedType", "Null pointee!", LogSeverity::Error);
                 ret null;
             }
         } else {
-            Logger::Log("QualifiedType", "Null pointee!", LogSeverity::Error);
+            Logger::Log("QualifiedType", "Not a pointer!", LogSeverity::Error);
             ret null;
         }
     }
 
     pub Size(&this) -> u64 {
-        if this.array {
+        if this.kind == TypeKind::Array {
             ret this.size;
         } else {
             Logger::Log("QualifiedType", "Not an array!", LogSeverity::Error);
@@ -232,21 +225,21 @@ class QualifiedType {
     }
 
     pub Element(&this) -> &QualifiedType {
-        if this.pointee != null {
-            if this.array {
+        if this.kind == TypeKind::Array {
+            if this.pointee != null {
                 ret this.pointee;
             } else {
-                Logger::Log("QualifiedType", "Not an array!", LogSeverity::Error);
+                Logger::Log("QualifiedType", "Null pointee!", LogSeverity::Error);
                 ret null;
             }
         } else {
-            Logger::Log("QualifiedType", "Null pointee!", LogSeverity::Error);
+            Logger::Log("QualifiedType", "Not an array!", LogSeverity::Error);
             ret null;
         }
     }
 
     pub Parameters(&this) -> &Vector<ParameterType> {
-        if this._function {
+        if this.kind == TypeKind::Function {
             ret this.params;
         } else {
             Logger::Log("QualifiedType", "Not a function!", LogSeverity::Error);
@@ -255,7 +248,7 @@ class QualifiedType {
     }
 
     pub Return(&this) -> &ReturnType {
-        if this._function {
+        if this.kind == TypeKind::Function {
             ret this.return;
         } else {
             Logger::Log("QualifiedType", "Not a function!", LogSeverity::Error);
@@ -264,7 +257,7 @@ class QualifiedType {
     }
 
     pub Fields(&this) -> &mut Map<String, Pair<Field, *const QualifiedType>> {
-        if this._class {
+        if this.kind == TypeKind::Class {
             ret this.fields;
         } else {
             Logger::Log("QualifiedType", "Not a class!", LogSeverity::Error);
@@ -273,7 +266,7 @@ class QualifiedType {
     }
 
     pub Methods(&this) -> &Vector<Pair<Method, *const QualifiedType>> {
-        if this._class || this._enum {
+        if this.kind == TypeKind::Class || this.kind == TypeKind::Enum {
             ret this.methods;
         } else {
             Logger::Log("QualifiedType", "Not a class!", LogSeverity::Error);
@@ -351,14 +344,14 @@ class QualifiedType {
                             if *_type == params[j]->Pointee() {
                                 _state = true;
                             } else if _type->IsPointer() && params[j]->Pointee().IsPointer() {
-                                if LLVMGetTypeKind(_type->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || params[j]->Pointee().Pointee()._null {
+                                if LLVMGetTypeKind(_type->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || params[j]->Pointee().IsNullPointer() {
                                     _state = true;
                                 }
                             }
                         }
 
                         if _type->IsPointer() && params[j]->IsPointer() {
-                            if LLVMGetTypeKind(_type->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || params[j]->Pointee()._null {
+                            if LLVMGetTypeKind(_type->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || params[j]->IsNullPointer() {
                                 _state = true;
                             }
                         }
@@ -450,14 +443,14 @@ class QualifiedType {
                             if *_type == params[j]->Pointee() {
                                 _state = true;
                             } else if _type->IsPointer() && params[j]->Pointee().IsPointer() {
-                                if LLVMGetTypeKind(_type->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || params[j]->Pointee().Pointee()._null {
+                                if LLVMGetTypeKind(_type->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || params[j]->Pointee().IsNullPointer() {
                                     state_ = true;
                                 }
                             }
                         }
 
                         if _type->IsPointer() && params[j]->IsPointer() {
-                            if LLVMGetTypeKind(_type->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || params[j]->Pointee()._null {
+                            if LLVMGetTypeKind(_type->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || params[j]->IsNullPointer() {
                                 state_ = true;
                             }
                         }
@@ -504,7 +497,11 @@ class QualifiedType {
     }
 
     pub op!=(&this, other: &QualifiedType) -> bool {
-        ret !(this == other);
+        if this.pointee != null && other.pointee != null {
+            ret this.signed != other.signed || !LLVMIsTypeEqual(this.value, other.value) || (*this.pointee) != (*other.pointee);
+        } else {
+            ret this.signed != other.signed || !LLVMIsTypeEqual(this.value, other.value) || this.pointee != other.pointee;
+        }
     }
 
     pub ToString(&this) -> String {

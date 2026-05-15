@@ -279,7 +279,7 @@ class Compiler {
 
                 let index: u64 = params[0u64].sret != null ? 1u64 : 0u64;
                 let instance: QualifiedValue = QualifiedValue(LLVMGetParam(this.function_ref, index as u32), params[index]._type);
-                this.CompileConstructor(_class, this.CompileCast2(instance, this.type_manager.Pointer(_class, _class.IsMutable()), forward.declaration as *const ASTNode), values, forward.declaration as *const ASTNode);
+                this.CompileConstructor(_class, this.CompileCast2(instance, this.type_manager.Pointer(_class, true), forward.declaration as *const ASTNode), values, forward.declaration as *const ASTNode);
                 l += 1u64;
             }
 
@@ -2933,7 +2933,7 @@ class Compiler {
             let _class: &QualifiedType = this.CompileType(call->expression);
             let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
             LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
-            let instance: QualifiedValue = QualifiedValue(LLVMBuildAlloca(this.builder, _class.Value(), ""), this.type_manager.Pointer(_class, _class.IsMutable()), false, true);
+            let instance: QualifiedValue = QualifiedValue(LLVMBuildAlloca(this.builder, _class.Value(), ""), this.type_manager.Pointer(_class, true), false, true);
             LLVMPositionBuilderAtEnd(this.builder, current);
             this.CompileConstructor(_class, instance, values, call as *const ASTNode);
             this.scope_manager.RegisterInstance(instance);
@@ -3497,7 +3497,11 @@ class Compiler {
         }
     }
 
-    priv CompileCast2(&mut this, value: QualifiedValue, target: &QualifiedType, node: *const ASTNode) -> QualifiedValue {
+    priv CompileCast2(&mut this, mut value: QualifiedValue, target: &QualifiedType, node: *const ASTNode) -> QualifiedValue {
+        if value.Type().IsReference() && !target.IsPointer() {
+            value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
+        }
+
         let mut left: *const QualifiedType = target;
         let mut right: *const QualifiedType = value.Type();
         let (mut state: bool, mut failed: bool) = (false, false);
@@ -3698,7 +3702,7 @@ class Compiler {
 
                 if _class.Has(method_name, param_types, this._class) {
                     let method: &Pair<Method, *const QualifiedType> = _class.Get(method_name, param_types, this._class, unary_op as *const ASTNode);
-                    let _instance: QualifiedValue = QualifiedValue(LLVMAddressOf(value.Value(), this.builder), this.type_manager.Pointer(_class, _class.IsMutable()));
+                    let _instance: QualifiedValue = QualifiedValue(LLVMAddressOf(value.Value(), this.builder), this.type_manager.Pointer(_class, true));
                     ret this.CompileCall2(QualifiedValue(method.left.value, method.right, _instance), values, pointer, false, unary_op as *const ASTNode);
                 }
             }

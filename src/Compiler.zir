@@ -3565,21 +3565,42 @@ class Compiler {
                 LLVMPositionBuilderAtStart(this.builder, end_block);
             }
         } else {
-            let mut values: Vector<QualifiedValue>;
             pointer = LLVMBuildMalloc(this.builder, _type.Value(), "");
-            let mut i: u64 = 0u64;
-            
-            while _new->arguments.Size() > i {
-                if !this.CompileArgument(_new->arguments[i], &values) {
-                    ret QualifiedValue(null, null);
-                } i += 1u64;
-            }
 
-            if _type.IsClass() {
-                this.CompileConstructor(_type, QualifiedValue(pointer, this.type_manager.Pointer(_type, true)), values, _new as *const ASTNode);
-            } else if !values.Empty() {
-                Logger::Log("Cannot initialize non-class types with parameters.", _new as *const ASTNode, LogSeverity::Error);
-                ret QualifiedValue(null, null);
+            if _new->initialized {
+                let mut values: Vector<QualifiedValue>;
+                let mut i: u64 = 0u64;
+
+                while _new->arguments.Size() > i {
+                    if !this.CompileArgument(_new->arguments[i], &values) {
+                        ret QualifiedValue(null, null);
+                    } i += 1u64;
+                }
+
+                if _type.IsClass() {
+                    this.CompileConstructor(_type, QualifiedValue(pointer, this.type_manager.Pointer(_type, true)), values, _new as *const ASTNode);
+                } else {
+                    if values.Size() != 1u64 {
+                        Logger::Log("Primitive type initialization requires exactly 1 argument.", _new as *const ASTNode, LogSeverity::Error);
+                        ret QualifiedValue(null, null);
+                    }
+
+                    let mut state: bool = false;
+                    let value: &QualifiedValue = values[0u64];
+
+                    if _type.IsPointer() && value.Type().IsPointer() {
+                        if LLVMGetTypeKind(_type.Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || value.Type().IsNullPointer() {
+                            state = true;
+                        }
+                    }
+
+                    if value.Type() == _type || state {
+                        LLVMBuildStore(this.builder, value.Value(), pointer);
+                    } else {
+                        Logger::Log("Incompatible primitive type initialization types. ('" + _type.ToString() + "' != '" + value.Type().ToString() + "').", _new as *const ASTNode, LogSeverity::Error);
+                        ret QualifiedValue(null, null);
+                    }
+                }
             }
         }
 

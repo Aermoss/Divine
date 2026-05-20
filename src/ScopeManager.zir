@@ -222,35 +222,19 @@ class ScopeManager {
     }
 
     pub ResolveChild(&this, scope: *const Scope, primitive_type: *const PrimitiveTypeNode, test: bool) -> *const Scope {
-        if primitive_type->generic {
-            if scope->Has(primitive_type->name) {
-                let mut types: Vector<*const QualifiedType>;
-                let mut i: u64 = 0u64;
+        let mut i: u64 = 0u64;
 
-                while i < primitive_type->types.Size() {
-                    types.PushBack(compiler->CompileType(primitive_type->types[i]));
-                    i += 1u64;
-                }
-
-                ret (scope->Get(primitive_type->name)->pointer as *mut Generic)->Get(types).right;
-            } else if !test {
-                Logger::Log("Generic '" + primitive_type->name + "' not found.", primitive_type as *const ASTNode, LogSeverity::Error);
-            } ret null;
-        } else {
-            let mut i: u64 = 0u64;
-
-            while i < scope->children.Size() {
-                if scope->children[i]->name == primitive_type->name {
-                    ret scope->children[i];
-                } else {
-                    i += 1u64;
-                }
+        while i < scope->children.Size() {
+            if scope->children[i]->name == primitive_type->name {
+                ret scope->children[i];
+            } else {
+                i += 1u64;
             }
-
-            if !test {
-                Logger::Log("Scope '" + primitive_type->name + "' not found.", primitive_type as *const ASTNode, LogSeverity::Error);
-            } ret null;
         }
+
+        if !test {
+            Logger::Log("Scope '" + primitive_type->name + "' not found.", primitive_type as *const ASTNode, LogSeverity::Error);
+        } ret null;
     }
 
     pub ResolveScopeHalf(&this, resolution: *const ScopeResolutionNode, test: bool) -> *const Scope {
@@ -267,6 +251,36 @@ class ScopeManager {
                 scope = this.ResolveChild(scope, resolution->scope as *const PrimitiveTypeNode, test);
             } else if resolution->scope->node_type == ASTNodeType::IDENTIFIER {
                 scope = this.ResolveChild(scope, resolution->scope as *const IdentifierNode, test);
+            } else if resolution->scope->node_type == ASTNodeType::TYPE_APPLICATION {
+                let type_application: *const TypeApplicationNode = resolution->scope as *const TypeApplicationNode;
+                let mut types: Vector<*const QualifiedType>;
+                let mut i: u64 = 0u64;
+
+                while i < type_application->types.Size() {
+                    types.PushBack(compiler->CompileType(type_application->types[i]));
+                    i += 1u64;
+                }
+
+                if type_application->expression->node_type == ASTNodeType::PRIMITIVE_TYPE {
+                    let primitive_type: *const PrimitiveTypeNode = type_application->expression as *const PrimitiveTypeNode;
+                    let symbol: *const Symbol = this.Resolve(primitive_type->name, primitive_type as *const ASTNode, test);
+
+                    if symbol != null && symbol->kind == SymbolKind::Generic {
+                        scope = (symbol->pointer as *mut Generic)->Get(types).right;
+                    } else {
+                        if !test {
+                            if symbol != null {
+                                Logger::Log("Type '" + primitive_type->name + "' is not generic.", primitive_type as *const ASTNode, LogSeverity::Error);
+                            } else {
+                                Logger::Log("Type '" + primitive_type->name + "' not found.", primitive_type as *const ASTNode, LogSeverity::Error);
+                            }
+                        } ret null;
+                    }
+                } else {
+                    if !test {
+                        Logger::Log("Unknown resolution '" + resolution->scope->node_type.ToString() + "'.", resolution->scope, LogSeverity::Error);
+                    } ret null;
+                }
             } else {
                 if !test {
                     Logger::Log("Unknown resolution '" + resolution->scope->node_type.ToString() + "'.", resolution->scope, LogSeverity::Error);

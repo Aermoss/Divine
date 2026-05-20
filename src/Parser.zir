@@ -134,6 +134,31 @@ class Parser {
         } ret false;
     }
 
+    priv IsTypeApplication(&this) -> bool {
+        if this.Current()._type != TokenType::LESS { ret false; }
+
+        let mut index: u64 = 1u64;
+        let mut depth: u64 = 1u64;
+
+        loop {
+            let token: Token = this.Peek(index);
+            index += 1u64;
+
+            if token._type == TokenType::LESS {
+                depth += 1u64;
+            } else if token._type == TokenType::GREATER {
+                depth -= 1u64;
+                if depth == 0u64 {
+                    ret true;
+                }
+            } else if token._type == TokenType::EOF || token._type == TokenType::SEMICOLON || token._type == TokenType::RBRACKET || token._type == TokenType::RBRACE || token._type == TokenType::LBRACE {
+                ret false;
+            }
+        }
+
+        ret false;
+    }
+
     priv IsAssignmentOperator(&this, _type: TokenType) -> bool {
         ret _type == TokenType::ASSIGN || _type == TokenType::PLUS_ASSIGN || _type == TokenType::MINUS_ASSIGN || _type == TokenType::MUL_ASSIGN || _type == TokenType::DIV_ASSIGN || _type == TokenType::MOD_ASSIGN
            || _type == TokenType::LSHIFT_ASSIGN || _type == TokenType::RSHIFT_ASSIGN || _type == TokenType::AND_ASSIGN || _type == TokenType::OR_ASSIGN || _type == TokenType::XOR_ASSIGN;
@@ -296,7 +321,7 @@ class Parser {
                 expression = new PackSplatNode(expression, token) as *const ASTNode;
             } else if this.IsTypeApplication() {
                 this.Advance();
-                let type_application: *mut TypeApplication = new TypeApplication(expression, token);
+                let type_application: *mut TypeApplicationNode = new TypeApplicationNode(expression, token);
 
                 while this.Current()._type != TokenType::GREATER {
                     let _type: *const ASTNode = this.ParseType();
@@ -498,6 +523,29 @@ class Parser {
 
             node = new PrimitiveTypeNode(token.value, token) as *const ASTNode;
             this.Advance();
+
+            loop {
+                if this.Match(TokenType::DOUBLE_COLON) {
+                    let identifier: Token = this.Expect(TokenType::IDENTIFIER);
+                    if identifier._type == TokenType::UNKNOWN { ret null; }
+                    node = new ScopeResolutionNode(node, new IdentifierNode(identifier.value, identifier), token) as *const ASTNode;
+                } else if this.IsTypeApplication() {
+                    this.Advance();
+                    let type_application: *mut TypeApplicationNode = new TypeApplicationNode(node, token);
+
+                    while this.Current()._type != TokenType::GREATER {
+                        let _type: *const ASTNode = this.ParseType();
+                        if _type == null { ret null; }
+                        type_application->types.PushBack(_type);
+                        if !this.Match(TokenType::COMMA) { break; }
+                    }
+
+                    if !this.Expect2(TokenType::GREATER) { ret null; }
+                    node = type_application as *const ASTNode;
+                } else {
+                    break;
+                }
+            }
         }
 
         let mut index: u64 = pointers.Size();

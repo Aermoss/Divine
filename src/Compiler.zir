@@ -1083,6 +1083,7 @@ class Compiler {
         }
 
         let scope: *mut Scope = this.scope_manager.current;
+        _class->pack_scope = scope as *const void;
         this.scope_manager.PopScope();
         ret Pair<*mut QualifiedType, *mut Scope>(_class, scope);
     }
@@ -1135,8 +1136,10 @@ class Compiler {
 
         while j < class_decl->methods.Size() {
             let method: QualifiedValue = this.CompileFunction(class_decl->methods[j].right, null);
-            _class->methods.PushBack(Pair<Method, *const QualifiedType>(Method(class_decl->methods[j].right->name, method.Value(), class_decl->methods[j].left), method.Type()));
-            j += 1u64;
+
+            if !class_decl->methods[j].right->generic {
+                _class->methods.PushBack(Pair<Method, *const QualifiedType>(Method(class_decl->methods[j].right->name, method.Value(), class_decl->methods[j].left), method.Type()));
+            } j += 1u64;
         }
 
         (this._class, this.scope_manager.current) = (prev_class, prev_scope);
@@ -1146,6 +1149,7 @@ class Compiler {
         let cache: Pair<*mut QualifiedType, *mut Scope> = this.CompileClassFirstPass(class_decl, generic);
 
         if cache.left != null {
+            cache.left->pack_scope = cache.right as *const void;
             this.CompileClassSecondPass(cache.left, class_decl, cache.right);
             this.CompileClassThirdPass(cache.left, class_decl, cache.right);
         } ret cache.left;
@@ -2133,7 +2137,7 @@ class Compiler {
     }
 
     priv CompileFor(&mut this, for_stmt: *const ForStmtNode) {
-        if for_stmt->iterable->node_type != ASTNodeType::RANGE_EXPR {
+        if for_stmt->iterable->node_type != ASTNodeType::RANGE {
             Logger::Log("For loop currently only supports range expressions.", for_stmt as *const ASTNode, LogSeverity::Error);
             ret;
         }
@@ -2945,11 +2949,7 @@ class Compiler {
         if call->expression->node_type == ASTNodeType::MEMBER_ACCESS {
             let member_access: *const MemberAccessNode = call->expression as *const MemberAccessNode;
             let mut instance: QualifiedValue = this.CompileExpression(member_access->expression, true);
-
-            if instance.Null() {
-                ret QualifiedValue(null, null);
-            }
-
+            if instance.Null() { ret QualifiedValue(null, null); }
             let mut state: bool = false;
 
             if instance.Type().IsPointer() {
@@ -3033,24 +3033,6 @@ class Compiler {
                 }
             }
         } else if call->expression->node_type == ASTNodeType::PRIMITIVE_TYPE {
-            let primitive_type: *const PrimitiveTypeNode = call->expression as *const PrimitiveTypeNode;
-
-            if this.scope_manager.Has(primitive_type->name, SymbolKind::Generic) {
-                let generic: *mut Generic = this.scope_manager.Get(primitive_type->name, SymbolKind::Generic)->pointer as *mut Generic;
-
-                if generic->ast->node_type == ASTNodeType::FUNCTION_DECL {
-                    let mut types: Vector<*const QualifiedType>;
-                    let mut i: u64 = 0u64;
-
-                    while i < primitive_type->types.Size() {
-                        types.PushBack(this.CompileType(primitive_type->types[i]));
-                        i += 1u64;
-                    }
-
-                    ret this.CompileCall2(generic->Get(types).left, values, pointer, false, call as *const ASTNode);
-                }
-            }
-
             let _class: &QualifiedType = this.CompileType(call->expression);
             let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
             LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
@@ -3063,6 +3045,85 @@ class Compiler {
                 ret QualifiedValue(LLVMBuildLoad2(this.builder, _class.Value(), instance.Value(), ""), _class);
             } else {
                 ret instance;
+            }
+        } else if call->expression->node_type == ASTNodeType::TYPE_APPLICATION {
+            let type_application: *const TypeApplicationNode = call->expression as *const TypeApplicationNode;
+            let mut types: Vector<*const QualifiedType>;
+            let mut i: u64 = 0u64;
+
+            while i < type_application->types.Size() {
+                types.PushBack(this.CompileType(type_application->types[i]));
+                i += 1u64;
+            }
+
+            if type_application->expression->node_type == ASTNodeType::PRIMITIVE_TYPE {
+                let primitive_type: *const PrimitiveTypeNode = type_application->expression as *const PrimitiveTypeNode;
+
+                if this.scope_manager.Has(primitive_type->name, SymbolKind::Generic) {
+                    let generic: *mut Generic = this.scope_manager.Get(primitive_type->name, SymbolKind::Generic)->pointer as *mut Generic;
+
+                    if generic->ast->node_type == ASTNodeType::FUNCTION_DECL {
+                        ret this.CompileCall2(generic->Get(types).left, values, pointer, false, call as *const ASTNode);
+                    } else {
+                        Logger::Log("Generic '" + primitive_type->name + "' is not a function.", call as *const ASTNode, LogSeverity::Error);
+                        ret QualifiedValue(null, null);
+                    }
+                } else {
+                    if this.scope_manager.Has(primitive_type->name) {
+                        Logger::Log("Symbol '" + primitive_type->name + "' is not generic.", call as *const ASTNode, LogSeverity::Error);
+                    } else {
+                        Logger::Log("Symbol '" + primitive_type->name + "' not found.", call as *const ASTNode, LogSeverity::Error);
+                    } ret QualifiedValue(null, null);
+                }
+            } else if type_application->expression->node_type == ASTNodeType::MEMBER_ACCESS {
+                let member_access: *const MemberAccessNode = type_application->expression as *const MemberAccessNode;
+                let mut instance: QualifiedValue = this.CompileExpression(member_access->expression, true);
+                if instance.Null() { ret QualifiedValue(null, null); }
+
+                if instance.Type().IsPointer() {
+                    if instance.Type().Pointee().IsReference() {
+                        instance = QualifiedValue(LLVMBuildLoad2(this.builder, instance.Type().Pointee().Value(), instance.Value(), ""), instance.Type().Pointee(), false, instance.binding);
+                    }
+                }
+
+                if !instance.Type().IsPointer() {
+                    Logger::Log("Member access value must be a pointer.", member_access as *const ASTNode, LogSeverity::Error);
+                    ret QualifiedValue(null, null);
+                }
+
+                let _class: *const QualifiedType = instance.Type().Pointee();
+
+                if _class->pack_scope != null {
+                    let symbol: *const Symbol = (_class->pack_scope as *mut Scope)->Get(member_access->member, SymbolKind::Generic);
+
+                    if symbol != null {
+                        let mut method: QualifiedValue = (symbol->pointer as *mut Generic)->Get(types).left;
+                        (method.instance, method.instance_type) = (instance.Value(), instance.Type());
+                        ret this.CompileCall2(method, values, pointer, false, call as *const ASTNode);
+                    } else {
+                        ret QualifiedValue(null, null);
+                    }
+                } else {
+                    ret QualifiedValue(null, null);
+                }
+            } else if type_application->expression->node_type == ASTNodeType::SCOPE_RESOLUTION {
+                let resolution: *const ScopeResolutionNode = type_application->expression as *const ScopeResolutionNode;
+                let scope: *const Scope = this.scope_manager.ResolveScopeHalf(resolution, true);
+
+                if scope != null {
+                    let symbol: *const Symbol = scope->Get(resolution->identifier->name, SymbolKind::Generic);
+
+                    if symbol != null {
+                        ret this.CompileCall2((symbol->pointer as *mut Generic)->Get(types).left, values, pointer, false, call as *const ASTNode);
+                    } else {
+                        ret QualifiedValue(null, null);
+                    }
+                } else {
+                    ret QualifiedValue(null, null);
+                }
+            } else {
+                Logger::Log("Invalid type application.", call as *const ASTNode, LogSeverity::Error);
+                ret QualifiedValue(null, null);
             }
         } else {
             let mut state: bool = false;
@@ -4339,24 +4400,36 @@ class Compiler {
                 } else if this.scope_manager.Has(primitive_type->name, SymbolKind::Class) {
                     ret this.scope_manager.Get(primitive_type->name, SymbolKind::Class)->value.Type();
                 } else if this.scope_manager.Has(primitive_type->name, SymbolKind::Generic) {
-                    if primitive_type->generic {
-                        let mut types: Vector<*const QualifiedType>;
-                        let mut i: u64 = 0u64;
-
-                        while i < primitive_type->types.Size() {
-                            types.PushBack(this.CompileType(primitive_type->types[i]));
-                            i += 1u64;
-                        }
-
-                        ret (this.scope_manager.Get(primitive_type->name, SymbolKind::Generic)->pointer as *mut Generic)->Get(types).left.Type();
-                    } else {
-                        Logger::Log("Generic type '" + primitive_type->name + "' requires parameters.", type_node, LogSeverity::Error);
-                        ret null;
-                    }
+                    Logger::Log("Generic type '" + primitive_type->name + "' requires parameters.", type_node, LogSeverity::Error);
                 } else {
                     Logger::Log("Type '" + primitive_type->name + "' not found.", type_node, LogSeverity::Error);
-                    ret null;
+                } ret null;
+            }
+        } else if type_node->node_type == ASTNodeType::TYPE_APPLICATION {
+            let type_application: *const TypeApplicationNode = type_node as *const TypeApplicationNode;
+            let mut types: Vector<*const QualifiedType>;
+            let mut i: u64 = 0u64;
+
+            while i < type_application->types.Size() {
+                types.PushBack(this.CompileType(type_application->types[i]));
+                i += 1u64;
+            }
+
+            if type_application->expression->node_type == ASTNodeType::PRIMITIVE_TYPE {
+                let primitive_type: *const PrimitiveTypeNode = type_application->expression as *const PrimitiveTypeNode;
+
+                if this.scope_manager.Has(primitive_type->name, SymbolKind::Generic) {
+                    ret (this.scope_manager.Get(primitive_type->name, SymbolKind::Generic)->pointer as *mut Generic)->Get(types).left.Type();
+                } else {
+                    if this.scope_manager.Has(primitive_type->name) {
+                        Logger::Log("Type '" + primitive_type->name + "' is not generic.", type_node, LogSeverity::Error);
+                    } else {
+                        Logger::Log("Type '" + primitive_type->name + "' not found.", type_node, LogSeverity::Error);
+                    } ret null;
                 }
+            } else {
+                Logger::Log("Invalid type application.", type_node, LogSeverity::Error);
+                ret null;
             }
         } else if type_node->node_type == ASTNodeType::POINTER_TYPE {
             let pointer_type: *const PointerTypeNode = type_node as *const PointerTypeNode;

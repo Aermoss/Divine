@@ -745,7 +745,7 @@ class Compiler {
     }
 
     pub CompileFunction(&mut this, func_decl: *const FunctionDeclNode, generic: *mut Generic) -> QualifiedValue {
-        if func_decl->generic && generic == null {
+        if func_decl->generic && generic == null && !this.pack_specializing {
             let _generic: *mut Generic = new Generic(func_decl as *const ASTNode);
             this.scope_manager.Set(func_decl->name, SymbolKind::Generic, _generic as *const void, false, func_decl as *const ASTNode);
             ret QualifiedValue(null, null);
@@ -846,7 +846,7 @@ class Compiler {
             }
         } else if this.mangling {
             let mut types: Vector<*const QualifiedType>;
-            if generic != null { types += generic->types; }
+            if this.generic != null { types += this.generic->types; }
             name = Mangler::MangleFunction(func_decl->name, _type, types);
         }
 
@@ -2703,8 +2703,66 @@ class Compiler {
             ret this.CompileBinaryOperation(expression as *const BinaryOpNode, pointer);
         } else if expression->node_type == ASTNodeType::STRUCT_INIT {
             ret this.CompileStructInit(expression as *const StructInitNode);
+        } else if expression->node_type == ASTNodeType::TYPE_APPLICATION {
+            ret this.CompileTypeApplication(expression as *const TypeApplicationNode);
         } else {
             Logger::Log("Unknown expression '" + expression->node_type.ToString() + "'.", expression, LogSeverity::Error);
+            ret QualifiedValue(null, null);
+        }
+    }
+
+    priv CompileTypeApplication(&mut this, node: *const TypeApplicationNode) -> QualifiedValue {
+        let mut types: Vector<*const QualifiedType>;
+        let mut i: u64 = 0u64;
+
+        while i < node->types.Size() {
+            types.PushBack(this.CompileType(node->types[i]));
+            i += 1u64;
+        }
+
+        let mut name: String;
+
+        if node->expression->node_type == ASTNodeType::IDENTIFIER {
+            name = (node->expression as *const IdentifierNode)->name;
+        } else if node->expression->node_type == ASTNodeType::PRIMITIVE_TYPE {
+            name = (node->expression as *const PrimitiveTypeNode)->name;
+        }
+
+        if node->expression->node_type == ASTNodeType::IDENTIFIER || node->expression->node_type == ASTNodeType::PRIMITIVE_TYPE {
+            if this.scope_manager.Has(name, SymbolKind::Generic) {
+                let generic: *mut Generic = this.scope_manager.Get(name, SymbolKind::Generic)->pointer as *mut Generic;
+
+                if generic->ast->node_type == ASTNodeType::FUNCTION_DECL {
+                    ret generic->Get(types).left;
+                } else {
+                    Logger::Log("Generic '" + name + "' is not a function.", node as *const ASTNode, LogSeverity::Error);
+                    ret QualifiedValue(null, null);
+                }
+            } else {
+                if this.scope_manager.Has(name) {
+                    Logger::Log("Symbol '" + name + "' is not generic.", node as *const ASTNode, LogSeverity::Error);
+                } else {
+                    Logger::Log("Symbol '" + name + "' not found.", node as *const ASTNode, LogSeverity::Error);
+                }
+                ret QualifiedValue(null, null);
+            }
+        } else if node->expression->node_type == ASTNodeType::SCOPE_RESOLUTION {
+            let resolution: *const ScopeResolutionNode = node->expression as *const ScopeResolutionNode;
+            let scope: *const Scope = this.scope_manager.ResolveScopeHalf(resolution, true);
+
+            if scope != null {
+                let symbol: *const Symbol = scope->Get(resolution->identifier->name, SymbolKind::Generic);
+
+                if symbol != null {
+                    ret (symbol->pointer as *mut Generic)->Get(types).left;
+                } else {
+                    ret QualifiedValue(null, null);
+                }
+            } else {
+                ret QualifiedValue(null, null);
+            }
+        } else {
+            Logger::Log("Invalid type application.", node as *const ASTNode, LogSeverity::Error);
             ret QualifiedValue(null, null);
         }
     }

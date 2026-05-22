@@ -19,7 +19,6 @@
 
 class Parser {
     priv types: Vector<String>,
-    priv generics: Vector<String>,
     priv tokens: Vector<Token>,
     priv index: u64;
 
@@ -158,6 +157,12 @@ class Parser {
                 if _type != TokenType::IDENTIFIER && _type != TokenType::COLON && _type != TokenType::DOUBLE_COLON && _type != TokenType::LPAREN && _type != TokenType::RPAREN
                     && _type != TokenType::MUL && _type != TokenType::BITWISE_AND && _type != TokenType::MUT && _type != TokenType::CONST && _type != TokenType::LBRACKET && _type != TokenType::RBRACKET
                         && _type != TokenType::FUNC && _type != TokenType::THREE_DOT && _type != TokenType::ARROW && _type != TokenType::INTEGER && _type != TokenType::COMMA { ret false; }
+
+                if _type == TokenType::IDENTIFIER {
+                    if this.types.Index(token.value) == -1i64 {
+                        ret false;
+                    }
+                }
             }
 
             if depth == 0u64 {
@@ -184,7 +189,7 @@ class Parser {
             let mut node: *const Node = null;
 
             if token._type != TokenType::DOUBLE_COLON {
-                if (this.types.Index(token.value) != -1i64 || this.generics.Index(token.value) != -1i64) && this.Peek(1u64)._type != TokenType::DOUBLE_COLON {
+                if this.types.Index(token.value) != -1i64 {
                     node = this.ParseType();
                     if node == null { ret null; }
                 } else {
@@ -1186,29 +1191,41 @@ class Parser {
 
         let function_type: *mut FunctionTypeNode = new FunctionTypeNode(token);
         let function: *mut FunctionNode = new FunctionNode(name, function_type, no_mangle, token);
+        let types: Vector<String> = this.types;
 
         if this.Match(TokenType::LESS) {
-            this.generics.PushBack(function->name);
             function->generic = true;
 
             while this.Current()._type != TokenType::GREATER {
                 let type_name: Token = this.Expect(TokenType::IDENTIFIER);
-                if type_name._type == TokenType::UNKNOWN { ret null; }
+
+                if type_name._type == TokenType::UNKNOWN {
+                    this.types = types;
+                    ret null;
+                }
+
                 function->types.PushBack(type_name.value);
+                this.types.PushBack(type_name.value);
                 if !this.Match(TokenType::COMMA) { break; }
             }
 
-            if !this.Expect2(TokenType::GREATER) { ret null; }
+            if !this.Expect2(TokenType::GREATER) {
+                this.types = types;
+                ret null;
+            }
         }
 
-        if !this.Expect2(TokenType::LPAREN) { ret null; }
+        if !this.Expect2(TokenType::LPAREN) {
+            this.types = types;
+            ret null;
+        }
 
         if this.Current()._type != TokenType::RPAREN {
             let mut has_instance: bool = true;
 
             if this.Match(TokenType::BITWISE_AND) {
                 let mutable: bool = this.Match(TokenType::MUT);
-                if !this.Expect2(TokenType::THIS) { ret null; }
+                if !this.Expect2(TokenType::THIS) { this.types = types; ret null; }
                 function_type->instance_kind = mutable ? InstanceKind::MutRef : InstanceKind::ConstRef;
             } else if this.Match(TokenType::THIS) {
                 function_type->instance_kind = InstanceKind::Copy;
@@ -1220,7 +1237,12 @@ class Parser {
                 while this.Current()._type != TokenType::EOF {
                     if this.Peek(1u64)._type == TokenType::THREE_DOT {
                         let pack_name: Token = this.Expect(TokenType::IDENTIFIER);
-                        if pack_name._type == TokenType::UNKNOWN { ret null; }
+
+                        if pack_name._type == TokenType::UNKNOWN {
+                            this.types = types;
+                            ret null;
+                        }
+
                         function_type->pack_name = pack_name.value;
                         this.Advance();
                         break;
@@ -1232,7 +1254,7 @@ class Parser {
                     }
 
                     let param: *const ParameterNode = this.ParseParameter();
-                    if param == null { ret null; }
+                    if param == null { this.types = types; ret null; }
                     function_type->parameters.PushBack(param);
 
                     if !this.Match(TokenType::COMMA) {
@@ -1242,7 +1264,10 @@ class Parser {
             }
         }
 
-        if !this.Expect2(TokenType::RPAREN) { ret null; }
+        if !this.Expect2(TokenType::RPAREN) {
+            this.types = types;
+            ret null;
+        }
 
         if this.Match(TokenType::ASYNC) {
             function->_async = true;
@@ -1250,14 +1275,22 @@ class Parser {
 
         if this.Match(TokenType::ARROW) {
             function_type->return_type = this.ParseType();
-            if function_type->return_type == null { ret null; }
+
+            if function_type->return_type == null {
+                this.types = types;
+                ret null;
+            }
         } else {
             function_type->return_type = new PrimitiveTypeNode({ "void" } as String, token) as *const Node;
 
             if token._type != TokenType::FUNC && token._type != TokenType::PUBLIC && token._type != TokenType::PRIVATE {
                 while (this.Match(TokenType::COLON) && function->constructors.Empty()) || (this.Match(TokenType::COMMA) && !function->constructors.Empty()) {
                     let expression: *const Node = this.ParseExpression();
-                    if expression == null { ret null; }
+
+                    if expression == null {
+                        this.types = types;
+                        ret null;
+                    }
 
                     if expression->_type == NodeType::CALL {
                         function->constructors.PushBack(expression as *const CallNode);
@@ -1271,9 +1304,11 @@ class Parser {
 
         if this.Current()._type == TokenType::LBRACE {
             let body: *const Node = this.ParseBlock();
+            this.types = types;
             if body == null { ret null; }
             function->body = body as *const BlockNode;
         } else {
+            this.types = types;
             if !this.Expect2(TokenType::SEMICOLON) { ret null; }
         } ret function as *const Node;
     }
@@ -1316,42 +1351,48 @@ class Parser {
 
         let identifier: Token = this.Expect(TokenType::IDENTIFIER);
         if identifier._type == TokenType::UNKNOWN { ret null; }
-
-        if this.types.Index(identifier.value) != -1i64 {
-            Logger::Log("Type '" + identifier.value + "' is overloaded.", identifier, LogSeverity::Error);
-            ret null;
-        }
-
-        this.types.PushBack(identifier.value);
         let class_node: *mut ClassNode = new ClassNode(identifier.value, token);
+        let types: Vector<String> = this.types;
 
         if this.Match(TokenType::LESS) {
-            this.generics.PushBack(class_node->name);
             class_node->generic = true;
 
             while this.Current()._type != TokenType::GREATER {
                 let type_name: Token = this.Expect(TokenType::IDENTIFIER);
-                if type_name._type == TokenType::UNKNOWN { ret null; }
+
+                if type_name._type == TokenType::UNKNOWN {
+                    this.types = types;
+                    ret null;
+                }
+
                 class_node->types.PushBack(type_name.value);
+                this.types.PushBack(type_name.value);
                 if !this.Match(TokenType::COMMA) { break; }
             }
 
-            if !this.Expect2(TokenType::GREATER) { ret null; }
+            if !this.Expect2(TokenType::GREATER) {
+                this.types = types;
+                ret null;
+            }
         }
 
         if this.Match(TokenType::COLON) {
             let _type: *const Node = this.ParseType();
-            if _type == null { ret null; }
+            if _type == null { this.types = types; ret null; }
             class_node->parents.PushBack(_type);
 
             while this.Match(TokenType::COMMA) {
                 let _type: *const Node = this.ParseType();
-                if _type == null { ret null; }
+                if _type == null { this.types = types; ret null; }
                 class_node->parents.PushBack(_type);
             }
         }
 
-        if !this.Expect2(TokenType::LBRACE) { ret null; }
+        if !this.Expect2(TokenType::LBRACE) {
+            this.types = types;
+            ret null;
+        }
+
         let mut state: bool = false;
 
         if this.Current()._type == TokenType::PUBLIC || this.Current()._type == TokenType::PRIVATE {
@@ -1370,15 +1411,17 @@ class Parser {
                     this.Advance();
                 } else {
                     Logger::Log("Expected visibility modifier.", visibility, LogSeverity::Error);
+                    this.types = types;
                     ret null;
                 }
 
                 if this.Current()._type == TokenType::IDENTIFIER {
                     let field: *const FieldNode = this.ParseField();
-                    if field == null { ret null; }
+                    if field == null { this.types = types; ret null; }
                     class_node->fields.PushBack(Pair<TokenType, *const FieldNode>(visibility._type, field));
                 } else {
                     Logger::Log("Expected field declaration.", this.Current(), LogSeverity::Error);
+                    this.types = types;
                     ret null;
                 }
 
@@ -1395,27 +1438,29 @@ class Parser {
 
                 if visibility._type == TokenType::PUBLIC || visibility._type == TokenType::PRIVATE {
                     let function: *const Node = this.ParseFunction(attributes);
-                    if function == null { ret null; }
+                    if function == null { this.types = types; ret null; }
                     class_node->methods.PushBack(Pair<TokenType, *const FunctionNode>(visibility._type, function as *const FunctionNode));
                 } else {
                     if this.Current()._type == TokenType::TILDE {
                         if class_node->destructor != null {
                             Logger::Log("Multiple destructor declarations are not allowed.", visibility, LogSeverity::Error);
+                            this.types = types;
                             ret null;
                         }
 
                         let function: *const Node = this.ParseFunction(attributes);
-                        if function == null { ret null; }
+                        if function == null { this.types = types; ret null; }
                         class_node->destructor = function as *const FunctionNode;
                     } else {
                         let function: *const Node = this.ParseFunction(attributes);
-                        if function == null { ret null; }
+                        if function == null { this.types = types; ret null; }
                         class_node->constructors.PushBack(function as *const FunctionNode);
                     }
                 }
             }
         }
 
+        this.types = types;
         if !this.Expect2(TokenType::RBRACE) { ret null; }
         ret class_node as *const Node;
     }
@@ -1463,80 +1508,101 @@ class Parser {
 
         let identifier: Token = this.Expect(TokenType::IDENTIFIER);
         if identifier._type == TokenType::UNKNOWN { ret null; }
-
-        if this.types.Index(identifier.value) != -1i64 {
-            Logger::Log("Type '" + identifier.value + "' is overloaded.", identifier, LogSeverity::Error);
-            ret null;
-        }
-
-        this.types.PushBack(identifier.value);
         let enum_node: *mut EnumNode = new EnumNode(identifier.value, token);
+        let types: Vector<String> = this.types;
 
         if this.Match(TokenType::LESS) {
-            this.generics.PushBack(enum_node->name);
             enum_node->generic = true;
 
             while this.Current()._type != TokenType::GREATER {
                 let type_name: Token = this.Expect(TokenType::IDENTIFIER);
-                if type_name._type == TokenType::UNKNOWN { ret null; }
+
+                if type_name._type == TokenType::UNKNOWN {
+                    this.types = types;
+                    ret null;
+                }
+
                 enum_node->types.PushBack(type_name.value);
+                this.types.PushBack(type_name.value);
                 if !this.Match(TokenType::COMMA) { break; }
             }
 
-            if !this.Expect2(TokenType::GREATER) { ret null; }
+            if !this.Expect2(TokenType::GREATER) {
+                this.types = types;
+                ret null;
+            }
         }
 
         if this.Match(TokenType::COLON) {
             enum_node->underlying_type = this.ParseType();
-            if enum_node->underlying_type == null { ret null; }
+
+            if enum_node->underlying_type == null {
+                this.types = types;
+                ret null;
+            }
         } else {
             enum_node->variant = true;
         }
 
-        if !this.Expect2(TokenType::LBRACE) { ret null; }
+        if !this.Expect2(TokenType::LBRACE) {
+            this.types = types;
+            ret null;
+        }
 
         while this.Current()._type != TokenType::SEMICOLON && this.Current()._type != TokenType::RBRACE && this.Current()._type != TokenType::EOF {
             let variant_identifier: Token = this.Expect(TokenType::IDENTIFIER);
-            if variant_identifier._type == TokenType::UNKNOWN { ret null; }
+            if variant_identifier._type == TokenType::UNKNOWN { this.types = types; ret null; }
             let variant: *mut VariantNode = new VariantNode(variant_identifier.value, variant_identifier);
 
             if this.Match(TokenType::LBRACE) {
                 while this.Current()._type != TokenType::RBRACE && this.Current()._type != TokenType::EOF {
                     let field_name: Token = this.Expect(TokenType::IDENTIFIER);
-                    if field_name._type == TokenType::UNKNOWN { ret null; }
-                    if !this.Expect2(TokenType::COLON) { ret null; }
+                    if field_name._type == TokenType::UNKNOWN { this.types = types; ret null; }
+                    if !this.Expect2(TokenType::COLON) { this.types = types; ret null; }
                     variant->field_names.PushBack(field_name.value);
                     let _type: *const Node = this.ParseType();
-                    if _type == null { ret null; }
+                    if _type == null { this.types = types; ret null; }
                     variant->types.PushBack(_type);
                     if !this.Match(TokenType::COMMA) { break; }
                 }
 
-                if !this.Expect2(TokenType::RBRACE) { ret null; }
+                if !this.Expect2(TokenType::RBRACE) {
+                    this.types = types;
+                    ret null;
+                }
             } else if this.Match(TokenType::LPAREN) {
                 let variant_type: *const Node = this.ParseType();
-                if variant_type == null { ret null; }
+                if variant_type == null { this.types = types; ret null; }
                 variant->types.PushBack(variant_type);
 
                 while this.Match(TokenType::COMMA) {
                     let variant_type: *const Node = this.ParseType();
-                    if variant_type == null { ret null; }
+                    if variant_type == null { this.types = types; ret null; }
                     variant->types.PushBack(variant_type);
                 }
 
-                if !this.Expect2(TokenType::RPAREN) { ret null; }
+                if !this.Expect2(TokenType::RPAREN) {
+                    this.types = types;
+                    ret null;
+                }
             } else if this.Match(TokenType::ASSIGN) {
                 if enum_node->variant {
                     Logger::Log("Explicit value assignment is not allowed for variant enums.", variant_identifier, LogSeverity::Error);
+                    this.types = types;
                     ret null;
                 }
 
                 variant->value = this.ParseExpression();
-                if variant->value == null { ret null; }
+
+                if variant->value == null {
+                    this.types = types;
+                    ret null;
+                }
             }
 
             if !enum_node->variant && !variant->types.Empty() {
                 Logger::Log("Data fields are only allowed in variant enums.", variant_identifier, LogSeverity::Error);
+                this.types = types;
                 ret null;
             }
 
@@ -1554,15 +1620,17 @@ class Parser {
 
                 if visibility._type == TokenType::PUBLIC || visibility._type == TokenType::PRIVATE {
                     let function: *const Node = this.ParseFunction(attributes);
-                    if function == null { ret null; }
+                    if function == null { this.types = types; ret null; }
                     enum_node->methods.PushBack(Pair<TokenType, *const FunctionNode>(visibility._type, function as *const FunctionNode));
                 } else {
                     Logger::Log("Expected visibility modifier.", visibility, LogSeverity::Error);
+                    this.types = types;
                     ret null;
                 }
             }
         }
 
+        this.types = types;
         if !this.Expect2(TokenType::RBRACE) { ret null; }
         ret enum_node as *const Node;
     }
@@ -1705,13 +1773,6 @@ class Parser {
         if token._type == TokenType::UNKNOWN { ret null; }
         let identifier: Token = this.Expect(TokenType::IDENTIFIER);
         if identifier._type == TokenType::UNKNOWN { ret null; }
-
-        if this.types.Index(identifier.value) != -1i64 {
-            Logger::Log("Type '" + identifier.value + "' is overloaded.", identifier, LogSeverity::Error);
-            ret null;
-        }
-
-        this.types.PushBack(identifier.value);
         if !this.Expect2(TokenType::ASSIGN) { ret null; }
         let _type: *const Node = this.ParseType();
         if _type == null { ret null; }
@@ -1739,6 +1800,24 @@ class Parser {
         this.types.PushBack(String("f32"));
         this.types.PushBack(String("f64"));
         this.types.PushBack(String("void"));
+
+        loop {
+            let token: Token = this.Advance();
+
+            if token._type == TokenType::CLASS || token._type == TokenType::ENUM || token._type == TokenType::TYPE {
+                let identifier: Token = this.Expect(TokenType::IDENTIFIER);
+                if identifier._type == TokenType::UNKNOWN { continue; }
+
+                if this.types.Index(identifier.value) != -1i64 {
+                    Logger::Log("Type '" + identifier.value + "' is overloaded.", identifier, LogSeverity::Error);
+                } else {
+                    this.types.PushBack(identifier.value);
+                }
+            } else if token._type == TokenType::EOF {
+                this.index = 0u64;
+                break;
+            }
+        }
 
         while this.Current()._type != TokenType::EOF {
             let declaration: *const Node = this.ParseDeclaration();

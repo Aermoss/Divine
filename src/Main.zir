@@ -629,10 +629,9 @@ func main(args: &mut Vector<String>) -> i32 {
 
     let context: Context;
     let target: Target = { triple, arch, code_model, features, opt_level };
-    let mut j: u64 = 0u64;
+    let mut entry_included: bool = false;
 
-    while j < input_files.Size() {
-        let input_file: String = input_files[j];
+    for input_file in input_files {
         let parts: Pair<String, String> = SplitExtension(input_file);
         let extension: &String = parts.right;
         let name: &String = parts.left;
@@ -652,7 +651,12 @@ func main(args: &mut Vector<String>) -> i32 {
             preprocessor.defines = defines;
 
             let mut source: String = _ReadFile(input_file);
-            if j == 0u64 && !check && !freestanding { source += "\n#[include \"src/Start.zir\" : *]\n"; }
+
+            if !entry_included && !check && !freestanding {
+                source += "\n#[include \"src/Start.zir\" : *]\n";
+                entry_included = true;
+            }
+
             let tokens: Vector<Token> = preprocessor.Process(lexer.Lex(source, input_file), input_file);
 
             let mut parser: Parser;
@@ -714,7 +718,6 @@ func main(args: &mut Vector<String>) -> i32 {
         } else if extension == ".asm" || extension == ".s" {
             if emit_asm {
                 Logger::Log(executable, "Skipping input: '" + input_file + "'.", LogSeverity::Warning);
-                j += 1u64;
                 continue;
             }
 
@@ -722,8 +725,6 @@ func main(args: &mut Vector<String>) -> i32 {
                 Logger::Log(executable, "Assembling: '" + input_file + "'.", LogSeverity::Info);
             } module = assembler.Assemble(_ReadFile(input_file), input_file);
         } else if extension == ".obj" || extension == ".o" {
-            j += 1u64;
-
             if emit_object {
                 Logger::Log(executable, "Skipping input: '" + input_file + "'.", LogSeverity::Warning);
             } else {
@@ -736,8 +737,6 @@ func main(args: &mut Vector<String>) -> i32 {
         failed |= module == null;
 
         if check || failed {
-            j += 1u64;
-
             if !check {
                 Logger::Clear();
             } continue;
@@ -793,7 +792,6 @@ func main(args: &mut Vector<String>) -> i32 {
             let mut asm_name: String = name + ".s";
             if !output_file.Empty() { asm_name = output_file; }
             let result: String = target.Emit(module, asm_name, LLVMCodeGenFileType::LLVMAssemblyFile);
-            j += 1u64;
 
             if !result.Empty() {
                 Logger::Log(input_file, "Failed to emit assembly: " + result, LogSeverity::Error);
@@ -820,18 +818,13 @@ func main(args: &mut Vector<String>) -> i32 {
 
         if !emit_object {
             temp_files.PushBack(object_name);
-        } j += 1u64;
+        }
     }
 
     if check || failed || emit_object || emit_asm {
-        let mut i: u64 = 0u64;
-
-        while i < temp_files.Size() {
-            RemoveFile(temp_files[i]);
-            i += 1u64;
-        }
-
-        ret failed ? 1i32 : 0i32;
+        for temp_file in temp_files {
+            RemoveFile(temp_file);
+        } ret failed ? 1i32 : 0i32;
     }
 
     if output_file.Empty() {
@@ -856,16 +849,25 @@ func main(args: &mut Vector<String>) -> i32 {
         command = "\"" + msvc_path + "\\bin\\Hostx64\\x64\\link.exe\" /NOLOGO /SUBSYSTEM:CONSOLE /NODEFAULTLIB /ENTRY:_start";
         if debug { command += " /DEBUG"; }
         command += " /OUT:" + output_file;
-        let (mut i: u64, mut j: u64, mut k: u64) = (0u64, 0u64, 0u64);
-        while i < objects.Size() { command += " " + objects[i]; i += 1u64; }
+
+        for object in objects {
+            command += " " + object;
+        }
 
         if !freestanding {
             command += " \"/LIBPATH:" + msvc_path + "\\lib\\x64\"";
             command += " \"/LIBPATH:" + sdk_path + "\\um\\x64\"";
             command += " \"/LIBPATH:" + sdk_path + "\\ucrt\\x64\"";
-            while j < lib_paths.Size() { command += " \"/LIBPATH:" + lib_paths[j] + "\""; j += 1u64; }
+
+            for lib_path in lib_paths {
+                command += " \"/LIBPATH:" + lib_path + "\"";
+            }
+
             command += " user32.lib shell32.lib kernel32.lib";
-            while k < libs.Size() { command += " " + libs[k] + ".lib"; k += 1u64; }
+
+            for lib in libs {
+                command += " " + lib + ".lib";
+            }
         }
 #[else]
         Logger::Log(executable, "Cannot link to windows from another platform.", LogSeverity::Error);
@@ -878,10 +880,18 @@ func main(args: &mut Vector<String>) -> i32 {
         command = lld_exe + " --nostdlib --entry _start";
         if !freestanding { command += " --dynamic-linker /lib64/ld-linux-x86-64.so.2"; }
         command += " -o " + output_file;
-        let (mut i: u64, mut j: u64, mut k: u64) = (0u64, 0u64, 0u64);
-        while i < objects.Size() { command += " " + objects[i]; i += 1u64; }
-        while j < lib_paths.Size() { command += " -L" + lib_paths[j]; j += 1u64; }
-        while k < libs.Size() { command += " -l" + libs[k]; k += 1u64; }
+
+        for object in objects {
+            command += " " + object;
+        }
+
+        for lib_path in lib_paths {
+            command += " -L" + lib_path;
+        }
+
+        for lib in libs {
+            command += " -l" + lib;
+        }
     } else {
         Logger::Log(executable, "Invalid target: '" + triple + "'.", LogSeverity::Error);
         ret 1i32;
@@ -893,11 +903,9 @@ func main(args: &mut Vector<String>) -> i32 {
 
     Execute(command.Data());
     WriteLine("Program compiled in " + String(timer.Get() - start) + " seconds.");
-    let mut k: u64 = 0u64;
 
-    while k < temp_files.Size() {
-        RemoveFile(temp_files[k]);
-        k += 1u64;
+    for temp_file in temp_files {
+        RemoveFile(temp_file);
     }
 
     if run {

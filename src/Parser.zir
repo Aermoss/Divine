@@ -92,7 +92,7 @@ class Parser {
         ret false;
     }
 
-    priv GetBinaryOpPrecedence(&this, _type: TokenType) -> i32 {
+    priv GetBinaryOperatorPrecedence(&this, _type: TokenType) -> i32 {
         if _type == TokenType::OR { ret 1i32; }
         else if _type == TokenType::AND { ret 2i32; }
         else if _type == TokenType::BITWISE_OR { ret 3i32; }
@@ -108,7 +108,7 @@ class Parser {
     }
 
     priv IsBinaryOperator(&this, _type: TokenType) -> bool {
-        let precedence: i32 = this.GetBinaryOpPrecedence(_type);
+        let precedence: i32 = this.GetBinaryOperatorPrecedence(_type);
         ret precedence >= 0i32 && precedence != 11i32;
     }
 
@@ -116,10 +116,10 @@ class Parser {
         ret _type == TokenType::NOT || _type == TokenType::MINUS || _type == TokenType::BITWISE_AND || _type == TokenType::MUL;
     }
 
-    priv IsStructInit(&this, node_type: ASTNodeType) -> bool {
+    priv IsStructInit(&this, _type: NodeType) -> bool {
         let after_brace: Token = this.Peek(1u64);
 
-        if node_type == ASTNodeType::SCOPE_RESOLUTION {
+        if _type == NodeType::SCOPE_RESOLUTION {
             if after_brace._type == TokenType::RBRACE { ret true; }
             if after_brace._type == TokenType::TWO_DOT { ret true; }
         }
@@ -128,7 +128,7 @@ class Parser {
             let after_name: Token = this.Peek(2u64);
             if after_name._type == TokenType::COLON { ret true; }
 
-            if node_type == ASTNodeType::SCOPE_RESOLUTION {
+            if _type == NodeType::SCOPE_RESOLUTION {
                 ret after_name._type == TokenType::COMMA || after_name._type == TokenType::RBRACE;
             }
         } ret false;
@@ -164,14 +164,14 @@ class Parser {
            || _type == TokenType::LSHIFT_ASSIGN || _type == TokenType::RSHIFT_ASSIGN || _type == TokenType::AND_ASSIGN || _type == TokenType::OR_ASSIGN || _type == TokenType::XOR_ASSIGN;
     }
 
-    priv ParsePrimary(&mut this) -> *const ASTNode {
+    priv ParsePrimary(&mut this) -> *const Node {
         let token: Token = this.Current();
 
         if token._type == TokenType::INTEGER || token._type == TokenType::FLOAT || token._type == TokenType::STRING || token._type == TokenType::CHAR || token._type == TokenType::TRUE || token._type == TokenType::FALSE || token._type == TokenType::NULL {
             this.Advance();
-            ret new LiteralNode(token.value, token._type, token) as *const ASTNode;
+            ret new LiteralNode(token.value, token._type, token) as *const Node;
         } else if token._type == TokenType::IDENTIFIER || token._type == TokenType::THIS || token._type == TokenType::OPERATOR || token._type == TokenType::DOUBLE_COLON {
-            let mut node: *const ASTNode = null;
+            let mut node: *const Node = null;
 
             if token._type != TokenType::DOUBLE_COLON {
                 if (this.types.Index(token.value) != -1i64 || this.generics.Index(token.value) != -1i64) && this.Peek(1u64)._type != TokenType::DOUBLE_COLON {
@@ -186,11 +186,11 @@ class Parser {
                             this.Advance();
                         }
 
-                        node = new IdentifierNode(identifier, token) as *const ASTNode;
+                        node = new IdentifierNode(identifier, token) as *const Node;
                     } else {
                         let identifier: Token = this.Expect(this.Current()._type != TokenType::THIS ? TokenType::IDENTIFIER : TokenType::THIS);
                         if identifier._type == TokenType::UNKNOWN { ret null; }
-                        node = new IdentifierNode(identifier.value, token) as *const ASTNode;
+                        node = new IdentifierNode(identifier.value, token) as *const Node;
                     }
                 }
             }
@@ -211,28 +211,28 @@ class Parser {
                     let _identifier: Token = this.Expect(this.Current()._type != TokenType::THIS ? TokenType::IDENTIFIER : TokenType::THIS);
                     if _identifier._type == TokenType::UNKNOWN { ret null; }
                     identifier = new IdentifierNode(_identifier.value, token);
-                } node = new ScopeResolutionNode(node, identifier, token) as *const ASTNode;
+                } node = new ScopeResolutionNode(node, identifier, token) as *const Node;
             } ret node;
         } else if token._type == TokenType::LBRACE {
             this.Advance();
             let initializer_list: *mut InitializerListNode = new InitializerListNode(token);
 
             if !this.Match(TokenType::RBRACE) {
-                let expression: *const ASTNode = this.ParseExpression();
+                let expression: *const Node = this.ParseExpression();
                 if expression == null { ret null; }
                 initializer_list->expressions.PushBack(expression);
 
                 while this.Match(TokenType::COMMA) {
-                    let expression: *const ASTNode = this.ParseExpression();
+                    let expression: *const Node = this.ParseExpression();
                     if expression == null { ret null; }
                     initializer_list->expressions.PushBack(expression);
                 }
 
                 if !this.Expect2(TokenType::RBRACE) { ret null; }
-            } ret initializer_list as *const ASTNode;
+            } ret initializer_list as *const Node;
         } else if token._type == TokenType::LPAREN {
             this.Advance();
-            let expression: *const ASTNode = this.ParseExpression();
+            let expression: *const Node = this.ParseExpression();
             if expression == null || !this.Expect2(TokenType::RPAREN) { ret null; }
             ret expression;
         } else {
@@ -242,8 +242,8 @@ class Parser {
         }
     }
 
-    priv ParsePostfix(&mut this) -> *const ASTNode {
-        let mut expression: *const ASTNode = this.ParsePrimary();
+    priv ParsePostfix(&mut this) -> *const Node {
+        let mut expression: *const Node = this.ParsePrimary();
         if expression == null { ret null; }
 
         loop {
@@ -255,7 +255,7 @@ class Parser {
 
                 if !this.Match(TokenType::RPAREN) {
                     while this.Current()._type != TokenType::RPAREN && this.Current()._type != TokenType::EOF {
-                        let expression: *const ASTNode = this.ParseExpression();
+                        let expression: *const Node = this.ParseExpression();
                         if expression == null { ret null; }
                         call->arguments.PushBack(expression);
 
@@ -265,7 +265,7 @@ class Parser {
                     }
 
                     if !this.Expect2(TokenType::RPAREN) { ret null; }
-                } expression = call as *const ASTNode;
+                } expression = call as *const Node;
             } else if token._type == TokenType::DOT || token._type == TokenType::ARROW {
                 this.Advance();
                 let member_access: *mut MemberAccessNode = new MemberAccessNode(expression, token._type == TokenType::ARROW, token);
@@ -281,15 +281,15 @@ class Parser {
                     let identifier: Token = this.Expect(TokenType::IDENTIFIER);
                     if identifier._type == TokenType::UNKNOWN { ret null; }
                     member_access->member += identifier.value;
-                } expression = member_access as *const ASTNode;
+                } expression = member_access as *const Node;
             } else if token._type == TokenType::LBRACKET {
                 this.Advance();
-                let _expression: *const ASTNode = this.ParseExpression();
+                let _expression: *const Node = this.ParseExpression();
                 if _expression == null { ret null; }
                 let index_access: *const IndexAccessNode = new IndexAccessNode(expression, _expression, token);
                 if !this.Expect2(TokenType::RBRACKET) { ret null; }
-                expression = index_access as *const ASTNode;
-            } else if token._type == TokenType::LBRACE && (expression->node_type == ASTNodeType::SCOPE_RESOLUTION || expression->node_type == ASTNodeType::IDENTIFIER) && this.IsStructInit(expression->node_type) {
+                expression = index_access as *const Node;
+            } else if token._type == TokenType::LBRACE && (expression->_type == NodeType::SCOPE_RESOLUTION || expression->_type == NodeType::IDENTIFIER) && this.IsStructInit(expression->_type) {
                 this.Advance();
                 let struct_init: *mut StructInitNode = new StructInitNode(expression, token);
 
@@ -303,11 +303,11 @@ class Parser {
                     if field_name._type == TokenType::UNKNOWN { ret null; }
 
                     if this.Match(TokenType::COLON) {
-                        let expression: *const ASTNode = this.ParseExpression();
+                        let expression: *const Node = this.ParseExpression();
                         if expression == null { ret null; }
                         struct_init->field_values.PushBack(expression);
                     } else {
-                        struct_init->field_values.PushBack(new IdentifierNode(field_name.value, field_name) as *const ASTNode);
+                        struct_init->field_values.PushBack(new IdentifierNode(field_name.value, field_name) as *const Node);
                     }
 
                     struct_init->field_names.PushBack(field_name.value);
@@ -315,30 +315,30 @@ class Parser {
                 }
 
                 if !this.Expect2(TokenType::RBRACE) { ret null; }
-                expression = struct_init as *const ASTNode;
+                expression = struct_init as *const Node;
             } else if token._type == TokenType::THREE_DOT {
                 this.Advance();
-                expression = new PackSplatNode(expression, token) as *const ASTNode;
+                expression = new PackSplatNode(expression, token) as *const Node;
             } else if this.IsTypeApplication() {
                 this.Advance();
                 let type_application: *mut TypeApplicationNode = new TypeApplicationNode(expression, token);
 
                 while this.Current()._type != TokenType::GREATER {
-                    let _type: *const ASTNode = this.ParseType();
+                    let _type: *const Node = this.ParseType();
                     if _type == null { ret null; }
                     type_application->types.PushBack(_type);
                     if !this.Match(TokenType::COMMA) { break; }
                 }
 
                 if !this.Expect2(TokenType::GREATER) { ret null; }
-                expression = type_application as *const ASTNode;
+                expression = type_application as *const Node;
             } else {
                 break;
             }
         } ret expression;
     }
 
-    priv ParseUnary(&mut this) -> *const ASTNode {
+    priv ParseUnary(&mut this) -> *const Node {
         let token: Token = this.Current();
         let mut mutable: bool = false;
 
@@ -349,12 +349,12 @@ class Parser {
                 mutable = this.Match(TokenType::MUT);
             }
 
-            let expression: *const ASTNode = this.ParseUnary();
+            let expression: *const Node = this.ParseUnary();
             if expression == null { ret null; }
-            ret new UnaryOpNode(expression, token._type, mutable, token) as *const ASTNode;
+            ret new UnaryOperationNode(expression, token._type, mutable, token) as *const Node;
         } else if token._type == TokenType::NEW {
             this.Advance();
-            let _type: *const ASTNode = this.ParseType();
+            let _type: *const Node = this.ParseType();
             if _type == null { ret null; }
             let _new: *mut NewNode = new NewNode(_type, token);
 
@@ -369,7 +369,7 @@ class Parser {
 
                 if !this.Match(TokenType::RPAREN) {
                     while this.Current()._type != TokenType::RPAREN {
-                        let argument: *const ASTNode = this.ParseExpression();
+                        let argument: *const Node = this.ParseExpression();
                         if argument == null { ret null; }
                         _new->arguments.PushBack(argument);
                         if !this.Match(TokenType::COMMA) { break; }
@@ -377,7 +377,7 @@ class Parser {
 
                     if !this.Expect2(TokenType::RPAREN) { ret null; }
                 }
-            } ret _new as *const ASTNode;
+            } ret _new as *const Node;
         } else if token._type == TokenType::DELETE {
             this.Advance();
             let delete: *mut DeleteNode = new DeleteNode(token);
@@ -389,19 +389,19 @@ class Parser {
 
             delete->expression = this.ParseExpression();
             if delete->expression == null { ret null; }
-            ret delete as *const ASTNode;
+            ret delete as *const Node;
         } else if token._type == TokenType::AWAIT {
             this.Advance();
-            let expression: *const ASTNode = this.ParseUnary();
+            let expression: *const Node = this.ParseUnary();
             if expression == null { ret null; }
-            ret new AwaitExprNode(expression, token) as *const ASTNode;
+            ret new AwaitNode(expression, token) as *const Node;
         } else {
             ret this.ParsePostfix();
         }
     }
 
-    priv ParseBinaryExpression(&mut this, min_precedence: i32) -> *const ASTNode {
-        let mut left: *const ASTNode = this.ParseUnary();
+    priv ParseBinary(&mut this, min_precedence: i32) -> *const Node {
+        let mut left: *const Node = this.ParseUnary();
         if left == null { ret null; }
 
         loop {
@@ -419,38 +419,38 @@ class Parser {
                 }
             }
 
-            let precedence: i32 = this.GetBinaryOpPrecedence(token._type);
+            let precedence: i32 = this.GetBinaryOperatorPrecedence(token._type);
             if precedence < min_precedence { break; }
             this.Advance();
 
             if token._type == TokenType::AS {
-                let _type: *const ASTNode = this.ParseType();
+                let _type: *const Node = this.ParseType();
                 if _type == null { ret null; }
-                left = new CastNode(left, _type, token) as *const ASTNode;
+                left = new CastNode(left, _type, token) as *const Node;
             } else {
-                let right: *const ASTNode = this.ParseBinaryExpression(precedence + 1i32);
+                let right: *const Node = this.ParseBinary(precedence + 1i32);
                 if right == null { ret null; }
-                left = new BinaryOpNode(left, right, token._type, token) as *const ASTNode;
+                left = new BinaryOperationNode(left, right, token._type, token) as *const Node;
             }
         } ret left;
     }
 
-    priv ParseExpression(&mut this) -> *const ASTNode {
-        let mut condition: *const ASTNode = this.ParseBinaryExpression(0i32);
+    priv ParseExpression(&mut this) -> *const Node {
+        let mut condition: *const Node = this.ParseBinary(0i32);
         if condition == null { ret null; }
         let token: Token = this.Current();
 
         if token._type == TokenType::QUESTION_MARK {
             this.Advance();
-            let then_expr: *const ASTNode = this.ParseExpression();
-            if then_expr == null || !this.Expect2(TokenType::COLON) { ret null; }
-            let else_expr: *const ASTNode = this.ParseExpression();
-            if else_expr == null { ret null; }
-            condition = new TernaryNode(condition, then_expr, else_expr, token) as *const ASTNode;
+            let then: *const Node = this.ParseExpression();
+            if then == null || !this.Expect2(TokenType::COLON) { ret null; }
+            let _else: *const Node = this.ParseExpression();
+            if _else == null { ret null; }
+            condition = new TernaryNode(condition, then, _else, token) as *const Node;
         } ret condition;
     }
 
-    priv ParseType(&mut this) -> *const ASTNode {
+    priv ParseType(&mut this) -> *const Node {
         let mut references: Vector<bool>;
 
         if this.Match(TokenType::BITWISE_AND) {
@@ -469,36 +469,36 @@ class Parser {
         }
 
         let token: Token = this.Current();
-        let mut node: *const ASTNode = null;
+        let mut node: *const Node = null;
 
         if this.Match(TokenType::FUNC) {
             if !this.Expect2(TokenType::LPAREN) { ret null; }
-            let func_type: *mut FunctionTypeNode = new FunctionTypeNode(token);
+            let function_type: *mut FunctionTypeNode = new FunctionTypeNode(token);
 
             if this.Current()._type != TokenType::RPAREN {
                 while this.Current()._type != TokenType::EOF {
                     if this.Peek(1u64)._type == TokenType::THREE_DOT {
                         let pack_name: Token = this.Expect(TokenType::IDENTIFIER);
                         if pack_name._type == TokenType::UNKNOWN { ret null; }
-                        func_type->pack_name = pack_name.value;
+                        function_type->pack_name = pack_name.value;
                         this.Advance();
                         break;
                     }
 
                     if this.Match(TokenType::THREE_DOT) {
-                        func_type->var_arg = true;
+                        function_type->var_arg = true;
                         break;
                     }
 
                     if (this.Peek(1u64)._type == TokenType::COLON || this.Peek(1u64)._type == TokenType::LBRACKET) || (this.Peek(1u64)._type == TokenType::MUT && (this.Peek(2u64)._type == TokenType::COLON || this.Peek(2u64)._type == TokenType::LBRACKET)) {
                         let param: *const ParameterNode = this.ParseParameter();
                         if param == null { ret null; }
-                        func_type->parameters.PushBack(param);
+                        function_type->parameters.PushBack(param);
                     } else {
                         let token: Token = this.Current();
-                        let _type: *const ASTNode = this.ParseType();
+                        let _type: *const Node = this.ParseType();
                         if _type == null { ret null; }
-                        func_type->parameters.PushBack(new ParameterNode(String(""), _type, false, token));
+                        function_type->parameters.PushBack(new ParameterNode(String(""), _type, false, token));
                     }
 
                     if !this.Match(TokenType::COMMA) {
@@ -510,38 +510,38 @@ class Parser {
             if !this.Expect2(TokenType::RPAREN) { ret null; }
 
             if this.Match(TokenType::ARROW) {
-                func_type->return_type = this.ParseType();
-                if func_type->return_type == null { ret null; }
+                function_type->return_type = this.ParseType();
+                if function_type->return_type == null { ret null; }
             } else {
-                func_type->return_type = new PrimitiveTypeNode({ "void" } as String, token) as *const ASTNode;
-            } node = func_type as *const ASTNode;
+                function_type->return_type = new PrimitiveTypeNode({ "void" } as String, token) as *const Node;
+            } node = function_type as *const Node;
         } else {
             if token._type != TokenType::IDENTIFIER {
                 Logger::Log("Expected type name.", token, LogSeverity::Error);
                 ret null;
             }
 
-            node = new PrimitiveTypeNode(token.value, token) as *const ASTNode;
+            node = new PrimitiveTypeNode(token.value, token) as *const Node;
             this.Advance();
 
             loop {
                 if this.Match(TokenType::DOUBLE_COLON) {
                     let identifier: Token = this.Expect(TokenType::IDENTIFIER);
                     if identifier._type == TokenType::UNKNOWN { ret null; }
-                    node = new ScopeResolutionNode(node, new IdentifierNode(identifier.value, identifier), token) as *const ASTNode;
+                    node = new ScopeResolutionNode(node, new IdentifierNode(identifier.value, identifier), token) as *const Node;
                 } else if this.IsTypeApplication() {
                     this.Advance();
                     let type_application: *mut TypeApplicationNode = new TypeApplicationNode(node, token);
 
                     while this.Current()._type != TokenType::GREATER {
-                        let _type: *const ASTNode = this.ParseType();
+                        let _type: *const Node = this.ParseType();
                         if _type == null { ret null; }
                         type_application->types.PushBack(_type);
                         if !this.Match(TokenType::COMMA) { break; }
                     }
 
                     if !this.Expect2(TokenType::GREATER) { ret null; }
-                    node = type_application as *const ASTNode;
+                    node = type_application as *const Node;
                 } else {
                     break;
                 }
@@ -551,40 +551,40 @@ class Parser {
         let mut index: u64 = pointers.Size();
 
         while 0u64 < index {
-            node = new PointerTypeNode(node, pointers[index - 1u64], token) as *const ASTNode;
+            node = new PointerTypeNode(node, pointers[index - 1u64], token) as *const Node;
             index -= 1u64;
         }
 
         if !references.Empty() {
-            node = new ReferenceTypeNode(node, references[0u64], token) as *const ASTNode;
+            node = new ReferenceTypeNode(node, references[0u64], token) as *const Node;
         } ret node;
     }
 
-    priv ParseStatement(&mut this, expression: bool) -> *const ASTNode {
+    priv ParseStatement(&mut this, expression: bool) -> *const Node {
         let token: Token = this.Current();
 
         if token._type == TokenType::LET && !expression {
-            ret this.ParseVariableDeclaration();
+            ret this.ParseVariable();
         } else if token._type == TokenType::IF && !expression {
-            ret this.ParseIfStatement();
+            ret this.ParseIf();
         } else if token._type == TokenType::WHILE && !expression {
-            ret this.ParseWhileStatement();
+            ret this.ParseWhile();
         } else if token._type == TokenType::FOR && !expression {
-            ret this.ParseForStatement();
+            ret this.ParseFor();
         } else if token._type == TokenType::LOOP && !expression {
-            ret this.ParseLoopStatement();
+            ret this.ParseLoop();
         } else if token._type == TokenType::MATCH && !expression {
-            ret this.ParseMatchStatement();
+            ret this.ParseMatch();
         } else if token._type == TokenType::UNSAFE && !expression {
-            ret this.ParseUnsafeStatement();
+            ret this.ParseUnsafe();
         } else if (token._type == TokenType::ASSEMBLY || token._type == TokenType::VOLATILE) && !expression {
-            ret this.ParseInlineAsm();
+            ret this.ParseAssembly();
         } else if token._type == TokenType::RETURN {
-            ret this.ParseReturnStatement(expression);
+            ret this.ParseReturn(expression);
         } else if token._type == TokenType::BREAK {
-            ret this.ParseBreakStatement(expression);
+            ret this.ParseBreak(expression);
         } else if token._type == TokenType::CONTINUE {
-            ret this.ParseContinueStatement(expression);
+            ret this.ParseContinue(expression);
         } else {
             let index: u64 = this.index;
 
@@ -593,7 +593,7 @@ class Parser {
                 let mut root: *mut AssignmentNode = null;
 
                 while root == null || this.Match(TokenType::COMMA) {
-                    let _expression: *const ASTNode = this.ParseExpression();
+                    let _expression: *const Node = this.ParseExpression();
                     if _expression == null { ret null; }
                     let assignment: *mut AssignmentNode = new AssignmentNode(_expression, null, TokenType::ASSIGN, token);
 
@@ -621,67 +621,67 @@ class Parser {
 
                     if !this.Expect2(TokenType::RPAREN) { ret null; }
                     if !this.Expect2(TokenType::SEMICOLON) { ret null; }
-                    ret root as *const ASTNode;
+                    ret root as *const Node;
                 } else {
                     this.index = index;
                 }
             }
 
-            let left: *const ASTNode = this.ParseExpression();
+            let left: *const Node = this.ParseExpression();
 
             if this.IsAssignmentOperator(this.Current()._type) {
                 let token: Token = this.Advance();
-                let right: *const ASTNode = this.ParseExpression();
+                let right: *const Node = this.ParseExpression();
                 if right == null { ret null; }
                 let assignment: *const AssignmentNode = new AssignmentNode(left, right, token._type, token);
 
                 if !expression {
                     if !this.Expect2(TokenType::SEMICOLON) { ret null; }
-                } ret assignment as *const ASTNode;
+                } ret assignment as *const Node;
             } else {
                 if !expression {
                     if !this.Expect2(TokenType::SEMICOLON) { ret null; }
                 }
 
-                ret new ExpressionStmtNode(left, token) as *const ASTNode;
+                ret new ExpressionNode(left, token) as *const Node;
             }
         }
     }
 
-    priv ParseVariableDeclaration(&mut this) -> *const ASTNode {
+    priv ParseVariable(&mut this) -> *const Node {
         let token: Token = this.Expect(TokenType::LET);
         if token._type == TokenType::UNKNOWN { ret null; }
         let multiple: bool = this.Match(TokenType::LPAREN);
-        let mut current: *mut VariableDeclNode = null;
-        let mut root: *mut VariableDeclNode = null;
+        let mut current: *mut VariableNode = null;
+        let mut root: *mut VariableNode = null;
 
         while root == null || (multiple && root != null && this.Match(TokenType::COMMA)) {
             let mutable: bool = this.Match(TokenType::MUT);
             let identifier: Token = this.Expect(TokenType::IDENTIFIER);
             if identifier._type == TokenType::UNKNOWN { ret null; }
-            let mut sizes: Vector<*const ASTNode>;
+            let mut sizes: Vector<*const Node>;
 
             while this.Match(TokenType::LBRACKET) {
                 if this.Match(TokenType::RBRACKET) {
                     sizes.PushBack(null);
                 } else {
-                    let expression: *const ASTNode = this.ParseExpression();
+                    let expression: *const Node = this.ParseExpression();
                     if expression == null || !this.Expect2(TokenType::RBRACKET) { ret null; }
                     sizes.PushBack(expression);
                 }
             }
 
             if !this.Expect2(TokenType::COLON) { ret null; }
-            let mut _type: *const ASTNode = this.ParseType();
+            let mut _type: *const Node = this.ParseType();
             if _type == null { ret null; }
             let mut i: u64 = 0u64;
 
             while i < sizes.Size() {
-                _type = new ArrayTypeNode(_type, sizes[i], token) as *const ASTNode;
+                _type = new ArrayTypeNode(_type, sizes[i], token) as *const Node;
                 i += 1u64;
             }
 
-            let declaration: *mut VariableDeclNode = new VariableDeclNode(identifier.value, _type, null, mutable, token);
+            let declaration: *mut VariableNode = new VariableNode(identifier.value, _type, null, mutable, token);
 
             if root != null {
                 current->next = declaration;
@@ -703,14 +703,14 @@ class Parser {
                 current->initializer = this.ParseExpression();
                 if current->initializer == null { ret null; }
 
-                if current->initializer->node_type == ASTNodeType::INITIALIZER_LIST {
+                if current->initializer->_type == NodeType::INITIALIZER_LIST {
                     let list: *const InitializerListNode = current->initializer as *const InitializerListNode;
 
-                    if current->_type->node_type == ASTNodeType::ARRAY_TYPE {
+                    if current->_type->_type == NodeType::ARRAY_TYPE {
                         let array_type: *mut ArrayTypeNode = current->_type as *mut ArrayTypeNode;
 
                         if array_type->size == null {
-                            array_type->size = new LiteralNode(String(list->expressions.Size() as i64) + "u64", TokenType::INTEGER, token) as *const ASTNode;
+                            array_type->size = new LiteralNode(String(list->expressions.Size() as i64) + "u64", TokenType::INTEGER, token) as *const Node;
                         }
                     }
                 }
@@ -726,139 +726,139 @@ class Parser {
         }
 
         if !this.Expect2(TokenType::SEMICOLON) { ret null; }
-        ret root as *const ASTNode;
+        ret root as *const Node;
     }
 
-    priv ParseIfStatement(&mut this) -> *const ASTNode {
+    priv ParseIf(&mut this) -> *const Node {
         let token: Token = this.Expect(TokenType::IF);
         if token._type == TokenType::UNKNOWN { ret null; }
 
         if this.Current()._type == TokenType::LET {
             this.Advance();
-            let pattern: *const ASTNode = this.ParsePattern();
+            let pattern: *const Node = this.ParsePattern();
             if pattern == null || !this.Expect2(TokenType::ASSIGN) { ret null; }
-            let expression: *const ASTNode = this.ParseExpression();
+            let expression: *const Node = this.ParseExpression();
             if expression == null { ret null; }
-            let then_stmt: *const ASTNode = this.ParseBlockStatement();
-            if then_stmt == null { ret null; }
-            let if_let: *mut IfLetStmtNode = new IfLetStmtNode(pattern, expression, then_stmt, token);
+            let then: *const Node = this.ParseBlock();
+            if then == null { ret null; }
+            let if_let: *mut IfLetNode = new IfLetNode(pattern, expression, then, token);
 
             if this.Match(TokenType::ELSE) {
                 if this.Current()._type == TokenType::IF {
-                    if_let->else_stmt = this.ParseIfStatement();
+                    if_let->_else = this.ParseIf();
                 } else {
-                    if_let->else_stmt = this.ParseBlockStatement();
+                    if_let->_else = this.ParseBlock();
                 }
-            } ret if_let as *const ASTNode;
+            } ret if_let as *const Node;
         }
 
-        let condition: *const ASTNode = this.ParseExpression();
+        let condition: *const Node = this.ParseExpression();
         if condition == null { ret null; }
-        let then_stmt: *const ASTNode = this.ParseBlockStatement();
-        if then_stmt == null { ret null; }
-        let mut else_stmt: *const ASTNode = null;
+        let then: *const Node = this.ParseBlock();
+        if then == null { ret null; }
+        let mut _else: *const Node = null;
 
         if this.Match(TokenType::ELSE) {
             if this.Current()._type == TokenType::IF {
-                else_stmt = this.ParseIfStatement();
+                _else = this.ParseIf();
             } else {
-                else_stmt = this.ParseBlockStatement();
+                _else = this.ParseBlock();
             }
         }
 
-        ret new IfStmtNode(condition, then_stmt, else_stmt, token) as *const ASTNode;
+        ret new IfNode(condition, then, _else, token) as *const Node;
     }
 
-    priv ParseWhileStatement(&mut this) -> *const ASTNode {
+    priv ParseWhile(&mut this) -> *const Node {
         let token: Token = this.Expect(TokenType::WHILE);
         if token._type == TokenType::UNKNOWN { ret null; }
 
         if this.Current()._type == TokenType::LET {
             this.Advance();
-            let pattern: *const ASTNode = this.ParsePattern();
+            let pattern: *const Node = this.ParsePattern();
             if pattern == null || !this.Expect2(TokenType::ASSIGN) { ret null; }
-            let expression: *const ASTNode = this.ParseExpression();
+            let expression: *const Node = this.ParseExpression();
             if expression == null { ret null; }
-            let loop_stmt: *const ASTNode = this.ParseBlockStatement();
-            if loop_stmt == null { ret null; }
-            ret new WhileLetStmtNode(pattern, expression, loop_stmt, token) as *const ASTNode;
+            let _loop: *const Node = this.ParseBlock();
+            if _loop == null { ret null; }
+            ret new WhileLetNode(pattern, expression, _loop, token) as *const Node;
         }
 
-        let expression: *const ASTNode = this.ParseExpression();
+        let expression: *const Node = this.ParseExpression();
         if expression == null { ret null; }
-        let loop_stmt: *const ASTNode = this.ParseBlockStatement();
-        if loop_stmt == null { ret null; }
-        let mut else_stmt: *const ASTNode = null;
+        let _loop: *const Node = this.ParseBlock();
+        if _loop == null { ret null; }
+        let mut _else: *const Node = null;
 
         if this.Match(TokenType::ELSE) {
-            else_stmt = this.ParseBlockStatement();
+            _else = this.ParseBlock();
         }
 
-        ret new WhileStmtNode(expression, loop_stmt, else_stmt, token) as *const ASTNode;
+        ret new WhileNode(expression, _loop, _else, token) as *const Node;
     }
 
-    priv ParseForStatement(&mut this) -> *const ASTNode {
+    priv ParseFor(&mut this) -> *const Node {
         let token: Token = this.Expect(TokenType::FOR);
         if token._type == TokenType::UNKNOWN { ret null; }
         let name: Token = this.Expect(TokenType::IDENTIFIER);
         if name._type == TokenType::UNKNOWN { ret null; }
         if !this.Expect2(TokenType::IN) { ret null; }
-        let iterable: *const ASTNode = this.ParseForIterable();
+        let iterable: *const Node = this.ParseForIterable();
         if iterable == null { ret null; }
-        let loop_stmt: *const ASTNode = this.ParseBlockStatement();
-        if loop_stmt == null { ret null; }
-        ret new ForStmtNode(name.value, iterable, loop_stmt, token) as *const ASTNode;
+        let _loop: *const Node = this.ParseBlock();
+        if _loop == null { ret null; }
+        ret new ForNode(name.value, iterable, _loop, token) as *const Node;
     }
 
-    priv ParseForIterable(&mut this) -> *const ASTNode {
-        let left: *const ASTNode = this.ParseBinaryExpression(0i32);
+    priv ParseForIterable(&mut this) -> *const Node {
+        let left: *const Node = this.ParseBinary(0i32);
         if left == null { ret null; }
 
         if this.Current()._type == TokenType::TWO_DOT {
             let token: Token = this.Advance();
             let inclusive: bool = this.Match(TokenType::ASSIGN);
-            let right: *const ASTNode = this.ParseBinaryExpression(0i32);
+            let right: *const Node = this.ParseBinary(0i32);
             if right == null { ret null; }
-            let range: *mut RangeExprNode = new RangeExprNode(left, right, token);
+            let range: *mut RangeNode = new RangeNode(left, right, token);
             range->inclusive = inclusive;
-            ret range as *const ASTNode;
+            ret range as *const Node;
         } ret left;
     }
 
-    priv ParseLoopStatement(&mut this) -> *const ASTNode {
+    priv ParseLoop(&mut this) -> *const Node {
         let token: Token = this.Expect(TokenType::LOOP);
         if token._type == TokenType::UNKNOWN { ret null; }
-        let loop_stmt: *const ASTNode = this.ParseBlockStatement();
-        if loop_stmt == null { ret null; }
-        ret new LoopStmtNode(loop_stmt, token) as *const ASTNode;
+        let _loop: *const Node = this.ParseBlock();
+        if _loop == null { ret null; }
+        ret new LoopNode(_loop, token) as *const Node;
     }
 
-    priv ConvertBitwiseToPattern(&mut this, node: *const ASTNode) -> *const ASTNode {
-        if node->node_type != ASTNodeType::BINARY_OP { ret node; }
-        let binary_operation: *const BinaryOpNode = node as *const BinaryOpNode;
+    priv ConvertBitwiseToPattern(&mut this, node: *const Node) -> *const Node {
+        if node->_type != NodeType::BINARY_OPERATION { ret node; }
+        let binary_operation: *const BinaryOperationNode = node as *const BinaryOperationNode;
         if binary_operation->operator != TokenType::BITWISE_OR { ret node; }
-        let left: *const ASTNode = this.ConvertBitwiseToPattern(binary_operation->left);
-        let right: *const ASTNode = this.ConvertBitwiseToPattern(binary_operation->right);
-        ret new OrPatternNode(left, right, node->start) as *const ASTNode;
+        let left: *const Node = this.ConvertBitwiseToPattern(binary_operation->left);
+        let right: *const Node = this.ConvertBitwiseToPattern(binary_operation->right);
+        ret new OrPatternNode(left, right, node->start) as *const Node;
     }
 
-    priv ParsePattern(&mut this) -> *const ASTNode {
+    priv ParsePattern(&mut this) -> *const Node {
         ret this.ParseSinglePattern();
     }
 
-    priv ParseSinglePattern(&mut this) -> *const ASTNode {
+    priv ParseSinglePattern(&mut this) -> *const Node {
         if this.Current()._type == TokenType::IDENTIFIER && this.Current().value == "_" {
             let token: Token = this.Current();
             this.Advance();
-            ret new IdentifierNode({ "_" } as String, token) as *const ASTNode;
+            ret new IdentifierNode({ "_" } as String, token) as *const Node;
         }
 
-        let expression: *const ASTNode = this.ParseExpression();
+        let expression: *const Node = this.ParseExpression();
         if expression == null { ret null; }
-        let converted: *const ASTNode = this.ConvertBitwiseToPattern(expression);
+        let converted: *const Node = this.ConvertBitwiseToPattern(expression);
         if converted != expression { ret converted; }
 
-        if this.Current()._type == TokenType::LBRACE && (expression->node_type == ASTNodeType::IDENTIFIER || expression->node_type == ASTNodeType::SCOPE_RESOLUTION) {
+        if this.Current()._type == TokenType::LBRACE && (expression->_type == NodeType::IDENTIFIER || expression->_type == NodeType::SCOPE_RESOLUTION) {
             let brace_token: Token = this.Current();
             this.Advance();
             let struct_pattern: *mut StructInitNode = new StructInitNode(expression, brace_token);
@@ -873,11 +873,11 @@ class Parser {
                 if field_name._type == TokenType::UNKNOWN { ret null; }
 
                 if this.Match(TokenType::COLON) {
-                    let pattern: *const ASTNode = this.ParsePattern();
+                    let pattern: *const Node = this.ParsePattern();
                     if pattern == null { ret null; }
                     struct_pattern->field_values.PushBack(pattern);
                 } else {
-                    struct_pattern->field_values.PushBack(new IdentifierNode(field_name.value, field_name) as *const ASTNode);
+                    struct_pattern->field_values.PushBack(new IdentifierNode(field_name.value, field_name) as *const Node);
                 }
 
                 struct_pattern->field_names.PushBack(field_name.value);
@@ -885,20 +885,20 @@ class Parser {
             }
 
             if !this.Expect2(TokenType::RBRACE) { ret null; }
-            ret struct_pattern as *const ASTNode;
+            ret struct_pattern as *const Node;
         } ret expression;
     }
 
-    priv ParseMatchStatement(&mut this) -> *const ASTNode {
+    priv ParseMatch(&mut this) -> *const Node {
         let token: Token = this.Expect(TokenType::MATCH);
         if token._type == TokenType::UNKNOWN { ret null; }
-        let expression: *const ASTNode = this.ParseExpression();
+        let expression: *const Node = this.ParseExpression();
         if expression == null { ret null; }
-        let match_node: *mut MatchStmtNode = new MatchStmtNode(expression, token);
+        let match_node: *mut MatchNode = new MatchNode(expression, token);
         if !this.Expect2(TokenType::LBRACE) { ret null; }
 
         while this.Current()._type != TokenType::RBRACE && this.Current()._type != TokenType::EOF {
-            let mut pattern: *const ASTNode = null;
+            let mut pattern: *const Node = null;
 
             if this.Current()._type == TokenType::IDENTIFIER && this.Current().value == "_" && this.Peek(1u64)._type == TokenType::FAT_ARROW {
                 this.Advance();
@@ -907,7 +907,7 @@ class Parser {
                 if pattern == null { ret null; }
             }
 
-            let mut guard: *const ASTNode = null;
+            let mut guard: *const Node = null;
 
             if pattern != null && this.Current()._type == TokenType::IF {
                 this.Advance();
@@ -916,10 +916,10 @@ class Parser {
             }
 
             if !this.Expect2(TokenType::FAT_ARROW) { break; }
-            let mut body: *const ASTNode = null;
+            let mut body: *const Node = null;
 
             if this.Current()._type == TokenType::LBRACE {
-                body = this.ParseBlockStatement();
+                body = this.ParseBlock();
                 if body == null { ret null; }
             } else {
                 body = this.ParseStatement(true);
@@ -927,9 +927,9 @@ class Parser {
             }
 
             if pattern == null {
-                match_node->default_case = new DefaultStmtNode(body, token);
+                match_node->default = new DefaultNode(body, token);
             } else {
-                match_node->cases.PushBack(new CaseStmtNode(pattern, body, guard, token));
+                match_node->cases.PushBack(new CaseNode(pattern, body, guard, token));
             }
 
             if !this.Match(TokenType::COMMA) {
@@ -938,30 +938,30 @@ class Parser {
         }
 
         if !this.Expect2(TokenType::RBRACE) { ret null; }
-        ret match_node as *const ASTNode;
+        ret match_node as *const Node;
     }
 
-    priv ParseUnsafeStatement(&mut this) -> *const ASTNode {
+    priv ParseUnsafe(&mut this) -> *const Node {
         let token: Token = this.Expect(TokenType::UNSAFE);
         if token._type == TokenType::UNKNOWN { ret null; }
-        let body: *const ASTNode = this.ParseBlockStatement();
+        let body: *const Node = this.ParseBlock();
         if body == null { ret null; }
-        ret new UnsafeStmtNode(body as *const BlockStmtNode, token) as *const ASTNode;
+        ret new UnsafeNode(body as *const BlockNode, token) as *const Node;
     }
 
-    priv ParseInlineAsm(&mut this) -> *const ASTNode {
+    priv ParseAssembly(&mut this) -> *const Node {
         let _volatile: bool = this.Match(TokenType::VOLATILE);
         let token: Token = this.Expect(TokenType::ASSEMBLY);
         if token._type == TokenType::UNKNOWN { ret null; }
-        let node: *mut InlineAsmNode = new InlineAsmNode(_volatile, token);
+        let node: *mut AssemblyNode = new AssemblyNode(_volatile, token);
 
         if this.Match(TokenType::COLON) {
             while this.Current()._type == TokenType::IDENTIFIER {
                 let register: String = this.Advance().value;
                 if !this.Expect2(TokenType::LPAREN) { ret null; }
-                let expression: *const ASTNode = this.ParseExpression();
+                let expression: *const Node = this.ParseExpression();
                 if expression == null || !this.Expect2(TokenType::RPAREN) { ret null; }
-                node->inputs.PushBack(Pair<String, *const ASTNode>(register, expression));
+                node->inputs.PushBack(Pair<String, *const Node>(register, expression));
                 if !this.Match(TokenType::COMMA) { break; }
             }
 
@@ -976,9 +976,9 @@ class Parser {
             while this.Current()._type == TokenType::IDENTIFIER {
                 let register: String = this.Advance().value;
                 if !this.Expect2(TokenType::LPAREN) { ret null; }
-                let expression: *const ASTNode = this.ParseExpression();
+                let expression: *const Node = this.ParseExpression();
                 if expression == null || !this.Expect2(TokenType::RPAREN) { ret null; }
-                node->outputs.PushBack(Pair<String, *const ASTNode>(register, expression));
+                node->outputs.PushBack(Pair<String, *const Node>(register, expression));
                 if !this.Match(TokenType::COMMA) { break; }
             }
         }
@@ -991,13 +991,13 @@ class Parser {
         }
 
         if !this.Expect2(TokenType::SEMICOLON) { ret null; }
-        ret node as *const ASTNode;
+        ret node as *const Node;
     }
 
-    priv ParseReturnStatement(&mut this, expression: bool) -> *const ASTNode {
+    priv ParseReturn(&mut this, expression: bool) -> *const Node {
         let token: Token = this.Expect(TokenType::RETURN);
         if token._type == TokenType::UNKNOWN { ret null; }
-        let mut value: *const ASTNode = null;
+        let mut value: *const Node = null;
 
         if this.Current()._type != TokenType::SEMICOLON {
             value = this.ParseExpression();
@@ -1008,10 +1008,10 @@ class Parser {
             if !this.Expect2(TokenType::SEMICOLON) { ret null; }
         }
 
-        ret new ReturnStmtNode(value, token) as *const ASTNode;
+        ret new ReturnNode(value, token) as *const Node;
     }
 
-    priv ParseBreakStatement(&mut this, expression: bool) -> *const ASTNode {
+    priv ParseBreak(&mut this, expression: bool) -> *const Node {
         let token: Token = this.Expect(TokenType::BREAK);
         if token._type == TokenType::UNKNOWN { ret null; }
 
@@ -1019,10 +1019,10 @@ class Parser {
             if !this.Expect2(TokenType::SEMICOLON) { ret null; }
         }
 
-        ret new BreakStmtNode(token) as *const ASTNode;
+        ret new BreakNode(token) as *const Node;
     }
 
-    priv ParseContinueStatement(&mut this, expression: bool) -> *const ASTNode {
+    priv ParseContinue(&mut this, expression: bool) -> *const Node {
         let token: Token = this.Expect(TokenType::CONTINUE);
         if token._type == TokenType::UNKNOWN { ret null; }
 
@@ -1030,16 +1030,16 @@ class Parser {
             if !this.Expect2(TokenType::SEMICOLON) { ret null; }
         }
 
-        ret new ContinueStmtNode(token) as *const ASTNode;
+        ret new ContinueNode(token) as *const Node;
     }
 
-    priv ParseBlockStatement(&mut this) -> *const ASTNode {
+    priv ParseBlock(&mut this) -> *const Node {
         let token: Token = this.Expect(TokenType::LBRACE);
         if token._type == TokenType::UNKNOWN { ret null; }
-        let block: *mut BlockStmtNode = new BlockStmtNode(token);
+        let block: *mut BlockNode = new BlockNode(token);
 
         while this.Current()._type != TokenType::RBRACE && this.Current()._type != TokenType::EOF {
-            let statement: *const ASTNode = this.ParseStatement(false);
+            let statement: *const Node = this.ParseStatement(false);
 
             if statement != null {
                 block->statements.PushBack(statement);
@@ -1062,7 +1062,7 @@ class Parser {
         }
 
         if !this.Expect2(TokenType::RBRACE) { ret null; }
-        ret block as *const ASTNode;
+        ret block as *const Node;
     }
 
     priv SynchronizeDeclaration(&mut this) {
@@ -1077,11 +1077,11 @@ class Parser {
         }
     }
 
-    priv ParseAttributes(&mut this) -> Vector<Pair<String, Vector<*const ASTNode>>> {
-        let mut attributes: Vector<Pair<String, Vector<*const ASTNode>>>;
+    priv ParseAttributes(&mut this) -> Vector<Pair<String, Vector<*const Node>>> {
+        let mut attributes: Vector<Pair<String, Vector<*const Node>>>;
 
         while this.Match(TokenType::AT) {
-            let mut pair: Pair<String, Vector<*const ASTNode>>;
+            let mut pair: Pair<String, Vector<*const Node>>;
             let identifier: Token = this.Expect(TokenType::IDENTIFIER);
             if identifier._type == TokenType::UNKNOWN { ret attributes; }
             pair.left = identifier.value;
@@ -1089,7 +1089,7 @@ class Parser {
             if this.Match(TokenType::LPAREN) {
                 if !this.Match(TokenType::RPAREN) {
                     while this.Current()._type != TokenType::RPAREN && this.Current()._type != TokenType::EOF {
-                        let expression: *const ASTNode = this.ParseExpression();
+                        let expression: *const Node = this.ParseExpression();
                         if expression == null { ret attributes; }
                         pair.right.PushBack(expression);
 
@@ -1106,26 +1106,26 @@ class Parser {
         } ret attributes;
     }
 
-    priv ParseDeclaration(&mut this) -> *const ASTNode {
-        let attributes: Vector<Pair<String, Vector<*const ASTNode>>> = this.ParseAttributes();
+    priv ParseDeclaration(&mut this) -> *const Node {
+        let attributes: Vector<Pair<String, Vector<*const Node>>> = this.ParseAttributes();
         let token: Token = this.Current();
 
         if token._type == TokenType::FUNC {
-            ret this.ParseFunctionDeclaration(attributes);
+            ret this.ParseFunction(attributes);
         } else if token._type == TokenType::CLASS {
-            ret this.ParseClassDeclaration(attributes);
+            ret this.ParseClass(attributes);
         } else if token._type == TokenType::ENUM {
-            ret this.ParseEnumDeclaration(attributes);
+            ret this.ParseEnum(attributes);
         } else if token._type == TokenType::EXTERN {
-            ret this.ParseExternBlock();
+            ret this.ParseExtern();
         } else if token._type == TokenType::CONST {
-            ret this.ParseConstantDeclaration();
+            ret this.ParseConstant();
         } else if token._type == TokenType::STATIC {
-            ret this.ParseStaticDeclaration(attributes);
+            ret this.ParseStatic(attributes);
         } else if token._type == TokenType::TYPE {
-            ret this.ParseTypeDeclaration();
+            ret this.ParseTypeDefinition();
         } else if token._type == TokenType::ASSEMBLY || token._type == TokenType::VOLATILE {
-            ret this.ParseInlineAsm();
+            ret this.ParseAssembly();
         } else {
             this.Advance();
             Logger::Log("Expected declaration.", token, LogSeverity::Error);
@@ -1133,13 +1133,13 @@ class Parser {
         }
     }
 
-    priv ParseFunctionDeclaration(&mut this, attributes: &Vector<Pair<String, Vector<*const ASTNode>>>) -> *const ASTNode {
+    priv ParseFunction(&mut this, attributes: &Vector<Pair<String, Vector<*const Node>>>) -> *const Node {
         let token: Token = this.Current();
         let mut no_mangle: bool = false;
         let mut i: u64 = 0u64;
 
         while i < attributes.Size() {
-            let attribute: &Pair<String, Vector<*const ASTNode>> = attributes[i];
+            let attribute: &Pair<String, Vector<*const Node>> = attributes[i];
 
             if attribute.left == "nomangle" {
                 if attribute.right.Size() != 0u64 {
@@ -1182,17 +1182,17 @@ class Parser {
             name += identifier.value;
         }
 
-        let func_type: *mut FunctionTypeNode = new FunctionTypeNode(token);
-        let func_decl: *mut FunctionDeclNode = new FunctionDeclNode(name, func_type, no_mangle, token);
+        let function_type: *mut FunctionTypeNode = new FunctionTypeNode(token);
+        let function: *mut FunctionNode = new FunctionNode(name, function_type, no_mangle, token);
 
         if this.Match(TokenType::LESS) {
-            this.generics.PushBack(func_decl->name);
-            func_decl->generic = true;
+            this.generics.PushBack(function->name);
+            function->generic = true;
 
             while this.Current()._type != TokenType::GREATER {
                 let type_name: Token = this.Expect(TokenType::IDENTIFIER);
                 if type_name._type == TokenType::UNKNOWN { ret null; }
-                func_decl->types.PushBack(type_name.value);
+                function->types.PushBack(type_name.value);
                 if !this.Match(TokenType::COMMA) { break; }
             }
 
@@ -1207,9 +1207,9 @@ class Parser {
             if this.Match(TokenType::BITWISE_AND) {
                 let mutable: bool = this.Match(TokenType::MUT);
                 if !this.Expect2(TokenType::THIS) { ret null; }
-                func_type->instance_kind = mutable ? InstanceKind::MutRef : InstanceKind::ConstRef;
+                function_type->instance_kind = mutable ? InstanceKind::MutRef : InstanceKind::ConstRef;
             } else if this.Match(TokenType::THIS) {
-                func_type->instance_kind = InstanceKind::Copy;
+                function_type->instance_kind = InstanceKind::Copy;
             } else {
                 has_instance = false;
             }
@@ -1219,19 +1219,19 @@ class Parser {
                     if this.Peek(1u64)._type == TokenType::THREE_DOT {
                         let pack_name: Token = this.Expect(TokenType::IDENTIFIER);
                         if pack_name._type == TokenType::UNKNOWN { ret null; }
-                        func_type->pack_name = pack_name.value;
+                        function_type->pack_name = pack_name.value;
                         this.Advance();
                         break;
                     }
 
                     if this.Match(TokenType::THREE_DOT) {
-                        func_type->var_arg = true;
+                        function_type->var_arg = true;
                         break;
                     }
 
                     let param: *const ParameterNode = this.ParseParameter();
                     if param == null { ret null; }
-                    func_type->parameters.PushBack(param);
+                    function_type->parameters.PushBack(param);
 
                     if !this.Match(TokenType::COMMA) {
                         break;
@@ -1243,22 +1243,22 @@ class Parser {
         if !this.Expect2(TokenType::RPAREN) { ret null; }
 
         if this.Match(TokenType::ASYNC) {
-            func_decl->_async = true;
+            function->_async = true;
         }
 
         if this.Match(TokenType::ARROW) {
-            func_type->return_type = this.ParseType();
-            if func_type->return_type == null { ret null; }
+            function_type->return_type = this.ParseType();
+            if function_type->return_type == null { ret null; }
         } else {
-            func_type->return_type = new PrimitiveTypeNode({ "void" } as String, token) as *const ASTNode;
+            function_type->return_type = new PrimitiveTypeNode({ "void" } as String, token) as *const Node;
 
             if token._type != TokenType::FUNC && token._type != TokenType::PUBLIC && token._type != TokenType::PRIVATE {
-                while (this.Match(TokenType::COLON) && func_decl->constructors.Empty()) || (this.Match(TokenType::COMMA) && !func_decl->constructors.Empty()) {
-                    let expression: *const ASTNode = this.ParseExpression();
+                while (this.Match(TokenType::COLON) && function->constructors.Empty()) || (this.Match(TokenType::COMMA) && !function->constructors.Empty()) {
+                    let expression: *const Node = this.ParseExpression();
                     if expression == null { ret null; }
 
-                    if expression->node_type == ASTNodeType::CALL {
-                        func_decl->constructors.PushBack(expression as *const CallNode);
+                    if expression->_type == NodeType::CALL {
+                        function->constructors.PushBack(expression as *const CallNode);
                     } else {
                         Logger::Log("Expected a function call.", token, LogSeverity::Error);
                         break;
@@ -1268,50 +1268,50 @@ class Parser {
         }
 
         if this.Current()._type == TokenType::LBRACE {
-            let body: *const ASTNode = this.ParseBlockStatement();
+            let body: *const Node = this.ParseBlock();
             if body == null { ret null; }
-            func_decl->body = body as *const BlockStmtNode;
+            function->body = body as *const BlockNode;
         } else {
             if !this.Expect2(TokenType::SEMICOLON) { ret null; }
-        } ret func_decl as *const ASTNode;
+        } ret function as *const Node;
     }
 
     priv ParseParameter(&mut this) -> *const ParameterNode {
         let mutable: bool = this.Match(TokenType::MUT);
         let token: Token = this.Expect(TokenType::IDENTIFIER);
         if token._type == TokenType::UNKNOWN { ret null; }
-        let mut sizes: Vector<*const ASTNode>;
+        let mut sizes: Vector<*const Node>;
 
         while this.Match(TokenType::LBRACKET) {
             if this.Match(TokenType::RBRACKET) {
                 sizes.PushBack(null);
             } else {
-                let expression: *const ASTNode = this.ParseExpression();
+                let expression: *const Node = this.ParseExpression();
                 if expression == null || !this.Expect2(TokenType::RBRACKET) { ret null; }
                 sizes.PushBack(expression);
             }
         }
 
         if !this.Expect2(TokenType::COLON) { ret null; }
-        let mut _type: *const ASTNode = this.ParseType();
+        let mut _type: *const Node = this.ParseType();
         if _type == null { ret null; }
         let mut i: u64 = 0u64;
 
         while i < sizes.Size() {
-            _type = new ArrayTypeNode(_type, sizes[i], token) as *const ASTNode;
+            _type = new ArrayTypeNode(_type, sizes[i], token) as *const Node;
             i += 1u64;
         }
 
         ret new ParameterNode(token.value, _type, mutable, token);
     }
 
-    priv ParseClassDeclaration(&mut this, attributes: &Vector<Pair<String, Vector<*const ASTNode>>>) -> *const ASTNode {
+    priv ParseClass(&mut this, attributes: &Vector<Pair<String, Vector<*const Node>>>) -> *const Node {
         let token: Token = this.Expect(TokenType::CLASS);
         if token._type == TokenType::UNKNOWN { ret null; }
         let mut i: u64 = 0u64;
 
         while i < attributes.Size() {
-            let attribute: &Pair<String, Vector<*const ASTNode>> = attributes[i];
+            let attribute: &Pair<String, Vector<*const Node>> = attributes[i];
             Logger::Log("Invalid attribute '" + attribute.left + "'.", token, LogSeverity::Error);
             ret null;
         }
@@ -1325,16 +1325,16 @@ class Parser {
         }
 
         this.types.PushBack(identifier.value);
-        let class_decl: *mut ClassDeclNode = new ClassDeclNode(identifier.value, token);
+        let class_node: *mut ClassNode = new ClassNode(identifier.value, token);
 
         if this.Match(TokenType::LESS) {
-            this.generics.PushBack(class_decl->name);
-            class_decl->generic = true;
+            this.generics.PushBack(class_node->name);
+            class_node->generic = true;
 
             while this.Current()._type != TokenType::GREATER {
                 let type_name: Token = this.Expect(TokenType::IDENTIFIER);
                 if type_name._type == TokenType::UNKNOWN { ret null; }
-                class_decl->types.PushBack(type_name.value);
+                class_node->types.PushBack(type_name.value);
                 if !this.Match(TokenType::COMMA) { break; }
             }
 
@@ -1342,14 +1342,14 @@ class Parser {
         }
 
         if this.Match(TokenType::COLON) {
-            let _type: *const ASTNode = this.ParseType();
+            let _type: *const Node = this.ParseType();
             if _type == null { ret null; }
-            class_decl->parents.PushBack(_type);
+            class_node->parents.PushBack(_type);
 
             while this.Match(TokenType::COMMA) {
-                let _type: *const ASTNode = this.ParseType();
+                let _type: *const Node = this.ParseType();
                 if _type == null { ret null; }
-                class_decl->parents.PushBack(_type);
+                class_node->parents.PushBack(_type);
             }
         }
 
@@ -1378,7 +1378,7 @@ class Parser {
                 if this.Current()._type == TokenType::IDENTIFIER {
                     let field: *const FieldNode = this.ParseField();
                     if field == null { ret null; }
-                    class_decl->fields.PushBack(Pair<TokenType, *const FieldNode>(visibility._type, field));
+                    class_node->fields.PushBack(Pair<TokenType, *const FieldNode>(visibility._type, field));
                 } else {
                     Logger::Log("Expected field declaration.", this.Current(), LogSeverity::Error);
                     ret null;
@@ -1392,59 +1392,59 @@ class Parser {
 
         if !state || this.Match(TokenType::SEMICOLON) {
             while this.Current()._type != TokenType::RBRACE && this.Current()._type != TokenType::EOF {
-                let attributes: Vector<Pair<String, Vector<*const ASTNode>>> = this.ParseAttributes();
+                let attributes: Vector<Pair<String, Vector<*const Node>>> = this.ParseAttributes();
                 let visibility: Token = this.Current();
 
                 if visibility._type == TokenType::PUBLIC || visibility._type == TokenType::PRIVATE {
-                    let function: *const ASTNode = this.ParseFunctionDeclaration(attributes);
+                    let function: *const Node = this.ParseFunction(attributes);
                     if function == null { ret null; }
-                    class_decl->methods.PushBack(Pair<TokenType, *const FunctionDeclNode>(visibility._type, function as *const FunctionDeclNode));
+                    class_node->methods.PushBack(Pair<TokenType, *const FunctionNode>(visibility._type, function as *const FunctionNode));
                 } else {
                     if this.Current()._type == TokenType::TILDE {
-                        if class_decl->destructor != null {
+                        if class_node->destructor != null {
                             Logger::Log("Multiple destructor declarations are not allowed.", visibility, LogSeverity::Error);
                             ret null;
                         }
 
-                        let function: *const ASTNode = this.ParseFunctionDeclaration(attributes);
+                        let function: *const Node = this.ParseFunction(attributes);
                         if function == null { ret null; }
-                        class_decl->destructor = function as *const FunctionDeclNode;
+                        class_node->destructor = function as *const FunctionNode;
                     } else {
-                        let function: *const ASTNode = this.ParseFunctionDeclaration(attributes);
+                        let function: *const Node = this.ParseFunction(attributes);
                         if function == null { ret null; }
-                        class_decl->constructors.PushBack(function as *const FunctionDeclNode);
+                        class_node->constructors.PushBack(function as *const FunctionNode);
                     }
                 }
             }
         }
 
         if !this.Expect2(TokenType::RBRACE) { ret null; }
-        ret class_decl as *const ASTNode;
+        ret class_node as *const Node;
     }
 
     priv ParseField(&mut this) -> *const FieldNode {
         let token: Token = this.Expect(TokenType::IDENTIFIER);
         if token._type == TokenType::UNKNOWN { ret null; }
-        let mut sizes: Vector<*const ASTNode>;
+        let mut sizes: Vector<*const Node>;
 
         while this.Match(TokenType::LBRACKET) {
             if this.Match(TokenType::RBRACKET) {
                 sizes.PushBack(null);
             } else {
-                let expression: *const ASTNode = this.ParseExpression();
+                let expression: *const Node = this.ParseExpression();
                 if expression == null || !this.Expect2(TokenType::RBRACKET) { ret null; }
                 sizes.PushBack(expression);
             }
         }
 
         if !this.Expect2(TokenType::COLON) { ret null; }
-        let mut field_type: *const ASTNode = this.ParseType();
-        if field_type == null { ret null; }
-        let mut initializer: *const ASTNode = null;
+        let mut _type: *const Node = this.ParseType();
+        if _type == null { ret null; }
+        let mut initializer: *const Node = null;
         let mut i: u64 = 0u64;
 
         while i < sizes.Size() {
-            field_type = new ArrayTypeNode(field_type, sizes[i], token) as *const ASTNode;
+            _type = new ArrayTypeNode(_type, sizes[i], token) as *const Node;
             i += 1u64;
         }
 
@@ -1453,16 +1453,16 @@ class Parser {
             if initializer == null { ret null; }
         }
 
-        ret new FieldNode(token.value, field_type, initializer, token);
+        ret new FieldNode(token.value, _type, initializer, token);
     }
 
-    priv ParseEnumDeclaration(&mut this, attributes: &Vector<Pair<String, Vector<*const ASTNode>>>) -> *const ASTNode {
+    priv ParseEnum(&mut this, attributes: &Vector<Pair<String, Vector<*const Node>>>) -> *const Node {
         let token: Token = this.Expect(TokenType::ENUM);
         if token._type == TokenType::UNKNOWN { ret null; }
         let mut i: u64 = 0u64;
 
         while i < attributes.Size() {
-            let attribute: &Pair<String, Vector<*const ASTNode>> = attributes[i];
+            let attribute: &Pair<String, Vector<*const Node>> = attributes[i];
             Logger::Log("Invalid attribute '" + attribute.left + "'.", token, LogSeverity::Error);
             ret null;
         }
@@ -1476,16 +1476,16 @@ class Parser {
         }
 
         this.types.PushBack(identifier.value);
-        let enum_decl: *mut EnumDeclNode = new EnumDeclNode(identifier.value, token);
+        let enum_node: *mut EnumNode = new EnumNode(identifier.value, token);
 
         if this.Match(TokenType::LESS) {
-            this.generics.PushBack(enum_decl->name);
-            enum_decl->generic = true;
+            this.generics.PushBack(enum_node->name);
+            enum_node->generic = true;
 
             while this.Current()._type != TokenType::GREATER {
                 let type_name: Token = this.Expect(TokenType::IDENTIFIER);
                 if type_name._type == TokenType::UNKNOWN { ret null; }
-                enum_decl->types.PushBack(type_name.value);
+                enum_node->types.PushBack(type_name.value);
                 if !this.Match(TokenType::COMMA) { break; }
             }
 
@@ -1493,10 +1493,10 @@ class Parser {
         }
 
         if this.Match(TokenType::COLON) {
-            enum_decl->underlying_type = this.ParseType();
-            if enum_decl->underlying_type == null { ret null; }
+            enum_node->underlying_type = this.ParseType();
+            if enum_node->underlying_type == null { ret null; }
         } else {
-            enum_decl->variant = true;
+            enum_node->variant = true;
         }
 
         if !this.Expect2(TokenType::LBRACE) { ret null; }
@@ -1512,27 +1512,27 @@ class Parser {
                     if field_name._type == TokenType::UNKNOWN { ret null; }
                     if !this.Expect2(TokenType::COLON) { ret null; }
                     variant->field_names.PushBack(field_name.value);
-                    let field_type: *const ASTNode = this.ParseType();
-                    if field_type == null { ret null; }
-                    variant->types.PushBack(field_type);
+                    let _type: *const Node = this.ParseType();
+                    if _type == null { ret null; }
+                    variant->types.PushBack(_type);
                     if !this.Match(TokenType::COMMA) { break; }
                 }
 
                 if !this.Expect2(TokenType::RBRACE) { ret null; }
             } else if this.Match(TokenType::LPAREN) {
-                let variant_type: *const ASTNode = this.ParseType();
+                let variant_type: *const Node = this.ParseType();
                 if variant_type == null { ret null; }
                 variant->types.PushBack(variant_type);
 
                 while this.Match(TokenType::COMMA) {
-                    let variant_type: *const ASTNode = this.ParseType();
+                    let variant_type: *const Node = this.ParseType();
                     if variant_type == null { ret null; }
                     variant->types.PushBack(variant_type);
                 }
 
                 if !this.Expect2(TokenType::RPAREN) { ret null; }
             } else if this.Match(TokenType::ASSIGN) {
-                if enum_decl->variant {
+                if enum_node->variant {
                     Logger::Log("Explicit value assignment is not allowed for variant enums.", variant_identifier, LogSeverity::Error);
                     ret null;
                 }
@@ -1541,12 +1541,12 @@ class Parser {
                 if variant->value == null { ret null; }
             }
 
-            if !enum_decl->variant && !variant->types.Empty() {
+            if !enum_node->variant && !variant->types.Empty() {
                 Logger::Log("Data fields are only allowed in variant enums.", variant_identifier, LogSeverity::Error);
                 ret null;
             }
 
-            enum_decl->variants.PushBack(variant);
+            enum_node->variants.PushBack(variant);
 
             if !this.Match(TokenType::COMMA) {
                 break;
@@ -1555,13 +1555,13 @@ class Parser {
 
         if this.Match(TokenType::SEMICOLON) {
             while this.Current()._type != TokenType::RBRACE && this.Current()._type != TokenType::EOF {
-                let attributes: Vector<Pair<String, Vector<*const ASTNode>>> = this.ParseAttributes();
+                let attributes: Vector<Pair<String, Vector<*const Node>>> = this.ParseAttributes();
                 let visibility: Token = this.Current();
 
                 if visibility._type == TokenType::PUBLIC || visibility._type == TokenType::PRIVATE {
-                    let function: *const ASTNode = this.ParseFunctionDeclaration(attributes);
+                    let function: *const Node = this.ParseFunction(attributes);
                     if function == null { ret null; }
-                    enum_decl->methods.PushBack(Pair<TokenType, *const FunctionDeclNode>(visibility._type, function as *const FunctionDeclNode));
+                    enum_node->methods.PushBack(Pair<TokenType, *const FunctionNode>(visibility._type, function as *const FunctionNode));
                 } else {
                     Logger::Log("Expected visibility modifier.", visibility, LogSeverity::Error);
                     ret null;
@@ -1570,22 +1570,22 @@ class Parser {
         }
 
         if !this.Expect2(TokenType::RBRACE) { ret null; }
-        ret enum_decl as *const ASTNode;
+        ret enum_node as *const Node;
     }
 
-    priv ParseExternBlock(&mut this) -> *const ASTNode {
+    priv ParseExtern(&mut this) -> *const Node {
         let extern_token: Token = this.Expect(TokenType::EXTERN);
         if extern_token._type == TokenType::UNKNOWN { ret null; }
         let linkage_token: Token = this.Expect(TokenType::STRING);
         if linkage_token._type == TokenType::UNKNOWN { ret null; }
-        let extern_block: *mut ExternBlockNode = new ExternBlockNode(linkage_token.value, extern_token);
+        let extern_block: *mut ExternNode = new ExternNode(linkage_token.value, extern_token);
         if !this.Expect2(TokenType::LBRACE) { ret null; }
 
         while this.Current()._type != TokenType::RBRACE && this.Current()._type != TokenType::EOF {
-            let attributes: Vector<Pair<String, Vector<*const ASTNode>>> = this.ParseAttributes();
+            let attributes: Vector<Pair<String, Vector<*const Node>>> = this.ParseAttributes();
 
             if this.Current()._type == TokenType::FUNC {
-                let function: *const ASTNode = this.ParseFunctionDeclaration(attributes);
+                let function: *const Node = this.ParseFunction(attributes);
 
                 if function == null {
                     this.SynchronizeDeclaration();
@@ -1594,7 +1594,7 @@ class Parser {
 
                 extern_block->declarations.PushBack(function);
             } else if this.Current()._type == TokenType::STATIC {
-                let _static: *const ASTNode = this.ParseStaticDeclaration(attributes);
+                let _static: *const Node = this.ParseStatic(attributes);
 
                 if _static == null {
                     this.SynchronizeDeclaration();
@@ -1610,50 +1610,50 @@ class Parser {
         }
 
         if !this.Expect2(TokenType::RBRACE) { ret null; }
-        ret extern_block as *const ASTNode;
+        ret extern_block as *const Node;
     }
 
-    priv ParseConstantDeclaration(&mut this) -> *const ASTNode {
+    priv ParseConstant(&mut this) -> *const Node {
         let token: Token = this.Expect(TokenType::CONST);
         if token._type == TokenType::UNKNOWN { ret null; }
         let identifier: Token = this.Expect(TokenType::IDENTIFIER);
         if identifier._type == TokenType::UNKNOWN { ret null; }
-        let mut sizes: Vector<*const ASTNode>;
+        let mut sizes: Vector<*const Node>;
 
         while this.Match(TokenType::LBRACKET) {
             if this.Match(TokenType::RBRACKET) {
                 sizes.PushBack(null);
             } else {
-                let expression: *const ASTNode = this.ParseExpression();
+                let expression: *const Node = this.ParseExpression();
                 if expression == null || !this.Expect2(TokenType::RBRACKET) { ret null; }
                 sizes.PushBack(expression);
             }
         }
 
         if !this.Expect2(TokenType::COLON) { ret null; }
-        let mut _type: *const ASTNode = this.ParseType();
+        let mut _type: *const Node = this.ParseType();
         if _type == null { ret null; }
         let mut i: u64 = 0u64;
 
         while i < sizes.Size() {
-            _type = new ArrayTypeNode(_type, sizes[i], token) as *const ASTNode;
+            _type = new ArrayTypeNode(_type, sizes[i], token) as *const Node;
             i += 1u64;
         }
 
         if !this.Expect2(TokenType::ASSIGN) { ret null; }
-        let initializer: *const ASTNode = this.ParseExpression();
+        let initializer: *const Node = this.ParseExpression();
         if initializer == null || !this.Expect2(TokenType::SEMICOLON) { ret null; }
-        ret new ConstantDeclNode(identifier.value, _type, initializer, token) as *const ASTNode;
+        ret new ConstantNode(identifier.value, _type, initializer, token) as *const Node;
     }
 
-    priv ParseStaticDeclaration(&mut this, attributes: &Vector<Pair<String, Vector<*const ASTNode>>>) -> *const ASTNode {
+    priv ParseStatic(&mut this, attributes: &Vector<Pair<String, Vector<*const Node>>>) -> *const Node {
         let token: Token = this.Expect(TokenType::STATIC);
         if token._type == TokenType::UNKNOWN { ret null; }
-        let mut alignment: *const ASTNode = null;
+        let mut alignment: *const Node = null;
         let mut i: u64 = 0u64;
 
         while i < attributes.Size() {
-            let attribute: &Pair<String, Vector<*const ASTNode>> = attributes[i];
+            let attribute: &Pair<String, Vector<*const Node>> = attributes[i];
 
             if attribute.left == "align" {
                 if attribute.right.Size() != 1u64 {
@@ -1676,44 +1676,44 @@ class Parser {
         let mutable: bool = this.Match(TokenType::MUT);
         let identifier: Token = this.Expect(TokenType::IDENTIFIER);
         if identifier._type == TokenType::UNKNOWN { ret null; }
-        let mut sizes: Vector<*const ASTNode>;
+        let mut sizes: Vector<*const Node>;
 
         while this.Match(TokenType::LBRACKET) {
             if this.Match(TokenType::RBRACKET) {
                 sizes.PushBack(null);
             } else {
-                let expression: *const ASTNode = this.ParseExpression();
+                let expression: *const Node = this.ParseExpression();
                 if expression == null || !this.Expect2(TokenType::RBRACKET) { ret null; }
                 sizes.PushBack(expression);
             }
         }
 
         if !this.Expect2(TokenType::COLON) { ret null; }
-        let mut _type: *const ASTNode = this.ParseType();
+        let mut _type: *const Node = this.ParseType();
         if _type == null { ret null; }
         let mut j: u64 = 0u64;
 
         while j < sizes.Size() {
-            _type = new ArrayTypeNode(_type, sizes[j], token) as *const ASTNode;
+            _type = new ArrayTypeNode(_type, sizes[j], token) as *const Node;
             j += 1u64;
         }
 
-        let static_decl: *mut StaticDeclNode = new StaticDeclNode(identifier.value, _type, mutable, alignment, token);
+        let _static: *mut StaticNode = new StaticNode(identifier.value, _type, mutable, alignment, token);
 
         if this.Match(TokenType::ASSIGN) {
             if this.Match(TokenType::ZERO) {
-                static_decl->zero_initializer = true;
+                _static->zero_initializer = true;
             } else {
-                static_decl->initializer = this.ParseExpression();
-                if static_decl->initializer == null { ret null; }
+                _static->initializer = this.ParseExpression();
+                if _static->initializer == null { ret null; }
             }
         }
 
         if !this.Expect2(TokenType::SEMICOLON) { ret null; }
-        ret static_decl as *const ASTNode;
+        ret _static as *const Node;
     }
 
-    priv ParseTypeDeclaration(&mut this) -> *const ASTNode {
+    priv ParseTypeDefinition(&mut this) -> *const Node {
         let token: Token = this.Expect(TokenType::TYPE);
         if token._type == TokenType::UNKNOWN { ret null; }
         let identifier: Token = this.Expect(TokenType::IDENTIFIER);
@@ -1726,11 +1726,11 @@ class Parser {
 
         this.types.PushBack(identifier.value);
         if !this.Expect2(TokenType::ASSIGN) { ret null; }
-        let _type: *const ASTNode = this.ParseType();
+        let _type: *const Node = this.ParseType();
         if _type == null { ret null; }
-        let type_decl: *const TypeDeclNode = new TypeDeclNode(identifier.value, _type, token);
+        let type_definition: *const TypeDefinitionNode = new TypeDefinitionNode(identifier.value, _type, token);
         if !this.Expect2(TokenType::SEMICOLON) { ret null; }
-        ret type_decl as *const ASTNode;
+        ret type_definition as *const Node;
     }
 
     pub Parse(&mut this, tokens: &Vector<Token>) -> *const RootNode {
@@ -1754,7 +1754,7 @@ class Parser {
         this.types.PushBack(String("void"));
 
         while this.Current()._type != TokenType::EOF {
-            let declaration: *const ASTNode = this.ParseDeclaration();
+            let declaration: *const Node = this.ParseDeclaration();
 
             if declaration != null {
                 root->declarations.PushBack(declaration);

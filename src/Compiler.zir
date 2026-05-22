@@ -2142,31 +2142,48 @@ class Compiler {
     }
 
     priv CompileFor(&mut this, _for: *const ForNode) {
-        if _for->iterable->_type != NodeType::RANGE {
-            Logger::Log("For loop currently only supports range expressions.", _for as *const Node, LogSeverity::Error);
-            ret;
+        let (mut start: QualifiedValue, mut end: QualifiedValue);
+        let (mut is_range: bool, mut is_inclusive: bool) = (false, false);
+
+        if _for->iterable->_type == NodeType::RANGE {
+            let range: *const RangeNode = _for->iterable as *const RangeNode;
+            (is_range, is_inclusive) = (true, range->inclusive);
+
+            start = this.CompileExpression(range->start, false);
+            if start.Null() { ret; }
+
+            end = this.CompileExpression(range->end, false);
+            if end.Null() { ret; }
+        } else {
+            let iterable: QualifiedValue = this.CompileExpression(_for->iterable, true);
+            if iterable.Null() { ret; }
+
+            let mut _class: *const QualifiedType = iterable.Type();
+            if _class->IsPointer() { _class = _class->Pointee(); }
+
+            if _class->IsClass() && _class->Has(String("Begin")) && _class->Has(String("End")) {
+                let begin_method: *const Pair<Method, *const QualifiedType> = _class->Get(String("Begin"), _for as *const Node);
+                if begin_method == null { ret; }
+
+                let end_method: *const Pair<Method, *const QualifiedType> = _class->Get(String("End"), _for as *const Node);
+                if end_method == null { ret; }
+
+                let values: Vector<QualifiedValue>;
+                start = this.CompileCall2(QualifiedValue(begin_method->left.value, begin_method->right, iterable), values, false, false, _for as *const Node);
+                if start.Null() { ret; }
+
+                end = this.CompileCall2(QualifiedValue(end_method->left.value, end_method->right, iterable), values, false, false, _for as *const Node);
+                if end.Null() { ret; }
+            } else {
+                Logger::Log("For loop only supports range expressions or classes with '.Begin()' and '.End()' methods.", _for as *const Node, LogSeverity::Error);
+                ret;
+            }
         }
 
-        let range: *const RangeNode = _for->iterable as *const RangeNode;
-        let start_val: QualifiedValue = this.CompileExpression(range->start, false);
-
-        if start_val.Null() {
+        if start.Type() != end.Type() {
+            Logger::Log("Start and end expressions of a for loop must have the same type.", _for as *const Node, LogSeverity::Error);
             ret;
         }
-
-        let end_val: QualifiedValue = this.CompileExpression(range->end, false);
-
-        if end_val.Null() {
-            ret;
-        }
-
-        let iter_type: *const QualifiedType = &start_val.Type();
-
-        let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
-        LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
-        let iter_alloca: LLVMValueRef = LLVMBuildAlloca(this.builder, iter_type->Value(), "");
-        LLVMPositionBuilderAtEnd(this.builder, current);
-        LLVMBuildStore(this.builder, start_val.Value(), iter_alloca);
 
         let function: LLVMValueRef = LLVMGetBasicBlockParent(LLVMGetInsertBlock(this.builder));
         let compare_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "");
@@ -2174,35 +2191,74 @@ class Compiler {
         let step_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "");
         let end_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "");
 
+        let _type: &QualifiedType = start.Type();
+        let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
+        LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(function));
+        let pointer: LLVMValueRef = LLVMBuildAlloca(this.builder, _type->Value(), "");
+        LLVMPositionBuilderAtEnd(this.builder, current);
+        LLVMBuildStore(this.builder, start.Value(), pointer);
         LLVMBuildBr(this.builder, compare_block);
         LLVMPositionBuilderAtStart(this.builder, compare_block);
-
-        let iter_val: LLVMValueRef = LLVMBuildLoad2(this.builder, iter_type->Value(), iter_alloca, "");
+        let value: LLVMValueRef = LLVMBuildLoad2(this.builder, _type->Value(), pointer, "");
         let mut condition: LLVMValueRef = null;
-        let type_kind: LLVMTypeKind = LLVMGetTypeKind(iter_type->Value());
 
-        if type_kind == LLVMTypeKind::LLVMFloatTypeKind || type_kind == LLVMTypeKind::LLVMDoubleTypeKind {
-            if range->inclusive {
-                condition = LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOLE, iter_val, end_val.Value(), "");
+        if is_range {
+            let type_kind: LLVMTypeKind = LLVMGetTypeKind(_type->Value());
+
+            if type_kind == LLVMTypeKind::LLVMFloatTypeKind || type_kind == LLVMTypeKind::LLVMDoubleTypeKind {
+                if is_inclusive {
+                    condition = LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOLE, value, end.Value(), "");
+                } else {
+                    condition = LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOLT, value, end.Value(), "");
+                }
+            } else if type_kind == LLVMTypeKind::LLVMIntegerTypeKind {
+                if is_inclusive {
+                    condition = LLVMBuildICmp(this.builder, _type->IsSigned() ? LLVMIntPredicate::LLVMIntSLE : LLVMIntPredicate::LLVMIntULE, value, end.Value(), "");
+                } else {
+                    condition = LLVMBuildICmp(this.builder, _type->IsSigned() ? LLVMIntPredicate::LLVMIntSLT : LLVMIntPredicate::LLVMIntULT, value, end.Value(), "");
+                }
             } else {
-                condition = LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOLT, iter_val, end_val.Value(), "");
+                Logger::Log("For loop only supports range expressions of integer or floating point types.", _for as *const Node, LogSeverity::Error);
+                ret;
             }
         } else {
-            if range->inclusive {
-                condition = LLVMBuildICmp(this.builder, iter_type->IsSigned() ? LLVMIntPredicate::LLVMIntSLE : LLVMIntPredicate::LLVMIntULE, iter_val, end_val.Value(), "");
+            if _type->IsPointer() {
+                condition = LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntNE, value, end.Value(), "");
+            } else if _type->IsClass() && _type->Has(String("op!=")) {
+                let mut values: Vector<QualifiedValue>;
+                values.PushBack(end);
+                let instance: QualifiedValue = QualifiedValue(pointer, this.type_manager.Pointer(_type, true), false, true);
+                let method: *const Pair<Method, *const QualifiedType> = _type->Get(String("op!="), _for as *const Node);
+                condition = this.CompileCall2(QualifiedValue(method->left.value, method->right, instance), values, false, false, _for as *const Node).Value();
             } else {
-                condition = LLVMBuildICmp(this.builder, iter_type->IsSigned() ? LLVMIntPredicate::LLVMIntSLT : LLVMIntPredicate::LLVMIntULT, iter_val, end_val.Value(), "");
+                Logger::Log("For loop only supports pointer iterators or classes with '!=' operator.", _for as *const Node, LogSeverity::Error);
+                ret;
             }
         }
 
         LLVMBuildCondBr(this.builder, condition, loop_block, end_block);
-
         LLVMPositionBuilderAtStart(this.builder, loop_block);
         this.blocks.PushBack(Pair<LLVMBasicBlockRef, LLVMBasicBlockRef>(step_block, end_block));
         this.scope_manager.PushScope(String("for"), false);
 
-        let iter_ptr: QualifiedValue = QualifiedValue(iter_alloca, this.type_manager.Pointer(iter_type, false), false, true);
-        this.scope_manager.Set(_for->variable, SymbolKind::Variable, iter_ptr, false, _for as *const Node);
+        if is_range {
+            let result: QualifiedValue = QualifiedValue(pointer, this.type_manager.Pointer(_type, false), false, true);
+            this.scope_manager.Set(_for->variable, SymbolKind::Variable, result, false, _for as *const Node);
+        } else {
+            if _type->IsPointer() {
+                let result: QualifiedValue = QualifiedValue(value, _type, false, true);
+                this.scope_manager.Set(_for->variable, SymbolKind::Variable, result, false, _for as *const Node);
+            } else if _type->IsClass() && _type->Has(String("op*")) {
+                let mut values: Vector<QualifiedValue>;
+                let instance: QualifiedValue = QualifiedValue(pointer, this.type_manager.Pointer(_type, true), false, true);
+                let method: *const Pair<Method, *const QualifiedType> = _type->Get(String("op*"), _for as *const Node);
+                let result: QualifiedValue = this.CompileCall2(QualifiedValue(method->left.value, method->right, instance), values, false, false, _for as *const Node);
+                this.scope_manager.Set(_for->variable, SymbolKind::Variable, result, false, _for as *const Node);
+            } else {
+                Logger::Log("For loop only supports pointer iterators or classes with 'op*' operator.", _for as *const Node, LogSeverity::Error);
+                ret;
+            }
+        }
 
         this.CompileBlock(_for->body as *const BlockNode);
         this.scope_manager.PopScope();
@@ -2213,18 +2269,40 @@ class Compiler {
         }
 
         LLVMPositionBuilderAtStart(this.builder, step_block);
-        let current_val: LLVMValueRef = LLVMBuildLoad2(this.builder, iter_type->Value(), iter_alloca, "");
-        let mut next_val: LLVMValueRef = null;
+        let current_value: LLVMValueRef = LLVMBuildLoad2(this.builder, _type->Value(), pointer, "");
+        let mut new_value: LLVMValueRef = null;
 
-        if type_kind == LLVMTypeKind::LLVMFloatTypeKind || type_kind == LLVMTypeKind::LLVMDoubleTypeKind {
-            next_val = LLVMBuildFAdd(this.builder, current_val, LLVMConstReal(iter_type->Value(), 1.0f64), "");
+        if is_range {
+            let type_kind: LLVMTypeKind = LLVMGetTypeKind(_type->Value());
+
+            if type_kind == LLVMTypeKind::LLVMFloatTypeKind || type_kind == LLVMTypeKind::LLVMDoubleTypeKind {
+                new_value = LLVMBuildFAdd(this.builder, current_value, LLVMConstReal(_type->Value(), 1.0f64), "");
+            } else if type_kind == LLVMTypeKind::LLVMIntegerTypeKind {
+                new_value = LLVMBuildAdd(this.builder, current_value, LLVMConstInt(_type->Value(), 1u64, 0i32), "");
+            } else {
+                Logger::Log("For loop only supports range expressions of integer or floating point types.", _for as *const Node, LogSeverity::Error);
+                ret;
+            }
         } else {
-            next_val = LLVMBuildAdd(this.builder, current_val, LLVMConstInt(iter_type->Value(), 1u64, 0i32), "");
+            if _type->IsPointer() {
+                let indices[]: LLVMValueRef = { LLVMConstInt(LLVMInt64Type(), 1u64, 0i32) };
+                new_value = LLVMBuildGEP2(this.builder, _type->Pointee().Value(), current_value, indices, 1u32, "");
+            } else if _type->IsClass() && _type->Has(String("op+=")) {
+                let mut values: Vector<QualifiedValue>;
+                let param_type: &QualifiedType = this.type_manager.Primitive(LLVMInt64TypeInContext(this.context), false);
+                values.PushBack(QualifiedValue(LLVMConstInt(param_type.Value(), 1u64, 0i32), param_type));
+                let instance: QualifiedValue = QualifiedValue(pointer, this.type_manager.Pointer(_type, true), false, true);
+                let method: *const Pair<Method, *const QualifiedType> = _type->Get(String("op+="), _for as *const Node);
+                this.CompileCall2(QualifiedValue(method->left.value, method->right, instance), values, false, false, _for as *const Node);
+                new_value = LLVMBuildLoad2(this.builder, _type->Value(), pointer, "");
+            } else {
+                Logger::Log("For loop only supports pointer iterators or classes with '+=' operator.", _for as *const Node, LogSeverity::Error);
+                ret;
+            }
         }
 
-        LLVMBuildStore(this.builder, next_val, iter_alloca);
+        LLVMBuildStore(this.builder, new_value, pointer);
         LLVMBuildBr(this.builder, compare_block);
-
         LLVMPositionBuilderAtStart(this.builder, end_block);
     }
 
@@ -4045,7 +4123,7 @@ class Compiler {
                 }
             }
 
-            let kind: LLVMTypeKind = LLVMGetTypeKind(value.Type().Value());
+            let type_kind: LLVMTypeKind = LLVMGetTypeKind(value.Type().Value());
 
             if unary->operator == TokenType::MUL {
                 if value.Type().IsPointer() {
@@ -4059,21 +4137,21 @@ class Compiler {
                     ret QualifiedValue(null, null);
                 }
             } else if unary->operator == TokenType::MINUS {
-                if kind == LLVMTypeKind::LLVMIntegerTypeKind {
+                if type_kind == LLVMTypeKind::LLVMIntegerTypeKind {
                     if value.Type().IsSigned() {
                         ret QualifiedValue(LLVMBuildNeg(this.builder, value.Value(), ""), value.Type());
                     } else {
                         Logger::Log("Cannot negate unsigned type '" + value.Type().ToString() + "'.", unary as *const Node, LogSeverity::Error);
                         ret QualifiedValue(null, null);
                     }
-                } else if kind == LLVMTypeKind::LLVMFloatTypeKind || kind == LLVMTypeKind::LLVMDoubleTypeKind {
+                } else if type_kind == LLVMTypeKind::LLVMFloatTypeKind || type_kind == LLVMTypeKind::LLVMDoubleTypeKind {
                     ret QualifiedValue(LLVMBuildFNeg(this.builder, value.Value(), ""), value.Type());
                 } else {
                     Logger::Log("Cannot negate type '" + value.Type().ToString() + "'.", unary as *const Node, LogSeverity::Error);
                     ret QualifiedValue(null, null);
                 }
             } else if unary->operator == TokenType::NOT {
-                if kind == LLVMTypeKind::LLVMIntegerTypeKind {
+                if type_kind == LLVMTypeKind::LLVMIntegerTypeKind {
                     ret QualifiedValue(LLVMBuildNot(this.builder, value.Value(), ""), value.Type());
                 } else {
                     Logger::Log("Cannot invert type '" + value.Type().ToString() + "'.", unary as *const Node, LogSeverity::Error);

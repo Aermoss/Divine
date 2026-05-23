@@ -14,7 +14,8 @@
  * limitations under the License.
  */
 
-#[include "vendor/glad", "vendor/glfw", "vendor/stb", "std/pair", "std/thrd", "std/math", "std/file", "std/str", "other/noise" : *]
+#[include "vendor/glad", "vendor/glfw", "vendor/stb", "other/noise",
+    "std/pair", "std/thrd", "std/atom", "std/math", "std/file", "std/str" : *]
 
 enum DWMWINDOWATTRIBUTE: u32 {
     DWMWA_NCRENDERING_ENABLED,
@@ -1151,11 +1152,17 @@ const CHUNK_WIDTH: u64 = 16u64;
 const CHUNK_HEIGHT: u64 = 256u64;
 const CHUNK_DEPTH: u64 = 16u64;
 
+enum ChunkState: i32 {
+    Empty, Generating, Meshing, Uploading, Ready, Dead
+}
+
 class Chunk {
     pub parent: *mut void, pub position: Vector3, pub world_position: Vector3,
     priv vertex_array: u32 = 0u32, priv vertex_buffer: u32 = 0u32, priv index_buffer: u32 = 0u32,
     priv vertices: Vector<f32>, priv indices: Vector<u32>, pub index_count: i32, pub offset: u32,
-    pub subchunks[CHUNK_HEIGHT / SUBCHUNK_HEIGHT]: *mut Subchunk, pub busy: bool = false,
+    pub subchunks[CHUNK_HEIGHT / SUBCHUNK_HEIGHT]: *mut Subchunk,
+    pub state: Atomic<ChunkState> = ChunkState::Empty,
+
     pub north_neighbor: *mut Chunk = null, pub south_neighbor: *mut Chunk = null,
     pub east_neighbor: *mut Chunk = null, pub west_neighbor: *mut Chunk = null;
 
@@ -1386,6 +1393,8 @@ class World {
     }
 
     ~World(&mut this) {
+        this.running = false;
+
         for thread in this.threads {
             let mut result: i32;
             thrd_join(thread, &result);
@@ -1556,25 +1565,25 @@ class World {
                         let dist_sq: f32 = dist_x * dist_x + dist_z * dist_z;
 
                         if dist_sq > UNLOAD_DISTANCE_SQ as f32 {
-                            let mut busy: bool = chunk->busy;
+                            let mut ready: bool = chunk->state == ChunkState::Ready;
 
                             if chunk->east_neighbor != null {
-                                busy |= chunk->east_neighbor->busy;
+                                ready |= chunk->east_neighbor->state == ChunkState::Ready;
                             }
 
                             if chunk->west_neighbor != null {
-                                busy |= chunk->west_neighbor->busy;
+                                ready |= chunk->west_neighbor->state == ChunkState::Ready;
                             }
 
                             if chunk->north_neighbor != null {
-                                busy |= chunk->north_neighbor->busy;
+                                ready |= chunk->north_neighbor->state == ChunkState::Ready;
                             }
 
                             if chunk->south_neighbor != null {
-                                busy |= chunk->south_neighbor->busy;
+                                ready |= chunk->south_neighbor->state == ChunkState::Ready;
                             }
 
-                            if !busy {
+                            if ready {
                                 mtx_lock(&this.chunk_update_mutex);
 
                                 for k in 0u64..this.chunk_update_queue.Size() {
@@ -1584,6 +1593,7 @@ class World {
                                     }
                                 }
 
+                                chunk->state = ChunkState::Dead;
                                 if chunk->east_neighbor != null { chunk->east_neighbor->west_neighbor = null; }
                                 if chunk->west_neighbor != null { chunk->west_neighbor->east_neighbor = null; }
                                 if chunk->north_neighbor != null { chunk->north_neighbor->south_neighbor = null; }
@@ -1611,6 +1621,7 @@ class World {
 
                         if this.GetChunk(position) == null {
                             let chunk: *mut Chunk = this.GenerateChunk(position);
+                            chunk->state = ChunkState::Generating;
                             this.InitializeSkylight(chunk);
                             chunk_update_queue.PushBack(chunk);
 
@@ -1706,9 +1717,10 @@ class World {
                 }
 
                 let chunk: *mut Chunk = this.chunk_update_queue.RemoveAt(best_index);
-                chunk->busy = true;
                 mtx_unlock(&this.chunk_update_mutex);
+                chunk->state = ChunkState::Meshing;
                 chunk->Update();
+                chunk->state = ChunkState::Uploading;
                 mtx_lock(&this.chunk_upload_mutex);
                 this.chunk_upload_queue.PushBack(chunk);
                 mtx_unlock(&this.chunk_upload_mutex);
@@ -2132,7 +2144,7 @@ class World {
             let chunk: *mut Chunk = this.chunk_upload_queue.RemoveAt(0u64);
             mtx_unlock(&this.chunk_upload_mutex);
             chunk->Upload();
-            chunk->busy = false;
+            chunk->state = ChunkState::Ready;
         }
 
         loop {
@@ -2143,8 +2155,9 @@ class World {
                 break;
             }
 
-            del this.chunk_delete_queue.RemoveAt(0u64);
+            let chunk: *mut Chunk = this.chunk_delete_queue.RemoveAt(0u64);
             mtx_unlock(&this.chunk_delete_mutex);
+            del chunk;
         }
     }
 
@@ -2684,7 +2697,6 @@ func main(args: &mut Vector<String>) -> i32 {
         }
     }
 
-    world.running = false;
     glfwDestroyWindow(window);
     glfwTerminate();
     ret 0i32;

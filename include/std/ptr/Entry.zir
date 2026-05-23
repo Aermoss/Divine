@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#[include "std/atom" : *]
+
 class SharedControlBlock<T> {
     pub ptr: *mut T = null,
     pub strong: u64 = 1u64,
@@ -37,7 +39,7 @@ class Shared<T> {
         this.control = other.control;
 
         if this.control != null {
-            this.control->strong += 1u64;
+            AtomicFetchAdd64(&this.control->strong, 1u64);
         }
     }
 
@@ -47,204 +49,17 @@ class Shared<T> {
 
     priv Release(&mut this) {
         if this.control == null { ret; }
-        this.control->strong -= 1u64;
 
-        if this.control->strong == 0u64 {
+        if AtomicFetchSub64(&this.control->strong, 1u64) == 1u64 {
             del this.control->ptr;
             this.control->ptr = null;
 
-            if this.control->weak == 0u64 {
+            if AtomicCompareExchange64(&this.control->weak, 0u64, 0u64) == 0u64 {
                 del this.control;
             }
         }
 
         this.control = null;
-    }
-
-    pub Ptr(&this) -> *mut T {
-        if this.control == null { ret null; }
-        ret this.control->ptr;
-    }
-
-    pub StrongCount(&this) -> u64 {
-        if this.control == null { ret 0u64; }
-        ret this.control->strong;
-    }
-
-    pub WeakCount(&this) -> u64 {
-        if this.control == null { ret 0u64; }
-        ret this.control->weak;
-    }
-
-    pub Valid(&this) -> bool {
-        ret this.Ptr() != null;
-    }
-
-    pub op->(&this) -> *mut T {
-        ret this.Ptr();
-    }
-
-    pub op*(&this) -> &mut T {
-        ret *this.Ptr();
-    }
-
-    pub op=(&mut this, other: &Shared<T>) -> &mut Shared<T> {
-        if &this != &other {
-            this.Release();
-            this.control = other.control;
-
-            if this.control != null {
-                this.control->strong += 1u64;
-            }
-        } ret this;
-    }
-
-    pub op!=(&this, other: &Shared<T>) -> bool {
-        ret this.Ptr() != other.Ptr();
-    }
-
-    pub op==(&this, other: &Shared<T>) -> bool {
-        ret this.Ptr() == other.Ptr();
-    }
-
-    pub op!=(&this, other: *const T) -> bool {
-        ret this.Ptr() != other;
-    }
-
-    pub op==(&this, other: *const T) -> bool {
-        ret this.Ptr() == other;
-    }
-
-    pub ToWeak(&this) -> Weak<T> {
-        let mut result: Weak<T>;
-        result.control = this.control;
-
-        if result.control != null {
-            result.control->weak += 1u64;
-        } ret result;
-    }
-}
-
-class Weak<T> {
-    pub control: *mut SharedControlBlock<T> = null;
-
-    Weak(&mut this) {}
-
-    Weak(&mut this, shared: &Shared<T>) {
-        this.control = shared.control;
-
-        if this.control != null {
-            this.control->weak += 1u64;
-        }
-    }
-
-    Weak(&mut this, other: &Weak<T>) {
-        this.control = other.control;
-
-        if this.control != null {
-            this.control->weak += 1u64;
-        }
-    }
-
-    ~Weak(&mut this) {
-        this.Release();
-    }
-
-    priv Release(&mut this) {
-        if this.control == null { ret; }
-        this.control->weak -= 1u64;
-
-        if this.control->weak == 0u64 &&
-            this.control->strong == 0u64 {
-            del this.control;
-        }
-
-        this.control = null;
-    }
-
-    pub Expired(&this) -> bool {
-        if this.control == null { ret true; }
-        ret this.control->strong == 0u64;
-    }
-
-    pub Lock(&this) -> Shared<T> {
-        let mut result: Shared<T>;
-
-        if !this.Expired() {
-            result.control = this.control;
-            result.control->strong += 1u64;
-        } ret result;
-    }
-
-    pub StrongCount(&this) -> u64 {
-        if this.control == null { ret 0u64; }
-        ret this.control->strong;
-    }
-
-    pub WeakCount(&this) -> u64 {
-        if this.control == null { ret 0u64; }
-        ret this.control->weak;
-    }
-
-    pub op=(&mut this, other: &Weak<T>) -> &mut Weak<T> {
-        if &this != &other {
-            this.Release();
-            this.control = other.control;
-
-            if this.control != null {
-                this.control->weak += 1u64;
-            }
-        } ret this;
-    }
-}
-
-#[include "std/atom" : *]
-
-class AtomicSharedControlBlock<T> {
-    pub ptr: *mut T = null,
-    pub strong: u64 = 1u64,
-    pub weak: u64 = 0u64;
-
-    AtomicSharedControlBlock(&mut this, ptr: *mut T) {
-        this.ptr = ptr;
-    }
-}
-
-class AtomicShared<T> {
-    pub control: *mut AtomicSharedControlBlock<T> = null;
-
-    AtomicShared(&mut this) {}
-
-    AtomicShared(&mut this, args...) {
-        this.control = new AtomicSharedControlBlock<T>(new T(args...));
-    }
-
-    AtomicShared(&mut this, other: &AtomicShared<T>) {
-        this.control = other.control;
-
-        if this.control != null {
-            AtomicFetchAdd64(&this.control->strong, 1u64);
-        }
-    }
-
-    ~AtomicShared(&mut this) {
-        this.Release();
-    }
-
-    priv Release(&mut this) {
-        if this.control != null {
-            if AtomicFetchSub64(&this.control->strong, 1u64) == 1u64 {
-                del this.control->ptr;
-                this.control->ptr = null;
-
-                if AtomicCompareExchange64(&this.control->weak, 0u64, 0u64) == 0u64 {
-                    del this.control;
-                }
-            }
-
-            this.control = null;
-        }
-
     }
 
     pub Ptr(&this) -> *mut T {
@@ -274,7 +89,7 @@ class AtomicShared<T> {
         ret *this.Ptr();
     }
 
-    pub op=(&mut this, other: &AtomicShared<T>) -> &mut AtomicShared<T> {
+    pub op=(&mut this, other: &Shared<T>) -> &mut Shared<T> {
         if &this != &other {
             this.Release();
             this.control = other.control;
@@ -285,11 +100,11 @@ class AtomicShared<T> {
         } ret this;
     }
 
-    pub op!=(&this, other: &AtomicShared<T>) -> bool {
+    pub op!=(&this, other: &Shared<T>) -> bool {
         ret this.Ptr() != other.Ptr();
     }
 
-    pub op==(&this, other: &AtomicShared<T>) -> bool {
+    pub op==(&this, other: &Shared<T>) -> bool {
         ret this.Ptr() == other.Ptr();
     }
 
@@ -301,8 +116,8 @@ class AtomicShared<T> {
         ret this.Ptr() == other;
     }
 
-    pub ToWeak(&this) -> AtomicWeak<T> {
-        let mut result: AtomicWeak<T>;
+    pub ToWeak(&this) -> Weak<T> {
+        let mut result: Weak<T>;
         result.control = this.control;
 
         if result.control != null {
@@ -311,12 +126,12 @@ class AtomicShared<T> {
     }
 }
 
-class AtomicWeak<T> {
-    pub control: *mut AtomicSharedControlBlock<T> = null;
+class Weak<T> {
+    pub control: *mut SharedControlBlock<T> = null;
 
-    AtomicWeak(&mut this) {}
+    Weak(&mut this) {}
 
-    AtomicWeak(&mut this, shared: &AtomicShared<T>) {
+    Weak(&mut this, shared: &Shared<T>) {
         this.control = shared.control;
 
         if this.control != null {
@@ -324,7 +139,7 @@ class AtomicWeak<T> {
         }
     }
 
-    AtomicWeak(&mut this, other: &AtomicWeak<T>) {
+    Weak(&mut this, other: &Weak<T>) {
         this.control = other.control;
 
         if this.control != null {
@@ -332,7 +147,7 @@ class AtomicWeak<T> {
         }
     }
 
-    ~AtomicWeak(&mut this) {
+    ~Weak(&mut this) {
         this.Release();
     }
 
@@ -354,8 +169,8 @@ class AtomicWeak<T> {
         ret AtomicCompareExchange64(&this.control->strong, 0u64, 0u64) == 0u64;
     }
 
-    pub Lock(&this) -> AtomicShared<T> {
-        let mut result: AtomicShared<T>;
+    pub Lock(&this) -> Shared<T> {
+        let mut result: Shared<T>;
         if this.control == null { ret result; }
         let mut count: u64 = AtomicCompareExchange64(&this.control->strong, 0u64, 0u64);
 
@@ -383,7 +198,7 @@ class AtomicWeak<T> {
         ret AtomicCompareExchange64(&this.control->weak, 0u64, 0u64);
     }
 
-    pub op=(&mut this, other: &AtomicWeak<T>) -> &mut AtomicWeak<T> {
+    pub op=(&mut this, other: &Weak<T>) -> &mut Weak<T> {
         if &this != &other {
             this.Release();
             this.control = other.control;

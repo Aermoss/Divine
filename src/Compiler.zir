@@ -90,7 +90,8 @@ class Compiler {
     pub function: *const QualifiedType = null,
     pub function_ref: LLVMValueRef = null,
     pub mangling: bool = true, pub _unsafe: bool = false,
-    priv blocks: Vector<Pair<LLVMBasicBlockRef, LLVMBasicBlockRef>>,
+    priv loop_blocks: Vector<Pair<LLVMBasicBlockRef, LLVMBasicBlockRef>>,
+    priv loop_scopes: Vector<*mut Scope>,
     priv pass_cache: Map<*const Node, Pair<*mut QualifiedType, *mut Scope>>,
     priv enum_pass_cache: Map<*const Node, *const QualifiedType>,
     priv forwards: Vector<Forward>,
@@ -1989,12 +1990,14 @@ class Compiler {
         LLVMBuildCondBr(this.builder, condition, loop_block, end_block);
 
         LLVMPositionBuilderAtEnd(this.builder, loop_block);
-        this.blocks.PushBack(Pair<LLVMBasicBlockRef, LLVMBasicBlockRef>(compare_block, end_block));
+        this.loop_blocks.PushBack(Pair<LLVMBasicBlockRef, LLVMBasicBlockRef>(compare_block, end_block));
         this.scope_manager.PushScope(String("while"), false);
+        this.loop_scopes.PushBack(this.scope_manager.current);
         this.BindPattern(while_let->pattern, match_pointer, &expression.Type());
         this.CompileStatement(while_let->body);
+        this.loop_scopes.PopBack();
         this.scope_manager.PopScope();
-        this.blocks.PopBack();
+        this.loop_blocks.PopBack();
 
         if LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(this.builder)) == null {
             LLVMBuildBr(this.builder, compare_block);
@@ -2041,11 +2044,13 @@ class Compiler {
         }
 
         LLVMPositionBuilderAtStart(this.builder, loop_block);
-        this.blocks.PushBack(Pair<LLVMBasicBlockRef, LLVMBasicBlockRef>(compare_block, end_block));
+        this.loop_blocks.PushBack(Pair<LLVMBasicBlockRef, LLVMBasicBlockRef>(compare_block, end_block));
         this.scope_manager.PushScope(String("while"), false);
+        this.loop_scopes.PushBack(this.scope_manager.current);
         this.CompileBlock(_while->body as *const BlockNode);
+        this.loop_scopes.PopBack();
         this.scope_manager.PopScope();
-        this.blocks.PopBack();
+        this.loop_blocks.PopBack();
 
         if LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(this.builder)) == null {
             LLVMBuildBr(this.builder, compare_block);
@@ -2162,8 +2167,9 @@ class Compiler {
 
         LLVMBuildCondBr(this.builder, condition, loop_block, end_block);
         LLVMPositionBuilderAtStart(this.builder, loop_block);
-        this.blocks.PushBack(Pair<LLVMBasicBlockRef, LLVMBasicBlockRef>(step_block, end_block));
+        this.loop_blocks.PushBack(Pair<LLVMBasicBlockRef, LLVMBasicBlockRef>(step_block, end_block));
         this.scope_manager.PushScope(String("for"), false);
+        this.loop_scopes.PushBack(this.scope_manager.current);
 
         if is_range {
             let result: QualifiedValue = QualifiedValue(pointer, this.type_manager.Pointer(_type, false), false, true);
@@ -2185,8 +2191,9 @@ class Compiler {
         }
 
         this.CompileBlock(_for->body as *const BlockNode);
+        this.loop_scopes.PopBack();
         this.scope_manager.PopScope();
-        this.blocks.PopBack();
+        this.loop_blocks.PopBack();
 
         if LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(this.builder)) == null {
             LLVMBuildBr(this.builder, step_block);
@@ -2234,12 +2241,14 @@ class Compiler {
         let function: LLVMValueRef = LLVMGetBasicBlockParent(LLVMGetInsertBlock(this.builder));
         let loop_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "");
         let end_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(this.context, function, "");
-        this.blocks.PushBack(Pair<LLVMBasicBlockRef, LLVMBasicBlockRef>(loop_block, end_block));
+        this.loop_blocks.PushBack(Pair<LLVMBasicBlockRef, LLVMBasicBlockRef>(loop_block, end_block));
 
         LLVMBuildBr(this.builder, loop_block);
         LLVMPositionBuilderAtStart(this.builder, loop_block);
         this.scope_manager.PushScope(String("loop"), false);
+        this.loop_scopes.PushBack(this.scope_manager.current);
         this.CompileBlock(_loop->body as *const BlockNode);
+        this.loop_scopes.PopBack();
         this.scope_manager.PopScope();
 
         if LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(this.builder)) == null {
@@ -2247,27 +2256,27 @@ class Compiler {
         }
 
         LLVMPositionBuilderAtStart(this.builder, end_block);
-        this.blocks.PopBack();
+        this.loop_blocks.PopBack();
     }
 
     priv CompileContinue(&this, _continue: *const ContinueNode) {
-        if this.blocks.Empty() {
+        if this.loop_blocks.Empty() {
             Logger::Log("Continue statement outside of loop.", _continue as *const Node, LogSeverity::Error);
             ret;
         }
 
-        // this.scope_manager.InvokeDestructors();
-        LLVMBuildBr(this.builder, this.blocks[this.blocks.Size() - 1u64].left);
+        this.scope_manager.InvokeDestructorsUntil(this.loop_scopes.Back());
+        LLVMBuildBr(this.builder, this.loop_blocks.Back().left);
     }
 
     priv CompileBreak(&this, _break: *const BreakNode) {
-        if this.blocks.Empty() {
+        if this.loop_blocks.Empty() {
             Logger::Log("Break statement outside of loop.", _break as *const Node, LogSeverity::Error);
             ret;
         }
 
-        // this.scope_manager.InvokeDestructors();
-        LLVMBuildBr(this.builder, this.blocks[this.blocks.Size() - 1u64].right);
+        this.scope_manager.InvokeDestructorsUntil(this.loop_scopes.Back());
+        LLVMBuildBr(this.builder, this.loop_blocks.Back().right);
     }
 
     priv CompileVariable(&mut this, variable: *const VariableNode) {
@@ -3014,6 +3023,99 @@ class Compiler {
                 let size: u64 = LLVMStoreSizeOfType(this.target->layout, _type->Value());
                 let size_type: &QualifiedType = this.type_manager.Primitive(LLVMInt64TypeInContext(this.context), false);
                 ret QualifiedValue(LLVMConstInt(size_type.Value(), size, 0i32), size_type);
+            } else if identifier->name == "construct" {
+                if call->arguments.Size() == 0u64 {
+                    Logger::Log("Invalid number of arguments for 'construct'.", call as *const Node, LogSeverity::Error);
+                    ret QualifiedValue(null, null);
+                }
+
+                let mut target_pointer: QualifiedValue = this.CompileExpression(call->arguments[0u64], false);
+
+                if target_pointer.Null() {
+                    ret QualifiedValue(null, null);
+                }
+
+                if target_pointer.Type().IsReference() {
+                    target_pointer = QualifiedValue(LLVMBuildLoad2(this.builder, target_pointer.Type().Pointee().Value(), target_pointer.Value(), ""), target_pointer.Type().Pointee());
+                }
+
+                if !target_pointer.Type().IsPointer() {
+                    Logger::Log("Construct target must be a pointer.", call as *const Node, LogSeverity::Error);
+                    ret QualifiedValue(null, null);
+                }
+
+                let target: &QualifiedType = target_pointer.Type().Pointee();
+                let mut values: Vector<QualifiedValue>;
+
+                for i in 1u64..call->arguments.Size() {
+                    if !this.CompileArgument(call->arguments[i], &values) {
+                        ret QualifiedValue(null, null);
+                    }
+                }
+
+                if target.IsClass() {
+                    if values.Size() == 1u64 {
+                        if values[0u64].Type() == target {
+                            values[0u64] = QualifiedValue(LLVMAddressOf(values[0u64].Value(), this.builder), this.type_manager.Pointer(target, true));
+                        }
+                    }
+
+                    this.CompileConstructor(target, target_pointer, values, call as *const Node);
+                } else {
+                    if values.Size() > 1u64 {
+                        Logger::Log("Primitive type initialization accepts at most 1 argument.", call as *const Node, LogSeverity::Error);
+                        ret QualifiedValue(null, null);
+                    }
+
+                    if values.Size() != 0u64 {
+                        let mut value: QualifiedValue = values[0u64];
+
+                        if value.Type().IsReference() {
+                            value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
+                        }
+
+                        let mut state: bool = false;
+
+                        if target.IsPointer() && value.Type().IsPointer() {
+                            if LLVMGetTypeKind(target.Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || value.Type().IsNullPointer() {
+                                state = true;
+                            }
+                        }
+
+                        if value.Type() == target || state {
+                            LLVMBuildStore(this.builder, value.Value(), target_pointer.Value());
+                        } else {
+                            Logger::Log("Incompatible primitive type initialization types. ('" + target.ToString() + "' != '" + value.Type().ToString() + "').", call as *const Node, LogSeverity::Error);
+                            ret QualifiedValue(null, null);
+                        }
+                    }
+                } ret target_pointer;
+            } else if identifier->name == "destruct" {
+                if call->arguments.Size() != 1u64 {
+                    Logger::Log("Invalid number of arguments for 'destruct'.", call as *const Node, LogSeverity::Error);
+                    ret QualifiedValue(null, null);
+                }
+
+                let mut target_pointer: QualifiedValue = this.CompileExpression(call->arguments[0u64], false);
+
+                if target_pointer.Null() {
+                    ret QualifiedValue(null, null);
+                }
+
+                if target_pointer.Type().IsReference() {
+                    target_pointer = QualifiedValue(LLVMBuildLoad2(this.builder, target_pointer.Type().Pointee().Value(), target_pointer.Value(), ""), target_pointer.Type().Pointee());
+                }
+
+                if !target_pointer.Type().IsPointer() {
+                    Logger::Log("Destruct target must be a pointer.", call as *const Node, LogSeverity::Error);
+                    ret QualifiedValue(null, null);
+                }
+
+                if target_pointer.Type().Pointee().IsClass() {
+                    this.CompileDestructor(target_pointer.Type().Pointee(), target_pointer, call as *const Node);
+                }
+
+                ret QualifiedValue(null, null);
             }
         }
 

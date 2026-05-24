@@ -1105,6 +1105,8 @@ class Subchunk {
 
         if !chunk.Valid() {
             Logger::Error("Failed to lock parent chunk.");
+        } else if chunk->state == ChunkState::Dead {
+            ret;
         }
 
         this.offset = 0u32;
@@ -1224,6 +1226,10 @@ class Chunk {
     }
 
     pub Upload(&mut this) {
+        if this.state == ChunkState::Dead {
+            ret;
+        }
+
         this.offset = 0u32;
         this.vertices.Clear();
         this.indices.Clear();
@@ -1613,21 +1619,11 @@ class World {
                             }
 
                             if ready {
-                                mtx_lock(&this.chunk_update_mutex);
-
-                                for k in 0u64..this.chunk_update_queue.Size() {
-                                    if this.chunk_update_queue[k] == chunk {
-                                        this.chunk_update_queue.RemoveAt(k);
-                                        break;
-                                    }
-                                }
-
                                 chunk->state = ChunkState::Dead;
                                 if east_neighbor.Valid() { east_neighbor->west_neighbor.Clear(); }
                                 if west_neighbor.Valid() { west_neighbor->east_neighbor.Clear(); }
                                 if north_neighbor.Valid() { north_neighbor->south_neighbor.Clear(); }
                                 if south_neighbor.Valid() { south_neighbor->north_neighbor.Clear(); }
-                                mtx_unlock(&this.chunk_update_mutex);
                                 this.buckets[i]->RemoveAt(j);
                                 continue;
                             }
@@ -2177,6 +2173,11 @@ class World {
 
             let chunk: Shared<Chunk> = this.chunk_upload_queue.RemoveAt(0u64);
             mtx_unlock(&this.chunk_upload_mutex);
+
+            if chunk->state == ChunkState::Dead {
+                continue;
+            }
+
             chunk->Upload();
             chunk->state = ChunkState::Ready;
         }

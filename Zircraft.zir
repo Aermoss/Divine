@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#[include "vendor/glad", "vendor/glfw", "vendor/stb", "other/noise",
-    "std/pair", "std/thrd", "std/atom", "std/math", "std/file", "std/str" : *]
+#[include "std/str", "std/file", "std/thrd", "std/atom", "std/ptr", "std/math",
+    "vendor/glad", "vendor/glfw", "vendor/stb", "other/noise" : *]
 
 enum DWMWINDOWATTRIBUTE: u32 {
     DWMWA_NCRENDERING_ENABLED,
@@ -804,12 +804,9 @@ class Subchunk {
     pub vertices: Vector<f32>, pub indices: Vector<u32>, pub offset: u32,
     pub blocks[SUBCHUNK_WIDTH * SUBCHUNK_HEIGHT * SUBCHUNK_DEPTH]: u8,
     pub lights[SUBCHUNK_WIDTH * SUBCHUNK_HEIGHT * SUBCHUNK_DEPTH]: u8,
-    pub parent: *mut Chunk;
+    pub parent: Weak<Chunk>;
 
-    Subchunk(&mut this, parent: *mut Chunk, position: Vector3) {
-        (this.parent, this.position) = (parent, position);
-        this.world_position = this.position * Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32);
-
+    Subchunk(&mut this) {
         for i in 0u64..(SUBCHUNK_WIDTH * SUBCHUNK_HEIGHT * SUBCHUNK_DEPTH) {
             (this.blocks[i], this.lights[i]) = (0u8, 0u8);
         }
@@ -937,9 +934,15 @@ class Subchunk {
     }
 
     pub GetLight(&this, number: u8, index: u64, position: &Vector3, direction: &Vector3) -> Vector<f32> {
+        let chunk: Shared<Chunk> = this.parent.Lock();
+
+        if !chunk.Valid() {
+            Logger::Error("Failed to lock parent chunk.");
+        }
+
         let mut light_source: bool = false;
 
-        for light_block in this.parent->parent->light_blocks {
+        for light_block in chunk->parent->light_blocks {
             if light_block == number {
                 light_source = true;
                 break;
@@ -948,10 +951,10 @@ class Subchunk {
 
         if light_source {
             let mut result: Vector<f32>;
-            result.PushBack(this.parent->parent->GetLight(position) as f32);
-            result.PushBack(this.parent->parent->GetLight(position) as f32);
-            result.PushBack(this.parent->parent->GetLight(position) as f32);
-            result.PushBack(this.parent->parent->GetLight(position) as f32);
+            result.PushBack(chunk->parent->GetLight(position) as f32);
+            result.PushBack(chunk->parent->GetLight(position) as f32);
+            result.PushBack(chunk->parent->GetLight(position) as f32);
+            result.PushBack(chunk->parent->GetLight(position) as f32);
             ret result;
         } else {
             let mut positions: Vector<Vector3>;
@@ -960,7 +963,7 @@ class Subchunk {
             let mut lights: Vector<f32>;
 
             for position in positions {
-                lights.PushBack(this.parent->parent->GetLight(position) as f32);
+                lights.PushBack(chunk->parent->GetLight(position) as f32);
             }
 
             ret this.GetSmoothFaceLight(lights[0u64], lights[1u64], lights[2u64], lights[3u64], lights[4u64], lights[5u64], lights[6u64], lights[7u64], lights[8u64]);
@@ -968,9 +971,15 @@ class Subchunk {
     }
 
     pub GetSkylight(&this, number: u8, index: u64, position: &Vector3, direction: &Vector3) -> Vector<f32> {
+        let chunk: Shared<Chunk> = this.parent.Lock();
+
+        if !chunk.Valid() {
+            Logger::Error("Failed to lock parent chunk.");
+        }
+
         let mut light_source: bool = false;
 
-        for light_block in this.parent->parent->light_blocks {
+        for light_block in chunk->parent->light_blocks {
             if light_block == number {
                 light_source = true;
                 break;
@@ -979,10 +988,10 @@ class Subchunk {
 
         if light_source {
             let mut result: Vector<f32>;
-            result.PushBack(this.parent->parent->GetSkylight(position) as f32);
-            result.PushBack(this.parent->parent->GetSkylight(position) as f32);
-            result.PushBack(this.parent->parent->GetSkylight(position) as f32);
-            result.PushBack(this.parent->parent->GetSkylight(position) as f32);
+            result.PushBack(chunk->parent->GetSkylight(position) as f32);
+            result.PushBack(chunk->parent->GetSkylight(position) as f32);
+            result.PushBack(chunk->parent->GetSkylight(position) as f32);
+            result.PushBack(chunk->parent->GetSkylight(position) as f32);
             ret result;
         } else {
             let mut positions: Vector<Vector3>;
@@ -991,7 +1000,7 @@ class Subchunk {
             let mut lights: Vector<f32>;
 
             for position in positions {
-                lights.PushBack(this.parent->parent->GetSkylight(position) as f32);
+                lights.PushBack(chunk->parent->GetSkylight(position) as f32);
             }
 
             ret this.GetSmoothFaceLight(lights[0u64], lights[1u64], lights[2u64], lights[3u64], lights[4u64], lights[5u64], lights[6u64], lights[7u64], lights[8u64]);
@@ -999,6 +1008,12 @@ class Subchunk {
     }
 
     pub GetShading(&this, number: u8, index: u64, direction: &Vector3) -> Vector<f32> {
+        let chunk: Shared<Chunk> = this.parent.Lock();
+
+        if !chunk.Valid() {
+            Logger::Error("Failed to lock parent chunk.");
+        }
+
         let mut result: Vector<f32>;
         
         for i in 0u64..4u64 {
@@ -1007,7 +1022,7 @@ class Subchunk {
 
         let mut light_source: bool = false;
 
-        for light_block in this.parent->parent->light_blocks {
+        for light_block in chunk->parent->light_blocks {
             if light_block == number {
                 light_source = true;
                 break;
@@ -1056,25 +1071,29 @@ class Subchunk {
             ret 0u8;
         }
 
-        let mut chunk: *mut Chunk = this.parent;
+        let mut chunk: Shared<Chunk> = this.parent.Lock();
 
-        if x < (chunk->world_position.x as i32) {
-            chunk = chunk->west_neighbor;
-        } else if x >= (chunk->world_position.x as i32) + (SUBCHUNK_WIDTH as i32) {
-            chunk = chunk->east_neighbor;
+        if !chunk.Valid() {
+            Logger::Error("Failed to lock parent chunk.");
         }
 
-        if chunk == null {
+        if x < (chunk->world_position.x as i32) {
+            chunk = chunk->west_neighbor.Lock();
+        } else if x >= (chunk->world_position.x as i32) + (SUBCHUNK_WIDTH as i32) {
+            chunk = chunk->east_neighbor.Lock();
+        }
+
+        if !chunk.Valid() {
             ret 0u8;
         }
 
         if z < (chunk->world_position.z as i32) {
-            chunk = chunk->north_neighbor;
+            chunk = chunk->north_neighbor.Lock();
         } else if z >= (chunk->world_position.z as i32) + (SUBCHUNK_DEPTH as i32) {
-            chunk = chunk->south_neighbor;
+            chunk = chunk->south_neighbor.Lock();
         }
 
-        if chunk == null {
+        if !chunk.Valid() {
             ret 0u8;
         }
 
@@ -1082,6 +1101,12 @@ class Subchunk {
     }
 
     pub Update(&mut this) {
+        let chunk: Shared<Chunk> = this.parent.Lock();
+
+        if !chunk.Valid() {
+            Logger::Error("Failed to lock parent chunk.");
+        }
+
         this.offset = 0u32;
         this.vertices.Clear();
         this.indices.Clear();
@@ -1100,7 +1125,7 @@ class Subchunk {
                 for z in 0u64..SUBCHUNK_DEPTH {
                     let position: Vector3 = Vector3(x as f32, y as f32, z as f32);
                     let block: u8 = this.blocks[x + y * SUBCHUNK_WIDTH + z * SUBCHUNK_WIDTH * SUBCHUNK_HEIGHT];
-                    let block_type: *mut BlockType = this.parent->parent->block_types[block as u64 - 1u64];
+                    let block_type: *mut BlockType = chunk->parent->block_types[block as u64 - 1u64];
 
                     if block != 0u8 {
                         for i in 0u64..6u64 {
@@ -1157,15 +1182,18 @@ class Chunk {
     pub subchunks[CHUNK_HEIGHT / SUBCHUNK_HEIGHT]: *mut Subchunk,
     pub state: Atomic<ChunkState> = ChunkState::Empty,
 
-    pub north_neighbor: *mut Chunk = null, pub south_neighbor: *mut Chunk = null,
-    pub east_neighbor: *mut Chunk = null, pub west_neighbor: *mut Chunk = null;
+    pub north_neighbor: Weak<Chunk>, pub south_neighbor: Weak<Chunk>,
+    pub east_neighbor: Weak<Chunk>, pub west_neighbor: Weak<Chunk>;
 
     Chunk(&mut this, parent: *mut World, position: Vector3) {
         (this.parent, this.position) = (parent, position);
         this.world_position = this.position * Vector3(CHUNK_WIDTH as f32, CHUNK_HEIGHT as f32, CHUNK_DEPTH as f32);
 
         for i in 0u64..(CHUNK_HEIGHT / SUBCHUNK_HEIGHT) {
-            this.subchunks[i] = new Subchunk(this, Vector3(position.x, position.y + i as f32, position.z));
+            let subchunk: *mut Subchunk = new Subchunk();
+            subchunk->position = Vector3(position.x, position.y + i as f32, position.z);
+            subchunk->world_position = subchunk->position * Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32);
+            this.subchunks[i] = subchunk;
         }
     }
 
@@ -1181,9 +1209,11 @@ class Chunk {
         if this.vertex_array != 0u32 {
             glDeleteVertexArrays(1i32, &this.vertex_array);
         }
+    }
 
+    pub SetSubchunkParents(&mut this, chunk: Weak<Chunk>) {
         for i in 0u64..(CHUNK_HEIGHT / SUBCHUNK_HEIGHT) {
-            del this.subchunks[i];
+            this.subchunks[i]->parent = chunk;
         }
     }
 
@@ -1310,10 +1340,9 @@ const UNLOAD_DISTANCE_SQ: i64 = UNLOAD_DISTANCE * UNLOAD_DISTANCE;
 const HASH_SIZE: u64 = 1024u64;
 
 class World {
-    priv chunk_update_queue: Vector<*mut Chunk>,
-    priv chunk_upload_queue: Vector<*mut Chunk>,
-    priv chunk_delete_queue: Vector<*mut Chunk>,
-    priv buckets[HASH_SIZE]: *mut Vector<*mut Chunk>,
+    priv chunk_update_queue: Vector<Shared<Chunk>>,
+    priv chunk_upload_queue: Vector<Shared<Chunk>>,
+    priv buckets[HASH_SIZE]: *mut Vector<Shared<Chunk>>,
     priv current_chunk: Vector3, priv last_chunk: Vector3,
     pub block_types: Vector<*mut BlockType>,
     pub light_blocks: Vector<u8>,
@@ -1334,7 +1363,7 @@ class World {
         this.last_chunk = Vector3(0.0f32, -1.0f32, 0.0f32);
 
         for i in 0u64..HASH_SIZE {
-            this.buckets[i] = new Vector<*mut Chunk>();
+            this.buckets[i] = new Vector<Shared<Chunk>>();
         }
 
         if mtx_init(&this.chunk_mutex, mtx_plain) != thrd_success {
@@ -1405,9 +1434,7 @@ class World {
         }
 
         for i in 0u64..HASH_SIZE {
-            for chunk in *this.buckets[i] {
-                del chunk;
-            } del this.buckets[i];
+            del this.buckets[i];
         }
     }
 
@@ -1417,14 +1444,14 @@ class World {
         ret (h1 ^ h2) % HASH_SIZE;
     }
 
-    pub AddChunk(&mut this, chunk: *mut Chunk) {
+    pub AddChunk(&mut this, chunk: Shared<Chunk>) {
         let hash: u64 = this.GetHash(chunk->position.x as i32, chunk->position.z as i32);
         mtx_lock(&this.chunk_mutex);
         this.buckets[hash]->PushBack(chunk);
         mtx_unlock(&this.chunk_mutex);
     }
 
-    pub RemoveChunk(&mut this, chunk: *mut Chunk) {
+    pub RemoveChunk(&mut this, chunk: Shared<Chunk>) {
         let mut index: u64 = 0u64;
         let hash: u64 = this.GetHash(chunk->position.x as i32, chunk->position.z as i32);
         mtx_lock(&this.chunk_mutex);
@@ -1439,8 +1466,8 @@ class World {
         mtx_unlock(&this.chunk_mutex);
     }
 
-    pub GetChunk(&this, position: &Vector3) -> *mut Chunk {
-        if position.y != 0.0f32 { ret null; }
+    pub GetChunk(&this, position: &Vector3) -> Shared<Chunk> {
+        if position.y != 0.0f32 { ret Shared<Chunk>(); }
         let hash: u64 = this.GetHash(position.x as i32, position.z as i32);
         mtx_lock(&this.chunk_mutex);
 
@@ -1452,14 +1479,14 @@ class World {
         }
 
         mtx_unlock(&this.chunk_mutex);
-        ret null;
+        ret Shared<Chunk>();
     }
 
     pub GetRawLight(&this, position: &Vector3) -> u8 {
         let chunk_position: Vector3 = (position / Vector3(CHUNK_WIDTH as f32, CHUNK_HEIGHT as f32, CHUNK_DEPTH as f32)).Floor();
-        let chunk: *mut Chunk = this.GetChunk(chunk_position);
+        let chunk: Shared<Chunk> = this.GetChunk(chunk_position);
 
-        if chunk != null {
+        if chunk.Valid() {
             let subchunk_position: Vector3 = (position / Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)).Floor();
             ret chunk->subchunks[subchunk_position.y as u64]->GetRawLight(position - (subchunk_position * Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)));
         } else {
@@ -1469,9 +1496,9 @@ class World {
 
     pub GetLight(&this, position: &Vector3) -> u8 {
         let chunk_position: Vector3 = (position / Vector3(CHUNK_WIDTH as f32, CHUNK_HEIGHT as f32, CHUNK_DEPTH as f32)).Floor();
-        let chunk: *mut Chunk = this.GetChunk(chunk_position);
+        let chunk: Shared<Chunk> = this.GetChunk(chunk_position);
 
-        if chunk != null {
+        if chunk.Valid() {
             let subchunk_position: Vector3 = (position / Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)).Floor();
             ret chunk->subchunks[subchunk_position.y as u64]->GetBlockLight(position - (subchunk_position * Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)));
         } else {
@@ -1481,9 +1508,9 @@ class World {
 
     pub GetSkylight(&this, position: &Vector3) -> u8 {
         let chunk_position: Vector3 = (position / Vector3(CHUNK_WIDTH as f32, CHUNK_HEIGHT as f32, CHUNK_DEPTH as f32)).Floor();
-        let chunk: *mut Chunk = this.GetChunk(chunk_position);
+        let chunk: Shared<Chunk> = this.GetChunk(chunk_position);
 
-        if chunk != null {
+        if chunk.Valid() {
             let subchunk_position: Vector3 = (position / Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)).Floor();
             ret chunk->subchunks[subchunk_position.y as u64]->GetSkylight(position - (subchunk_position * Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)));
         } else {
@@ -1493,9 +1520,9 @@ class World {
 
     pub SetBlock(&mut this, position: &Vector3, block: u8) {
         let chunk_position: Vector3 = (position / Vector3(CHUNK_WIDTH as f32, CHUNK_HEIGHT as f32, CHUNK_DEPTH as f32)).Floor();
-        let chunk: *mut Chunk = this.GetChunk(chunk_position);
+        let chunk: Shared<Chunk> = this.GetChunk(chunk_position);
 
-        if chunk != null {
+        if chunk.Valid() {
             let subchunk_position: Vector3 = (position / Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)).Floor();
             chunk->subchunks[subchunk_position.y as u64]->SetBlock(position - (subchunk_position * Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)), block);
             this.UpdateAtPosition(position);
@@ -1506,9 +1533,9 @@ class World {
 
     pub GetBlock(&this, position: &Vector3) -> u8 {
         let chunk_position: Vector3 = (position / Vector3(CHUNK_WIDTH as f32, CHUNK_HEIGHT as f32, CHUNK_DEPTH as f32)).Floor();
-        let chunk: *mut Chunk = this.GetChunk(chunk_position);
+        let chunk: Shared<Chunk> = this.GetChunk(chunk_position);
 
-        if chunk != null {
+        if chunk.Valid() {
             let subchunk_position: Vector3 = (position / Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)).Floor();
             ret chunk->subchunks[subchunk_position.y as u64]->GetBlock(position - (subchunk_position * Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)));
         } else {
@@ -1516,8 +1543,9 @@ class World {
         }
     }
 
-    pub GenerateChunk(&mut this, position: Vector3) -> *mut Chunk {
-        let chunk: *mut Chunk = new Chunk(this, position);
+    pub GenerateChunk(&mut this, position: Vector3) -> Shared<Chunk> {
+        let chunk: Shared<Chunk> = { this, position };
+        chunk->SetSubchunkParents(chunk.ToWeak());
 
         for x in 0u64..CHUNK_WIDTH {
             for z in 0u64..CHUNK_DEPTH {
@@ -1542,7 +1570,7 @@ class World {
         };
 
         while this.running {
-            let mut chunk_update_queue: Vector<*mut Chunk>;
+            let mut chunk_update_queue: Vector<Shared<Chunk>>;
             mtx_lock(&this.current_chunk_mutex);
             let current_chunk: Vector3 = this.current_chunk;
             mtx_unlock(&this.current_chunk_mutex);
@@ -1553,28 +1581,35 @@ class World {
                     let mut j: u64 = 0u64;
 
                     while j < this.buckets[i]->Size() {
-                        let chunk: *mut Chunk = this.buckets[i]->Data()[j];
+                        let chunk: Shared<Chunk> = this.buckets[i]->Data()[j];
                         let dist_x: f32 = chunk->position.x - current_chunk.x;
                         let dist_z: f32 = chunk->position.z - current_chunk.z;
                         let dist_sq: f32 = dist_x * dist_x + dist_z * dist_z;
 
                         if dist_sq > UNLOAD_DISTANCE_SQ as f32 {
                             let mut ready: bool = chunk->state == ChunkState::Ready;
+                            let east_neighbor: Shared<Chunk> = chunk->east_neighbor.Lock();
 
-                            if chunk->east_neighbor != null {
-                                ready |= chunk->east_neighbor->state == ChunkState::Ready;
+                            if east_neighbor.Valid() {
+                                ready |= east_neighbor->state == ChunkState::Ready;
                             }
 
-                            if chunk->west_neighbor != null {
-                                ready |= chunk->west_neighbor->state == ChunkState::Ready;
+                            let west_neighbor: Shared<Chunk> = chunk->west_neighbor.Lock();
+
+                            if west_neighbor.Valid() {
+                                ready |= west_neighbor->state == ChunkState::Ready;
                             }
 
-                            if chunk->north_neighbor != null {
-                                ready |= chunk->north_neighbor->state == ChunkState::Ready;
+                            let north_neighbor: Shared<Chunk> = chunk->north_neighbor.Lock();
+
+                            if north_neighbor.Valid() {
+                                ready |= north_neighbor->state == ChunkState::Ready;
                             }
 
-                            if chunk->south_neighbor != null {
-                                ready |= chunk->south_neighbor->state == ChunkState::Ready;
+                            let south_neighbor: Shared<Chunk> = chunk->south_neighbor.Lock();
+
+                            if south_neighbor.Valid() {
+                                ready |= south_neighbor->state == ChunkState::Ready;
                             }
 
                             if ready {
@@ -1588,15 +1623,12 @@ class World {
                                 }
 
                                 chunk->state = ChunkState::Dead;
-                                if chunk->east_neighbor != null { chunk->east_neighbor->west_neighbor = null; }
-                                if chunk->west_neighbor != null { chunk->west_neighbor->east_neighbor = null; }
-                                if chunk->north_neighbor != null { chunk->north_neighbor->south_neighbor = null; }
-                                if chunk->south_neighbor != null { chunk->south_neighbor->north_neighbor = null; }
+                                if east_neighbor.Valid() { east_neighbor->west_neighbor.Clear(); }
+                                if west_neighbor.Valid() { west_neighbor->east_neighbor.Clear(); }
+                                if north_neighbor.Valid() { north_neighbor->south_neighbor.Clear(); }
+                                if south_neighbor.Valid() { south_neighbor->north_neighbor.Clear(); }
                                 mtx_unlock(&this.chunk_update_mutex);
                                 this.buckets[i]->RemoveAt(j);
-                                mtx_lock(&this.chunk_delete_mutex);
-                                this.chunk_delete_queue.PushBack(chunk);
-                                mtx_unlock(&this.chunk_delete_mutex);
                                 continue;
                             }
                         } j += 1u64;
@@ -1613,16 +1645,16 @@ class World {
 
                         let position: Vector3 = { current_chunk.x + x as f32, 0.0f32, current_chunk.z + z as f32 };
 
-                        if this.GetChunk(position) == null {
-                            let chunk: *mut Chunk = this.GenerateChunk(position);
+                        if !this.GetChunk(position).Valid() {
+                            let chunk: Shared<Chunk> = this.GenerateChunk(position);
                             chunk->state = ChunkState::Generating;
                             this.InitializeSkylight(chunk);
                             chunk_update_queue.PushBack(chunk);
 
                             for i in 0u64..4u64 {
-                                let neighbor_chunk: *mut Chunk = this.GetChunk(position + neighbor_offsets[i]);
+                                let neighbor_chunk: Shared<Chunk> = this.GetChunk(position + neighbor_offsets[i]);
 
-                                if neighbor_chunk != null {
+                                if neighbor_chunk.Valid() {
                                     if i == 0u64 {
                                         neighbor_chunk->west_neighbor = chunk;
                                         chunk->east_neighbor = neighbor_chunk;
@@ -1699,7 +1731,7 @@ class World {
                 let mut min_dist_sq: f32 = 1.0f32 / 0.0f32;
 
                 for i in 0u64..this.chunk_update_queue.Size() {
-                    let chunk: *mut Chunk = this.chunk_update_queue[i];
+                    let chunk: Shared<Chunk> = this.chunk_update_queue[i];
                     let dist_x: f32 = chunk->position.x - current_chunk.x;
                     let dist_z: f32 = chunk->position.z - current_chunk.z;
                     let dist_sq: f32 = dist_x * dist_x + dist_z * dist_z;
@@ -1710,7 +1742,7 @@ class World {
                     }
                 }
 
-                let chunk: *mut Chunk = this.chunk_update_queue.RemoveAt(best_index);
+                let chunk: Shared<Chunk> = this.chunk_update_queue.RemoveAt(best_index);
                 mtx_unlock(&this.chunk_update_mutex);
                 chunk->state = ChunkState::Meshing;
                 chunk->Update();
@@ -1736,7 +1768,7 @@ class World {
         }
     }
 
-    priv InitializeSkylight(&mut this, chunk: *mut Chunk) {
+    priv InitializeSkylight(&mut this, chunk: Shared<Chunk>) {
         let mut height: u64 = 0u64;
 
         for x in 0u64..CHUNK_WIDTH {
@@ -1790,9 +1822,9 @@ class World {
                 }
 
                 let chunk_position: Vector3 = (neighbour_position / Vector3(CHUNK_WIDTH as f32, CHUNK_HEIGHT as f32, CHUNK_DEPTH as f32)).Floor();
-                let chunk: *mut Chunk = this.GetChunk(chunk_position);
+                let chunk: Shared<Chunk> = this.GetChunk(chunk_position);
 
-                if chunk != null {
+                if chunk.Valid() {
                     let subchunk_position: Vector3 = (neighbour_position / Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)).Floor();
                     let local_position: Vector3 = neighbour_position - (subchunk_position * Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32));
                     let subchunk: *mut Subchunk = chunk->subchunks[subchunk_position.y as u64];
@@ -1821,9 +1853,9 @@ class World {
 
     pub DecreaseSkylight(&mut this, position: &Vector3, light_update: bool) {
         let chunk_position: Vector3 = (position / Vector3(CHUNK_WIDTH as f32, CHUNK_HEIGHT as f32, CHUNK_DEPTH as f32)).Floor();
-        let chunk: *mut Chunk = this.GetChunk(chunk_position);
+        let chunk: Shared<Chunk> = this.GetChunk(chunk_position);
 
-        if chunk != null {
+        if chunk.Valid() {
             let subchunk_position: Vector3 = (position / Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)).Floor();
             let local_position: Vector3 = position - (subchunk_position * Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32));
             let old_light: u8 = chunk->subchunks[subchunk_position.y as u64]->GetSkylight(local_position);
@@ -1852,9 +1884,9 @@ class World {
                 }
 
                 let chunk_position: Vector3 = (neighbour_position / Vector3(CHUNK_WIDTH as f32, CHUNK_HEIGHT as f32, CHUNK_DEPTH as f32)).Floor();
-                let chunk: *mut Chunk = this.GetChunk(chunk_position);
+                let chunk: Shared<Chunk> = this.GetChunk(chunk_position);
 
-                if chunk != null {
+                if chunk.Valid() {
                     let subchunk_position: Vector3 = (neighbour_position / Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)).Floor();
                     let local_position: Vector3 = neighbour_position - (subchunk_position * Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32));
                     let subchunk: *mut Subchunk = chunk->subchunks[subchunk_position.y as u64];
@@ -1883,9 +1915,9 @@ class World {
 
     pub IncreaseLight(&mut this, position: &Vector3, newlight: u8, light_update: bool) {
         let chunk_position: Vector3 = (position / Vector3(CHUNK_WIDTH as f32, CHUNK_HEIGHT as f32, CHUNK_DEPTH as f32)).Floor();
-        let chunk: *mut Chunk = this.GetChunk(chunk_position);
+        let chunk: Shared<Chunk> = this.GetChunk(chunk_position);
 
-        if chunk != null {
+        if chunk.Valid() {
             let subchunk_position: Vector3 = (position / Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)).Floor();
             let local_position: Vector3 = position - (subchunk_position * Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32));
             chunk->subchunks[subchunk_position.y as u64]->SetBlockLight(local_position, newlight);
@@ -1912,9 +1944,9 @@ class World {
                 }
 
                 let chunk_position: Vector3 = (neighbour_position / Vector3(CHUNK_WIDTH as f32, CHUNK_HEIGHT as f32, CHUNK_DEPTH as f32)).Floor();
-                let chunk: *mut Chunk = this.GetChunk(chunk_position);
+                let chunk: Shared<Chunk> = this.GetChunk(chunk_position);
 
-                if chunk != null {
+                if chunk.Valid() {
                     let subchunk_position: Vector3 = (neighbour_position / Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)).Floor();
                     let local_position: Vector3 = neighbour_position - (subchunk_position * Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32));
                     let subchunk: *mut Subchunk = chunk->subchunks[subchunk_position.y as u64];
@@ -1934,9 +1966,9 @@ class World {
 
     pub DecreaseLight(&mut this, position: &Vector3) {
         let chunk_position: Vector3 = (position / Vector3(CHUNK_WIDTH as f32, CHUNK_HEIGHT as f32, CHUNK_DEPTH as f32)).Floor();
-        let chunk: *mut Chunk = this.GetChunk(chunk_position);
+        let chunk: Shared<Chunk> = this.GetChunk(chunk_position);
 
-        if chunk != null {
+        if chunk.Valid() {
             let subchunk_position: Vector3 = (position / Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)).Floor();
             let local_position: Vector3 = position - (subchunk_position * Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32));
             let old_light: u8 = chunk->subchunks[subchunk_position.y as u64]->GetBlockLight(local_position);
@@ -1965,9 +1997,9 @@ class World {
                 }
 
                 let chunk_position: Vector3 = (neighbour_position / Vector3(CHUNK_WIDTH as f32, CHUNK_HEIGHT as f32, CHUNK_DEPTH as f32)).Floor();
-                let chunk: *mut Chunk = this.GetChunk(chunk_position);
+                let chunk: Shared<Chunk> = this.GetChunk(chunk_position);
 
-                if chunk != null {
+                if chunk.Valid() {
                     let subchunk_position: Vector3 = (neighbour_position / Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)).Floor();
                     let local_position: Vector3 = neighbour_position - (subchunk_position * Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32));
                     let subchunk: *mut Subchunk = chunk->subchunks[subchunk_position.y as u64];
@@ -2005,7 +2037,7 @@ class World {
         }
     }
 
-    priv QueueChunkUpload(&mut this, chunk: *mut Chunk) {
+    priv QueueChunkUpload(&mut this, chunk: Shared<Chunk>) {
         let mut found: bool = false;
         mtx_lock(&this.chunk_upload_mutex);
 
@@ -2025,23 +2057,27 @@ class World {
 
     priv UpdateAtPosition(&mut this, position: Vector3) {
         let chunk_position: Vector3 = (position / Vector3(CHUNK_WIDTH as f32, CHUNK_HEIGHT as f32, CHUNK_DEPTH as f32)).Floor();
-        let chunk: *mut Chunk = this.GetChunk(chunk_position);
+        let chunk: Shared<Chunk> = this.GetChunk(chunk_position);
 
-        if chunk != null {
+        if chunk.Valid() {
             let subchunk_position: Vector3 = (position / Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32)).Floor();
             let local_position: Vector3 = position - (subchunk_position * Vector3(SUBCHUNK_WIDTH as f32, SUBCHUNK_HEIGHT as f32, SUBCHUNK_DEPTH as f32));
             chunk->subchunks[subchunk_position.y as u64]->Update();
             this.QueueChunkUpload(chunk);
 
             if local_position.x == (SUBCHUNK_WIDTH as f32) - 1.0f32 {
-                if chunk->east_neighbor != null {
-                    chunk->east_neighbor->subchunks[subchunk_position.y as u64]->Update();
-                    this.QueueChunkUpload(chunk->east_neighbor);
+                let east_neighbor: Shared<Chunk> = chunk->east_neighbor.Lock();
+
+                if east_neighbor.Valid() {
+                    east_neighbor->subchunks[subchunk_position.y as u64]->Update();
+                    this.QueueChunkUpload(east_neighbor);
                 }
             } else if local_position.x == 0.0f32 {
-                if chunk->west_neighbor != null {
-                    chunk->west_neighbor->subchunks[subchunk_position.y as u64]->Update();
-                    this.QueueChunkUpload(chunk->west_neighbor);
+                let west_neighbor: Shared<Chunk> = chunk->west_neighbor.Lock();
+
+                if west_neighbor.Valid() {
+                    west_neighbor->subchunks[subchunk_position.y as u64]->Update();
+                    this.QueueChunkUpload(west_neighbor);
                 }
             }
 
@@ -2054,14 +2090,18 @@ class World {
             }
 
             if local_position.z == (SUBCHUNK_DEPTH as f32) - 1.0f32 {
-                if chunk->south_neighbor != null {
-                    chunk->south_neighbor->subchunks[subchunk_position.y as u64]->Update();
-                    this.QueueChunkUpload(chunk->south_neighbor);
+                let south_neighbor: Shared<Chunk> = chunk->south_neighbor.Lock();
+
+                if south_neighbor.Valid() {
+                    south_neighbor->subchunks[subchunk_position.y as u64]->Update();
+                    this.QueueChunkUpload(south_neighbor);
                 }
             } else if local_position.z == 0.0f32 {
-                if chunk->north_neighbor != null {
-                    chunk->north_neighbor->subchunks[subchunk_position.y as u64]->Update();
-                    this.QueueChunkUpload(chunk->north_neighbor);
+                let north_neighbor: Shared<Chunk> = chunk->north_neighbor.Lock();
+
+                if north_neighbor.Valid() {
+                    north_neighbor->subchunks[subchunk_position.y as u64]->Update();
+                    this.QueueChunkUpload(north_neighbor);
                 }
             }
         }
@@ -2135,23 +2175,10 @@ class World {
                 break;
             }
 
-            let chunk: *mut Chunk = this.chunk_upload_queue.RemoveAt(0u64);
+            let chunk: Shared<Chunk> = this.chunk_upload_queue.RemoveAt(0u64);
             mtx_unlock(&this.chunk_upload_mutex);
             chunk->Upload();
             chunk->state = ChunkState::Ready;
-        }
-
-        loop {
-            mtx_lock(&this.chunk_delete_mutex);
-
-            if this.chunk_delete_queue.Empty() {
-                mtx_unlock(&this.chunk_delete_mutex);
-                break;
-            }
-
-            let chunk: *mut Chunk = this.chunk_delete_queue.RemoveAt(0u64);
-            mtx_unlock(&this.chunk_delete_mutex);
-            del chunk;
         }
     }
 

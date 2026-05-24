@@ -1200,18 +1200,6 @@ class Chunk {
     }
 
     ~Chunk(&mut this) {
-        if this.index_buffer != 0u32 {
-            glDeleteBuffers(1i32, &this.index_buffer);
-        }
-
-        if this.vertex_buffer != 0u32 {
-            glDeleteBuffers(1i32, &this.vertex_buffer);
-        }
-
-        if this.vertex_array != 0u32 {
-            glDeleteVertexArrays(1i32, &this.vertex_array);
-        }
-
         for i in 0u64..(CHUNK_HEIGHT / SUBCHUNK_HEIGHT) {
             del this.subchunks[i];
         }
@@ -1286,6 +1274,23 @@ class Chunk {
         this.index_count = this.indices.Size() as i32;
     }
 
+    pub Delete(&mut this) {
+        if this.index_buffer != 0u32 {
+            glDeleteBuffers(1i32, &this.index_buffer);
+            this.index_buffer = 0u32;
+        }
+
+        if this.vertex_buffer != 0u32 {
+            glDeleteBuffers(1i32, &this.vertex_buffer);
+            this.vertex_buffer = 0u32;
+        }
+
+        if this.vertex_array != 0u32 {
+            glDeleteVertexArrays(1i32, &this.vertex_array);
+            this.vertex_array = 0u32;
+        }
+    }
+
     pub Render(&this) {
         if this.vertex_array != 0u32 && this.vertex_buffer != 0u32 && this.index_buffer != 0u32 {
             glBindVertexArray(this.vertex_array);
@@ -1352,6 +1357,7 @@ const HASH_SIZE: u64 = 1024u64;
 class World {
     priv chunk_update_queue: Vector<Shared<Chunk>>,
     priv chunk_upload_queue: Vector<Shared<Chunk>>,
+    priv chunk_delete_queue: Vector<Shared<Chunk>>,
     priv buckets[HASH_SIZE]: *mut Vector<Shared<Chunk>>,
     priv current_chunk: Vector3, priv last_chunk: Vector3,
     pub block_types: Vector<*mut BlockType>,
@@ -1629,6 +1635,11 @@ class World {
                                 if north_neighbor.Valid() { north_neighbor->south_neighbor.Clear(); }
                                 if south_neighbor.Valid() { south_neighbor->north_neighbor.Clear(); }
                                 this.buckets[i]->RemoveAt(j);
+                                mtx_unlock(&this.chunk_mutex);
+                                mtx_lock(&this.chunk_delete_mutex);
+                                this.chunk_delete_queue.PushBack(chunk);
+                                mtx_unlock(&this.chunk_delete_mutex);
+                                mtx_lock(&this.chunk_mutex);
                                 continue;
                             }
                         } j += 1u64;
@@ -1744,8 +1755,18 @@ class World {
 
                 let chunk: Shared<Chunk> = this.chunk_update_queue.RemoveAt(best_index);
                 mtx_unlock(&this.chunk_update_mutex);
+
+                if chunk->state == ChunkState::Dead {
+                    continue;
+                }
+
                 chunk->state = ChunkState::Meshing;
                 chunk->Update();
+
+                if chunk->state == ChunkState::Dead {
+                    continue;
+                }
+
                 chunk->state = ChunkState::Uploading;
                 mtx_lock(&this.chunk_upload_mutex);
                 this.chunk_upload_queue.PushBack(chunk);
@@ -2184,6 +2205,19 @@ class World {
 
             chunk->Upload();
             chunk->state = ChunkState::Ready;
+        }
+
+        loop {
+            mtx_lock(&this.chunk_delete_mutex);
+
+            if this.chunk_delete_queue.Empty() {
+                mtx_unlock(&this.chunk_delete_mutex);
+                break;
+            }
+
+            let chunk: Shared<Chunk> = this.chunk_delete_queue.RemoveAt(0u64);
+            mtx_unlock(&this.chunk_delete_mutex);
+            chunk->Delete();
         }
     }
 

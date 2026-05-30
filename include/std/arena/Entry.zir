@@ -1,0 +1,215 @@
+/*
+ * Copyright 2025-2026 Yusuf Rençber
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#[include "std/mem" : *]
+
+const ARENA_DEFAULT_ALIGNMENT: u64 = 16u64;
+const ARENA_DEFAULT_CHUNK_SIZE: u64 = 1048576u64;
+
+class ArenaChunk {
+    pub next: *mut ArenaChunk = null,
+    pub data: *mut i8, pub capacity: u64,
+    pub used: u64 = 0u64;
+
+    ArenaChunk(&mut this, capacity: u64) {
+        (this.data, this.capacity) = (malloc(capacity) as *mut i8, capacity);
+    }
+
+    ~ArenaChunk(&mut this) {
+        if this.data != null {
+            free(this.data);
+            this.data = null;
+        }
+    }
+}
+
+class ArenaDestructor {
+    pub next: *mut ArenaDestructor = null,
+    pub destructor: func(*mut void),
+    pub instance: *mut void;
+
+    ArenaDestructor(&mut this, instance: *mut void, destructor: func(*mut void)) {
+        (this.instance, this.destructor) = (instance, destructor);
+    }
+}
+
+class Arena {
+    priv head: *mut ArenaChunk = null,
+    priv tail: *mut ArenaChunk = null,
+    priv destructor: *mut ArenaDestructor = null;
+
+    Arena(&mut this) {
+        let chunk: *mut ArenaChunk = new ArenaChunk(ARENA_DEFAULT_CHUNK_SIZE);
+
+        if chunk != null {
+            if chunk->data != null {
+                (this.head, this.tail) = (chunk, chunk);
+            } else {
+                del chunk;
+            }
+        }
+    }
+
+    ~Arena(&mut this) {
+        this.Reset();
+    }
+
+    pub Allocate(&mut this, size: u64) -> *mut void {
+        ret this.AllocateAligned(size, ARENA_DEFAULT_ALIGNMENT);
+    }
+
+    pub AllocateAligned(&mut this, size: u64, align: u64) -> *mut void {
+        if size == 0u64 {
+            ret null;
+        }
+
+        loop {
+            if this.tail == null {
+                if !this.GrowChain(size + align) {
+                    ret null;
+                }
+            }
+
+            let pointer: u64 = this.tail->data as u64 + this.tail->used;
+            let aligned: u64 = (pointer + align - 1u64) & !(align - 1u64);
+            let offset: u64 = aligned - (this.tail->data as u64);
+
+            if (offset + size) <= this.tail->capacity {
+                this.tail->used = offset + size;
+                ret aligned as *mut void;
+            }
+
+            if this.tail->next != null {
+                this.tail = this.tail->next;
+            } else {
+                if !this.GrowChain(size + align) {
+                    ret null;
+                }
+            }
+        } ret null;
+    }
+
+    pub New<T>(&mut this, args...) -> *mut T {
+        let size: u64 = (sizeof(T) + ARENA_DEFAULT_ALIGNMENT - 1u64) & !(ARENA_DEFAULT_ALIGNMENT - 1u64);
+        let destructor_size: u64 = (sizeof(ArenaDestructor) + ARENA_DEFAULT_ALIGNMENT - 1u64) & !(ARENA_DEFAULT_ALIGNMENT - 1u64);
+        let pointer: *mut i8 = this.Allocate(size + destructor_size) as *mut i8;
+        if pointer == null { ret null; }
+        let destructor: *mut ArenaDestructor = (pointer + size) as *mut ArenaDestructor;
+        construct(pointer as *mut T, args...);
+        construct(destructor, pointer, InvokeDestructor<T>);
+        destructor->next = this.destructor;
+        this.destructor = destructor;
+        ret pointer as *mut T;
+    }
+
+    pub Reset(&mut this) {
+        this.InvokeDestructors();
+        this.FreeChunks();
+    }
+
+    pub Clear(&mut this) {
+        this.InvokeDestructors();
+        this.RewindCursors();
+    }
+
+    pub TotalUsed(&this) -> u64 {
+        let mut total: u64 = 0u64;
+        let mut current: *mut ArenaChunk = this.head;
+
+        while current != null {
+            total += current->used;
+            current = current->next;
+        } ret total;
+    }
+
+    pub TotalCapacity(&this) -> u64 {
+        let mut total: u64 = 0u64;
+        let mut current: *mut ArenaChunk = this.head;
+
+        while current != null {
+            total += current->capacity;
+            current = current->next;
+        } ret total;
+    }
+
+    pub ChunkCount(&this) -> u64 {
+        let mut count: u64 = 0u64;
+        let mut current: *mut ArenaChunk = this.head;
+
+        while current != null {
+            current = current->next;
+            count += 1u64;
+        } ret count;
+    }
+
+    priv GrowChain(&mut this, min_bytes: u64) -> bool {
+        let chunk: *mut ArenaChunk = new ArenaChunk(min_bytes > ARENA_DEFAULT_CHUNK_SIZE ? min_bytes : ARENA_DEFAULT_CHUNK_SIZE);
+
+        if chunk == null {
+            ret false;
+        }
+
+        if chunk->data == null {
+            del chunk;
+            ret false;
+        }
+
+        if this.head == null {
+            (this.head, this.tail) = (chunk, chunk);
+        } else {
+            this.tail->next = chunk;
+            this.tail = chunk;
+        } ret true;
+    }
+
+    priv InvokeDestructors(&mut this) {
+        let mut current: *mut ArenaDestructor = this.destructor;
+        this.destructor = null;
+
+        while current != null {
+            if current->instance != null && current->destructor != null {
+                current->destructor(current->instance);
+            } current = current->next;
+        }
+    }
+
+    priv FreeChunks(&mut this) {
+        let mut current: *mut ArenaChunk = this.head;
+
+        while current != null {
+            let next: *mut ArenaChunk = current->next;
+            del current;
+            current = next;
+        }
+
+        (this.head, this.tail) = (null, null);
+    }
+
+    priv RewindCursors(&mut this) {
+        let mut current: *mut ArenaChunk = this.head;
+
+        while current != null {
+            current->used = 0u64;
+            current = current->next;
+        }
+
+        this.tail = this.head;
+    }
+}
+
+func InvokeDestructor<T>(instance: *mut void) {
+    destruct(instance as *mut T);
+}

@@ -14,10 +14,11 @@
  * limitations under the License.
  */
 
-#[include "std/str", "std/vec", "std/map", "std/pair",
+#[include "std/str", "std/vec", "std/map", "std/pair", "std/arena",
     "src/Logger.zir", "src/Lexer.zir", "src/Preprocessor.zir", "src/Nodes.zir" : *]
 
 class Parser {
+    priv arena: Arena,
     priv types: Vector<String>,
     priv tokens: Vector<Token>,
     priv index: u64;
@@ -184,7 +185,7 @@ class Parser {
 
         if token._type == TokenType::INTEGER || token._type == TokenType::FLOAT || token._type == TokenType::STRING || token._type == TokenType::CHAR || token._type == TokenType::TRUE || token._type == TokenType::FALSE || token._type == TokenType::NULL {
             this.Advance();
-            ret new LiteralNode(token.value, token._type, token) as *const Node;
+            ret this.arena.New<LiteralNode>(token.value, token._type, token) as *const Node;
         } else if token._type == TokenType::IDENTIFIER || token._type == TokenType::THIS || token._type == TokenType::OPERATOR || token._type == TokenType::DOUBLE_COLON {
             let mut node: *const Node = null;
 
@@ -201,11 +202,11 @@ class Parser {
                             this.Advance();
                         }
 
-                        node = new IdentifierNode(identifier, token);
+                        node = this.arena.New<IdentifierNode>(identifier, token);
                     } else {
                         let identifier: Token = this.Expect(this.Current()._type != TokenType::THIS ? TokenType::IDENTIFIER : TokenType::THIS);
                         if identifier._type == TokenType::UNKNOWN { ret null; }
-                        node = new IdentifierNode(identifier.value, token);
+                        node = this.arena.New<IdentifierNode>(identifier.value, token);
                     }
                 }
             }
@@ -221,16 +222,16 @@ class Parser {
                         this.Advance();
                     }
 
-                    identifier = new IdentifierNode(_identifier, token);
+                    identifier = this.arena.New<IdentifierNode>(_identifier, token);
                 } else {
                     let _identifier: Token = this.Expect(this.Current()._type != TokenType::THIS ? TokenType::IDENTIFIER : TokenType::THIS);
                     if _identifier._type == TokenType::UNKNOWN { ret null; }
-                    identifier = new IdentifierNode(_identifier.value, token);
-                } node = new ScopeResolutionNode(node, identifier, token);
+                    identifier = this.arena.New<IdentifierNode>(_identifier.value, token);
+                } node = this.arena.New<ScopeResolutionNode>(node, identifier, token);
             } ret node;
         } else if token._type == TokenType::LBRACE {
             this.Advance();
-            let initializer_list: *mut InitializerListNode = new InitializerListNode(token);
+            let initializer_list: *mut InitializerListNode = this.arena.New<InitializerListNode>(token);
 
             if !this.Match(TokenType::RBRACE) {
                 let expression: *const Node = this.ParseExpression();
@@ -266,7 +267,7 @@ class Parser {
 
             if token._type == TokenType::LPAREN {
                 this.Advance();
-                let call: *mut CallNode = new CallNode(expression, token);
+                let call: *mut CallNode = this.arena.New<CallNode>(expression, token);
 
                 if !this.Match(TokenType::RPAREN) {
                     while this.Current()._type != TokenType::RPAREN && this.Current()._type != TokenType::EOF {
@@ -283,7 +284,7 @@ class Parser {
                 } expression = call;
             } else if token._type == TokenType::DOT || token._type == TokenType::ARROW {
                 this.Advance();
-                let member_access: *mut MemberAccessNode = new MemberAccessNode(expression, token._type == TokenType::ARROW, token);
+                let member_access: *mut MemberAccessNode = this.arena.New<MemberAccessNode>(expression, token._type == TokenType::ARROW, token);
 
                 if this.Match(TokenType::OPERATOR) {
                     member_access->member += "op";
@@ -301,11 +302,11 @@ class Parser {
                 this.Advance();
                 let _expression: *const Node = this.ParseExpression();
                 if _expression == null { ret null; }
-                expression = new IndexAccessNode(expression, _expression, token);
+                expression = this.arena.New<IndexAccessNode>(expression, _expression, token);
                 if !this.Expect2(TokenType::RBRACKET) { ret null; }
             } else if token._type == TokenType::LBRACE && (expression->_type == NodeType::SCOPE_RESOLUTION || expression->_type == NodeType::IDENTIFIER) && this.IsStructInit(expression->_type) {
                 this.Advance();
-                let struct_init: *mut StructInitNode = new StructInitNode(expression, token);
+                let struct_init: *mut StructInitNode = this.arena.New<StructInitNode>(expression, token);
 
                 while this.Current()._type != TokenType::RBRACE && this.Current()._type != TokenType::EOF {
                     if this.Current()._type == TokenType::TWO_DOT {
@@ -321,7 +322,7 @@ class Parser {
                         if expression == null { ret null; }
                         struct_init->field_values.PushBack(expression);
                     } else {
-                        struct_init->field_values.PushBack(new IdentifierNode(field_name.value, field_name) as *const Node);
+                        struct_init->field_values.PushBack(this.arena.New<IdentifierNode>(field_name.value, field_name) as *const Node);
                     }
 
                     struct_init->field_names.PushBack(field_name.value);
@@ -332,10 +333,10 @@ class Parser {
                 expression = struct_init;
             } else if token._type == TokenType::THREE_DOT {
                 this.Advance();
-                expression = new PackSplatNode(expression, token);
+                expression = this.arena.New<PackSplatNode>(expression, token);
             } else if this.IsTypeApplication() {
                 this.Advance();
-                let type_application: *mut TypeApplicationNode = new TypeApplicationNode(expression, token);
+                let type_application: *mut TypeApplicationNode = this.arena.New<TypeApplicationNode>(expression, token);
 
                 while this.Current()._type != TokenType::GREATER {
                     let _type: *const Node = this.ParseType();
@@ -365,12 +366,12 @@ class Parser {
 
             let expression: *const Node = this.ParseUnary();
             if expression == null { ret null; }
-            ret new UnaryOperationNode(expression, token._type, mutable, token) as *const Node;
+            ret this.arena.New<UnaryOperationNode>(expression, token._type, mutable, token) as *const Node;
         } else if token._type == TokenType::NEW {
             this.Advance();
             let _type: *const Node = this.ParseType();
             if _type == null { ret null; }
-            let _new: *mut NewNode = new NewNode(_type, token);
+            let _new: *mut NewNode = this.arena.New<NewNode>(_type, token);
 
             if this.Match(TokenType::LBRACKET) {
                 _new->size = this.ParseExpression();
@@ -394,7 +395,7 @@ class Parser {
             } ret _new as *const Node;
         } else if token._type == TokenType::DELETE {
             this.Advance();
-            let delete: *mut DeleteNode = new DeleteNode(token);
+            let delete: *mut DeleteNode = this.arena.New<DeleteNode>(token);
 
             if this.Match(TokenType::LBRACKET) {
                 if !this.Expect2(TokenType::RBRACKET) { ret null; }
@@ -408,7 +409,7 @@ class Parser {
             this.Advance();
             let expression: *const Node = this.ParseUnary();
             if expression == null { ret null; }
-            ret new AwaitNode(expression, token) as *const Node;
+            ret this.arena.New<AwaitNode>(expression, token) as *const Node;
         } else {
             ret this.ParsePostfix();
         }
@@ -440,11 +441,11 @@ class Parser {
             if token._type == TokenType::AS {
                 let _type: *const Node = this.ParseType();
                 if _type == null { ret null; }
-                left = new CastNode(left, _type, token);
+                left = this.arena.New<CastNode>(left, _type, token);
             } else {
                 let right: *const Node = this.ParseBinary(precedence + 1i32);
                 if right == null { ret null; }
-                left = new BinaryOperationNode(left, right, token._type, token);
+                left = this.arena.New<BinaryOperationNode>(left, right, token._type, token);
             }
         } ret left;
     }
@@ -460,7 +461,7 @@ class Parser {
             if then == null || !this.Expect2(TokenType::COLON) { ret null; }
             let _else: *const Node = this.ParseExpression();
             if _else == null { ret null; }
-            expression = new TernaryNode(expression, then, _else, token);
+            expression = this.arena.New<TernaryNode>(expression, then, _else, token);
         } ret expression;
     }
 
@@ -487,7 +488,7 @@ class Parser {
 
         if this.Match(TokenType::FUNC) {
             if !this.Expect2(TokenType::LPAREN) { ret null; }
-            let function_type: *mut FunctionTypeNode = new FunctionTypeNode(token);
+            let function_type: *mut FunctionTypeNode = this.arena.New<FunctionTypeNode>(token);
 
             if this.Current()._type != TokenType::RPAREN {
                 while this.Current()._type != TokenType::EOF {
@@ -512,7 +513,7 @@ class Parser {
                         let token: Token = this.Current();
                         let _type: *const Node = this.ParseType();
                         if _type == null { ret null; }
-                        function_type->parameters.PushBack(new ParameterNode(String(""), _type, false, token));
+                        function_type->parameters.PushBack(this.arena.New<ParameterNode>(String(""), _type, false, token));
                     }
 
                     if !this.Match(TokenType::COMMA) {
@@ -527,7 +528,7 @@ class Parser {
                 function_type->return_type = this.ParseType();
                 if function_type->return_type == null { ret null; }
             } else {
-                function_type->return_type = new PrimitiveTypeNode({ "void" } as String, token);
+                function_type->return_type = this.arena.New<PrimitiveTypeNode>({ "void" } as String, token);
             } node = function_type;
         } else {
             if token._type != TokenType::IDENTIFIER {
@@ -535,17 +536,17 @@ class Parser {
                 ret null;
             }
 
-            node = new PrimitiveTypeNode(token.value, token);
+            node = this.arena.New<PrimitiveTypeNode>(token.value, token);
             this.Advance();
 
             loop {
                 if this.Match(TokenType::DOUBLE_COLON) {
                     let identifier: Token = this.Expect(TokenType::IDENTIFIER);
                     if identifier._type == TokenType::UNKNOWN { ret null; }
-                    node = new ScopeResolutionNode(node, new IdentifierNode(identifier.value, identifier), token);
+                    node = this.arena.New<ScopeResolutionNode>(node, this.arena.New<IdentifierNode>(identifier.value, identifier), token);
                 } else if this.IsTypeApplication() {
                     this.Advance();
-                    let type_application: *mut TypeApplicationNode = new TypeApplicationNode(node, token);
+                    let type_application: *mut TypeApplicationNode = this.arena.New<TypeApplicationNode>(node, token);
 
                     while this.Current()._type != TokenType::GREATER {
                         let _type: *const Node = this.ParseType();
@@ -563,11 +564,11 @@ class Parser {
         }
 
         while !pointers.Empty() {
-            node = new PointerTypeNode(node, pointers.PopBack(), token);
+            node = this.arena.New<PointerTypeNode>(node, pointers.PopBack(), token);
         }
 
         if !references.Empty() {
-            node = new ReferenceTypeNode(node, references[0u64], token);
+            node = this.arena.New<ReferenceTypeNode>(node, references[0u64], token);
         } ret node;
     }
 
@@ -606,7 +607,7 @@ class Parser {
                 while root == null || this.Match(TokenType::COMMA) {
                     let _expression: *const Node = this.ParseExpression();
                     if _expression == null { ret null; }
-                    let assignment: *mut AssignmentNode = new AssignmentNode(_expression, null, TokenType::ASSIGN, token);
+                    let assignment: *mut AssignmentNode = this.arena.New<AssignmentNode>(_expression, null, TokenType::ASSIGN, token);
 
                     if root != null {
                         current->next = assignment;
@@ -644,7 +645,7 @@ class Parser {
                 let token: Token = this.Advance();
                 let right: *const Node = this.ParseExpression();
                 if right == null { ret null; }
-                let assignment: *const AssignmentNode = new AssignmentNode(left, right, token._type, token);
+                let assignment: *const AssignmentNode = this.arena.New<AssignmentNode>(left, right, token._type, token);
 
                 if !expression {
                     if !this.Expect2(TokenType::SEMICOLON) { ret null; }
@@ -654,7 +655,7 @@ class Parser {
                     if !this.Expect2(TokenType::SEMICOLON) { ret null; }
                 }
 
-                ret new ExpressionNode(left, token) as *const Node;
+                ret this.arena.New<ExpressionNode>(left, token) as *const Node;
             }
         }
     }
@@ -687,10 +688,10 @@ class Parser {
             if _type == null { ret null; }
 
             for size in sizes {
-                _type = new ArrayTypeNode(_type, size, token);
+                _type = this.arena.New<ArrayTypeNode>(_type, size, token);
             }
 
-            let declaration: *mut VariableNode = new VariableNode(identifier.value, _type, null, mutable, token);
+            let declaration: *mut VariableNode = this.arena.New<VariableNode>(identifier.value, _type, null, mutable, token);
 
             if root != null {
                 current->next = declaration;
@@ -719,7 +720,7 @@ class Parser {
                         let array_type: *mut ArrayTypeNode = current->_type as *mut ArrayTypeNode;
 
                         if array_type->size == null {
-                            array_type->size = new LiteralNode(String(list->expressions.Size() as i64) + "u64", TokenType::INTEGER, token);
+                            array_type->size = this.arena.New<LiteralNode>(String(list->expressions.Size() as i64) + "u64", TokenType::INTEGER, token);
                         }
                     }
                 }
@@ -750,7 +751,7 @@ class Parser {
             if expression == null { ret null; }
             let then: *const Node = this.ParseBlock();
             if then == null { ret null; }
-            let if_let: *mut IfLetNode = new IfLetNode(pattern, expression, then, token);
+            let if_let: *mut IfLetNode = this.arena.New<IfLetNode>(pattern, expression, then, token);
 
             if this.Match(TokenType::ELSE) {
                 if this.Current()._type == TokenType::IF {
@@ -775,7 +776,7 @@ class Parser {
             }
         }
 
-        ret new IfNode(condition, then, _else, token) as *const Node;
+        ret this.arena.New<IfNode>(condition, then, _else, token) as *const Node;
     }
 
     priv ParseWhile(&mut this) -> *const Node {
@@ -790,7 +791,7 @@ class Parser {
             if expression == null { ret null; }
             let _loop: *const Node = this.ParseBlock();
             if _loop == null { ret null; }
-            ret new WhileLetNode(pattern, expression, _loop, token) as *const Node;
+            ret this.arena.New<WhileLetNode>(pattern, expression, _loop, token) as *const Node;
         }
 
         let expression: *const Node = this.ParseExpression();
@@ -803,7 +804,7 @@ class Parser {
             _else = this.ParseBlock();
         }
 
-        ret new WhileNode(expression, _loop, _else, token) as *const Node;
+        ret this.arena.New<WhileNode>(expression, _loop, _else, token) as *const Node;
     }
 
     priv ParseFor(&mut this) -> *const Node {
@@ -816,7 +817,7 @@ class Parser {
         if iterable == null { ret null; }
         let _loop: *const Node = this.ParseBlock();
         if _loop == null { ret null; }
-        ret new ForNode(name.value, iterable, _loop, token) as *const Node;
+        ret this.arena.New<ForNode>(name.value, iterable, _loop, token) as *const Node;
     }
 
     priv ParseForIterable(&mut this) -> *const Node {
@@ -828,7 +829,7 @@ class Parser {
             let inclusive: bool = this.Match(TokenType::ASSIGN);
             let right: *const Node = this.ParseBinary(0i32);
             if right == null { ret null; }
-            let range: *mut RangeNode = new RangeNode(left, right, token);
+            let range: *mut RangeNode = this.arena.New<RangeNode>(left, right, token);
             range->inclusive = inclusive;
             ret range as *const Node;
         } ret left;
@@ -839,7 +840,7 @@ class Parser {
         if token._type == TokenType::UNKNOWN { ret null; }
         let _loop: *const Node = this.ParseBlock();
         if _loop == null { ret null; }
-        ret new LoopNode(_loop, token) as *const Node;
+        ret this.arena.New<LoopNode>(_loop, token) as *const Node;
     }
 
     priv ConvertBitwiseToPattern(&mut this, node: *const Node) -> *const Node {
@@ -848,7 +849,7 @@ class Parser {
         if binary_operation->operator != TokenType::BITWISE_OR { ret node; }
         let left: *const Node = this.ConvertBitwiseToPattern(binary_operation->left);
         let right: *const Node = this.ConvertBitwiseToPattern(binary_operation->right);
-        ret new OrPatternNode(left, right, node->start) as *const Node;
+        ret this.arena.New<OrPatternNode>(left, right, node->start) as *const Node;
     }
 
     priv ParsePattern(&mut this) -> *const Node {
@@ -859,7 +860,7 @@ class Parser {
         if this.Current()._type == TokenType::IDENTIFIER && this.Current().value == "_" {
             let token: Token = this.Current();
             this.Advance();
-            ret new IdentifierNode({ "_" } as String, token) as *const Node;
+            ret this.arena.New<IdentifierNode>({ "_" } as String, token) as *const Node;
         }
 
         let expression: *const Node = this.ParseExpression();
@@ -870,7 +871,7 @@ class Parser {
         if this.Current()._type == TokenType::LBRACE && (expression->_type == NodeType::IDENTIFIER || expression->_type == NodeType::SCOPE_RESOLUTION) {
             let brace_token: Token = this.Current();
             this.Advance();
-            let struct_pattern: *mut StructInitNode = new StructInitNode(expression, brace_token);
+            let struct_pattern: *mut StructInitNode = this.arena.New<StructInitNode>(expression, brace_token);
 
             while this.Current()._type != TokenType::RBRACE && this.Current()._type != TokenType::EOF {
                 if this.Current()._type == TokenType::TWO_DOT {
@@ -886,7 +887,7 @@ class Parser {
                     if pattern == null { ret null; }
                     struct_pattern->field_values.PushBack(pattern);
                 } else {
-                    struct_pattern->field_values.PushBack(new IdentifierNode(field_name.value, field_name) as *const Node);
+                    struct_pattern->field_values.PushBack(this.arena.New<IdentifierNode>(field_name.value, field_name) as *const Node);
                 }
 
                 struct_pattern->field_names.PushBack(field_name.value);
@@ -903,7 +904,7 @@ class Parser {
         if token._type == TokenType::UNKNOWN { ret null; }
         let expression: *const Node = this.ParseExpression();
         if expression == null { ret null; }
-        let match_node: *mut MatchNode = new MatchNode(expression, token);
+        let match_node: *mut MatchNode = this.arena.New<MatchNode>(expression, token);
         if !this.Expect2(TokenType::LBRACE) { ret null; }
 
         while this.Current()._type != TokenType::RBRACE && this.Current()._type != TokenType::EOF {
@@ -936,9 +937,9 @@ class Parser {
             }
 
             if pattern == null {
-                match_node->default = new DefaultNode(body, token);
+                match_node->default = this.arena.New<DefaultNode>(body, token);
             } else {
-                match_node->cases.PushBack(new CaseNode(pattern, body, guard, token));
+                match_node->cases.PushBack(this.arena.New<CaseNode>(pattern, body, guard, token));
             }
 
             if !this.Match(TokenType::COMMA) {
@@ -955,14 +956,14 @@ class Parser {
         if token._type == TokenType::UNKNOWN { ret null; }
         let body: *const Node = this.ParseBlock();
         if body == null { ret null; }
-        ret new UnsafeNode(body as *const BlockNode, token) as *const Node;
+        ret this.arena.New<UnsafeNode>(body as *const BlockNode, token) as *const Node;
     }
 
     priv ParseAssembly(&mut this) -> *const Node {
         let _volatile: bool = this.Match(TokenType::VOLATILE);
         let token: Token = this.Expect(TokenType::ASSEMBLY);
         if token._type == TokenType::UNKNOWN { ret null; }
-        let node: *mut AssemblyNode = new AssemblyNode(_volatile, token);
+        let node: *mut AssemblyNode = this.arena.New<AssemblyNode>(_volatile, token);
 
         if this.Match(TokenType::COLON) {
             while this.Current()._type == TokenType::IDENTIFIER {
@@ -1017,7 +1018,7 @@ class Parser {
             if !this.Expect2(TokenType::SEMICOLON) { ret null; }
         }
 
-        ret new ReturnNode(value, token) as *const Node;
+        ret this.arena.New<ReturnNode>(value, token) as *const Node;
     }
 
     priv ParseBreak(&mut this, expression: bool) -> *const Node {
@@ -1028,7 +1029,7 @@ class Parser {
             if !this.Expect2(TokenType::SEMICOLON) { ret null; }
         }
 
-        ret new BreakNode(token) as *const Node;
+        ret this.arena.New<BreakNode>(token) as *const Node;
     }
 
     priv ParseContinue(&mut this, expression: bool) -> *const Node {
@@ -1039,13 +1040,13 @@ class Parser {
             if !this.Expect2(TokenType::SEMICOLON) { ret null; }
         }
 
-        ret new ContinueNode(token) as *const Node;
+        ret this.arena.New<ContinueNode>(token) as *const Node;
     }
 
     priv ParseBlock(&mut this) -> *const Node {
         let token: Token = this.Expect(TokenType::LBRACE);
         if token._type == TokenType::UNKNOWN { ret null; }
-        let block: *mut BlockNode = new BlockNode(token);
+        let block: *mut BlockNode = this.arena.New<BlockNode>(token);
 
         while this.Current()._type != TokenType::RBRACE && this.Current()._type != TokenType::EOF {
             let statement: *const Node = this.ParseStatement(false);
@@ -1188,8 +1189,8 @@ class Parser {
             name += identifier.value;
         }
 
-        let function_type: *mut FunctionTypeNode = new FunctionTypeNode(token);
-        let function: *mut FunctionNode = new FunctionNode(name, function_type, no_mangle, token);
+        let function_type: *mut FunctionTypeNode = this.arena.New<FunctionTypeNode>(token);
+        let function: *mut FunctionNode = this.arena.New<FunctionNode>(name, function_type, no_mangle, token);
         let types: Vector<String> = this.types;
 
         if this.Match(TokenType::LESS) {
@@ -1280,7 +1281,7 @@ class Parser {
                 ret null;
             }
         } else {
-            function_type->return_type = new PrimitiveTypeNode({ "void" } as String, token);
+            function_type->return_type = this.arena.New<PrimitiveTypeNode>({ "void" } as String, token);
 
             if token._type != TokenType::FUNC && token._type != TokenType::PUBLIC && token._type != TokenType::PRIVATE {
                 while (this.Match(TokenType::COLON) && function->constructors.Empty()) || (this.Match(TokenType::COMMA) && !function->constructors.Empty()) {
@@ -1333,10 +1334,10 @@ class Parser {
         if _type == null { ret null; }
 
         for size in sizes {
-            _type = new ArrayTypeNode(_type, size, token);
+            _type = this.arena.New<ArrayTypeNode>(_type, size, token);
         }
 
-        ret new ParameterNode(token.value, _type, mutable, token);
+        ret this.arena.New<ParameterNode>(token.value, _type, mutable, token);
     }
 
     priv ParseClass(&mut this, attributes: &Vector<Pair<String, Vector<*const Node>>>) -> *const Node {
@@ -1350,7 +1351,7 @@ class Parser {
 
         let identifier: Token = this.Expect(TokenType::IDENTIFIER);
         if identifier._type == TokenType::UNKNOWN { ret null; }
-        let class_node: *mut ClassNode = new ClassNode(identifier.value, token);
+        let class_node: *mut ClassNode = this.arena.New<ClassNode>(identifier.value, token);
         let types: Vector<String> = this.types;
 
         if this.Match(TokenType::LESS) {
@@ -1485,7 +1486,7 @@ class Parser {
         let mut initializer: *const Node = null;
 
         for size in sizes {
-            _type = new ArrayTypeNode(_type, size, token);
+            _type = this.arena.New<ArrayTypeNode>(_type, size, token);
         }
 
         if this.Match(TokenType::ASSIGN) {
@@ -1493,7 +1494,7 @@ class Parser {
             if initializer == null { ret null; }
         }
 
-        ret new FieldNode(token.value, _type, initializer, token);
+        ret this.arena.New<FieldNode>(token.value, _type, initializer, token);
     }
 
     priv ParseEnum(&mut this, attributes: &Vector<Pair<String, Vector<*const Node>>>) -> *const Node {
@@ -1507,7 +1508,7 @@ class Parser {
 
         let identifier: Token = this.Expect(TokenType::IDENTIFIER);
         if identifier._type == TokenType::UNKNOWN { ret null; }
-        let enum_node: *mut EnumNode = new EnumNode(identifier.value, token);
+        let enum_node: *mut EnumNode = this.arena.New<EnumNode>(identifier.value, token);
         let types: Vector<String> = this.types;
 
         if this.Match(TokenType::LESS) {
@@ -1551,7 +1552,7 @@ class Parser {
         while this.Current()._type != TokenType::SEMICOLON && this.Current()._type != TokenType::RBRACE && this.Current()._type != TokenType::EOF {
             let variant_identifier: Token = this.Expect(TokenType::IDENTIFIER);
             if variant_identifier._type == TokenType::UNKNOWN { this.types = types; ret null; }
-            let variant: *mut VariantNode = new VariantNode(variant_identifier.value, variant_identifier);
+            let variant: *mut VariantNode = this.arena.New<VariantNode>(variant_identifier.value, variant_identifier);
 
             if this.Match(TokenType::LBRACE) {
                 while this.Current()._type != TokenType::RBRACE && this.Current()._type != TokenType::EOF {
@@ -1639,7 +1640,7 @@ class Parser {
         if extern_token._type == TokenType::UNKNOWN { ret null; }
         let linkage_token: Token = this.Expect(TokenType::STRING);
         if linkage_token._type == TokenType::UNKNOWN { ret null; }
-        let extern_block: *mut ExternNode = new ExternNode(linkage_token.value, extern_token);
+        let extern_block: *mut ExternNode = this.arena.New<ExternNode>(linkage_token.value, extern_token);
         if !this.Expect2(TokenType::LBRACE) { ret null; }
 
         while this.Current()._type != TokenType::RBRACE && this.Current()._type != TokenType::EOF {
@@ -1696,13 +1697,13 @@ class Parser {
         if _type == null { ret null; }
 
         for size in sizes {
-            _type = new ArrayTypeNode(_type, size, token);
+            _type = this.arena.New<ArrayTypeNode>(_type, size, token);
         }
 
         if !this.Expect2(TokenType::ASSIGN) { ret null; }
         let initializer: *const Node = this.ParseExpression();
         if initializer == null || !this.Expect2(TokenType::SEMICOLON) { ret null; }
-        ret new ConstantNode(identifier.value, _type, initializer, token) as *const Node;
+        ret this.arena.New<ConstantNode>(identifier.value, _type, initializer, token) as *const Node;
     }
 
     priv ParseStatic(&mut this, attributes: &Vector<Pair<String, Vector<*const Node>>>) -> *const Node {
@@ -1749,10 +1750,10 @@ class Parser {
         if _type == null { ret null; }
 
         for size in sizes {
-            _type = new ArrayTypeNode(_type, size, token);
+            _type = this.arena.New<ArrayTypeNode>(_type, size, token);
         }
 
-        let _static: *mut StaticNode = new StaticNode(identifier.value, _type, mutable, alignment, token);
+        let _static: *mut StaticNode = this.arena.New<StaticNode>(identifier.value, _type, mutable, alignment, token);
 
         if this.Match(TokenType::ASSIGN) {
             if this.Match(TokenType::ZERO) {
@@ -1775,14 +1776,13 @@ class Parser {
         if !this.Expect2(TokenType::ASSIGN) { ret null; }
         let _type: *const Node = this.ParseType();
         if _type == null { ret null; }
-        let type_definition: *const TypeDefinitionNode = new TypeDefinitionNode(identifier.value, _type, token);
+        let type_definition: *const TypeDefinitionNode = this.arena.New<TypeDefinitionNode>(identifier.value, _type, token);
         if !this.Expect2(TokenType::SEMICOLON) { ret null; }
         ret type_definition as *const Node;
     }
 
     pub Parse(&mut this, tokens: &Vector<Token>) -> *const RootNode {
         (this.tokens, this.index) = (tokens, 0u64);
-        let root: *mut RootNode = new RootNode();
 
         this.types.Clear();
         this.types.PushBack(String("bool"));
@@ -1799,6 +1799,7 @@ class Parser {
         this.types.PushBack(String("f32"));
         this.types.PushBack(String("f64"));
         this.types.PushBack(String("void"));
+        this.arena.Clear();
 
         loop {
             let token: Token = this.Advance();
@@ -1817,6 +1818,8 @@ class Parser {
                 break;
             }
         }
+
+        let root: *mut RootNode = this.arena.New<RootNode>();
 
         while this.Current()._type != TokenType::EOF {
             let declaration: *const Node = this.ParseDeclaration();

@@ -2283,43 +2283,34 @@ class Compiler {
         let mut _type: *const QualifiedType = this.CompileType(variable->_type);
 
         if _type->IsClass() {
+            let (mut has_error: bool, mut skip: bool) = (true, false);
             let mut params: Vector<QualifiedValue>;
-            let mut has_error: bool = false;
-            let mut skip: bool = false;
 
             if variable->initializer != null {
-                if variable->initializer->_type != NodeType::INITIALIZER_LIST {
-                    let mut value: QualifiedValue = this.CompileExpression(variable->initializer, false);
+                let mut value: QualifiedValue = this.CompileExpression(variable->initializer, false);
 
-                    if !value.Null() {
+                if !value.Null() {
+                    if value.Type().IsReference() {
+                        if *_type == value.Type().Pointee() {
+                            value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
+                        }
+                    }
+
+                    if value.Type() == *_type {
+                        has_error = false;
+
                         if !value.return {
-                            if value.Type() == *_type {
-                                value = QualifiedValue(LLVMAddressOf(value.Value(), this.builder), this.type_manager.Pointer(value.Type(), true));
-                            } params.PushBack(value);
+                            params.PushBack(QualifiedValue(LLVMAddressOf(value.Value(), this.builder), this.type_manager.Pointer(value.Type(), true)));
                         } else {
-                            if *_type == value.Type() {
-                                this.scope_manager.Set(variable->name, SymbolKind::Variable, QualifiedValue(LLVMAddressOf(value.Value(), this.builder), this.type_manager.Pointer(_type, variable->mutable), false, true), false, variable as *const Node);
-                                skip = true;
-                            } else {
-                                Logger::Log("Incompatible variable initialization types. ('" + _type->ToString() + "' != '" + value.Type().ToString() + "').", variable as *const Node, LogSeverity::Error);
-                                has_error = true;
-                            }
+                            this.scope_manager.Set(variable->name, SymbolKind::Variable, QualifiedValue(LLVMAddressOf(value.Value(), this.builder), this.type_manager.Pointer(_type, variable->mutable), false, true), false, variable as *const Node);
+                            skip = true;
                         }
                     } else {
-                        has_error = true;
-                    }
-                } else {
-                    for expression in (variable->initializer as *const InitializerListNode)->expressions {
-                        let value: QualifiedValue = this.CompileExpression(expression, false);
-
-                        if value.Null() {
-                            has_error = true;
-                            break;
-                        }
-
-                        params.PushBack(value);
+                        Logger::Log("Incompatible variable initialization types. ('" + _type->ToString() + "' != '" + value.Type().ToString() + "').", variable as *const Node, LogSeverity::Error);
                     }
                 }
+            } else {
+                has_error = false;
             }
 
             if !skip {

@@ -2440,11 +2440,16 @@ class Compiler {
 
             if !value.Null() {
                 let _type: *const QualifiedType = value.Type();
-                let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
-                LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
-                pointer = QualifiedValue(LLVMBuildAlloca(this.builder, _type->Value(), ""), this.type_manager.Pointer(_type, variable->mutable), false, true);
-                LLVMPositionBuilderAtEnd(this.builder, current);
-                LLVMBuildStore(this.builder, value.Value(), pointer.Value());
+
+                if !value.return {
+                    let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
+                    LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
+                    pointer = QualifiedValue(LLVMBuildAlloca(this.builder, _type->Value(), ""), this.type_manager.Pointer(_type, variable->mutable), false, true);
+                    LLVMPositionBuilderAtEnd(this.builder, current);
+                    LLVMBuildStore(this.builder, value.Value(), pointer.Value());
+                } else {
+                    pointer = QualifiedValue(LLVMAddressOf(value.Value(), this.builder), this.type_manager.Pointer(_type, variable->mutable), false, true);
+                }
             }
 
             this.scope_manager.Set(variable->name, SymbolKind::Variable, pointer, false, variable as *const Node);
@@ -3307,13 +3312,13 @@ class Compiler {
             let _class: &QualifiedType = this.CompileType(call->expression);
             let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
             LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
-            let instance: QualifiedValue = QualifiedValue(LLVMBuildAlloca(this.builder, _class.Value(), ""), this.type_manager.Pointer(_class, true), false, true);
+            let instance: QualifiedValue = QualifiedValue(LLVMBuildAlloca(this.builder, _class.Value(), ""), this.type_manager.Pointer(_class, true), true, true);
             LLVMPositionBuilderAtEnd(this.builder, current);
             this.CompileConstructor(_class, instance, values, call as *const Node);
             this.scope_manager.RegisterInstance(instance);
 
             if !pointer {
-                ret QualifiedValue(LLVMBuildLoad2(this.builder, _class.Value(), instance.Value(), ""), _class);
+                ret QualifiedValue(LLVMBuildLoad2(this.builder, _class.Value(), instance.Value(), ""), _class, true);
             } else {
                 ret instance;
             }

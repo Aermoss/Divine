@@ -2280,150 +2280,171 @@ class Compiler {
     }
 
     priv CompileVariable(&mut this, variable: *const VariableNode) {
-        let mut _type: *const QualifiedType = this.CompileType(variable->_type);
+        if variable->_type != null {
+            let mut _type: *const QualifiedType = this.CompileType(variable->_type);
 
-        if _type->IsClass() {
-            let (mut has_error: bool, mut skip: bool) = (true, false);
-            let mut params: Vector<QualifiedValue>;
+            if _type->IsClass() {
+                let (mut has_error: bool, mut skip: bool) = (true, false);
+                let mut params: Vector<QualifiedValue>;
 
-            if variable->initializer != null {
-                let mut value: QualifiedValue = this.CompileExpression(variable->initializer, false);
+                if variable->initializer != null {
+                    let mut value: QualifiedValue = this.CompileExpression(variable->initializer, false);
 
-                if !value.Null() {
-                    if value.Type().IsReference() {
-                        if *_type == value.Type().Pointee() {
-                            value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
+                    if !value.Null() {
+                        if value.Type().IsReference() {
+                            if *_type == value.Type().Pointee() {
+                                value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
+                            }
+                        }
+
+                        if value.Type() == *_type {
+                            has_error = false;
+
+                            if !value.return {
+                                params.PushBack(QualifiedValue(LLVMAddressOf(value.Value(), this.builder), this.type_manager.Pointer(value.Type(), true)));
+                            } else {
+                                this.scope_manager.Set(variable->name, SymbolKind::Variable, QualifiedValue(LLVMAddressOf(value.Value(), this.builder), this.type_manager.Pointer(_type, variable->mutable), false, true), false, variable as *const Node);
+                                skip = true;
+                            }
+                        } else {
+                            Logger::Log("Incompatible variable initialization types. ('" + _type->ToString() + "' != '" + value.Type().ToString() + "').", variable as *const Node, LogSeverity::Error);
                         }
                     }
+                } else {
+                    has_error = false;
+                }
 
-                    if value.Type() == *_type {
-                        has_error = false;
+                if !skip {
+                    if !has_error {
+                        let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
+                        LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
+                        let instance: QualifiedValue = QualifiedValue(LLVMBuildAlloca(this.builder, _type->Value(), ""), this.type_manager.Pointer(_type, variable->mutable), false, true);
+                        LLVMPositionBuilderAtEnd(this.builder, current);
 
-                        if !value.return {
-                            params.PushBack(QualifiedValue(LLVMAddressOf(value.Value(), this.builder), this.type_manager.Pointer(value.Type(), true)));
-                        } else {
-                            this.scope_manager.Set(variable->name, SymbolKind::Variable, QualifiedValue(LLVMAddressOf(value.Value(), this.builder), this.type_manager.Pointer(_type, variable->mutable), false, true), false, variable as *const Node);
-                            skip = true;
-                        }
+                        this.CompileConstructor(_type, instance, params, variable as *const Node);
+                        this.scope_manager.Set(variable->name, SymbolKind::Variable, instance, false, variable as *const Node);
+                        this.scope_manager.RegisterInstance(instance);
                     } else {
-                        Logger::Log("Incompatible variable initialization types. ('" + _type->ToString() + "' != '" + value.Type().ToString() + "').", variable as *const Node, LogSeverity::Error);
+                        this.scope_manager.Set(variable->name, SymbolKind::Variable, QualifiedValue(null, null), false, variable as *const Node);
                     }
                 }
             } else {
-                has_error = false;
-            }
+                if variable->initializer != null {
+                    if variable->initializer->_type == NodeType::INITIALIZER_LIST {
+                        let initializer_list: *const InitializerListNode = variable->initializer as *const InitializerListNode;
 
-            if !skip {
-                if !has_error {
-                    let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
-                    LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
-                    let instance: QualifiedValue = QualifiedValue(LLVMBuildAlloca(this.builder, _type->Value(), ""), this.type_manager.Pointer(_type, variable->mutable), false, true);
-                    LLVMPositionBuilderAtEnd(this.builder, current);
+                        if variable->_type->_type == NodeType::ARRAY_TYPE {
+                            let array: *const ArrayTypeNode = variable->_type as *const ArrayTypeNode;
 
-                    this.CompileConstructor(_type, instance, params, variable as *const Node);
-                    this.scope_manager.Set(variable->name, SymbolKind::Variable, instance, false, variable as *const Node);
-                    this.scope_manager.RegisterInstance(instance);
-                } else {
-                    this.scope_manager.Set(variable->name, SymbolKind::Variable, QualifiedValue(null, null), false, variable as *const Node);
-                }
-            }
-        } else {
-            if variable->initializer != null {
-                if variable->initializer->_type == NodeType::INITIALIZER_LIST {
-                    let initializer_list: *const InitializerListNode = variable->initializer as *const InitializerListNode;
-
-                    if variable->_type->_type == NodeType::ARRAY_TYPE {
-                        let array: *const ArrayTypeNode = variable->_type as *const ArrayTypeNode;
-
-                        if array->size == null && !initializer_list->expressions.Empty() {
-                            _type = this.type_manager.Array(_type->Pointee(), initializer_list->expressions.Size(), _type->IsMutable());
+                            if array->size == null && !initializer_list->expressions.Empty() {
+                                _type = this.type_manager.Array(_type->Pointee(), initializer_list->expressions.Size(), _type->IsMutable());
+                            }
                         }
                     }
                 }
-            }
 
-            let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
-            LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
-            let pointer: QualifiedValue = QualifiedValue(LLVMBuildAlloca(this.builder, _type->Value(), ""), this.type_manager.Pointer(_type, variable->mutable), false, true);
-            LLVMPositionBuilderAtEnd(this.builder, current);
+                let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
+                LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
+                let pointer: QualifiedValue = QualifiedValue(LLVMBuildAlloca(this.builder, _type->Value(), ""), this.type_manager.Pointer(_type, variable->mutable), false, true);
+                LLVMPositionBuilderAtEnd(this.builder, current);
 
-            if variable->initializer != null {
-                if variable->initializer->_type != NodeType::INITIALIZER_LIST {
-                    let mut initializer: QualifiedValue = this.CompileExpression(variable->initializer, false);
+                if variable->initializer != null {
+                    if variable->initializer->_type != NodeType::INITIALIZER_LIST {
+                        let mut initializer: QualifiedValue = this.CompileExpression(variable->initializer, false);
 
-                    if !initializer.Null() {
-                        if initializer.Type().IsReference() {
-                            if *_type == initializer.Type().Pointee() {
-                                initializer = QualifiedValue(LLVMBuildLoad2(this.builder, initializer.Type().Pointee().Value(), initializer.Value(), ""), initializer.Type().Pointee());
-                            }
-                        }
-
-                        if _type->IsReference() {
-                            if _type->Pointee() == initializer.Type() {
-                                initializer = QualifiedValue(LLVMAddressOf(initializer.Value(), this.builder), this.type_manager.Pointer(initializer.Type(), initializer.Type().IsMutable()));
-                            }
-                        }
-
-                        let mut left: *const QualifiedType = _type;
-                        let mut right: *const QualifiedType = initializer.Type();
-                        let mut failed: bool = false;
-
-                        while left->IsPointer() && right->IsPointer() {
-                            if left->IsMutable() && !right->IsMutable() && !right->IsNullPointer() {
-                                Logger::Log("Cannot assign immutable pointer to mutable pointer.", variable as *const Node, LogSeverity::Error);
-                                failed = true;
-                                break;
-                            }
-
-                            (left, right) = (left->Pointee(), right->Pointee());
-                        }
-
-                        if !failed {
-                            let mut state: bool = false;
-
-                            if _type->IsPointer() && initializer.Type().IsPointer() {
-                                if LLVMGetTypeKind(_type->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || initializer.Type().IsNullPointer() {
-                                    state = true;
-                                } else if _type->Pointee().IsClass() && initializer.Type().Pointee().IsClass() {
-                                    let fields: &Map<String, Pair<Field, *const QualifiedType>> = initializer.Type().Pointee().Fields();
-
-                                    for i in 0u64..fields.Size() {
-                                        if fields[i].left == _type->Pointee().name {
-                                            let mut value_ref: LLVMValueRef = initializer.Value();
-
-                                            if i != 0u64 {
-                                                value_ref = LLVMBuildStructGEP2(this.builder, initializer.Type().Pointee().Value(), initializer.Value(), i as u32, "");
-                                            }
-
-                                            initializer = QualifiedValue(LLVMBuildBitCast(this.builder, value_ref, _type->Value(), ""), _type);
-                                            break;
-                                        }
-                                    }
+                        if !initializer.Null() {
+                            if initializer.Type().IsReference() {
+                                if *_type == initializer.Type().Pointee() {
+                                    initializer = QualifiedValue(LLVMBuildLoad2(this.builder, initializer.Type().Pointee().Value(), initializer.Value(), ""), initializer.Type().Pointee());
                                 }
                             }
 
-                            if *_type == initializer.Type() || state {
-                                LLVMBuildStore(this.builder, initializer.Value(), pointer.Value());
-                            } else {
-                                Logger::Log("Incompatible variable initialization types. ('" + _type->ToString() + "' != '" + initializer.Type().ToString() + "').", variable as *const Node, LogSeverity::Error);
+                            if _type->IsReference() {
+                                if _type->Pointee() == initializer.Type() {
+                                    initializer = QualifiedValue(LLVMAddressOf(initializer.Value(), this.builder), this.type_manager.Pointer(initializer.Type(), initializer.Type().IsMutable()));
+                                }
+                            }
+
+                            let mut left: *const QualifiedType = _type;
+                            let mut right: *const QualifiedType = initializer.Type();
+                            let mut failed: bool = false;
+
+                            while left->IsPointer() && right->IsPointer() {
+                                if left->IsMutable() && !right->IsMutable() && !right->IsNullPointer() {
+                                    Logger::Log("Cannot assign immutable pointer to mutable pointer.", variable as *const Node, LogSeverity::Error);
+                                    failed = true;
+                                    break;
+                                }
+
+                                (left, right) = (left->Pointee(), right->Pointee());
+                            }
+
+                            if !failed {
+                                let mut state: bool = false;
+
+                                if _type->IsPointer() && initializer.Type().IsPointer() {
+                                    if LLVMGetTypeKind(_type->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || initializer.Type().IsNullPointer() {
+                                        state = true;
+                                    } else if _type->Pointee().IsClass() && initializer.Type().Pointee().IsClass() {
+                                        let fields: &Map<String, Pair<Field, *const QualifiedType>> = initializer.Type().Pointee().Fields();
+
+                                        for i in 0u64..fields.Size() {
+                                            if fields[i].left == _type->Pointee().name {
+                                                let mut value_ref: LLVMValueRef = initializer.Value();
+
+                                                if i != 0u64 {
+                                                    value_ref = LLVMBuildStructGEP2(this.builder, initializer.Type().Pointee().Value(), initializer.Value(), i as u32, "");
+                                                }
+
+                                                initializer = QualifiedValue(LLVMBuildBitCast(this.builder, value_ref, _type->Value(), ""), _type);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if *_type == initializer.Type() || state {
+                                    LLVMBuildStore(this.builder, initializer.Value(), pointer.Value());
+                                } else {
+                                    Logger::Log("Incompatible variable initialization types. ('" + _type->ToString() + "' != '" + initializer.Type().ToString() + "').", variable as *const Node, LogSeverity::Error);
+                                }
                             }
                         }
-                    }
-                } else {
-                    let mut index: u64 = 0u64;
+                    } else {
+                        let mut index: u64 = 0u64;
 
-                    for expression in (variable->initializer as *const InitializerListNode)->expressions {
-                        let value: QualifiedValue = this.CompileExpression(expression, false);
+                        for expression in (variable->initializer as *const InitializerListNode)->expressions {
+                            let value: QualifiedValue = this.CompileExpression(expression, false);
 
-                        if value.Null() {
-                            break;
+                            if value.Null() {
+                                break;
+                            }
+
+                            let indices[]: LLVMValueRef = { LLVMConstInt(LLVMInt32TypeInContext(this.context), index, 0i32) };
+                            LLVMBuildStore(this.builder, value.Value(), LLVMBuildGEP2(this.builder, _type->Element().Value(), pointer.Value(), indices, 1u32, ""));
+                            index += 1u64;
                         }
-
-                        let indices[]: LLVMValueRef = { LLVMConstInt(LLVMInt32TypeInContext(this.context), index, 0i32) };
-                        LLVMBuildStore(this.builder, value.Value(), LLVMBuildGEP2(this.builder, _type->Element().Value(), pointer.Value(), indices, 1u32, ""));
-                        index += 1u64;
                     }
                 }
+
+                this.scope_manager.Set(variable->name, SymbolKind::Variable, pointer, false, variable as *const Node);
+            }
+        } else {
+            let (mut value: QualifiedValue, mut pointer: QualifiedValue);
+
+            if variable->initializer != null {
+                value = this.CompileExpression(variable->initializer, false);
+            } else {
+                Logger::Log("Type annotation required for variable '" + variable->name + "' without initializer.", variable as *const Node, LogSeverity::Error);
+            }
+
+            if !value.Null() {
+                let _type: *const QualifiedType = value.Type();
+                let current: LLVMBasicBlockRef = LLVMGetInsertBlock(this.builder);
+                LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
+                pointer = QualifiedValue(LLVMBuildAlloca(this.builder, _type->Value(), ""), this.type_manager.Pointer(_type, variable->mutable), false, true);
+                LLVMPositionBuilderAtEnd(this.builder, current);
+                LLVMBuildStore(this.builder, value.Value(), pointer.Value());
             }
 
             this.scope_manager.Set(variable->name, SymbolKind::Variable, pointer, false, variable as *const Node);

@@ -97,7 +97,7 @@ class Compiler {
     priv forwards: Vector<Forward>,
 
     priv context: LLVMContextRef, priv target: *const Target,
-    priv module: LLVMModuleRef = null, priv builder: LLVMBuilderRef = null,
+    priv module: LLVMModuleRef = null, pub builder: LLVMBuilderRef = null,
     priv freestanding: bool, priv no_red_zone: bool, priv systemv: bool;
 
     Compiler(&mut this, context: &Context, target: &Target, freestanding: bool, no_red_zone: bool) {
@@ -484,21 +484,19 @@ class Compiler {
                             break;
                         }
 
-                        let mut state = false;
-
-                        if _type->Element().IsPointer() && value.Type().IsPointer() {
-                            if LLVMGetTypeKind(_type->Element().Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || value.Type().IsNullPointer() {
-                                state = true;
-                            }
-                        }
-
-                        if value.Type() != _type->Element() && !state {
+                        if !_type->Element().IsCompatible(value.Type()) {
                             Logger::Log("Incompatible initializer list element types. ('" + value.Type().ToString() + "' != '" + _type->Element().ToString() + "').", constant as *const Node, LogSeverity::Error);
                             has_error = true;
                             break;
                         }
 
-                        values.PushBack(value.Value());
+                        if !_type->Element().IsMutabilityCompatible(value.Type()) {
+                            Logger::Log("Cannot assign immutable pointer to mutable pointer.", constant as *const Node, LogSeverity::Error);
+                            has_error = true;
+                            break;
+                        }
+
+                        values.PushBack(value.MakeCompatible(_type->Element()).Value());
                     }
                 }
 
@@ -516,23 +514,20 @@ class Compiler {
             ret;
         }
 
-        let mut state = false;
-
-        if _type->IsPointer() && initializer.Type().IsPointer() {
-            if LLVMGetTypeKind(_type->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || initializer.Type().IsNullPointer() {
-                state = true;
-            }
+        if !_type->IsCompatible(initializer.Type()) {
+            Logger::Log("Incompatible constant initialization types. ('" + _type->ToString() + "' != '" + initializer.Type().ToString() + "').", constant as *const Node, LogSeverity::Error);
+            ret;
         }
 
-        if initializer.Type() != *_type && !state {
-            Logger::Log("Incompatible constant initialization types. ('" + _type->ToString() + "' != '" + initializer.Type().ToString() + "').", constant as *const Node, LogSeverity::Error);
+        if !_type->IsMutabilityCompatible(initializer.Type()) {
+            Logger::Log("Cannot assign immutable pointer to mutable pointer.", constant as *const Node, LogSeverity::Error);
             ret;
         }
 
         let global = LLVMAddGlobal(this.module, _type->Value(), constant->name.Data());
         this.scope_manager.Set(constant->name, SymbolKind::GlobalVariable, QualifiedValue(global, this.type_manager.Pointer(_type, false), false, true), false, constant as *const Node);
         LLVMSetLinkage(global, LLVMLinkage::LLVMPrivateLinkage);
-        LLVMSetInitializer(global, initializer.Value());
+        LLVMSetInitializer(global, initializer.MakeCompatible(_type).Value());
         LLVMSetGlobalConstant(global, 1i32);
     }
 
@@ -602,21 +597,19 @@ class Compiler {
                                 break;
                             }
 
-                            let mut state = false;
-
-                            if _type->Element().IsPointer() && value.Type().IsPointer() {
-                                if LLVMGetTypeKind(_type->Element().Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || value.Type().IsNullPointer() {
-                                    state = true;
-                                }
-                            }
-
-                            if value.Type() != _type->Element() && !state {
+                            if !_type->Element().IsCompatible(value.Type()) {
                                 Logger::Log("Incompatible initializer list element types. ('" + value.Type().ToString() + "' != '" + _type->Element().ToString() + "').", _static as *const Node, LogSeverity::Error);
                                 has_error = true;
                                 break;
                             }
 
-                            values.PushBack(value.Value());
+                            if !_type->Element().IsMutabilityCompatible(value.Type()) {
+                                Logger::Log("Cannot assign immutable pointer to mutable pointer.", _static as *const Node, LogSeverity::Error);
+                                has_error = true;
+                                break;
+                            }
+
+                            values.PushBack(value.MakeCompatible(_type->Element()).Value());
                         }
                     }
 
@@ -630,16 +623,15 @@ class Compiler {
             }
 
             if !has_error {
-                let mut state = false;
-
-                if _type->IsPointer() && initializer.Type().IsPointer() {
-                    if LLVMGetTypeKind(_type->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || initializer.Type().IsNullPointer() {
-                        state = true;
+                if _type->IsCompatible(initializer.Type()) {
+                    if _type->IsMutabilityCompatible(initializer.Type()) {
+                        initializer = initializer.MakeCompatible(_type);
+                    } else {
+                        Logger::Log("Cannot assign immutable pointer to mutable pointer.", _static as *const Node, LogSeverity::Error);
+                        has_error = true;
                     }
-                }
-
-                if initializer.Type() != *_type && !state {
-                    Logger::Log("Incompatible constant initialization types. ('" + _type->ToString() + "' != '" + initializer.Type().ToString() + "').", _static as *const Node, LogSeverity::Error);
+                } else {
+                    Logger::Log("Incompatible static initialization types. ('" + _type->ToString() + "' != '" + initializer.Type().ToString() + "').", _static as *const Node, LogSeverity::Error);
                     has_error = true;
                 }
             }
@@ -1795,21 +1787,18 @@ class Compiler {
                     }
                 }
 
-                let mut state = false;
-
-                if return_type._type->IsPointer() && value.Type().IsPointer() {
-                    if LLVMGetTypeKind(return_type._type->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || value.Type().IsNullPointer() {
-                        state = true;
-                    }
-                }
-
-                if *return_type._type != value.Type() && !state {
+                if !return_type._type->IsCompatible(value.Type()) {
                     Logger::Log("Incompatible return types. ('" + return_type._type->ToString() + "' != '" + value.Type().ToString() + "').", return as *const Node, LogSeverity::Error);
                     ret;
                 }
 
+                if !return_type._type->IsMutabilityCompatible(value.Type()) {
+                    Logger::Log("Cannot assign immutable pointer to mutable pointer.", return as *const Node, LogSeverity::Error);
+                    ret;
+                }
+
                 this.scope_manager.InvokeDestructors();
-                LLVMBuildRet(this.builder, value.Value());
+                LLVMBuildRet(this.builder, value.MakeCompatible(return_type._type).Value());
             }
         } else {
             this.scope_manager.InvokeDestructors();
@@ -2359,18 +2348,7 @@ class Compiler {
                         let mut initializer = this.CompileExpression(variable->initializer, false);
 
                         if !initializer.Null() {
-                            let mut left = _type;
-                            let mut right: *const QualifiedType = initializer.Type();
-                            let mut same = *_type == initializer.Type();
-
-                            while left->IsPointer() && right->IsPointer() {
-                                if left->IsMutable() != right->IsMutable() || left->IsReference() != right->IsReference() || right->IsNullPointer() {
-                                    same = false;
-                                    break;
-                                }
-
-                                (left, right) = (left->Pointee(), right->Pointee());
-                            }
+                            let same = _type->IsSame(initializer.Type());
 
                             if initializer.Type().IsReference() {
                                 if *_type == initializer.Type().Pointee() {
@@ -2384,52 +2362,18 @@ class Compiler {
                                 }
                             }
 
-                            (left, right) = (_type, initializer.Type());
-                            let mut failed = false;
-
-                            while left->IsPointer() && right->IsPointer() {
-                                if left->IsMutable() && !right->IsMutable() && !right->IsNullPointer() {
-                                    Logger::Log("Cannot assign immutable pointer to mutable pointer.", variable as *const Node, LogSeverity::Error);
-                                    failed = true;
-                                    break;
-                                }
-
-                                (left, right) = (left->Pointee(), right->Pointee());
-                            }
-
-                            if !failed {
-                                let mut state = false;
-
-                                if _type->IsPointer() && initializer.Type().IsPointer() {
-                                    if LLVMGetTypeKind(_type->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || initializer.Type().IsNullPointer() {
-                                        state = true;
-                                    } else if _type->Pointee().IsClass() && initializer.Type().Pointee().IsClass() {
-                                        let fields: &Map<String, Pair<Field, *const QualifiedType>> = initializer.Type().Pointee().Fields();
-
-                                        for i in 0u64..fields.Size() {
-                                            if fields[i].left == _type->Pointee().name {
-                                                let mut value_ref = initializer.Value();
-
-                                                if i != 0u64 {
-                                                    value_ref = LLVMBuildStructGEP2(this.builder, initializer.Type().Pointee().Value(), initializer.Value(), i as u32, "");
-                                                }
-
-                                                initializer = QualifiedValue(LLVMBuildBitCast(this.builder, value_ref, _type->Value(), ""), _type);
-                                                break;
-                                            }
-                                        }
-                                    }
-                                }
-
-                                if *_type == initializer.Type() || state {
+                            if _type->IsCompatible(initializer.Type()) {
+                                if _type->IsMutabilityCompatible(initializer.Type()) {
                                     if same {
                                         Logger::Log("Unnecessary type annotation, type can be inferred from initializer.", variable as *const Node, LogSeverity::Warning);
                                     }
 
-                                    LLVMBuildStore(this.builder, initializer.Value(), pointer.Value());
+                                    LLVMBuildStore(this.builder, initializer.MakeCompatible(_type).Value(), pointer.Value());
                                 } else {
-                                    Logger::Log("Incompatible variable initialization types. ('" + _type->ToString() + "' != '" + initializer.Type().ToString() + "').", variable as *const Node, LogSeverity::Error);
+                                    Logger::Log("Cannot assign immutable pointer to mutable pointer.", variable as *const Node, LogSeverity::Error);
                                 }
+                            } else {
+                                Logger::Log("Incompatible variable initialization types. ('" + _type->ToString() + "' != '" + initializer.Type().ToString() + "').", variable as *const Node, LogSeverity::Error);
                             }
                         }
                     } else {
@@ -2678,49 +2622,14 @@ class Compiler {
                 }
             }
 
-            let mut failed = false;
-            let mut left: *const QualifiedType = pointer.Type().Pointee();
-            let mut right: *const QualifiedType = value.Type();
-
-            while left->IsPointer() && right->IsPointer() {
-                if left->IsMutable() && !right->IsMutable() && !right->IsNullPointer() {
-                    Logger::Log("Cannot assign immutable pointer to mutable pointer.", node, LogSeverity::Error);
-                    failed = true;
-                    break;
-                }
-
-                (left, right) = (left->Pointee(), right->Pointee());
-            }
-
-            if !failed {
-                let mut state = false;
-
-                if pointer.Type().Pointee().IsPointer() && value.Type().IsPointer() {
-                    if LLVMGetTypeKind(pointer.Type().Pointee().Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || value.Type().IsNullPointer() {
-                        state = true;
-                    } else if pointer.Type().Pointee().Pointee().IsClass() && value.Type().Pointee().IsClass() {
-                        let fields: &Map<String, Pair<Field, *const QualifiedType>> = value.Type().Pointee().Fields();
-
-                        for i in 0u64..fields.Size() {
-                            if fields[i].left == pointer.Type().Pointee().Pointee().name {
-                                let mut value_ref = value.Value();
-
-                                if i != 0u64 {
-                                    value_ref = LLVMBuildStructGEP2(this.builder, value.Type().Pointee().Value(), value.Value(), i as u32, "");
-                                }
-
-                                value = QualifiedValue(LLVMBuildBitCast(this.builder, value_ref, pointer.Type().Pointee().Value(), ""), pointer.Type().Pointee());
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                if value.Type() == pointer.Type().Pointee() || state {
-                    LLVMBuildStore(this.builder, value.Value(), pointer.Value());
+            if pointer.Type().Pointee().IsCompatible(value.Type()) {
+                if pointer.Type().Pointee().IsMutabilityCompatible(value.Type()) {
+                    LLVMBuildStore(this.builder, value.MakeCompatible(pointer.Type().Pointee()).Value(), pointer.Value());
                 } else {
-                    Logger::Log("Incompatible assignment types. ('" + pointer.Type().Pointee().ToString() + "' != '" + value.Type().ToString() + "').", node, LogSeverity::Error);
+                    Logger::Log("Cannot assign immutable pointer to mutable pointer.", node, LogSeverity::Error);
                 }
+            } else {
+                Logger::Log("Incompatible assignment types. ('" + pointer.Type().Pointee().ToString() + "' != '" + value.Type().ToString() + "').", node, LogSeverity::Error);
             }
         } ret pointer;
     }
@@ -3125,19 +3034,18 @@ class Compiler {
                         let mut value = values[0u64];
 
                         if value.Type().IsReference() {
-                            value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
-                        }
-
-                        let mut state = false;
-
-                        if target.IsPointer() && value.Type().IsPointer() {
-                            if LLVMGetTypeKind(target.Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || value.Type().IsNullPointer() {
-                                state = true;
+                            if value.Type().Pointee() == target {
+                                value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
                             }
                         }
 
-                        if value.Type() == target || state {
-                            LLVMBuildStore(this.builder, value.Value(), target_pointer.Value());
+                        if target.IsCompatible(value.Type()) {
+                            if target.IsMutabilityCompatible(value.Type()) {
+                                LLVMBuildStore(this.builder, value.MakeCompatible(target).Value(), target_pointer.Value());
+                            } else {
+                                Logger::Log("Cannot assign immutable pointer to mutable pointer.", call as *const Node, LogSeverity::Error);
+                                ret QualifiedValue(null, null);
+                            }
                         } else {
                             Logger::Log("Incompatible primitive type initialization types. ('" + target.ToString() + "' != '" + value.Type().ToString() + "').", call as *const Node, LogSeverity::Error);
                             ret QualifiedValue(null, null);
@@ -3520,22 +3428,22 @@ class Compiler {
 
                 if param.byval != null {
                     if value.Type().IsReference() {
-                        value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
-                    }
-
-                    let mut state = false;
-
-                    if param.byval->IsPointer() && value.Type().IsPointer() {
-                        if LLVMGetTypeKind(param.byval->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || value.Type().IsNullPointer() {
-                            state = true;
+                        if value.Type().Pointee() == *param.byval {
+                            value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
                         }
                     }
 
-                    if *param.byval != value.Type() && !state {
+                    if !param.byval->IsCompatible(value.Type()) {
                         Logger::Log("Incompatible argument types for function '" + _func.Type().Pointee().name + "'. ('" + param.byval->ToString() + "' != '" + value.Type().ToString() + "').", node, LogSeverity::Error);
                         ret QualifiedValue(null, null);
                     }
 
+                    if !param.byval->IsMutabilityCompatible(value.Type()) {
+                        Logger::Log("Cannot assign immutable pointer to mutable pointer.", node, LogSeverity::Error);
+                        ret QualifiedValue(null, null);
+                    }
+
+                    value = value.MakeCompatible(param.byval);
                     let mut source = value;
 
                     if value.return {
@@ -3581,20 +3489,17 @@ class Compiler {
                         }
                     }
 
-                    let mut state = false;
-
-                    if param._type->IsPointer() && value.Type().IsPointer() {
-                        if LLVMGetTypeKind(param._type->Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || value.Type().IsNullPointer() {
-                            state = true;
-                        }
-                    }
-
-                    if *param._type != value.Type() && !state {
+                    if !param._type->IsCompatible(value.Type()) {
                         Logger::Log("Incompatible argument types for function '" + _func.Type().Pointee().name + "'. ('" + param._type->ToString() + "' != '" + value.Type().ToString() + "').", node, LogSeverity::Error);
                         ret QualifiedValue(null, null);
                     }
 
-                    args.PushBack(value.Value());
+                    if !param._type->IsMutabilityCompatible(value.Type()) {
+                        Logger::Log("Cannot assign immutable pointer to mutable pointer.", node, LogSeverity::Error);
+                        ret QualifiedValue(null, null);
+                    }
+
+                    args.PushBack(value.MakeCompatible(param._type).Value());
                 }
             } else {
                 if value.Type().IsReference() {
@@ -3869,17 +3774,15 @@ class Compiler {
                         ret QualifiedValue(null, null);
                     }
 
-                    let mut state = false;
                     let value = values[0u64];
 
-                    if _type.IsPointer() && value.Type().IsPointer() {
-                        if LLVMGetTypeKind(_type.Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || value.Type().IsNullPointer() {
-                            state = true;
+                    if _type.IsCompatible(value.Type()) {
+                        if _type.IsMutabilityCompatible(value.Type()) {
+                            LLVMBuildStore(this.builder, value.MakeCompatible(_type).Value(), pointer);
+                        } else {
+                            Logger::Log("Cannot assign immutable pointer to mutable pointer.", _new as *const Node, LogSeverity::Error);
+                            ret QualifiedValue(null, null);
                         }
-                    }
-
-                    if value.Type() == _type || state {
-                        LLVMBuildStore(this.builder, value.Value(), pointer);
                     } else {
                         Logger::Log("Incompatible primitive type initialization types. ('" + _type.ToString() + "' != '" + value.Type().ToString() + "').", _new as *const Node, LogSeverity::Error);
                         ret QualifiedValue(null, null);

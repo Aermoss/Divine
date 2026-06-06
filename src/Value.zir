@@ -60,7 +60,11 @@ class QualifiedValue {
     }
 
     pub Load(&this, args...) -> QualifiedValue {
-        ret QualifiedValue(LLVMBuildLoad2(compiler->builder, this.Type().Pointee().Value(), this.Value(), ""), this.Type().Pointee(), args...);
+        if LLVMIsGlobalConstant(this.Value()) != 0i32 && !this.Type().Pointee().IsClass() && !this.Type().Pointee().IsPointer() {
+            ret QualifiedValue(LLVMGetInitializer(this.Value()), this.Type().Pointee()); // args...
+        } else {
+            ret QualifiedValue(LLVMBuildLoad2(compiler->builder, this.Type().Pointee().Value(), this.Value(), ""), this.Type().Pointee(), args...);
+        }
     }
 
     pub IsLValue(&this) -> bool { ret this.lvalue; }
@@ -78,7 +82,13 @@ class QualifiedValue {
     }
 
     pub ToRValueType(&this) -> &QualifiedType {
-        ret this.IsLValue() ? this.Type().Pointee() : this.Type();
+        if this.IsLValue() {
+            if this.Type().Pointee().IsArray() {
+                ret compiler->type_manager.Pointer(this.Type().Pointee().Element(), this.Type().IsMutable());
+            } else {
+                ret this.Type().Pointee();
+            }
+        } ret this.Type();
     }
 
     pub MakeCompatible(&this, target: &QualifiedType) -> QualifiedValue {

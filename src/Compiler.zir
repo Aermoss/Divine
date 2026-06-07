@@ -1127,6 +1127,7 @@ class Compiler {
             }
 
             _type->variants.PushBack(Pair<String, Vector<*const QualifiedType>>(variant->name, types));
+            this.scope_manager.Set(variant->name, SymbolKind::Variant, QualifiedValue(LLVMConstInt(LLVMInt32TypeInContext(this.context), (_type->variants.Size() - 1u64), 0i32), _type), false, variant);
             let current_size = LLVMABISizeOfType(this.target->layout, this.CreateVariantPayloadType(types));
 
             if current_size > max_size {
@@ -1212,15 +1213,11 @@ class Compiler {
         ret (pattern as *const IdentifierNode)->name == "_";
     }
 
-    priv BuildEnumTagPointer(&mut this, pointer: LLVMValueRef, _type: *const QualifiedType) -> LLVMValueRef {
-        ret LLVMBuildStructGEP2(this.builder, _type->Value(), pointer, 0u32, "tag_ptr");
-    }
-
     priv BuildPayloadFieldPointer(&mut this, pointer: LLVMValueRef, _type: *const QualifiedType, variant_index: u64, field_index: u64) -> LLVMValueRef {
-        let data_ptr = LLVMBuildStructGEP2(this.builder, _type->Value(), pointer, 1u32, "data_ptr");
+        let data_ptr = LLVMBuildStructGEP2(this.builder, _type->Value(), pointer, 1u32, "");
         let payload_type = this.CreateVariantPayloadType(_type->variants[variant_index].right);
-        let payload_ptr = LLVMBuildBitCast(this.builder, data_ptr, LLVMPointerType(payload_type, 0u32), "payload_ptr");
-        ret LLVMBuildStructGEP2(this.builder, payload_type, payload_ptr, field_index as u32, "payload_field_ptr");
+        let payload_ptr = LLVMBuildBitCast(this.builder, data_ptr, LLVMPointerType(payload_type, 0u32), "");
+        ret LLVMBuildStructGEP2(this.builder, payload_type, payload_ptr, field_index as u32, "");
     }
 
     priv BuildPatternCondition(&mut this, pattern: *const Node, pointer: LLVMValueRef, _type: *const QualifiedType) -> LLVMValueRef {
@@ -1232,7 +1229,7 @@ class Compiler {
             let or_pattern = pattern as *const OrPatternNode;
             let left = this.BuildPatternCondition(or_pattern->left, pointer, _type);
             let right = this.BuildPatternCondition(or_pattern->right, pointer, _type);
-            ret LLVMBuildOr(this.builder, left, right, "or_pattern");
+            ret LLVMBuildOr(this.builder, left, right, "");
         }
 
         if _type->IsEnum() {
@@ -1290,8 +1287,9 @@ class Compiler {
                 ret null;
             }
 
-            let tag = LLVMBuildLoad2(this.builder, LLVMInt32TypeInContext(this.context), this.BuildEnumTagPointer(pointer, _type), "tag");
-            let mut result = LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntEQ, tag, LLVMConstInt(LLVMInt32TypeInContext(this.context), variant_index as u64, 0i32), "match_tag");
+            let tag_ptr = LLVMBuildStructGEP2(this.builder, _type->Value(), pointer, 0u32, "");
+            let tag = LLVMBuildLoad2(this.builder, LLVMInt32TypeInContext(this.context), tag_ptr, "");
+            let mut result = LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntEQ, tag, LLVMConstInt(LLVMInt32TypeInContext(this.context), variant_index as u64, 0i32), "");
             let mut index = 0u64;
 
             for argument in arguments {
@@ -1310,7 +1308,7 @@ class Compiler {
 
                 let field_ptr = this.BuildPayloadFieldPointer(pointer, _type, variant_index as u64, field_index);
                 let field_result = this.BuildPatternCondition(argument, field_ptr, variant_types[field_index]);
-                result = LLVMBuildAnd(this.builder, result, field_result, "match_pattern");
+                result = LLVMBuildAnd(this.builder, result, field_result, "");
                 index += 1u64;
             } ret result;
         }
@@ -1422,12 +1420,12 @@ class Compiler {
         if expression.Null() { ret; }
 
         let function = LLVMGetBasicBlockParent(LLVMGetInsertBlock(this.builder));
-        let end_block = LLVMAppendBasicBlockInContext(this.context, function, "match_end");
+        let end_block = LLVMAppendBasicBlockInContext(this.context, function, "");
         let mut default_block = end_block;
         let mut any_arm_branches_to_end = false;
 
         if _match->default != null {
-            default_block = LLVMAppendBasicBlockInContext(this.context, function, "match_default");
+            default_block = LLVMAppendBasicBlockInContext(this.context, function, "");
         }
 
         let mut match_pointer = null;
@@ -1442,7 +1440,7 @@ class Compiler {
         }
 
         if match_pointer == null && expression.Type().IsEnum() {
-            match_pointer = LLVMBuildAlloca(this.builder, expression.Type().Value(), "match_value");
+            match_pointer = LLVMBuildAlloca(this.builder, expression.Type().Value(), "");
             LLVMBuildStore(this.builder, expression.Value(), match_pointer);
         }
 
@@ -1450,11 +1448,11 @@ class Compiler {
         let mut index = 0u64;
 
         for case in _match->cases {
-            let body_block = LLVMAppendBasicBlockInContext(this.context, function, "match_case");
+            let body_block = LLVMAppendBasicBlockInContext(this.context, function, "");
             let mut next_block = default_block;
 
             if index + 1u64 < _match->cases.Size() {
-                next_block = LLVMAppendBasicBlockInContext(this.context, function, "match_next");
+                next_block = LLVMAppendBasicBlockInContext(this.context, function, "");
             }
 
             LLVMPositionBuilderAtEnd(this.builder, current_block);
@@ -1473,8 +1471,8 @@ class Compiler {
             }
 
             if case->guard != null {
-                let guard_block = LLVMAppendBasicBlockInContext(this.context, function, "match_guard");
-                let guard_fail = LLVMAppendBasicBlockInContext(this.context, function, "match_guard_fail");
+                let guard_block = LLVMAppendBasicBlockInContext(this.context, function, "");
+                let guard_fail = LLVMAppendBasicBlockInContext(this.context, function, "");
                 LLVMBuildCondBr(this.builder, condition, guard_block, next_block);
 
                 LLVMPositionBuilderAtEnd(this.builder, guard_block);
@@ -2693,13 +2691,13 @@ class Compiler {
         let tag_type = LLVMInt32TypeInContext(this.context);
         let struct_type = enum_type->Value();
         let data_type = LLVMStructGetTypeAtIndex(struct_type, 1u32);
-        let mut alloca = LLVMBuildAlloca(this.builder, struct_type, "struct_init");
-        let tag_ptr = LLVMBuildStructGEP2(this.builder, struct_type, alloca, 0u32, "tag_ptr");
+        let mut alloca = LLVMBuildAlloca(this.builder, struct_type, "");
+        let tag_ptr = LLVMBuildStructGEP2(this.builder, struct_type, alloca, 0u32, "");
         LLVMBuildStore(this.builder, LLVMConstInt(tag_type, variant_index as u64, 0i32), tag_ptr);
 
-        let data_ptr = LLVMBuildStructGEP2(this.builder, struct_type, alloca, 1u32, "data_ptr");
+        let data_ptr = LLVMBuildStructGEP2(this.builder, struct_type, alloca, 1u32, "");
         let payload_type = this.CreateVariantPayloadType(variant_types);
-        let payload_ptr = LLVMBuildBitCast(this.builder, data_ptr, LLVMPointerType(payload_type, 0u32), "payload_ptr");
+        let payload_ptr = LLVMBuildBitCast(this.builder, data_ptr, LLVMPointerType(payload_type, 0u32), "");
 
         for _ in variant_types {
             let elem_ptr = LLVMBuildStructGEP2(this.builder, payload_type, payload_ptr, index as u32, "");

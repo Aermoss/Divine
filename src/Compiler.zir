@@ -3129,12 +3129,56 @@ class Compiler {
             }
 
             if state {
-                let symbol = this.scope_manager.Resolve(call->expression, this.ValueToType(values), false);
+                let symbol = this.scope_manager.Resolve(call->expression, this.ValueToType(values), true);
 
                 if symbol != null {
                     ret this.CompileCall2(symbol->value, values, false, call);
                 } else {
-                    ret QualifiedValue(null, null);
+                    let symbol = this.scope_manager.Resolve(call->expression, false);
+
+                    if symbol != null {
+                        if symbol->kind != SymbolKind::Variant {
+                            Logger::Log("Expected a variant, got '" + symbol->kind.ToString() + "'.", call, LogSeverity::Error);
+                            ret QualifiedValue(null, null);
+                        }
+
+                        let enum_type = symbol->value.Type();
+                        let variant_index = LLVMConstIntGetZExtValue(symbol->value.Value());
+                        let variant_types = enum_type->variants[variant_index].right;
+
+                        if values.Size() != variant_types.Size() {
+                            Logger::Log("Variant '" + symbol->name + "' argument count mismatch.", call, LogSeverity::Error);
+                            ret QualifiedValue(null, null);
+                        }
+
+                        for i in 0u64..values.Size() {
+                            if !variant_types[i]->IsCompatible(values[i].ToRValueType()) {
+                                Logger::Log("Incompatible argument types for variant '" + symbol->name + "'. ('" + variant_types[i]->ToString() + "' != '" + values[i].ToRValueType().ToString() + "').", call, LogSeverity::Error);
+                                ret QualifiedValue(null, null);
+                            }
+                        }
+
+                        let current = LLVMGetInsertBlock(this.builder);
+                        LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
+                        let pointer = LLVMBuildAlloca(this.builder, enum_type->Value(), "");
+                        LLVMPositionBuilderAtEnd(this.builder, current);
+
+                        let tag_ptr = LLVMBuildStructGEP2(this.builder, enum_type->Value(), pointer, 0u32, "");
+                        LLVMBuildStore(this.builder, LLVMConstInt(LLVMInt32TypeInContext(this.context), variant_index, 0i32), tag_ptr);
+
+                        let data_ptr = LLVMBuildStructGEP2(this.builder, enum_type->Value(), pointer, 1u32, "");
+                        let payload_type = this.CreateVariantPayloadType(variant_types);
+                        let payload_ptr = LLVMBuildBitCast(this.builder, data_ptr, LLVMPointerType(payload_type, 0u32), "");
+
+                        for i in 0u64..values.Size() {
+                            let elem_ptr = LLVMBuildStructGEP2(this.builder, payload_type, payload_ptr, i as u32, "");
+                            LLVMBuildStore(this.builder, values[i].ToRValue().Value(), elem_ptr);
+                        }
+
+                        ret QualifiedValue(pointer, this.type_manager.Pointer(enum_type, true), true, true);
+                    } else {
+                        ret QualifiedValue(null, null);
+                    }
                 }
             } else {
                 let value = this.CompileExpression(call->expression).ToRValue();

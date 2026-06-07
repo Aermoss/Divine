@@ -274,49 +274,49 @@ class QualifiedType {
         } ret this == other;
     }
 
-    pub Score(&this, other: &QualifiedType) -> u64 {
-        if this != other { ret 0u64; }
+    pub ScorePointer(&this, other: &QualifiedType, base: u64) -> u64 {
+        let mut reference_mismatch = false;
+        let mut mutability_mismatch = false;
         let mut left: *const QualifiedType = this;
         let mut right: *const QualifiedType = other;
-        let mut score = 100u64;
+        let mut score = base;
 
         while left->IsPointer() && right->IsPointer() {
-            if left->IsMutable() && !right->IsMutable() {
+            if left->IsMutable() && !right->IsMutable() && !right->IsNullPointer() {
                 ret 0u64;
             }
 
-            if left->IsMutable() == right->IsMutable() {
-                score += 10u64;
-            }
-
-            if left->IsReference() == right->IsReference() {
-                score += 10u64;
-            }
-
+            mutability_mismatch |= left->IsMutable() != right->IsMutable();
+            reference_mismatch |= left->IsReference() != right->IsReference();
             (left, right) = (left->Pointee(), right->Pointee());
-        } ret score;
+        }
+
+        if reference_mismatch { score -= 10u64; }
+        if mutability_mismatch { score -= 1u64; }
+        ret score;
     }
 
     pub ScoreParameter(&this, other: &QualifiedType) -> u64 {
-        let score = this.Score(other);
-        if score != 0u64 { ret score; }
+        if this == other {
+            ret this.ScorePointer(other, 100u64);
+        }
 
         if this.IsReference() {
             let score = this.Pointee().ScoreParameter(other);
-            if score != 0u64 { ret score - 10u64; }
+            if score != 0u64 { ret score - 3u64; }
         }
 
         if other.IsReference() {
             let score = this.ScoreParameter(other.Pointee());
-            if score != 0u64 { ret score + 10u64; }
+            if score != 0u64 { ret score - 3u64; }
         }
 
         if this.IsPointer() && other.IsPointer() {
             if LLVMGetTypeKind(this.Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || other.IsNullPointer() {
-                ret 20u64;
+                ret this.ScorePointer(other, 30u64);
             } else if this.Pointee().IsClass() && other.Pointee().IsClass() {
                 if this.Pointee().IsDerivedFrom(other.Pointee()) {
-                    ret 70u64;
+                    ret this.ScorePointer(other, 70u64);
                 }
             }
         } ret 0u64;
@@ -451,13 +451,10 @@ class QualifiedType {
 
                     for j in 0u64..(_params.Size() - offset) {
                         let param_type = _params[j + offset];
-                        let mut _type = param_type._type;
+                        let _type = param_type.byval != null ? param_type.byval : param_type._type;
+                        let param_score = _type->ScoreParameter(*params[j]);
 
-                        if param_type.byval != null {
-                            _type = param_type.byval;
-                        }
-
-                        if _type->ScoreParameter(*params[j]) == 0u64 {
+                        if param_score == 0u64 {
                             _match = false;
                             break;
                         }
@@ -525,12 +522,7 @@ class QualifiedType {
 
                     for j in 0u64..(_params.Size() - offset) {
                         let param_type = _params[j + offset];
-                        let mut _type = param_type._type;
-
-                        if param_type.byval != null {
-                            _type = param_type.byval;
-                        }
-
+                        let _type = param_type.byval != null ? param_type.byval : param_type._type;
                         let param_score = _type->ScoreParameter(*params[j]);
 
                         if param_score != 0u64 {

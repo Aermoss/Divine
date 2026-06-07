@@ -986,8 +986,7 @@ class Compiler {
     }
 
     priv CompileClassSecondPass(&mut this, _type: *mut QualifiedType, _class: *const ClassNode, scope: *mut Scope) {
-        let prev_class = this._class;
-        let prev_scope = this.scope_manager.current;
+        let (prev_class, prev_scope) = (this._class, this.scope_manager.current);
         (this._class, this.scope_manager.current) = (_type, scope);
         let mut field_types: Vector<LLVMTypeRef>;
 
@@ -1011,8 +1010,7 @@ class Compiler {
     }
 
     priv CompileClassThirdPass(&mut this, _type: *mut QualifiedType, _class: *const ClassNode, scope: *mut Scope) {
-        let prev_class = this._class;
-        let prev_scope = this.scope_manager.current;
+        let (prev_class, prev_scope) = (this._class, this.scope_manager.current);
         (this._class, this.scope_manager.current) = (_type, scope);
 
         for constructor in _class->constructors {
@@ -1117,12 +1115,9 @@ class Compiler {
     }
 
     priv CompileVariantSecondPass(&mut this, _type: *mut QualifiedType, _enum: *const EnumNode, scope: *mut Scope) {
-        let prev_class = this._class;
-        let prev_scope = this.scope_manager.current;
+        let (prev_class, prev_scope) = (this._class, this.scope_manager.current);
         (this._class, this.scope_manager.current) = (_type, scope);
-
         let mut max_size = 0u64;
-        let mut variant_types: Vector<Pair<String, Vector<*const QualifiedType>>>;
 
         for variant in _enum->variants {
             let mut types: Vector<*const QualifiedType>;
@@ -1131,7 +1126,7 @@ class Compiler {
                 types.PushBack(this.CompileType(_type));
             }
 
-            variant_types.PushBack(Pair<String, Vector<*const QualifiedType>>(variant->name, types));
+            _type->variants.PushBack(Pair<String, Vector<*const QualifiedType>>(variant->name, types));
             let current_size = LLVMABISizeOfType(this.target->layout, this.CreateVariantPayloadType(types));
 
             if current_size > max_size {
@@ -1139,7 +1134,6 @@ class Compiler {
             }
         }
 
-        _type->variants = variant_types;
         let tag_type = LLVMInt32TypeInContext(this.context);
         let data_type = LLVMArrayType(LLVMInt8TypeInContext(this.context), max_size as u32);
         let elements[]: LLVMTypeRef = { tag_type, data_type };
@@ -1153,67 +1147,15 @@ class Compiler {
     }
 
     priv CompileVariantThirdPass(&mut this, _type: *mut QualifiedType, _enum: *const EnumNode, scope: *mut Scope) {
-        let prev_class = this._class;
-        let prev_scope = this.scope_manager.current;
+        let (prev_class, prev_scope) = (this._class, this.scope_manager.current);
         (this._class, this.scope_manager.current) = (_type, scope);
-
-        let tag_type = LLVMInt32TypeInContext(this.context);
-        let struct_type = _type->Value();
-        let data_type = LLVMStructGetTypeAtIndex(struct_type, 1u32);
-        let mut index = 0u64;
-
-        for variant in _enum->variants {
-            let current_variant_types = _type->variants[index].right;
-
-            if current_variant_types.Empty() {
-                let tag_value = LLVMConstInt(tag_type, index, 0i32);
-                let data_value = LLVMConstNull(data_type);
-                let values[]: LLVMValueRef = { tag_value, data_value };
-                let const_val = LLVMConstNamedStruct(struct_type, values, 2u32);
-                this.scope_manager.Set(variant->name, SymbolKind::Constant, QualifiedValue(const_val, _type), false, _enum);
-            } else {
-                let mut params: Vector<ParameterType>;
-                let mut param_types: Vector<LLVMTypeRef>;
-
-                for _type in current_variant_types {
-                    param_types.PushBack(_type->Value());
-                    params.PushBack(ParameterType(_type));
-                }
-
-                let function_type = LLVMFunctionType(struct_type, param_types.Data(), param_types.Size() as u32, 0i32);
-                let types: Vector<*const QualifiedType>;
-                let func_name = Mangler::MangleFunction(variant->name, this.type_manager.Function(function_type, params, ReturnType(_type)), types);
-                let function = LLVMAddFunction(this.module, func_name.Data(), function_type);
-                this.AddAttributes(function);
-
-                let entry = LLVMAppendBasicBlockInContext(this.context, function, "entry");
-                let temp_builder = LLVMCreateBuilderInContext(this.context);
-                LLVMPositionBuilderAtEnd(temp_builder, entry);
-
-                let mut alloca = LLVMBuildAlloca(temp_builder, struct_type, "adt");
-                let tag_ptr = LLVMBuildStructGEP2(temp_builder, struct_type, alloca, 0u32, "tag_ptr");
-                LLVMBuildStore(temp_builder, LLVMConstInt(tag_type, index, 0i32), tag_ptr);
-
-                let data_ptr = LLVMBuildStructGEP2(temp_builder, struct_type, alloca, 1u32, "data_ptr");
-                let payload_type = this.CreateVariantPayloadType(current_variant_types);
-                let payload_ptr = LLVMBuildBitCast(temp_builder, data_ptr, LLVMPointerType(payload_type, 0u32), "payload_ptr");
-
-                for param_index in 0u32..current_variant_types.Size() as u32 {
-                    let param = LLVMGetParam(function, param_index);
-                    let elem_ptr = LLVMBuildStructGEP2(temp_builder, payload_type, payload_ptr, param_index, "");
-                    LLVMBuildStore(temp_builder, param, elem_ptr);
-                }
-
-                LLVMBuildRet(temp_builder, LLVMBuildLoad2(temp_builder, struct_type, alloca, ""));
-                LLVMDisposeBuilder(temp_builder);
-
-                this.scope_manager.Set(variant->name, SymbolKind::Function, QualifiedValue(function, this.type_manager.Pointer(this.type_manager.Function(function_type, params, ReturnType(_type)), false)), false, _enum);
-            } index += 1u64;
-        }
 
         for method in _enum->methods {
             let function = this.CompileFunction(method.right, null);
-            _type->methods.PushBack(Pair<Method, *const QualifiedType>(Method(method.right->name, function.Value(), method.left), function.Type()));
+
+            if !method.right->generic {
+                _type->methods.PushBack(Pair<Method, *const QualifiedType>(Method(method.right->name, function.Value(), method.left), function.Type()));
+            }
         }
 
         (this._class, this.scope_manager.current) = (prev_class, prev_scope);

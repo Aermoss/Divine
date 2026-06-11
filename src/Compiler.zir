@@ -2179,9 +2179,14 @@ class Compiler {
                     let mut value = this.CompileExpression(variable->initializer);
 
                     if !value.Null() {
-                        let mut same = _type->IsSame(value.ToRValueType());
+                        let mut value_type: *const QualifiedType = value.ToRValueType();
+                        let same = _type->IsSame(value_type);
 
-                        if *_type == value.ToRValueType().Pointee() {
+                        if value_type->IsReference() {
+                            value_type = value_type->Pointee();
+                        }
+
+                        if *_type == value_type {
                             has_error = false;
 
                             if !value.return {
@@ -2195,7 +2200,7 @@ class Compiler {
                                 Logger::Log("Unnecessary type annotation, type can be inferred from initializer.", variable, LogSeverity::Warning);
                             }
                         } else {
-                            Logger::Log("Incompatible variable initialization types. ('" + _type->ToString() + "' != '" + value.ToRValueType().Pointee().ToString() + "').", variable, LogSeverity::Error);
+                            Logger::Log("Incompatible variable initialization types. ('" + _type->ToString() + "' != '" + value_type->ToString() + "').", variable, LogSeverity::Error);
                         }
                     }
                 } else {
@@ -3137,70 +3142,71 @@ class Compiler {
             this.scope_manager.RegisterInstance(instance);
             ret instance;
         } else {
+            let mut symbol: *const Symbol = null;
             let mut state = false;
 
             if call->expression->_type == NodeType::IDENTIFIER {
                 let identifier = call->expression as *const IdentifierNode;
-                state = !this.scope_manager.Has(identifier->name, SymbolKind::Variable) && !this.scope_manager.Has(identifier->name, SymbolKind::Parameter);
+
+                if this.scope_manager.Has(identifier->name, SymbolKind::Variant) {
+                    symbol = this.scope_manager.Get(identifier->name, SymbolKind::Variant);
+                } else {
+                    state = this.scope_manager.Has(identifier->name, SymbolKind::Variable)
+                        || this.scope_manager.Has(identifier->name, SymbolKind::Parameter);
+                }
             } else if call->expression->_type == NodeType::SCOPE_RESOLUTION {
                 let resolution = call->expression as *const ScopeResolutionNode;
                 let scope = this.scope_manager.ResolveScopeHalf(resolution, false);
+                if scope == null { ret QualifiedValue(null, null); }
 
-                if scope != null {
-                    state = !scope->Has(resolution->identifier->name, SymbolKind::Variable);
+                if scope->Has(resolution->identifier->name, SymbolKind::Variant) {
+                    symbol = scope->Get(resolution->identifier->name, SymbolKind::Variant);
                 } else {
-                    ret QualifiedValue(null, null);
+                    state = scope->Has(resolution->identifier->name, SymbolKind::Variable);
                 }
             }
 
-            if state {
-                let symbol = this.scope_manager.Resolve(call->expression, this.ValueToType(values), true);
-
+            if !state {
                 if symbol != null {
-                    ret this.CompileCall2(symbol->value, values, false, call);
+                    let enum_type = symbol->value.Type();
+                    let variant_index = LLVMConstIntGetZExtValue(symbol->value.Value());
+                    let variant_types = enum_type->variants[variant_index].right;
+
+                    if values.Size() != variant_types.Size() {
+                        Logger::Log("Variant '" + symbol->name + "' argument count mismatch.", call, LogSeverity::Error);
+                        ret QualifiedValue(null, null);
+                    }
+
+                    for i in 0u64..values.Size() {
+                        if !variant_types[i]->IsCompatible(values[i].ToRValueType()) {
+                            Logger::Log("Incompatible argument types for variant '" + symbol->name + "'. ('" + variant_types[i]->ToString() + "' != '" + values[i].ToRValueType().ToString() + "').", call, LogSeverity::Error);
+                            ret QualifiedValue(null, null);
+                        }
+                    }
+
+                    let current = LLVMGetInsertBlock(this.builder);
+                    LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
+                    let pointer = LLVMBuildAlloca(this.builder, enum_type->Value(), "");
+                    LLVMPositionBuilderAtEnd(this.builder, current);
+
+                    let tag_pointer = LLVMBuildStructGEP2(this.builder, enum_type->Value(), pointer, 0u32, "");
+                    LLVMBuildStore(this.builder, LLVMConstInt(LLVMInt32TypeInContext(this.context), variant_index, 0i32), tag_pointer);
+
+                    let payload_type = this.CreateVariantPayloadType(variant_types);
+                    let mut payload_pointer = LLVMBuildStructGEP2(this.builder, enum_type->Value(), pointer, 1u32, "");
+                    payload_pointer = LLVMBuildBitCast(this.builder, payload_pointer, LLVMPointerType(payload_type, 0u32), "");
+
+                    for i in 0u64..values.Size() {
+                        let element_pointer = LLVMBuildStructGEP2(this.builder, payload_type, payload_pointer, i as u32, "");
+                        LLVMBuildStore(this.builder, values[i].ToRValue().Value(), element_pointer);
+                    }
+
+                    ret QualifiedValue(pointer, this.type_manager.Pointer(enum_type, true), true, true);
                 } else {
-                    let symbol = this.scope_manager.Resolve(call->expression, false);
+                    symbol = this.scope_manager.Resolve(call->expression, this.ValueToType(values), false);
 
                     if symbol != null {
-                        if symbol->kind != SymbolKind::Variant {
-                            Logger::Log("Expected a variant, got '" + symbol->kind.ToString() + "'.", call, LogSeverity::Error);
-                            ret QualifiedValue(null, null);
-                        }
-
-                        let enum_type = symbol->value.Type();
-                        let variant_index = LLVMConstIntGetZExtValue(symbol->value.Value());
-                        let variant_types = enum_type->variants[variant_index].right;
-
-                        if values.Size() != variant_types.Size() {
-                            Logger::Log("Variant '" + symbol->name + "' argument count mismatch.", call, LogSeverity::Error);
-                            ret QualifiedValue(null, null);
-                        }
-
-                        for i in 0u64..values.Size() {
-                            if !variant_types[i]->IsCompatible(values[i].ToRValueType()) {
-                                Logger::Log("Incompatible argument types for variant '" + symbol->name + "'. ('" + variant_types[i]->ToString() + "' != '" + values[i].ToRValueType().ToString() + "').", call, LogSeverity::Error);
-                                ret QualifiedValue(null, null);
-                            }
-                        }
-
-                        let current = LLVMGetInsertBlock(this.builder);
-                        LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
-                        let pointer = LLVMBuildAlloca(this.builder, enum_type->Value(), "");
-                        LLVMPositionBuilderAtEnd(this.builder, current);
-
-                        let tag_pointer = LLVMBuildStructGEP2(this.builder, enum_type->Value(), pointer, 0u32, "");
-                        LLVMBuildStore(this.builder, LLVMConstInt(LLVMInt32TypeInContext(this.context), variant_index, 0i32), tag_pointer);
-
-                        let payload_type = this.CreateVariantPayloadType(variant_types);
-                        let mut payload_pointer = LLVMBuildStructGEP2(this.builder, enum_type->Value(), pointer, 1u32, "");
-                        payload_pointer = LLVMBuildBitCast(this.builder, payload_pointer, LLVMPointerType(payload_type, 0u32), "");
-
-                        for i in 0u64..values.Size() {
-                            let element_pointer = LLVMBuildStructGEP2(this.builder, payload_type, payload_pointer, i as u32, "");
-                            LLVMBuildStore(this.builder, values[i].ToRValue().Value(), element_pointer);
-                        }
-
-                        ret QualifiedValue(pointer, this.type_manager.Pointer(enum_type, true), true, true);
+                        ret this.CompileCall2(symbol->value, values, false, call);
                     } else {
                         ret QualifiedValue(null, null);
                     }
@@ -3951,9 +3957,9 @@ class Compiler {
                 ret QualifiedValue(null, null);
             }
 
-            if value.Type().IsPointer() {
+            if value.IsLValue() {
                 if value.Type().Pointee().IsReference() {
-                    value = value.Load(value.IsLValue());
+                    value = value.Load(true);
                 }
 
                 let mut method_name = "op".ToString();
@@ -3978,18 +3984,24 @@ class Compiler {
                         ret this.CompileCall2(QualifiedValue(method->left.value, method->right, value), values, false, unary);
                     }
                 }
+            } else if value.Type().IsReference() {
+                value = value.Load();
             }
 
             if unary->operator == TokenType::MUL {
                 if value.Type().IsPointer() {
-                    ret value.Load(value.IsLValue());
+                    if value.IsLValue() {
+                        ret value.Load(true);
+                    } else {
+                        ret value.MakeLValue();
+                    }
                 } else {
                     Logger::Log("Cannot dereference non-pointer type '" + value.Type().ToString() + "'.", unary, LogSeverity::Error);
                     ret QualifiedValue(null, null);
                 }
-            } else {
-                value = value.ToRValue();
             }
+
+            value = value.ToRValue();
 
             if value.Type().IsReference() {
                 value = value.Load();
@@ -4094,26 +4106,30 @@ class Compiler {
         } else if left.Type().IsPointer() || right.Type().IsPointer() {
             let (mut left_state, mut right_state) = (false, false);
 
-            if left.Type().IsPointer() {
+            if left.IsLValue() {
                 if left.Type().Pointee().IsReference() {
                     if left.Type().Pointee().Pointee().IsClass() {
-                        left = left.Load(left.IsLValue());
+                        left = left.Load(true);
                         left_state = true;
                     }
                 } else {
                     left_state = left.Type().Pointee().IsClass();
                 }
+            } else if left.Type().IsReference() {
+                left_state = left.Type().Pointee().IsClass();
             }
 
-            if right.Type().IsPointer() {
+            if right.IsLValue() {
                 if right.Type().Pointee().IsReference() {
                     if right.Type().Pointee().Pointee().IsClass() {
-                        right = right.Load(right.IsLValue());
+                        right = right.Load(true);
                         right_state = true;
                     }
                 } else {
                     right_state = right.Type().Pointee().IsClass();
                 }
+            } else if right.Type().IsReference() {
+                right_state = right.Type().Pointee().IsClass();
             }
 
             if left_state || right_state {

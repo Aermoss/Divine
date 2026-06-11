@@ -14,10 +14,97 @@
  * limitations under the License.
  */
 
-#[include "std/io", "std/str", "std/vec", "std/pair", "src/Tokens.zir", "src/Nodes.zir" : *]
+#[include "std/io", "std/str", "std/vec", "std/pair", "std/mem", "std/std", "src/Tokens.zir", "src/Nodes.zir" : *]
+
+#[if WINDOWS]
+class SYMBOL_INFO {
+    pub SizeOfStruct: u32,
+    pub TypeIndex: u32,
+    pub Reserved[2u64]: u64,
+    pub Index: u32,
+    pub Size: u32,
+    pub ModBase: u64,
+    pub Flags: u32,
+    pub Value: u64,
+    pub Address: u64,
+    pub Register: u32,
+    pub Scope: u32,
+    pub Tag: u32,
+    pub NameLen: u32,
+    pub MaxNameLen: u32,
+    pub Name[256u64]: i8
+}
+
+class IMAGEHLP_MODULE64 {
+    pub SizeOfStruct: u32,
+    pub BaseOfImage: u64,
+    pub ImageSize: u32,
+    pub TimeDateStamp: u32,
+    pub CheckSum: u32,
+    pub NumSyms: u32,
+    pub SymType: i32,
+    pub ModuleName[32u64]: i8,
+    pub ImageName[256u64]: i8,
+    pub LoadedImageName[256u64]: i8
+}
+
+extern "C" {
+    func GetCurrentProcess() -> *mut void;
+    func RtlCaptureStackBackTrace(FramesToSkip: u32, FramesToCapture: u32, BackTrace: *mut *mut void, BackTraceHash: *mut u32) -> u16;
+    func SymInitialize(hProcess: *mut void, UserSearchPath: *const i8, fInvadeProcess: i32) -> i32;
+    func SymFromAddr(hProcess: *mut void, Address: u64, Displacement: *mut u64, Symbol: *mut SYMBOL_INFO) -> i32;
+    func SymGetModuleInfo64(hProcess: *mut void, dwAddr: u64, ModuleInfo: *mut IMAGEHLP_MODULE64) -> i32;
+}
+
+static mut sym_initialized: bool = false;
+
+func StackDump() {
+    let mut backtrace[64u64]: *mut void;
+    let frames = RtlCaptureStackBackTrace(2u32, 62u32, backtrace, null);
+    let longest = String((frames - 1u16) as i64).Length();
+    let process = GetCurrentProcess();
+
+    if !sym_initialized {
+        SymInitialize(process, null, 1i32);
+        sym_initialized = true;
+    }
+
+    let mut symbol: SYMBOL_INFO;
+    memset(&mut symbol, 0i32, sizeof(symbol));
+    symbol.SizeOfStruct = 88u32;
+    symbol.MaxNameLen = 255u32;
+
+    let mut module: IMAGEHLP_MODULE64;
+    memset(&mut module, 0i32, sizeof(module));
+    module.SizeOfStruct = sizeof(module) as u32;
+
+    for i in 0u16..frames {
+        let address = backtrace[i as u64] as u64;
+        let mut line: String;
+
+        let index_string = String(i as i64);
+        for j in 0u64..(longest - index_string.Length()) { line += " "; }
+        line += "#" + index_string + " 0x";
+
+        let address_string = String(address, 16u64).ToLower();
+        for j in 0u64..(16u64 - address_string.Length()) { line += '0'; }
+        line += address_string;
+
+        if SymFromAddr(process, address, null, &mut symbol) != 0i32 {
+            line += " " + symbol.Name.ToString();
+        }
+
+        if SymGetModuleInfo64(process, address, &mut module) != 0i32 {
+            line += " (" + module.ImageName.ToString() + "+0x" + String(address - module.BaseOfImage, 16u64).ToLower() + ")";
+        }
+
+        WriteLine(line);
+    }
+}
+#[endif]
 
 enum LogSeverity: i32 {
-    Info, Warning, Error
+    Info, Warning, Error, Fatal
 }
 
 class Log {
@@ -65,11 +152,21 @@ class Logger {
         } else if severity == LogSeverity::Error {
             log.message += " \x1b[31mError:\x1b[0m ";
             logger->has_error = true;
+        } else if severity == LogSeverity::Fatal {
+            log.message += " \x1b[31mFatal Error:\x1b[0m ";
+            logger->has_error = true;
         }
 
         log.message += message;
         logger->logs.PushBack(log);
         WriteLine(log.message);
+
+        if severity == LogSeverity::Fatal {
+#[if WINDOWS]
+            StackDump();
+#[endif]
+            Exit(1i32);
+        }
     }
 
     pub Log(file: &String, row: u64, column: u64, message: &String, severity: LogSeverity) {

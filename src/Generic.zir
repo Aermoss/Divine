@@ -43,17 +43,25 @@ class Generic {
     }
 
     pub Set(&mut this, value: QualifiedValue) {
-        if this.current != "" {
-            this.last_scope = value.Null() ? compiler->scope_manager.current : null;
-            this.cache[this.current] = Pair<QualifiedValue, *mut Scope>(value, this.last_scope);
-            this.current = "";
-        } else {
-            Logger::Log("Generic", "Not in a generic compilation.", LogSeverity::Error);
-            ret;
+        if this.current.Empty() {
+            Logger::Log("Generic", "Not in a generic compilation!", LogSeverity::Fatal);
         }
+
+        this.last_scope = value.Null() ? compiler->scope_manager.current : null;
+        this.cache[this.current] = Pair<QualifiedValue, *mut Scope>(value, this.last_scope);
+        this.current = "";
     }
 
     pub Get(&mut this, types: Vector<*const QualifiedType>) -> Pair<QualifiedValue, *mut Scope> {
+        if !this.current.Empty() {
+            Logger::Log("Generic", "Nested generics are not supported!", LogSeverity::Fatal);
+        }
+
+        if types.Size() != this.type_names.Size() {
+            Logger::Log("Generic", "Generic type parameter count mismatch.", LogSeverity::Error);
+            ret Pair<QualifiedValue, *mut Scope>(QualifiedValue(null, null), null);
+        }
+
         let (prev_mangling, prev_unsafe) = (compiler->mangling, compiler->_unsafe);
         let (prev_scope, prev_generic) = (compiler->scope_manager.current, compiler->generic);
         let (prev_class, prev_function) = (compiler->_class, compiler->function);
@@ -62,15 +70,6 @@ class Generic {
         (compiler->scope_manager.current, compiler->generic) = (this.scope, this);
         (compiler->_class, compiler->function, compiler->function_ref) = (this._class, null, null);
         (compiler->mangling, compiler->_unsafe) = (true, false);
-
-        if this.current != "" {
-            Logger::Log("Generic", "Nested generics are not supported.", LogSeverity::Error);
-        }
-
-        if types.Size() != this.type_names.Size() {
-            Logger::Log("Generic", "Generic type parameter count mismatch.", LogSeverity::Error);
-        }
-
         let name = Mangler::MangleClass(this.name, types);
 
         if this.cache.Has(name) {
@@ -100,7 +99,6 @@ class Generic {
             result = compiler->CompileFunction(this.node as *const FunctionNode, this);
         }
 
-        this.current = "";
         this.types.Clear();
         compiler->scope_manager.PopScope();
         compiler->function_ref = prev_function_ref;

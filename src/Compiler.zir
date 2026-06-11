@@ -2543,7 +2543,25 @@ class Compiler {
             let symbol = this.scope_manager.Resolve(expression, false);
             if symbol == null { ret QualifiedValue(null, null); }
             else if symbol->value.Null() { ret QualifiedValue(null, null); }
-            else { ret symbol->value; }
+            else if symbol->kind == SymbolKind::Variant {
+                let enum_type = symbol->value.Type();
+                let variant_index = LLVMConstIntGetZExtValue(symbol->value.Value());
+                let variant_types = enum_type->variants[variant_index].right;
+
+                if variant_types.Size() != 0u64 {
+                    Logger::Log("Variant '" + symbol->name + "' argument count mismatch.", expression, LogSeverity::Error);
+                    ret QualifiedValue(null, null);
+                }
+
+                let current = LLVMGetInsertBlock(this.builder);
+                LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
+                let pointer = LLVMBuildAlloca(this.builder, enum_type->Value(), "");
+                LLVMPositionBuilderAtEnd(this.builder, current);
+
+                let tag_ptr = LLVMBuildStructGEP2(this.builder, enum_type->Value(), pointer, 0u32, "");
+                LLVMBuildStore(this.builder, LLVMConstInt(LLVMInt32TypeInContext(this.context), variant_index, 0i32), tag_ptr);
+                ret QualifiedValue(pointer, this.type_manager.Pointer(enum_type, true), true, true);
+            } else { ret symbol->value; }
         } else if expression->_type == NodeType::NEW {
             ret this.CompileNew(expression as *const NewNode);
         } else if expression->_type == NodeType::DELETE {

@@ -1171,7 +1171,7 @@ class Compiler {
         } ret cache.left;
     }
 
-    priv CreateVariantPayloadType(&mut this, types: Vector<*const QualifiedType>) -> LLVMTypeRef {
+    priv CreateVariantPayloadType(&mut this, types: &Vector<*const QualifiedType>) -> LLVMTypeRef {
         if types.Empty() {
             ret LLVMStructTypeInContext(this.context, null, 0u32, 0i32);
         }
@@ -1206,18 +1206,15 @@ class Compiler {
     }
 
     priv PatternIsWildcard(&this, pattern: *const Node) -> bool {
-        if pattern == null || pattern->_type != NodeType::IDENTIFIER {
-            ret false;
-        }
-
+        if pattern->_type != NodeType::IDENTIFIER { ret false; }
         ret (pattern as *const IdentifierNode)->name == "_";
     }
 
     priv BuildPayloadFieldPointer(&mut this, pointer: LLVMValueRef, _type: *const QualifiedType, variant_index: u64, field_index: u64) -> LLVMValueRef {
-        let data_ptr = LLVMBuildStructGEP2(this.builder, _type->Value(), pointer, 1u32, "");
+        let mut payload_pointer = LLVMBuildStructGEP2(this.builder, _type->Value(), pointer, 1u32, "");
         let payload_type = this.CreateVariantPayloadType(_type->variants[variant_index].right);
-        let payload_ptr = LLVMBuildBitCast(this.builder, data_ptr, LLVMPointerType(payload_type, 0u32), "");
-        ret LLVMBuildStructGEP2(this.builder, payload_type, payload_ptr, field_index as u32, "");
+        payload_pointer = LLVMBuildBitCast(this.builder, payload_pointer, LLVMPointerType(payload_type, 0u32), "");
+        ret LLVMBuildStructGEP2(this.builder, payload_type, payload_pointer, field_index as u32, "");
     }
 
     priv BuildPatternCondition(&mut this, pattern: *const Node, pointer: LLVMValueRef, _type: *const QualifiedType) -> LLVMValueRef {
@@ -1273,7 +1270,7 @@ class Compiler {
                 ret null;
             }
 
-            let variant_index = this.VariantIndex(_type, &variant_name);
+            let variant_index = this.VariantIndex(_type, variant_name);
 
             if variant_index == -1i64 {
                 Logger::Log("Unknown enum variant '" + variant_name + "'.", pattern, LogSeverity::Error);
@@ -1459,7 +1456,7 @@ class Compiler {
             let mut condition: LLVMValueRef = null;
 
             if expression.Type().IsEnum() {
-                condition = this.BuildPatternCondition(case->pattern, match_pointer, &expression.Type());
+                condition = this.BuildPatternCondition(case->pattern, match_pointer, expression.Type());
             } else {
                 let value = this.CompileExpression(case->pattern);
 

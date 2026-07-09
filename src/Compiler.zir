@@ -633,8 +633,8 @@ class Compiler {
                 ret;
             }
 
-            if LLVMGetTypeKind(alignment.Type().Value()) != LLVMTypeKind::LLVMIntegerTypeKind || LLVMGetIntTypeWidth(alignment.Type().Value()) != 64u32 || alignment.Type().IsSigned() {
-                Logger::Log("Static alignment must be of type 'u64'.", _static, LogSeverity::Error);
+            if LLVMGetTypeKind(alignment.Type().Value()) != LLVMTypeKind::LLVMIntegerTypeKind || LLVMGetIntTypeWidth(alignment.Type().Value()) != LLVMPointerSize(this.target->layout) * 8u32 || alignment.Type().IsSigned() {
+                Logger::Log("Static alignment must be of type 'usize'.", _static, LogSeverity::Error);
                 ret;
             }
 
@@ -2411,7 +2411,7 @@ class Compiler {
 
             if operator != TokenType::ASSIGN {
                 let other = QualifiedValue(LLVMBuildLoad2(this.builder, pointer.Type().Pointee().Value(), pointer.Value(), ""), pointer.Type().Pointee());
-                let (value_kind, other_kind) = (LLVMGetTypeKind(pointer.Type().Pointee().Value()), LLVMGetTypeKind(value.Type().Value()));
+                let (value_kind, other_kind) = (LLVMGetTypeKind(value.Type().Value()), LLVMGetTypeKind(pointer.Type().Pointee().Value()));
 
                 if value.Type().IsPointer() && other.Type().IsPointer() {
                     if operator == TokenType::MINUS_ASSIGN {
@@ -2424,21 +2424,20 @@ class Compiler {
                 } else if (value.Type().IsPointer() && other_kind == LLVMTypeKind::LLVMIntegerTypeKind) || (value_kind == LLVMTypeKind::LLVMIntegerTypeKind && other.Type().IsPointer()) {
                     let ptr = value.Type().IsPointer() ? value : other;
                     let index = value.Type().IsPointer() ? other : value;
-                    let width = LLVMGetIntTypeWidth(index.Type().Value());
 
-                    if width == 64u32 {
-                        if operator == TokenType::PLUS_ASSIGN {
-                            let indices[]: LLVMValueRef = { index.Value() };
-                            value = QualifiedValue(LLVMBuildGEP2(this.builder, ptr.Type().Pointee().Value(), ptr.Value(), indices, 1u32, ""), ptr.Type());
-                        } else if operator == TokenType::MINUS_ASSIGN {
-                            let indices[]: LLVMValueRef = { LLVMBuildNeg(this.builder, index.Value(), "") };
-                            value = QualifiedValue(LLVMBuildGEP2(this.builder, ptr.Type().Pointee().Value(), ptr.Value(), indices, 1u32, ""), ptr.Type());
-                        } else {
-                            Logger::Log("Invalid pointer assignment operation '" + operator.ToString() + "' for type '" + ptr.Type().ToString() + "'.", node, LogSeverity::Error);
-                            ret QualifiedValue(null, null);
-                        }
+                    if LLVMGetIntTypeWidth(index.Type().Value()) != LLVMPointerSize(this.target->layout) * 8u32 || index.Type().IsSigned() {
+                        Logger::Log("Pointer arithmetic requires an operand of type 'usize'.", node, LogSeverity::Error);
+                        ret QualifiedValue(null, null);
+                    }
+
+                    if operator == TokenType::PLUS_ASSIGN {
+                        let indices[]: LLVMValueRef = { index.Value() };
+                        value = QualifiedValue(LLVMBuildGEP2(this.builder, ptr.Type().Pointee().Value(), ptr.Value(), indices, 1u32, ""), ptr.Type());
+                    } else if operator == TokenType::MINUS_ASSIGN {
+                        let indices[]: LLVMValueRef = { LLVMBuildNeg(this.builder, index.Value(), "") };
+                        value = QualifiedValue(LLVMBuildGEP2(this.builder, ptr.Type().Pointee().Value(), ptr.Value(), indices, 1u32, ""), ptr.Type());
                     } else {
-                        Logger::Log("Invalid index type '" + index.Type().ToString() + "'.", node, LogSeverity::Error);
+                        Logger::Log("Invalid pointer assignment operation '" + operator.ToString() + "' for type '" + ptr.Type().ToString() + "'.", node, LogSeverity::Error);
                         ret QualifiedValue(null, null);
                     }
                 } else if value_kind == LLVMTypeKind::LLVMIntegerTypeKind && other_kind == LLVMTypeKind::LLVMIntegerTypeKind {
@@ -3512,7 +3511,7 @@ class Compiler {
             ret QualifiedValue(null, null);
         }
 
-        let index = this.CompileExpression(index_access->index);
+        let mut index = this.CompileExpression(index_access->index);
 
         if index.Null() {
             ret QualifiedValue(null, null);
@@ -3546,11 +3545,18 @@ class Compiler {
         }
 
         if !value.Type().IsPointer() {
-            Logger::Log("Index access value must be a pointer.", index_access, LogSeverity::Error);
+            Logger::Log("Indexed value must be a pointer.", index_access, LogSeverity::Error);
             ret QualifiedValue(null, null);
         }
 
-        let indices[]: LLVMValueRef = { index.ToRValue().Value() };
+        index = index.ToRValue();
+
+        if LLVMGetTypeKind(index.Type().Value()) != LLVMTypeKind::LLVMIntegerTypeKind || LLVMGetIntTypeWidth(index.Type().Value()) != LLVMPointerSize(this.target->layout) * 8u32 || index.Type().IsSigned() {
+            Logger::Log("Index must be of type 'usize'.", index_access, LogSeverity::Error);
+            ret QualifiedValue(null, null);
+        }
+
+        let indices[]: LLVMValueRef = { index.Value() };
         let target_pointer = LLVMBuildGEP2(this.builder, value.Type().Pointee().Value(), value.Value(), indices, 1u32, "");
         ret QualifiedValue(target_pointer, this.type_manager.Reference(value.Type().Pointee(), value.Type().IsMutable()));
     }
@@ -3635,8 +3641,8 @@ class Compiler {
                 ret QualifiedValue(null, null);
             }
 
-            if LLVMGetTypeKind(size.Type().Value()) != LLVMTypeKind::LLVMIntegerTypeKind || LLVMGetIntTypeWidth(size.Type().Value()) != 64u32 || size.Type().IsSigned() {
-                Logger::Log("Array size must be of type 'u64'.", _new, LogSeverity::Error);
+            if LLVMGetTypeKind(size.Type().Value()) != LLVMTypeKind::LLVMIntegerTypeKind || LLVMGetIntTypeWidth(size.Type().Value()) != LLVMPointerSize(this.target->layout) * 8u32 || size.Type().IsSigned() {
+                Logger::Log("Array size must be of type 'usize'.", _new, LogSeverity::Error);
                 ret QualifiedValue(null, null);
             }
 
@@ -4214,21 +4220,20 @@ class Compiler {
         } else if (left.Type().IsPointer() && right_kind == LLVMTypeKind::LLVMIntegerTypeKind) || (left_kind == LLVMTypeKind::LLVMIntegerTypeKind && right.Type().IsPointer()) {
             let ptr = left.Type().IsPointer() ? left : right;
             let index = left.Type().IsPointer() ? right : left;
-            let width = LLVMGetIntTypeWidth(index.Type().Value());
 
-            if width == 64u32 {
-                if operator == TokenType::PLUS {
-                    let indices[]: LLVMValueRef = { index.Value() };
-                    ret QualifiedValue(LLVMBuildGEP2(this.builder, ptr.Type().Pointee().Value(), ptr.Value(), indices, 1u32, ""), ptr.Type());
-                } else if operator == TokenType::MINUS {
-                    let indices[]: LLVMValueRef = { LLVMBuildNeg(this.builder, index.Value(), "") };
-                    ret QualifiedValue(LLVMBuildGEP2(this.builder, ptr.Type().Pointee().Value(), ptr.Value(), indices, 1u32, ""), ptr.Type());
-                } else {
-                    Logger::Log("Invalid pointer binary operation '" + operator.ToString() + "' for type '" + left.Type().ToString() + "'.", node, LogSeverity::Error);
-                    ret QualifiedValue(null, null);
-                }
+            if LLVMGetIntTypeWidth(index.Type().Value()) != LLVMPointerSize(this.target->layout) * 8u32 || index.Type().IsSigned() {
+                Logger::Log("Pointer arithmetic requires an operand of type 'usize'.", node, LogSeverity::Error);
+                ret QualifiedValue(null, null);
+            }
+
+            if operator == TokenType::PLUS {
+                let indices[]: LLVMValueRef = { index.Value() };
+                ret QualifiedValue(LLVMBuildGEP2(this.builder, ptr.Type().Pointee().Value(), ptr.Value(), indices, 1u32, ""), ptr.Type());
+            } else if operator == TokenType::MINUS {
+                let indices[]: LLVMValueRef = { LLVMBuildNeg(this.builder, index.Value(), "") };
+                ret QualifiedValue(LLVMBuildGEP2(this.builder, ptr.Type().Pointee().Value(), ptr.Value(), indices, 1u32, ""), ptr.Type());
             } else {
-                Logger::Log("Invalid index type '" + index.Type().ToString() + "'.", node, LogSeverity::Error);
+                Logger::Log("Invalid pointer binary operation '" + operator.ToString() + "' for type '" + left.Type().ToString() + "'.", node, LogSeverity::Error);
                 ret QualifiedValue(null, null);
             }
         } else if left_kind == LLVMTypeKind::LLVMIntegerTypeKind && right_kind == LLVMTypeKind::LLVMIntegerTypeKind {
@@ -4475,8 +4480,8 @@ class Compiler {
                     ret null;
                 }
 
-                if LLVMGetTypeKind(size.Type().Value()) != LLVMTypeKind::LLVMIntegerTypeKind || LLVMGetIntTypeWidth(size.Type().Value()) != 64u32 || size.Type().IsSigned() {
-                    Logger::Log("Array size must be of type 'u64'.", _type, LogSeverity::Error);
+                if LLVMGetTypeKind(size.Type().Value()) != LLVMTypeKind::LLVMIntegerTypeKind || LLVMGetIntTypeWidth(size.Type().Value()) != LLVMPointerSize(this.target->layout) * 8u32 || size.Type().IsSigned() {
+                    Logger::Log("Array size must be of type 'usize'.", _type, LogSeverity::Error);
                     ret null;
                 }
 

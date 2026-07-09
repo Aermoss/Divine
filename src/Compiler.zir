@@ -2103,7 +2103,7 @@ class Compiler {
                 new_value = LLVMBuildGEP2(this.builder, _type->Pointee().Value(), current_value, indices, 1u32, "");
             } else if _type->IsClass() && _type->Has(String("op+=")) {
                 let mut values: Vector<QualifiedValue>;
-                let param_type = this.type_manager.Primitive(LLVMInt64TypeInContext(this.context), false);
+                let param_type = this.type_manager.Primitive(LLVMIntPtrTypeInContext(this.context, this.target->layout), false);
                 values.PushBack(QualifiedValue(LLVMConstInt(param_type.Value(), 1u64, 0i32), param_type));
                 let instance = QualifiedValue(pointer, this.type_manager.Pointer(_type, true), true);
                 let method = _type->Get(String("op+="), _for);
@@ -2415,7 +2415,7 @@ class Compiler {
 
                 if value.Type().IsPointer() && other.Type().IsPointer() {
                     if operator == TokenType::MINUS_ASSIGN {
-                        let _type = this.type_manager.Primitive(LLVMInt64TypeInContext(this.context), false);
+                        let _type = this.type_manager.Primitive(LLVMIntPtrTypeInContext(this.context, this.target->layout), false);
                         value = QualifiedValue(LLVMBuildSub(this.builder, LLVMBuildPtrToInt(this.builder, other.Value(), _type.Value(), ""), LLVMBuildPtrToInt(this.builder, value.Value(), _type.Value(), ""), ""), _type);
                     } else {
                         Logger::Log("Invalid pointer assignment operation '" + operator.ToString() + "' for type '" + value.Type().ToString() + "'.", node, LogSeverity::Error);
@@ -2879,7 +2879,7 @@ class Compiler {
                     value = LLVMABIAlignmentOfType(this.target->layout, _type->Value()) as u64;
                 }
 
-                let result_type = this.type_manager.Primitive(LLVMInt64TypeInContext(this.context), false);
+                let result_type = this.type_manager.Primitive(LLVMIntPtrTypeInContext(this.context, this.target->layout), false);
                 ret QualifiedValue(LLVMConstInt(result_type.Value(), value, 0i32), result_type);
             } else if identifier->name == "construct" {
                 if call->arguments.Size() == 0u64 {
@@ -3646,18 +3646,19 @@ class Compiler {
                 ret QualifiedValue(null, null);
             }
 
-            let mut _size = LLVMConstInt(LLVMInt64TypeInContext(this.context), LLVMABISizeOfType(this.target->layout, _type.Value()), 0i32);
-            _size = LLVMBuildAdd(this.builder, LLVMBuildMul(this.builder, _size, size.Value(), ""), LLVMConstInt(LLVMInt64TypeInContext(this.context), 8u64, 0i32), "");
+            let size_type = LLVMIntPtrTypeInContext(this.context, this.target->layout);
+            let mut _size = LLVMConstInt(size_type, LLVMABISizeOfType(this.target->layout, _type.Value()), 0i32);
+            _size = LLVMBuildAdd(this.builder, LLVMBuildMul(this.builder, _size, size.Value(), ""), LLVMConstInt(size_type, 8u64, 0i32), "");
             pointer = LLVMBuildArrayMalloc(this.builder, LLVMInt8TypeInContext(this.context), _size, "");
-            LLVMBuildStore(this.builder, size.Value(), LLVMBuildBitCast(this.builder, pointer, LLVMPointerType(LLVMInt64TypeInContext(this.context), 0u32), ""));
+            LLVMBuildStore(this.builder, size.Value(), LLVMBuildBitCast(this.builder, pointer, LLVMPointerType(size_type, 0u32), ""));
 
-            let indices[]: LLVMValueRef = { LLVMConstInt(LLVMInt64TypeInContext(this.context), 8u64, 0i32) };
+            let indices[]: LLVMValueRef = { LLVMConstInt(size_type, 8u64, 0i32) };
             pointer = LLVMBuildGEP2(this.builder, LLVMInt8TypeInContext(this.context), pointer, indices, 1u32, "");
             pointer = LLVMBuildBitCast(this.builder, pointer, LLVMPointerType(_type.Value(), 0u32), "");
 
             if _type.IsClass() {
-                let value = LLVMBuildAlloca(this.builder, LLVMInt64TypeInContext(this.context), "");
-                LLVMBuildStore(this.builder, LLVMConstInt(LLVMInt64TypeInContext(this.context), 0u64, 0i32), value);
+                let value = LLVMBuildAlloca(this.builder, size_type, "");
+                LLVMBuildStore(this.builder, LLVMConstInt(size_type, 0u64, 0i32), value);
 
                 let function = LLVMGetBasicBlockParent(LLVMGetInsertBlock(this.builder));
                 let compare_block = LLVMAppendBasicBlockInContext(this.context, function, "");
@@ -3666,14 +3667,14 @@ class Compiler {
 
                 LLVMBuildBr(this.builder, compare_block);
                 LLVMPositionBuilderAtStart(this.builder, compare_block);
-                let index = LLVMBuildLoad2(this.builder, LLVMInt64TypeInContext(this.context), value, "");
+                let index = LLVMBuildLoad2(this.builder, size_type, value, "");
                 LLVMBuildCondBr(this.builder, LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntULT, index, size.Value(), ""), loop_block, end_block);
 
                 let params: Vector<QualifiedValue>;
                 let indices[]: LLVMValueRef = { index };
                 LLVMPositionBuilderAtStart(this.builder, loop_block);
                 this.CompileConstructor(_type, QualifiedValue(LLVMBuildGEP2(this.builder, _type.Value(), pointer, indices, 1u32, ""), this.type_manager.Pointer(_type, true)), params, _new);
-                LLVMBuildStore(this.builder, LLVMBuildAdd(this.builder, index, LLVMConstInt(LLVMInt64TypeInContext(this.context), 1u64, 0i32), ""), value);
+                LLVMBuildStore(this.builder, LLVMBuildAdd(this.builder, index, LLVMConstInt(size_type, 1u64, 0i32), ""), value);
                 LLVMBuildBr(this.builder, compare_block);
                 LLVMPositionBuilderAtStart(this.builder, end_block);
             }
@@ -3740,14 +3741,15 @@ class Compiler {
         }
 
         if delete->array {
-            let indices[]: LLVMValueRef = { LLVMConstInt(LLVMInt64TypeInContext(this.context), -8i64 as u64, 0i32) };
+            let size_type = LLVMIntPtrTypeInContext(this.context, this.target->layout);
+            let indices[]: LLVMValueRef = { LLVMConstInt(size_type, -8i64 as u64, 0i32) };
             _pointer = LLVMBuildGEP2(this.builder, LLVMInt8TypeInContext(this.context), _pointer, indices, 1u32, "");
 
             if pointer.Type().Pointee().IsClass() {
-                let count = LLVMBuildLoad2(this.builder, LLVMInt64TypeInContext(this.context), LLVMBuildBitCast(this.builder, _pointer, LLVMPointerType(LLVMInt64TypeInContext(this.context), 0u32), ""), "");
+                let count = LLVMBuildLoad2(this.builder, size_type, LLVMBuildBitCast(this.builder, _pointer, LLVMPointerType(size_type, 0u32), ""), "");
 
-                let value = LLVMBuildAlloca(this.builder, LLVMInt64TypeInContext(this.context), "");
-                LLVMBuildStore(this.builder, LLVMConstInt(LLVMInt64TypeInContext(this.context), 0u64, 0i32), value);
+                let value = LLVMBuildAlloca(this.builder, size_type, "");
+                LLVMBuildStore(this.builder, LLVMConstInt(size_type, 0u64, 0i32), value);
 
                 let function = LLVMGetBasicBlockParent(LLVMGetInsertBlock(this.builder));
                 let compare_block = LLVMAppendBasicBlockInContext(this.context, function, "");
@@ -3756,13 +3758,13 @@ class Compiler {
 
                 LLVMBuildBr(this.builder, compare_block);
                 LLVMPositionBuilderAtStart(this.builder, compare_block);
-                let index = LLVMBuildLoad2(this.builder, LLVMInt64TypeInContext(this.context), value, "");
+                let index = LLVMBuildLoad2(this.builder, size_type, value, "");
                 LLVMBuildCondBr(this.builder, LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntULT, index, count, ""), loop_block, end_block);
 
                 let indices[]: LLVMValueRef = { index };
                 LLVMPositionBuilderAtStart(this.builder, loop_block);
                 this.CompileDestructor(pointer.Type().Pointee(), QualifiedValue(LLVMBuildGEP2(this.builder, pointer.Type().Pointee().Value(), pointer.Value(), indices, 1u32, ""), pointer.Type()), delete);
-                LLVMBuildStore(this.builder, LLVMBuildAdd(this.builder, index, LLVMConstInt(LLVMInt64TypeInContext(this.context), 1u64, 0i32), ""), value);
+                LLVMBuildStore(this.builder, LLVMBuildAdd(this.builder, index, LLVMConstInt(size_type, 1u64, 0i32), ""), value);
                 LLVMBuildBr(this.builder, compare_block);
                 LLVMPositionBuilderAtStart(this.builder, end_block);
             }
@@ -4199,7 +4201,7 @@ class Compiler {
 
         if left.Type().IsPointer() && right.Type().IsPointer() {
             if operator == TokenType::MINUS {
-                let _type = this.type_manager.Primitive(LLVMInt64TypeInContext(this.context), false);
+                let _type = this.type_manager.Primitive(LLVMIntPtrTypeInContext(this.context, this.target->layout), false);
                 ret QualifiedValue(LLVMBuildSub(this.builder, LLVMBuildPtrToInt(this.builder, left.Value(), _type.Value(), ""), LLVMBuildPtrToInt(this.builder, right.Value(), _type.Value(), ""), ""), _type);
             } else if operator == TokenType::EQUAL {
                 ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntEQ, left.Value(), right.Value(), ""), this.type_manager.Primitive(LLVMInt1TypeInContext(this.context), false));

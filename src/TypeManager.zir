@@ -17,7 +17,16 @@
 #[include "std/io", "std/str", "std/vec", "src/Types.zir" : *]
 
 class TypeManager {
-    priv types: Vector<*const QualifiedType>;
+    priv types: Vector<*const QualifiedType>,
+    priv void_type: *const QualifiedType = null,
+    priv bool_type: *const QualifiedType = null,
+    priv char_type: *const QualifiedType = null,
+    priv signed_types: Map<u32, *const QualifiedType>,
+    priv unsigned_types: Map<u32, *const QualifiedType>,
+    priv size_types: Map<bool, *const QualifiedType>,
+    priv float_types: Map<u32, *const QualifiedType>,
+    priv pointer_types: Map<u64, *const QualifiedType>,
+    priv reference_types: Map<u64, *const QualifiedType>;
 
     ~TypeManager(&mut this) {
         WriteLine("Disposing " + String(this.types.Size() as i64) + " types (" + String((this.types.Size() * sizeof(QualifiedType)) as f64 / 1024.0f64 / 1024.0f64) + " MB)...");
@@ -27,43 +36,65 @@ class TypeManager {
         }
     }
 
-    pub Void(&mut this, value: LLVMTypeRef) -> &QualifiedType {
-        let _type = new QualifiedType(TypeKind::Void, value);
-        this.types.PushBack(_type);
-        ret _type;
+    pub Void(&mut this) -> &QualifiedType {
+        if this.void_type == null {
+            this.void_type = new QualifiedType(TypeKind::Void, LLVMVoidTypeInContext(compiler->context));
+            this.types.PushBack(this.void_type);
+        } ret this.void_type;
     }
 
-    pub Boolean(&mut this, value: LLVMTypeRef) -> &QualifiedType {
-        let _type = new QualifiedType(TypeKind::Boolean, value);
-        this.types.PushBack(_type);
-        ret _type;
+    pub Boolean(&mut this) -> &QualifiedType {
+        if this.bool_type == null {
+            this.bool_type = new QualifiedType(TypeKind::Boolean, LLVMInt1TypeInContext(compiler->context));
+            this.types.PushBack(this.bool_type);
+        } ret this.bool_type;
     }
 
-    pub Character(&mut this, value: LLVMTypeRef) -> &QualifiedType {
-        let _type = new QualifiedType(TypeKind::Character, value);
-        this.types.PushBack(_type);
-        ret _type;
+    pub Character(&mut this) -> &QualifiedType {
+        if this.char_type == null {
+            this.char_type = new QualifiedType(TypeKind::Character, LLVMInt32TypeInContext(compiler->context));
+            this.types.PushBack(this.char_type);
+        } ret this.char_type;
     }
 
     pub Integer(&mut this, width: u32, signed: bool) -> &QualifiedType {
-        let _type = new QualifiedType(TypeKind::Integer, LLVMIntTypeInContext(compiler->context, width));
-        this.types.PushBack(_type);
-        (_type->width, _type->signed) = (width, signed);
-        ret _type;
+        if signed && this.signed_types.Has(width) {
+            ret this.signed_types[width];
+        } else if !signed && this.unsigned_types.Has(width) {
+            ret this.unsigned_types[width];
+        } else {
+            let _type = new QualifiedType(TypeKind::Integer, LLVMIntTypeInContext(compiler->context, width));
+            this.types.PushBack(_type);
+            (_type->width, _type->signed) = (width, signed);
+
+            if signed {
+                this.signed_types[width] = _type;
+            } else {
+                this.unsigned_types[width] = _type;
+            } ret _type;
+        }
     }
 
     pub IntegerPointer(&mut this, signed: bool) -> &QualifiedType {
-        let _type = new QualifiedType(TypeKind::Integer, LLVMIntPtrTypeInContext(compiler->context, compiler->target->layout));
-        this.types.PushBack(_type);
-        _type->signed = signed;
-        ret _type;
+        if this.size_types.Has(signed) {
+            ret this.size_types[signed];
+        } else {
+            let _type = new QualifiedType(TypeKind::Integer, LLVMIntPtrTypeInContext(compiler->context, compiler->target->layout));
+            this.types.PushBack(_type);
+            (this.size_types[signed], _type->signed) = (_type, signed);
+            ret _type;
+        }
     }
 
-    pub Float(&mut this, value: LLVMTypeRef, width: u32) -> &QualifiedType {
-        let _type = new QualifiedType(TypeKind::Float, value);
-        this.types.PushBack(_type);
-        _type->width = width;
-        ret _type;
+    pub Float(&mut this, width: u32) -> &QualifiedType {
+        if this.float_types.Has(width) {
+            ret this.float_types[width];
+        } else {
+            let _type = new QualifiedType(TypeKind::Float, width == 64u32 ? LLVMDoubleTypeInContext(compiler->context) : LLVMFloatTypeInContext(compiler->context));
+            this.types.PushBack(_type);
+            (this.float_types[width], _type->width) = (_type, width);
+            ret _type;
+        }
     }
 
     pub Function(&mut this, value: LLVMTypeRef, params: &Vector<ParameterType>, return: &ReturnType) -> *mut QualifiedType {
@@ -109,26 +140,33 @@ class TypeManager {
     }
 
     pub Pointer(&mut this, pointee: *const QualifiedType, mutable: bool) -> &QualifiedType {
-        let _type = new QualifiedType(TypeKind::Pointer, LLVMPointerType(pointee->Value(), 0u32));
-        this.types.PushBack(_type);
-        (_type->mutable, _type->pointee) = (mutable, pointee);
-        ret _type;
+        let key = (pointee as u64) ^ (mutable ? 1u64 : 0u64);
+
+        if this.pointer_types.Has(key) {
+            ret this.pointer_types[key];
+        } else {
+            let _type = new QualifiedType(TypeKind::Pointer, LLVMPointerType(pointee->Value(), 0u32));
+            this.types.PushBack(_type);
+            (this.pointer_types[key], _type->mutable, _type->pointee) = (_type, mutable, pointee);
+            ret _type;
+        }
     }
 
     pub NullPointer(&mut this, value: LLVMTypeRef) -> &QualifiedType {
-        let pointee = new QualifiedType(TypeKind::Void, value);
-        this.types.PushBack(pointee);
-        let _type = new QualifiedType(TypeKind::Pointer, LLVMPointerType(value, 0u32));
-        this.types.PushBack(_type);
-        (_type->mutable, _type->pointee) = (false, pointee);
-        ret _type;
+        ret this.Pointer(this.Void(), false);
     }
 
     pub Reference(&mut this, pointee: *const QualifiedType, mutable: bool) -> &QualifiedType {
-        let _type = new QualifiedType(TypeKind::Reference, LLVMPointerType(pointee->Value(), 0u32));
-        this.types.PushBack(_type);
-        (_type->mutable, _type->pointee) = (mutable, pointee);
-        ret _type;
+        let key = (pointee as u64) ^ (mutable ? 1u64 : 0u64);
+
+        if this.reference_types.Has(key) {
+            ret this.reference_types[key];
+        } else {
+            let _type = new QualifiedType(TypeKind::Reference, LLVMPointerType(pointee->Value(), 0u32));
+            this.types.PushBack(_type);
+            (this.reference_types[key], _type->mutable, _type->pointee) = (_type, mutable, pointee);
+            ret _type;
+        }
     }
 
     pub Array(&mut this, pointee: *const QualifiedType, length: usize, mutable: bool) -> &QualifiedType {
@@ -141,15 +179,19 @@ class TypeManager {
     pub Copy(&mut this, _type: *const QualifiedType, mutable: bool) -> *const QualifiedType {
         if !_type->IsPointer() {
             Logger::Log("TypeManager", "Cannot copy non-pointer type!", LogSeverity::Fatal);
+        } else if mutable == _type->IsMutable() {
+            ret _type;
         }
 
-        if mutable != _type->IsMutable() {
-            let mut copy = new QualifiedType(_type->kind, _type->value);
-            this.types.PushBack(copy);
-            (copy->mutable, copy->pointee) = (mutable, _type->pointee);
-            ret copy;
+        let key = (_type->pointee as u64) ^ (mutable ? 1u64 : 0u64);
+
+        if this.pointer_types.Has(key) {
+            ret this.pointer_types[key];
         } else {
-            ret _type;
+            let copy = new QualifiedType(TypeKind::Pointer, _type->value);
+            this.types.PushBack(copy);
+            (this.pointer_types[key], copy->mutable, copy->pointee) = (copy, mutable, _type->pointee);
+            ret copy;
         }
     }
 }

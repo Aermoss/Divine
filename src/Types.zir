@@ -17,94 +17,6 @@
 #[include "std/str", "std/vec", "std/map", "vendor/llvm",
     "src/Generic.zir", "src/Scope.zir", "src/Nodes.zir", "src/Logger.zir" : *]
 
-func LLVMIsTypeEqual(left: LLVMTypeRef, right: LLVMTypeRef) -> bool {
-    if left == right {
-        ret true;
-    }
-
-    let left_kind = LLVMGetTypeKind(left);
-    let right_kind = LLVMGetTypeKind(right);
-
-    if left_kind != right_kind {
-        ret false;
-    } else if left_kind == LLVMTypeKind::LLVMVoidTypeKind || left_kind == LLVMTypeKind::LLVMPointerTypeKind || left_kind == LLVMTypeKind::LLVMHalfTypeKind || left_kind == LLVMTypeKind::LLVMFloatTypeKind || left_kind == LLVMTypeKind::LLVMDoubleTypeKind || left_kind == LLVMTypeKind::LLVMX86_FP80TypeKind || left_kind == LLVMTypeKind::LLVMFP128TypeKind || left_kind == LLVMTypeKind::LLVMPPC_FP128TypeKind || left_kind == LLVMTypeKind::LLVMLabelTypeKind {
-        ret true;
-    } else if left_kind == LLVMTypeKind::LLVMIntegerTypeKind {
-        ret LLVMGetIntTypeWidth(left) == LLVMGetIntTypeWidth(right);
-    } else if left_kind == LLVMTypeKind::LLVMFunctionTypeKind {
-        if !LLVMIsTypeEqual(LLVMGetReturnType(left), LLVMGetReturnType(right)) {
-            ret false;
-        }
-
-        let left_param_count = LLVMCountParamTypes(left) as usize;
-        let right_param_count = LLVMCountParamTypes(right) as usize;
-
-        if (left_param_count != right_param_count) {
-            ret false;
-        }
-
-        let left_params = new LLVMTypeRef[left_param_count];
-        let right_params = new LLVMTypeRef[right_param_count];
-
-        LLVMGetParamTypes(left, left_params);
-        LLVMGetParamTypes(right, right_params);
-
-        for i in 0usize..left_param_count {
-            if !LLVMIsTypeEqual(left_params[i], right_params[i]) {
-                del[] left_params;
-                del[] right_params;
-                ret false;
-            }
-        }
-
-        del[] left_params;
-        del[] right_params;
-        ret true;
-    } else if left_kind == LLVMTypeKind::LLVMArrayTypeKind {
-        ret LLVMGetArrayLength(left) == LLVMGetArrayLength(right) && LLVMIsTypeEqual(LLVMGetElementType(left), LLVMGetElementType(right));
-    } else if left_kind == LLVMTypeKind::LLVMStructTypeKind {
-        let left_name = LLVMGetStructName(left);
-        let right_name = LLVMGetStructName(right);
-
-        if left_name != null && right_name != null {
-            ret String(left_name) == right_name;
-        }
-
-        let left_elem_count = LLVMCountStructElementTypes(left) as usize;
-        let right_elem_count = LLVMCountStructElementTypes(right) as usize;
-        
-        if left_elem_count != right_elem_count {
-            ret false;
-        }
-
-        if LLVMIsPackedStruct(left) != LLVMIsPackedStruct(right) {
-            ret false;
-        }
-
-        let left_elems = new LLVMTypeRef[left_elem_count];
-        let right_elems = new LLVMTypeRef[right_elem_count];
-
-        LLVMGetStructElementTypes(left, left_elems);
-        LLVMGetStructElementTypes(right, right_elems);
-
-        for i in 0usize..left_elem_count {
-            if !LLVMIsTypeEqual(left_elems[i], right_elems[i]) {
-                del[] left_elems;
-                del[] right_elems;
-                ret false;
-            }
-        }
-        
-        del[] left_elems;
-        del[] right_elems;
-        ret true;
-    } else if left_kind == LLVMTypeKind::LLVMVectorTypeKind {
-        ret LLVMGetVectorSize(left) == LLVMGetVectorSize(right) && LLVMIsTypeEqual(LLVMGetElementType(left), LLVMGetElementType(right));
-    } else {
-        ret false;
-    }
-}
-
 class Field {
     pub initializer: *const Node,
     pub visibility: TokenType,
@@ -145,13 +57,24 @@ class ReturnType {
 }
 
 enum TypeKind: i32 {
-    Null, Primitive, Pointer, Reference, Array, Function, PackSpecializedFunction, Class, Enum
+    Void,
+    Boolean, Character, Integer, Float,
+    Pointer, Reference, Array,
+    Function, PackSpecializedFunction,
+    Class, Enum
 }
 
 class QualifiedType {
-    pub kind: TypeKind, pub name: String,
-    pub signed: bool = false, pub mutable: bool = false, pub size: usize = 0usize,
-    pub value: LLVMTypeRef, pub pointee: *const QualifiedType = null,
+    pub kind: TypeKind,
+    pub name: String,
+
+    pub width: u32 = 0u32,
+    pub signed: bool = false,
+    pub mutable: bool = false,
+    pub length: usize = 0usize,
+
+    pub value: LLVMTypeRef,
+    pub pointee: *const QualifiedType = null,
 
     pub pack_name: String,
     pub declaration: *const FunctionNode = null,
@@ -176,11 +99,15 @@ class QualifiedType {
     pub IsMutable(&this) -> bool { ret this.mutable; }
     pub IsSigned(&this) -> bool { ret this.signed; }
 
-    pub IsNull(&this) -> bool { ret this.kind == TypeKind::Null; }
-    pub IsPrimitive(&this) -> bool { ret this.kind == TypeKind::Primitive; }
+    pub IsVoid(&this) -> bool { ret this.kind == TypeKind::Void; }
+    pub IsBoolean(&this) -> bool { ret this.kind == TypeKind::Boolean; }
+    pub IsCharacter(&this) -> bool { ret this.kind == TypeKind::Character; }
+    pub IsInteger(&this) -> bool { ret this.kind == TypeKind::Integer; }
+    pub IsIntegerPointer(&this) -> bool { ret this.kind == TypeKind::Integer && this.width == 0u32; }
+    pub IsFloat(&this) -> bool { ret this.kind == TypeKind::Float; }
     pub IsPointer(&this) -> bool { ret this.kind == TypeKind::Pointer || this.kind == TypeKind::Reference; }
-    pub IsNullPointer(&this) -> bool { if this.kind == TypeKind::Pointer { ret this.pointee->kind == TypeKind::Null; } else { ret false; } }
-    // pub IsNullPointer(&this) -> bool { ret this.kind == TypeKind::Pointer || this.pointee->kind == TypeKind::Null; }
+    pub IsNullPointer(&this) -> bool { if this.kind == TypeKind::Pointer { ret this.pointee->kind == TypeKind::Void; } else { ret false; } }
+    // pub IsNullPointer(&this) -> bool { ret this.kind == TypeKind::Pointer || this.pointee->kind == TypeKind::Void; }
     pub IsReference(&this) -> bool { ret this.kind == TypeKind::Reference; }
     pub IsArray(&this) -> bool { ret this.kind == TypeKind::Array; }
     pub IsFunction(&this) -> bool { ret this.kind == TypeKind::Function || this.kind == TypeKind::PackSpecializedFunction; }
@@ -189,7 +116,7 @@ class QualifiedType {
     pub IsEnum(&this) -> bool { ret this.kind == TypeKind::Enum; }
 
     pub IsTrivial(&this) -> bool {
-        if this.IsPrimitive() || this.IsPointer() || this.IsReference() {
+        if this.IsBoolean() || this.IsCharacter() || this.IsInteger() || this.IsFloat() || this.IsPointer() || this.IsReference() {
             ret true;
         }
 
@@ -336,10 +263,10 @@ class QualifiedType {
         } ret this.pointee;
     }
 
-    pub Size(&this) -> u64 {
+    pub Size(&this) -> usize {
         if this.kind != TypeKind::Array {
             Logger::Log("QualifiedType", "Not an array!", LogSeverity::Fatal);
-        } ret this.size;
+        } ret this.length;
     }
 
     pub Element(&this) -> &QualifiedType {
@@ -426,7 +353,7 @@ class QualifiedType {
                         let _type = param_type.byval != null ? param_type.byval : param_type._type;
                         let param_score = _type->ScoreParameter(*params[j]);
 
-                        if param_score == 0usize {
+                        if param_score == 0u64 {
                             _match = false;
                             break;
                         }
@@ -531,31 +458,72 @@ class QualifiedType {
     }
 
     pub op==(&this, other: &QualifiedType) -> bool {
-        if this.pointee != null && other.pointee != null {
-            ret this.signed == other.signed && LLVMIsTypeEqual(this.value, other.value) && *this.pointee == *other.pointee;
+        if this.kind == TypeKind::Integer && other.kind == TypeKind::Integer {
+            ret this.signed == other.signed && this.width == other.width;
+        } else if this.kind == TypeKind::Float && other.kind == TypeKind::Float {
+            ret this.width == other.width;
+        } else if (this.kind == TypeKind::Pointer || this.kind == TypeKind::Reference) && (other.kind == TypeKind::Pointer || other.kind == TypeKind::Reference) {
+            ret *this.pointee == *other.pointee;
+        } else if this.kind == TypeKind::Array && other.kind == TypeKind::Array {
+            ret *this.pointee == *other.pointee && this.length == other.length;
+        } else if (this.kind == TypeKind::Class || this.kind == TypeKind::Enum) && (other.kind == TypeKind::Class || other.kind == TypeKind::Enum) {
+            ret this.name == other.name;
+        } else if (this.kind == TypeKind::Function || this.kind == TypeKind::PackSpecializedFunction) && (other.kind == TypeKind::Function || other.kind == TypeKind::PackSpecializedFunction) {
+            if this.params.Size() != other.params.Size() {
+                ret false;
+            }
+
+            for i in 0usize..this.params.Size() {
+                if *this.params[i]._type != *other.params[i]._type {
+                    ret false;
+                }
+            }
+
+            ret *this.return._type == *other.return._type;
         } else {
-            ret this.signed == other.signed && LLVMIsTypeEqual(this.value, other.value) && this.pointee == other.pointee;
+            ret this.kind == other.kind;
         }
     }
 
     pub op!=(&this, other: &QualifiedType) -> bool {
-        if this.pointee != null && other.pointee != null {
-            ret this.signed != other.signed || !LLVMIsTypeEqual(this.value, other.value) || *this.pointee != *other.pointee;
-        } else {
-            ret this.signed != other.signed || !LLVMIsTypeEqual(this.value, other.value) || this.pointee != other.pointee;
-        }
+        ret !(this == other);
     }
 
     pub ToString(&this) -> String {
-        if this.value != null {
-            let mut result: String;
-            let string = LLVMPrintTypeToString(this.value);
-            result += string;
-            LLVMDisposeMessage(string);
-            ret result;
+        if this.kind == TypeKind::Void {
+            ret "void".ToString();
+        } else if this.kind == TypeKind::Boolean {
+            ret "bool".ToString();
+        } else if this.kind == TypeKind::Character {
+            ret "char".ToString();
+        } else if this.kind == TypeKind::Integer {
+            if this.width != 0u32 {
+                ret (this.signed ? "i" : "u") + String(this.width as u64);
+            } else {
+                ret (this.signed ? "isize" : "usize").ToString();
+            }
+        } else if this.kind == TypeKind::Float {
+            ret "f" + String(this.width as u64);
+        } else if this.kind == TypeKind::Pointer {
+            ret (this.mutable ? "*mut " : "*const ") + this.pointee->ToString();
+        } else if this.kind == TypeKind::Reference {
+            ret (this.mutable ? "&mut " : "&") + this.pointee->ToString();
+        } else if this.kind == TypeKind::Array {
+            ret "(" + this.pointee->ToString() + ")[" + String(this.length as u64) + "]";
+        } else if this.kind == TypeKind::Class || this.kind == TypeKind::Enum {
+            ret this.name;
+        } else if this.kind == TypeKind::Function || this.kind == TypeKind::PackSpecializedFunction {
+            let mut result = "func(".ToString();
+
+            for param in this.params {
+                result += param._type->ToString();
+            } result += ')';
+
+            if this.return._type->kind != TypeKind::Void {
+                result += " -> " + this.return._type->ToString();
+            } ret result;
         } else {
-            Logger::Log("QualifiedType", "Null type!", LogSeverity::Error);
-            ret String("");
+            ret "<unknown>".ToString();
         }
     }
 }

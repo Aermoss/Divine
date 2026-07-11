@@ -627,7 +627,7 @@ class Compiler {
         }
 
         if _static->alignment != null {
-            let alignment = this.CompileExpression(_static->alignment).ToRValue();
+            let alignment = this.CompileExpression(_static->alignment, this.type_manager.IntegerPointer(false)).ToRValue();
 
             if alignment.Null() {
                 ret;
@@ -1064,7 +1064,7 @@ class Compiler {
 
         for variant in _enum->variants {
             if variant->value != null {
-                let _value = this.CompileExpression(variant->value).ToRValue();
+                let _value = this.CompileExpression(variant->value, underlying_type).ToRValue();
 
                 if !_value.Null() {
                     if _value.Type() == *underlying_type {
@@ -1315,7 +1315,7 @@ class Compiler {
         let value = QualifiedValue(pointer, this.type_manager.Pointer(_type, false));
 
         if pattern->_type == NodeType::SCOPE_RESOLUTION {
-            let constant = this.CompileExpression(pattern);
+            let constant = this.CompileExpression(pattern, _type);
 
             if !constant.Null() {
                 ret this.CompileBinaryOperation2(value, constant, TokenType::EQUAL, pattern).ToRValue().Value();
@@ -1456,7 +1456,7 @@ class Compiler {
             if expression.Type().IsEnum() {
                 condition = this.BuildPatternCondition(case->pattern, match_pointer, expression.Type());
             } else {
-                let value = this.CompileExpression(case->pattern);
+                let value = this.CompileExpression(case->pattern, expression.Type());
 
                 if !value.Null() {
                     condition = this.CompileBinaryOperation2(expression, value, TokenType::EQUAL, case->pattern).ToRValue().Value();
@@ -1955,6 +1955,18 @@ class Compiler {
 
             end = this.CompileExpression(range->end).ToRValue();
             if end.Null() { ret; }
+
+            let start_type = start.ToRValueType();
+
+            if range->end->_type == NodeType::LITERAL && (start_type->IsInteger() || start_type->IsFloat()) {
+                end = this.CompileExpression(range->end, start_type).ToRValue();
+            } else if range->start->_type == NodeType::LITERAL {
+                let end_type = end.ToRValueType();
+
+                if end_type->IsInteger() || end_type->IsFloat() {
+                    start = this.CompileExpression(range->start, end_type).ToRValue();
+                }
+            }
         } else {
             let mut iterable = this.CompileExpression(_for->iterable);
             if iterable.Null() { ret; }
@@ -2339,7 +2351,14 @@ class Compiler {
             ret QualifiedValue(null, null);
         }
 
-        let expected = pointer.Type().IsPointer() ? pointer.Type().Pointee() : null;
+        let mut expected: *const QualifiedType;
+
+        if pointer.Type().IsPointer() && (assignment->operator == TokenType::PLUS_ASSIGN || assignment->operator == TokenType::MINUS_ASSIGN) {
+            expected = this.type_manager.IntegerPointer(false);
+        } else {
+            expected = pointer.Type().IsPointer() ? pointer.Type().Pointee() : null;
+        }
+
         let mut value = this.CompileExpression(assignment->right, expected);
 
         if value.Null() {
@@ -2542,7 +2561,7 @@ class Compiler {
         } else if expression->_type == NodeType::CALL {
             ret this.CompileCall(expression as *const CallNode);
         } else if expression->_type == NodeType::TERNARY {
-            ret this.CompileTernary(expression as *const TernaryNode);
+            ret this.CompileTernary(expression as *const TernaryNode, expected_type);
         } else if expression->_type == NodeType::IDENTIFIER || expression->_type == NodeType::SCOPE_RESOLUTION {
             let symbol = this.scope_manager.Resolve(expression, false);
 
@@ -2774,6 +2793,8 @@ class Compiler {
                 if expected_type != null {
                     if LLVMGetTypeKind(expected_type->Value()) == LLVMTypeKind::LLVMIntegerTypeKind {
                         use_expected_type = true;
+                    } else {
+                        use_default_type = true;
                     }
                 } else {
                     use_default_type = true;
@@ -2826,6 +2847,8 @@ class Compiler {
 
                     if expected_kind == LLVMTypeKind::LLVMFloatTypeKind || expected_kind == LLVMTypeKind::LLVMDoubleTypeKind {
                         use_expected_type = true;
+                    } else {
+                        use_default_type = true;
                     }
                 } else {
                     use_default_type = true;
@@ -3491,7 +3514,7 @@ class Compiler {
         }
     }
 
-    priv CompileTernary(&mut this, ternary: *const TernaryNode) -> QualifiedValue {
+    priv CompileTernary(&mut this, ternary: *const TernaryNode, expected_type: *const QualifiedType) -> QualifiedValue {
         let function = LLVMGetBasicBlockParent(LLVMGetInsertBlock(this.builder));
         let mut then_block = LLVMAppendBasicBlockInContext(this.context, function, "");
         let mut else_block = LLVMAppendBasicBlockInContext(this.context, function, "");
@@ -3503,12 +3526,12 @@ class Compiler {
         } else { ret; }
 
         LLVMPositionBuilderAtEnd(this.builder, then_block);
-        let mut then_value = this.CompileExpression(ternary->then);
+        let mut then_value = this.CompileExpression(ternary->then, expected_type);
         if then_value.Null() { ret QualifiedValue(null, null); }
         then_block = LLVMGetInsertBlock(this.builder);
 
         LLVMPositionBuilderAtEnd(this.builder, else_block);
-        let mut else_value = this.CompileExpression(ternary->_else);
+        let mut else_value = this.CompileExpression(ternary->_else, expected_type);
         if else_value.Null() { ret QualifiedValue(null, null); }
         if then_value.IsRValue() { else_value = else_value.ToRValue(); }
         else_block = LLVMGetInsertBlock(this.builder);
@@ -3546,17 +3569,17 @@ class Compiler {
             ret QualifiedValue(null, null);
         }
 
-        let mut index = this.CompileExpression(index_access->index);
-
-        if index.Null() {
-            ret QualifiedValue(null, null);
-        }
-
         if value.Type().IsReference() {
             value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
         }
 
         if value.Type().IsClass() {
+            let mut index = this.CompileExpression(index_access->index);
+
+            if index.Null() {
+                ret QualifiedValue(null, null);
+            }
+
             let mut params: Vector<QualifiedValue>;
             params.PushBack(index);
 
@@ -3577,6 +3600,12 @@ class Compiler {
             } else {
                 ret QualifiedValue(null, null);
             }
+        }
+
+        let mut index = this.CompileExpression(index_access->index, this.type_manager.IntegerPointer(false));
+
+        if index.Null() {
+            ret QualifiedValue(null, null);
         }
 
         if !value.Type().IsPointer() {
@@ -3670,7 +3699,7 @@ class Compiler {
         let mut pointer: LLVMValueRef = null;
 
         if _new->size != null {
-            let size = this.CompileExpression(_new->size).ToRValue();
+            let size = this.CompileExpression(_new->size, this.type_manager.IntegerPointer(false)).ToRValue();
 
             if size.Null() {
                 ret QualifiedValue(null, null);
@@ -4124,10 +4153,35 @@ class Compiler {
         }
 #[endif]
 
-        let right = this.CompileExpression(binary->right);
+        let mut right: QualifiedValue;
+        let left_type = left.ToRValueType();
+
+        if binary->right->_type == NodeType::LITERAL && (left_type->IsInteger() || left_type->IsFloat()) {
+            right = this.CompileExpression(binary->right, left_type);
+        } else if binary->right->_type == NodeType::LITERAL && left_type->IsPointer() {
+            right = this.CompileExpression(binary->right, this.type_manager.IntegerPointer(false));
+        } else {
+            right = this.CompileExpression(binary->right);
+        }
 
         if right.Null() {
             ret QualifiedValue(null, null);
+        }
+
+        let right_type = right.ToRValueType();
+
+        if binary->left->_type == NodeType::LITERAL && (right_type->IsInteger() || right_type->IsFloat()) {
+            left = this.CompileExpression(binary->left, right_type);
+
+            if left.Null() {
+                ret QualifiedValue(null, null);
+            }
+        } else if binary->left->_type == NodeType::LITERAL && right_type->IsPointer() {
+            left = this.CompileExpression(binary->left, this.type_manager.IntegerPointer(false));
+
+            if left.Null() {
+                ret QualifiedValue(null, null);
+            }
         }
 
         ret this.CompileBinaryOperation2(left, right, binary->operator, binary);
@@ -4510,7 +4564,7 @@ class Compiler {
             if array_type->size == null {
                 ret this.type_manager.Pointer(element_type, element_type->IsMutable());
             } else {
-                let size = this.CompileExpression(array_type->size).ToRValue();
+                let size = this.CompileExpression(array_type->size, this.type_manager.IntegerPointer(false)).ToRValue();
 
                 if size.Null() {
                     ret null;

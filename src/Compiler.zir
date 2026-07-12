@@ -253,8 +253,9 @@ class Compiler {
 
             for constructor in forward.declaration->constructors {
                 let _class = this.CompileType(constructor->expression);
+                if _class == null { ret; }
 
-                if !_class.IsClass() {
+                if !_class->IsClass() {
                     Logger::Log("Constructor type must be a class.", forward.declaration, LogSeverity::Error);
                     ret;
                 }
@@ -298,7 +299,7 @@ class Compiler {
             for symbol in symbols {
                 let index = forward.generic->scope->symbols.Index(symbol);
 
-                if index != (-1 as isize) {
+                if index != -1 {
                     forward.generic->scope->symbols.RemoveAt(index as usize);
                     del symbol;
                 }
@@ -394,11 +395,11 @@ class Compiler {
 
     priv CompileConstant(&mut this, constant: *const ConstantNode) {
         let mut initializer: QualifiedValue;
-        let mut _type: *const QualifiedType = this.CompileType(constant->_type);
+        let mut _type = this.CompileType(constant->_type);
         let mut has_error = false;
 
         if constant->initializer->_type != NodeType::INITIALIZER_LIST {
-            initializer = this.CompileMaterializedExpression(constant->initializer, _type).ToRValue();
+            initializer = this.CompileMaterializedExpressionWithFallback(constant->initializer, _type).ToRValue();
             if initializer.Null() { has_error = true; }
         } else {
             let mut values: Vector<LLVMValueRef>;
@@ -413,7 +414,7 @@ class Compiler {
 
                 for field in _type->Fields() {
                     if index < initializer_list->expressions.Size() {
-                        let value = this.CompileMaterializedExpression(initializer_list->expressions[index], field.right.right).ToRValue();
+                        let value = this.CompileMaterializedExpressionWithFallback(initializer_list->expressions[index], field.right.right).ToRValue();
 
                         if !value.Null() {
                             values.PushBack(value.Value());
@@ -423,7 +424,7 @@ class Compiler {
                         }
                     } else {
                         if field.right.left.initializer != null {
-                            let value = this.CompileMaterializedExpression(field.right.left.initializer, field.right.right).ToRValue();
+                            let value = this.CompileMaterializedExpressionWithFallback(field.right.left.initializer, field.right.right).ToRValue();
 
                             if !value.Null() {
                                 values.PushBack(value.Value());
@@ -450,7 +451,7 @@ class Compiler {
 
                 if !has_error {
                     for expression in initializer_list->expressions {
-                        let value = this.CompileMaterializedExpression(expression, _type->Element()).ToRValue();
+                        let value = this.CompileMaterializedExpressionWithFallback(expression, _type->Element()).ToRValue();
 
                         if value.Null() {
                             has_error = true;
@@ -506,12 +507,12 @@ class Compiler {
 
     priv CompileStatic(&mut this, _static: *const StaticNode) {
         let mut initializer: QualifiedValue;
-        let mut _type: *const QualifiedType = this.CompileType(_static->_type);
+        let mut _type = this.CompileType(_static->_type);
         let mut has_error = false;
 
         if _static->initializer != null {
             if _static->initializer->_type != NodeType::INITIALIZER_LIST {
-                initializer = this.CompileMaterializedExpression(_static->initializer, _type).ToRValue();
+                initializer = this.CompileMaterializedExpressionWithFallback(_static->initializer, _type).ToRValue();
                 if initializer.Null() { has_error = true; }
             } else {
                 let mut values: Vector<LLVMValueRef>;
@@ -526,7 +527,7 @@ class Compiler {
 
                     for field in _type->Fields() {
                         if index < initializer_list->expressions.Size() {
-                            let value = this.CompileMaterializedExpression(initializer_list->expressions[index], field.right.right).ToRValue();
+                            let value = this.CompileMaterializedExpressionWithFallback(initializer_list->expressions[index], field.right.right).ToRValue();
 
                             if !value.Null() {
                                 values.PushBack(value.Value());
@@ -536,7 +537,7 @@ class Compiler {
                             }
                         } else {
                             if field.right.left.initializer != null {
-                                let value = this.CompileMaterializedExpression(field.right.left.initializer, field.right.right).ToRValue();
+                                let value = this.CompileMaterializedExpressionWithFallback(field.right.left.initializer, field.right.right).ToRValue();
 
                                 if !value.Null() {
                                     values.PushBack(value.Value());
@@ -563,7 +564,7 @@ class Compiler {
 
                     if !has_error {
                         for expression in initializer_list->expressions {
-                            let value = this.CompileMaterializedExpression(expression, _type->Element()).ToRValue();
+                            let value = this.CompileMaterializedExpressionWithFallback(expression, _type->Element()).ToRValue();
 
                             if value.Null() {
                                 has_error = true;
@@ -627,7 +628,7 @@ class Compiler {
         }
 
         if _static->alignment != null {
-            let alignment = this.CompileMaterializedExpression(_static->alignment, this.type_manager.IntegerPointer(false)).ToRValue();
+            let alignment = this.CompileMaterializedExpressionWithFallback(_static->alignment, this.type_manager.IntegerPointer(false)).ToRValue();
 
             if alignment.Null() {
                 ret;
@@ -815,15 +816,19 @@ class Compiler {
 
         for constructor in function->constructors {
             unsafe {
-                let _class = this.CompileType(constructor->expression) as &mut QualifiedType;
+                let _class = this.CompileType(constructor->expression) as *mut QualifiedType;
             }
 
-            if !_class.IsClass() {
+            if _class == null {
+                ret value;
+            }
+
+            if !_class->IsClass() {
                 Logger::Log("Constructor type must be a class.", function, LogSeverity::Error);
                 ret value;
             }
 
-            _class.constructed.PushBack(this._class);
+            _class->constructed.PushBack(this._class);
         }
 
         if function->body != null && (function->_type->pack_name == "" || this.pack_specializing) {
@@ -990,14 +995,16 @@ class Compiler {
 
         for parent in _class->parents {
             let parent_type = this.CompileType(parent);
-            _type->fields[parent_type.name] = Pair<Field, *const QualifiedType>(Field(null, TokenType::PRIVATE, field_types.Size()), parent_type);
-            field_types.PushBack(parent_type.Value());
+            if parent_type == null { continue; }
+            _type->fields[parent_type->name] = Pair<Field, *const QualifiedType>(Field(null, TokenType::PRIVATE, field_types.Size()), parent_type);
+            field_types.PushBack(parent_type->Value());
         }
 
         for field in _class->fields {
             let field_type = this.CompileType(field.right->_type);
+            if field_type == null { continue; }
             _type->fields[field.right->name] = Pair<Field, *const QualifiedType>(Field(field.right->initializer, field.left, field_types.Size()), field_type);
-            field_types.PushBack(field_type.Value());
+            field_types.PushBack(field_type->Value());
         }
 
         if !field_types.Empty() {
@@ -1042,7 +1049,7 @@ class Compiler {
     }
 
     priv CompileEnumerationFirstPass(&mut this, _enum: *const EnumNode) -> *const QualifiedType {
-        let underlying_type: *const QualifiedType = this.CompileType(_enum->underlying_type);
+        let underlying_type = this.CompileType(_enum->underlying_type);
 
         if underlying_type == null {
             ret null;
@@ -1064,7 +1071,7 @@ class Compiler {
 
         for variant in _enum->variants {
             if variant->value != null {
-                let _value = this.CompileMaterializedExpression(variant->value, underlying_type).ToRValue();
+                let _value = this.CompileMaterializedExpressionWithFallback(variant->value, underlying_type).ToRValue();
 
                 if !_value.Null() {
                     if _value.Type() == *underlying_type {
@@ -1190,7 +1197,7 @@ class Compiler {
             if variant.left == name {
                 ret index as isize;
             } index += 1;
-        } ret (-1 as isize);
+        } ret -1;
     }
 
     priv VariantFieldIndex(&this, _type: *const QualifiedType, variant_index: usize, name: &String) -> isize {
@@ -1200,7 +1207,7 @@ class Compiler {
             if field_name == name {
                 ret index as isize;
             } index += 1;
-        } ret (-1 as isize);
+        } ret -1;
     }
 
     priv PatternIsWildcard(&this, pattern: *const Node) -> bool {
@@ -1270,7 +1277,7 @@ class Compiler {
 
             let variant_index = this.VariantIndex(_type, variant_name);
 
-            if variant_index == (-1 as isize) {
+            if variant_index == -1 {
                 Logger::Log("Unknown enum variant '" + variant_name + "'.", pattern, LogSeverity::Error);
                 ret null;
             }
@@ -1293,7 +1300,7 @@ class Compiler {
                 if is_struct_pattern {
                     let new_field_index = this.VariantFieldIndex(_type, variant_index as usize, struct_field_names[index]);
 
-                    if new_field_index != (-1 as isize) {
+                    if new_field_index != -1 {
                         field_index = new_field_index as usize;
                     } else {
                         Logger::Log("Unknown field '" + struct_field_names[index] + "' in pattern for variant '" + variant_name + "'.", pattern, LogSeverity::Error);
@@ -1315,7 +1322,7 @@ class Compiler {
         let value = QualifiedValue(pointer, this.type_manager.Pointer(_type, false));
 
         if pattern->_type == NodeType::SCOPE_RESOLUTION {
-            let constant = this.CompileMaterializedExpression(pattern, _type);
+            let constant = this.CompileMaterializedExpressionWithFallback(pattern, _type);
 
             if !constant.Null() {
                 ret this.CompileBinaryOperation2(value, constant, TokenType::EQUAL, pattern).ToRValue().Value();
@@ -1385,7 +1392,7 @@ class Compiler {
                 for field_name in struct_init->field_names {
                     let field_index = this.VariantFieldIndex(_type, variant_index as usize, field_name);
 
-                    if field_index == (-1 as isize) {
+                    if field_index == -1 {
                         Logger::Log("Unknown field '" + field_name + "' in pattern.", pattern, LogSeverity::Error);
                         ret;
                     }
@@ -1398,7 +1405,7 @@ class Compiler {
 
             if pattern->_type == NodeType::IDENTIFIER {
                 let identifier = pattern as *const IdentifierNode;
-                if this.VariantIndex(_type, &identifier->name) != (-1 as isize) { ret; }
+                if this.VariantIndex(_type, &identifier->name) != -1 { ret; }
             } else if pattern->_type == NodeType::SCOPE_RESOLUTION {
                 ret;
             }
@@ -1456,7 +1463,7 @@ class Compiler {
             if expression.Type().IsEnum() {
                 condition = this.BuildPatternCondition(case->pattern, match_pointer, expression.Type());
             } else {
-                let value = this.CompileMaterializedExpression(case->pattern, expression.Type());
+                let value = this.CompileMaterializedExpressionWithFallback(case->pattern, expression.Type());
 
                 if !value.Null() {
                     condition = this.CompileBinaryOperation2(expression, value, TokenType::EQUAL, case->pattern).ToRValue().Value();
@@ -1657,7 +1664,7 @@ class Compiler {
                     LLVMBuildRetVoid(this.builder);
                 }
             } else {
-                let mut value = this.CompileMaterializedExpression(return->expression, return_type._type);
+                let mut value = this.CompileMaterializedExpressionWithFallback(return->expression, return_type._type);
 
                 if value.Null() {
                     ret;
@@ -2207,14 +2214,15 @@ class Compiler {
 
     priv CompileVariable(&mut this, variable: *const VariableNode) {
         if variable->_type != null {
-            let mut _type: *const QualifiedType = this.CompileType(variable->_type);
+            let mut _type = this.CompileType(variable->_type);
+            if _type == null { ret; }
 
             if _type->IsClass() {
                 let (mut has_error, mut skip) = (true, false);
                 let mut params: Vector<QualifiedValue>;
 
                 if variable->initializer != null {
-                    let mut value = this.CompileMaterializedExpression(variable->initializer, _type);
+                    let mut value = this.CompileMaterializedExpressionWithFallback(variable->initializer, _type);
 
                     if !value.Null() {
                         let mut value_type: *const QualifiedType = value.ToRValueType();
@@ -2281,7 +2289,7 @@ class Compiler {
 
                 if variable->initializer != null {
                     if variable->initializer->_type != NodeType::INITIALIZER_LIST {
-                        let mut initializer = this.CompileMaterializedExpression(variable->initializer, _type);
+                        let mut initializer = this.CompileMaterializedExpressionWithFallback(variable->initializer, _type);
 
                         if !initializer.Null() {
                             let same = _type->IsSame(initializer.ToRValueType());
@@ -2321,7 +2329,7 @@ class Compiler {
                         let mut index: u64 = 0;
 
                         for expression in (variable->initializer as *const InitializerListNode)->expressions {
-                            let value = this.CompileMaterializedExpression(expression, _type->Element()).ToRValue();
+                            let value = this.CompileMaterializedExpressionWithFallback(expression, _type->Element()).ToRValue();
 
                             if value.Null() {
                                 break;
@@ -2393,7 +2401,7 @@ class Compiler {
             }
         }
 
-        let mut value = this.CompileMaterializedExpression(assignment->right, target);
+        let mut value = this.CompileMaterializedExpressionWithFallback(assignment->right, target);
 
         if value.Null() {
             ret QualifiedValue(null, null);
@@ -2635,9 +2643,9 @@ class Compiler {
         } else if expression->_type == NodeType::MEMBER_ACCESS {
             ret this.CompileMemberAccess(expression as *const MemberAccessNode);
         } else if expression->_type == NodeType::UNARY_OPERATION {
-            ret this.CompileUnaryOperation(expression as *const UnaryOperationNode);
+            ret this.CompileUnaryOperation(expression as *const UnaryOperationNode, null);
         } else if expression->_type == NodeType::BINARY_OPERATION {
-            ret this.CompileBinaryOperation(expression as *const BinaryOperationNode);
+            ret this.CompileBinaryOperation(expression as *const BinaryOperationNode, null);
         } else if expression->_type == NodeType::STRUCT_INIT {
             ret this.CompileStructInit(expression as *const StructInitNode);
         } else if expression->_type == NodeType::TYPE_APPLICATION {
@@ -2651,16 +2659,48 @@ class Compiler {
     priv CompileMaterializedExpression(&mut this, expression: *const Node, target: &QualifiedType) -> QualifiedValue {
         if expression->_type == NodeType::TERNARY {
             ret this.CompileTernary(expression as *const TernaryNode, target);
+        } else if expression->_type == NodeType::BINARY_OPERATION {
+            ret this.CompileBinaryOperation(expression as *const BinaryOperationNode, target);
+        } else if expression->_type == NodeType::UNARY_OPERATION {
+            ret this.CompileUnaryOperation(expression as *const UnaryOperationNode, target);
         } else {
-            ret this.CompileExpression(expression).Materialize(target);
+            let value = this.CompileExpression(expression);
+
+            if value.Null() {
+                ret QualifiedValue(null, null);
+            }
+
+            ret value.Materialize(target);
+        }
+    }
+
+    priv CompileMaterializedExpressionWithFallback(&mut this, expression: *const Node, target: &QualifiedType) -> QualifiedValue {
+        let mut value = this.CompileMaterializedExpression(expression, target);
+
+        if value.Null() {
+            ret value;
+        } else if value.Type().IsLiteral() {
+            ret value.Materialize();
+        } else {
+            ret value;
         }
     }
 
     priv CompileMaterializedExpression(&mut this, expression: *const Node) -> QualifiedValue {
         if expression->_type == NodeType::TERNARY {
             ret this.CompileTernary(expression as *const TernaryNode, null);
+        } else if expression->_type == NodeType::BINARY_OPERATION {
+            ret this.CompileBinaryOperation(expression as *const BinaryOperationNode, null);
+        } else if expression->_type == NodeType::UNARY_OPERATION {
+            ret this.CompileUnaryOperation(expression as *const UnaryOperationNode, null);
         } else {
-            ret this.CompileExpression(expression).Materialize();
+            let value = this.CompileExpression(expression);
+
+            if value.Null() {
+                ret QualifiedValue(null, null);
+            }
+
+            ret value.Materialize();
         }
     }
 
@@ -2747,7 +2787,7 @@ class Compiler {
 
         let variant_index = this.VariantIndex(enum_type, &variant_name);
 
-        if variant_index == (-1 as isize) {
+        if variant_index == -1 {
             Logger::Log("Unknown enum variant '" + variant_name + "'.", node, LogSeverity::Error);
             ret QualifiedValue(null, null);
         }
@@ -2770,12 +2810,12 @@ class Compiler {
         for field_name in node->field_names {
             let field_index = this.VariantFieldIndex(enum_type, variant_index as usize, field_name);
 
-            if field_index == (-1 as isize) {
+            if field_index == -1 {
                 Logger::Log("Unknown field '" + field_name + "' for variant '" + variant_name + "'.", node, LogSeverity::Error);
                 ret QualifiedValue(null, null);
             }
 
-            let value = this.CompileMaterializedExpression(node->field_values[index], variant_types[field_index as usize]).ToRValue();
+            let value = this.CompileMaterializedExpressionWithFallback(node->field_values[index], variant_types[field_index as usize]).ToRValue();
 
             if !value.Null() {
                 ordered_args[field_index as usize] = value;
@@ -3103,10 +3143,10 @@ class Compiler {
                 }
             } else {
                 let mut _state = true;
-                let index = instance.Type().Pointee().IsClass() ? instance.Type().Pointee().Index(member_access->member) : (-1 as isize);
+                let index: isize = instance.Type().Pointee().IsClass() ? instance.Type().Pointee().Index(member_access->member) : -1;
                 if this._class != null { _state = *this._class != instance.Type().Pointee(); }
 
-                if index != (-1 as isize) {
+                if index != -1 {
                     let field = instance.Type().Pointee().Fields()[member_access->member];
 
                     if field.left.visibility != TokenType::PUBLIC && _state {
@@ -3199,9 +3239,10 @@ class Compiler {
             }
 
             let _class = this.CompileType(call->expression);
+            if _class == null { ret QualifiedValue(null, null); }
             let current = LLVMGetInsertBlock(this.builder);
             LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
-            let instance = QualifiedValue(LLVMBuildAlloca(this.builder, _class.Value(), ""), this.type_manager.Pointer(_class, true), true, true);
+            let instance = QualifiedValue(LLVMBuildAlloca(this.builder, _class->Value(), ""), this.type_manager.Pointer(_class, true), true, true);
             LLVMPositionBuilderAtEnd(this.builder, current);
             this.CompileConstructor(_class, instance, values, call);
             this.scope_manager.RegisterInstance(instance);
@@ -3344,7 +3385,7 @@ class Compiler {
         for symbol in symbols {
             let index = pack_generic->scope->symbols.Index(symbol);
 
-            if index != (-1 as isize) {
+            if index != -1 {
                 pack_generic->scope->symbols.RemoveAt(index as usize);
                 del symbol;
             }
@@ -3634,7 +3675,7 @@ class Compiler {
             }
         }
 
-        let mut index = this.CompileMaterializedExpression(index_access->index, this.type_manager.IntegerPointer(false));
+        let mut index = this.CompileMaterializedExpressionWithFallback(index_access->index, this.type_manager.IntegerPointer(false));
 
         if index.Null() {
             ret QualifiedValue(null, null);
@@ -3702,10 +3743,10 @@ class Compiler {
         }
 
         let mut state = true;
-        let index = instance.Type().Pointee().IsClass() ? instance.Type().Pointee().Index(member_access->member) : (-1 as isize);
+        let index: isize = instance.Type().Pointee().IsClass() ? instance.Type().Pointee().Index(member_access->member) : -1;
         if this._class != null { state = *this._class != instance.Type().Pointee(); }
 
-        if index != (-1 as isize) {
+        if index != -1 {
             let field = instance.Type().Pointee().Fields()[member_access->member];
 
             if field.left.visibility != TokenType::PUBLIC && state {
@@ -3728,10 +3769,11 @@ class Compiler {
 
     priv CompileNew(&mut this, _new: *const NewNode) -> QualifiedValue {
         let _type = this.CompileType(_new->_type);
+        if _type == null { ret QualifiedValue(null, null); }
         let mut pointer: LLVMValueRef = null;
 
         if _new->size != null {
-            let size = this.CompileMaterializedExpression(_new->size, this.type_manager.IntegerPointer(false)).ToRValue();
+            let size = this.CompileMaterializedExpressionWithFallback(_new->size, this.type_manager.IntegerPointer(false)).ToRValue();
 
             if size.Null() {
                 ret QualifiedValue(null, null);
@@ -3743,16 +3785,16 @@ class Compiler {
             }
 
             let size_type = LLVMIntPtrTypeInContext(this.context, this.target->layout);
-            let mut _size = LLVMConstInt(size_type, LLVMABISizeOfType(this.target->layout, _type.Value()), 0);
+            let mut _size = LLVMConstInt(size_type, LLVMABISizeOfType(this.target->layout, _type->Value()), 0);
             _size = LLVMBuildAdd(this.builder, LLVMBuildMul(this.builder, _size, size.Value(), ""), LLVMConstInt(size_type, 8, 0), "");
             pointer = LLVMBuildArrayMalloc(this.builder, LLVMInt8TypeInContext(this.context), _size, "");
             LLVMBuildStore(this.builder, size.Value(), LLVMBuildBitCast(this.builder, pointer, LLVMPointerType(size_type, 0), ""));
 
             let indices[]: LLVMValueRef = { LLVMConstInt(size_type, 8, 0) };
             pointer = LLVMBuildGEP2(this.builder, LLVMInt8TypeInContext(this.context), pointer, indices, 1, "");
-            pointer = LLVMBuildBitCast(this.builder, pointer, LLVMPointerType(_type.Value(), 0), "");
+            pointer = LLVMBuildBitCast(this.builder, pointer, LLVMPointerType(_type->Value(), 0), "");
 
-            if _type.IsClass() {
+            if _type->IsClass() {
                 let value = LLVMBuildAlloca(this.builder, size_type, "");
                 LLVMBuildStore(this.builder, LLVMConstInt(size_type, 0, 0), value);
 
@@ -3769,13 +3811,13 @@ class Compiler {
                 let params: Vector<QualifiedValue>;
                 let indices[]: LLVMValueRef = { index };
                 LLVMPositionBuilderAtStart(this.builder, loop_block);
-                this.CompileConstructor(_type, QualifiedValue(LLVMBuildGEP2(this.builder, _type.Value(), pointer, indices, 1, ""), this.type_manager.Pointer(_type, true)), params, _new);
+                this.CompileConstructor(_type, QualifiedValue(LLVMBuildGEP2(this.builder, _type->Value(), pointer, indices, 1, ""), this.type_manager.Pointer(_type, true)), params, _new);
                 LLVMBuildStore(this.builder, LLVMBuildAdd(this.builder, index, LLVMConstInt(size_type, 1, 0), ""), value);
                 LLVMBuildBr(this.builder, compare_block);
                 LLVMPositionBuilderAtStart(this.builder, end_block);
             }
         } else {
-            pointer = LLVMBuildMalloc(this.builder, _type.Value(), "");
+            pointer = LLVMBuildMalloc(this.builder, _type->Value(), "");
 
             if _new->initialized {
                 let mut values: Vector<QualifiedValue>;
@@ -3786,7 +3828,7 @@ class Compiler {
                     }
                 }
 
-                if _type.IsClass() {
+                if _type->IsClass() {
                     this.CompileConstructor(_type, QualifiedValue(pointer, this.type_manager.Pointer(_type, true)), values, _new);
                 } else {
                     if values.Size() != 1 {
@@ -3796,15 +3838,15 @@ class Compiler {
 
                     let value = values[0];
 
-                    if _type.IsCompatible(value.Type()) {
-                        if _type.IsMutabilityCompatible(value.Type()) {
+                    if _type->IsCompatible(value.Type()) {
+                        if _type->IsMutabilityCompatible(value.Type()) {
                             LLVMBuildStore(this.builder, value.MakeCompatible(_type).Value(), pointer);
                         } else {
                             Logger::Log("Cannot assign immutable pointer to mutable pointer.", _new, LogSeverity::Error);
                             ret QualifiedValue(null, null);
                         }
                     } else {
-                        Logger::Log("Incompatible primitive type initialization types. ('" + _type.ToString() + "' != '" + value.Type().ToString() + "').", _new, LogSeverity::Error);
+                        Logger::Log("Incompatible primitive type initialization types. ('" + _type->ToString() + "' != '" + value.Type().ToString() + "').", _new, LogSeverity::Error);
                         ret QualifiedValue(null, null);
                     }
                 }
@@ -3875,8 +3917,13 @@ class Compiler {
     }
 
     priv CompileCast(&mut this, cast: *const CastNode) -> QualifiedValue {
-        let mut target: *const QualifiedType = this.CompileType(cast->target_type);
-        let value = this.CompileMaterializedExpression(cast->expression, target).ToRValue();
+        let mut target = this.CompileType(cast->target_type);
+
+        if target == null {
+            ret QualifiedValue(null, null);
+        }
+
+        let value = this.CompileMaterializedExpressionWithFallback(cast->expression, target).ToRValue();
 
         if !value.Null() {
             ret this.CompileCast2(value, target, cast);
@@ -4016,7 +4063,7 @@ class Compiler {
         }
     }
 
-    priv CompileUnaryOperation(&mut this, unary: *const UnaryOperationNode) -> QualifiedValue {
+    priv CompileUnaryOperation(&mut this, unary: *const UnaryOperationNode, target: *const QualifiedType) -> QualifiedValue {
         if unary->operator == TokenType::BITWISE_AND {
             let pointer = this.CompileExpression(unary->operand);
 
@@ -4054,7 +4101,25 @@ class Compiler {
 
             ret QualifiedValue(pointer.Value(), this.type_manager.Copy(pointer.Type(), unary->mutable));
         } else {
-            let mut value = this.CompileMaterializedExpression(unary->operand);
+            let mut operand_target: *const QualifiedType = null;
+
+            if target != null {
+                if unary->operator == TokenType::MINUS {
+                    if !(target->IsInteger() && !target->IsSigned()) {
+                        operand_target = target;
+                    }
+                } else if unary->operator == TokenType::TILDE || unary->operator == TokenType::NOT {
+                    operand_target = target;
+                }
+            }
+
+            let mut value: QualifiedValue;
+
+            if operand_target != null {
+                value = this.CompileMaterializedExpressionWithFallback(unary->operand, target);
+            } else {
+                value = this.CompileMaterializedExpression(unary->operand);
+            }
 
             if value.Null() {
                 ret QualifiedValue(null, null);
@@ -4140,8 +4205,22 @@ class Compiler {
         }
     }
 
-    priv CompileBinaryOperation(&mut this, binary: *const BinaryOperationNode) -> QualifiedValue {
-        let mut left = this.CompileExpression(binary->left);
+    priv CompileBinaryOperation(&mut this, binary: *const BinaryOperationNode, target: *const QualifiedType) -> QualifiedValue {
+        let mut operand_target: *const QualifiedType = null;
+
+        if target != null && binary->operator != TokenType::EQUAL && binary->operator != TokenType::NOT_EQUAL && binary->operator != TokenType::GREATER && binary->operator != TokenType::LESS && binary->operator != TokenType::GREATER_EQUAL && binary->operator != TokenType::LESS_EQUAL && binary->operator != TokenType::AND && binary->operator != TokenType::OR {
+            if target->IsInteger() || target->IsFloat() || target->IsBoolean() {
+                operand_target = target;
+            }
+        }
+
+        let mut left: QualifiedValue;
+
+        if operand_target != null {
+            left = this.CompileMaterializedExpression(binary->left, operand_target);
+        } else {
+            left = this.CompileExpression(binary->left);
+        }
         
         if left.Null() {
             ret QualifiedValue(null, null);
@@ -4187,7 +4266,23 @@ class Compiler {
         }
 #[endif]
 
-        let right = this.CompileExpression(binary->right);
+        let mut right: QualifiedValue;
+
+        let mut has_right = false;
+
+        if !left.Type().IsLiteral() {
+            right = this.CompileMaterializedExpression(binary->right, left.ToRValueType());
+            has_right = true;
+        } else if target != null {
+            if target->IsInteger() || target->IsFloat() || target->IsBoolean() {
+                right = this.CompileMaterializedExpression(binary->right, *target);
+                has_right = true;
+            }
+        }
+
+        if !has_right {
+            right = this.CompileExpression(binary->right);
+        }
 
         if right.Null() {
             ret QualifiedValue(null, null);
@@ -4523,7 +4618,7 @@ class Compiler {
         }
     }
 
-    pub CompileType(&mut this, _type: *const Node) -> &QualifiedType {
+    pub CompileType(&mut this, _type: *const Node) -> *const QualifiedType {
         if _type->_type == NodeType::PRIMITIVE_TYPE {
             let primitive_type = _type as *const PrimitiveTypeNode;
 
@@ -4563,7 +4658,9 @@ class Compiler {
             let mut types: Vector<*const QualifiedType>;
 
             for type_ in type_application->types {
-                types.PushBack(this.CompileType(type_));
+                let __type = this.CompileType(type_);
+                if __type == null { ret null; }
+                types.PushBack(__type);
             }
 
             if type_application->expression->_type == NodeType::PRIMITIVE_TYPE {
@@ -4584,18 +4681,23 @@ class Compiler {
             }
         } else if _type->_type == NodeType::POINTER_TYPE {
             let pointer_type = _type as *const PointerTypeNode;
-            ret this.type_manager.Pointer(this.CompileType(pointer_type->base_type), pointer_type->mutable);
+            let base_type = this.CompileType(pointer_type->base_type);
+            if base_type == null { ret null; }
+            ret this.type_manager.Pointer(base_type, pointer_type->mutable);
         } else if _type->_type == NodeType::REFERENCE_TYPE {
             let reference_type = _type as *const ReferenceTypeNode;
-            ret this.type_manager.Reference(this.CompileType(reference_type->base_type), reference_type->mutable);
+            let base_type = this.CompileType(reference_type->base_type);
+            if base_type == null { ret null; }
+            ret this.type_manager.Reference(base_type, reference_type->mutable);
         } else if _type->_type == NodeType::ARRAY_TYPE {
             let array_type = _type as *const ArrayTypeNode;
-            let element_type: *const QualifiedType = this.CompileType(array_type->element_type);
+            let element_type = this.CompileType(array_type->element_type);
+            if element_type == null { ret null; }
 
             if array_type->size == null {
                 ret this.type_manager.Pointer(element_type, element_type->IsMutable());
             } else {
-                let size = this.CompileMaterializedExpression(array_type->size, this.type_manager.IntegerPointer(false)).ToRValue();
+                let size = this.CompileMaterializedExpressionWithFallback(array_type->size, this.type_manager.IntegerPointer(false)).ToRValue();
 
                 if size.Null() {
                     ret null;
@@ -4612,6 +4714,7 @@ class Compiler {
             let function_type = _type as *const FunctionTypeNode;
             let (mut params: Vector<ParameterType>, mut param_types: Vector<LLVMTypeRef>);
             let mut return_type = ReturnType(this.CompileType(function_type->return_type));
+            if return_type._type == null { ret null; }
 
             if LLVMGetTypeKind(return_type._type->Value()) == LLVMTypeKind::LLVMStructTypeKind && !return_type._type->IsEnum() {
                 let processed_type = this.ProcessType(return_type._type);
@@ -4629,7 +4732,8 @@ class Compiler {
 
             for parameter in function_type->parameters {
                 let real_type = this.CompileType(parameter->_type);
-                let mut param_type = ParameterType(real_type.IsEnum() ? real_type : this.ProcessType(real_type));
+                if real_type == null { ret null; }
+                let mut param_type = ParameterType(real_type->IsEnum() ? real_type : this.ProcessType(real_type));
 
                 if real_type != *param_type._type {
                     param_type.byval = real_type;

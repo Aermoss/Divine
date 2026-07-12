@@ -19,6 +19,7 @@
 class QualifiedValue {
     priv value: LLVMValueRef = null, priv _type: *const QualifiedType = null,
     pub instance: LLVMValueRef = null, pub instance_type: *const QualifiedType = null,
+    priv integer_literal: u64 = 0u64, priv float_literal: f64 = 0.0f64,
     priv lvalue: bool = false, pub return: bool = false;
 
     QualifiedValue(&mut this, value: LLVMValueRef, _type: *const QualifiedType) {
@@ -27,6 +28,14 @@ class QualifiedValue {
 
     QualifiedValue(&mut this, value: LLVMValueRef, _type: *const QualifiedType, instance: &QualifiedValue) {
         (this.value, this._type, this.instance, this.instance_type) = (value, _type, instance.value, instance._type);
+    }
+
+    QualifiedValue(&mut this, _type: *const QualifiedType, integer_literal: u64) {
+        (this._type, this.integer_literal) = (_type, integer_literal);
+    }
+
+    QualifiedValue(&mut this, _type: *const QualifiedType, float_literal: f64) {
+        (this._type, this.float_literal) = (_type, float_literal);
     }
 
     QualifiedValue(&mut this, value: LLVMValueRef, _type: *const QualifiedType, lvalue: bool, return: bool) {
@@ -38,7 +47,7 @@ class QualifiedValue {
     }
 
     pub Null(&this) -> bool {
-        ret this.value == null;
+        ret this.value == null && this._type == null;
     }
 
     pub Value(&this) -> LLVMValueRef {
@@ -51,6 +60,26 @@ class QualifiedValue {
         if this._type == null {
             Logger::Log("QualifiedValue", "Null type!", LogSeverity::Fatal);
         } ret this._type;
+    }
+
+    pub Materialize(&this, target: &QualifiedType) -> QualifiedValue {
+        if this.Type().IsInteger() && this.Type().IsLiteral() && target.IsInteger() {
+            ret QualifiedValue(LLVMConstInt(target.Value(), this.integer_literal, this.Type().IsSigned() ? 1i32 : 0i32), target);
+        } else if this.Type().IsFloat() && this.Type().IsLiteral() && target.IsFloat() {
+            ret QualifiedValue(LLVMConstReal(target.Value(), this.float_literal), target);
+        } else {
+            ret this;
+        }
+    }
+
+    pub Materialize(&this) -> QualifiedValue {
+        if this.Type().kind == TypeKind::IntegerLiteral {
+            ret this.Materialize(compiler->type_manager.Integer(32u32, true));
+        } else if this.Type().kind == TypeKind::FloatLiteral {
+            ret this.Materialize(compiler->type_manager.Float(64u32));
+        } else {
+            ret this;
+        }
     }
 
     pub Load(&this, args...) -> QualifiedValue {

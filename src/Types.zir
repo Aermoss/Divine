@@ -57,8 +57,8 @@ class ReturnType {
 }
 
 enum TypeKind: i32 {
-    Void,
-    Boolean, Character, Integer, Float,
+    Void, Boolean, Character,
+    Integer, IntegerLiteral, Float, FloatLiteral,
     Pointer, Reference, Array,
     Function, PackSpecializedFunction,
     Class, Enum
@@ -97,14 +97,15 @@ class QualifiedType {
     }
 
     pub IsMutable(&this) -> bool { ret this.mutable; }
+    pub IsLiteral(&this) -> bool { ret this.kind == TypeKind::IntegerLiteral || this.kind == TypeKind::FloatLiteral; }
     pub IsSigned(&this) -> bool { ret this.signed; }
 
     pub IsVoid(&this) -> bool { ret this.kind == TypeKind::Void; }
     pub IsBoolean(&this) -> bool { ret this.kind == TypeKind::Boolean; }
     pub IsCharacter(&this) -> bool { ret this.kind == TypeKind::Character; }
-    pub IsInteger(&this) -> bool { ret this.kind == TypeKind::Integer; }
+    pub IsInteger(&this) -> bool { ret this.kind == TypeKind::Integer || this.kind == TypeKind::IntegerLiteral; }
     pub IsIntegerPointer(&this) -> bool { ret this.kind == TypeKind::Integer && this.width == 0u32; }
-    pub IsFloat(&this) -> bool { ret this.kind == TypeKind::Float; }
+    pub IsFloat(&this) -> bool { ret this.kind == TypeKind::Float || this.kind == TypeKind::FloatLiteral; }
     pub IsPointer(&this) -> bool { ret this.kind == TypeKind::Pointer || this.kind == TypeKind::Reference; }
     pub IsNullPointer(&this) -> bool { if this.kind == TypeKind::Pointer { ret this.pointee->kind == TypeKind::Void; } else { ret false; } }
     // pub IsNullPointer(&this) -> bool { ret this.kind == TypeKind::Pointer || this.pointee->kind == TypeKind::Void; }
@@ -224,6 +225,18 @@ class QualifiedType {
     }
 
     pub ScoreParameter(&this, other: &QualifiedType) -> u64 {
+        if other.IsLiteral() {
+            if this.IsInteger() && other.IsInteger() {
+                if this.width == other.width && this.signed == other.signed {
+                    ret 100u64;
+                } ret 1u64;
+            } else if this.IsFloat() && other.IsFloat() {
+                if this.width == other.width {
+                    ret 100u64;
+                } ret 1u64;
+            } ret 0u64;
+        }
+
         if this == other {
             ret this.ScorePointer(other, 100u64);
         }
@@ -458,9 +471,9 @@ class QualifiedType {
     }
 
     pub op==(&this, other: &QualifiedType) -> bool {
-        if this.kind == TypeKind::Integer && other.kind == TypeKind::Integer {
+        if (this.kind == TypeKind::Integer || this.kind == TypeKind::IntegerLiteral) && this.kind == other.kind {
             ret this.signed == other.signed && this.width == other.width;
-        } else if this.kind == TypeKind::Float && other.kind == TypeKind::Float {
+        } else if (this.kind == TypeKind::Float || this.kind == TypeKind::FloatLiteral) && this.kind == other.kind {
             ret this.width == other.width;
         } else if (this.kind == TypeKind::Pointer || this.kind == TypeKind::Reference) && (other.kind == TypeKind::Pointer || other.kind == TypeKind::Reference) {
             ret *this.pointee == *other.pointee;
@@ -502,8 +515,12 @@ class QualifiedType {
             } else {
                 ret (this.signed ? "isize" : "usize").ToString();
             }
+        } else if this.kind == TypeKind::IntegerLiteral {
+            ret "(integer literal)".ToString();
         } else if this.kind == TypeKind::Float {
             ret "f" + String(this.width as u64);
+        } else if this.kind == TypeKind::FloatLiteral {
+            ret "(float literal)".ToString();
         } else if this.kind == TypeKind::Pointer {
             ret (this.mutable ? "*mut " : "*const ") + this.pointee->ToString();
         } else if this.kind == TypeKind::Reference {

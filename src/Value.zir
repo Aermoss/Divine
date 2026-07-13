@@ -16,6 +16,9 @@
 
 #[include "std/str", "vendor/llvm", "src/Types.zir" : *]
 
+const F32_MAX: f64 = 3.40282347e+38;
+const F64_MAX: f64 = 1.7976931348623157e+308;
+
 class QualifiedValue {
     priv value: LLVMValueRef = null, priv _type: *const QualifiedType = null,
     pub instance: LLVMValueRef = null, pub instance_type: *const QualifiedType = null,
@@ -64,9 +67,27 @@ class QualifiedValue {
 
     pub Materialize(&this, target: &QualifiedType) -> QualifiedValue {
         if this.Type().IsInteger() && this.Type().IsLiteral() && target.IsInteger() {
-            ret QualifiedValue(LLVMConstInt(target.Value(), this.integer_literal, this.Type().IsSigned() ? 1 : 0), target);
+            let mut value = this.integer_literal;
+            let size = LLVMPointerSize(compiler->target->layout) as usize * 8;
+            let width = target.width == 0 ? size : target.width as usize;
+
+            if width < size {
+                if value as usize >= (target.IsSigned() ? 1 << (width - 1) : 1 << width) {
+                    Logger::Log("Integer literal '" + String(value) + "' overflows target type '" + target.ToString() + "'.", LogSeverity::Error);
+                    value = 0;
+                }
+            }
+
+            ret QualifiedValue(LLVMConstInt(target.Value(), value, target.IsSigned() ? 1 : 0), target);
         } else if this.Type().IsFloat() && this.Type().IsLiteral() && target.IsFloat() {
-            ret QualifiedValue(LLVMConstReal(target.Value(), this.float_literal), target);
+            let mut value = this.float_literal;
+
+            if (value < 0.0 ? -value : value) > (target.width == 32 ? F32_MAX : F64_MAX) {
+                Logger::Log("Float literal '" + String(value) + "' overflows target type '" + target.ToString() + "'.", LogSeverity::Error);
+                value = 0.0;
+            }
+
+            ret QualifiedValue(LLVMConstReal(target.Value(), value), target);
         } else {
             ret this;
         }
@@ -74,7 +95,17 @@ class QualifiedValue {
 
     pub Materialize(&this) -> QualifiedValue {
         if this.Type().kind == TypeKind::IntegerLiteral {
-            ret this.Materialize(compiler->type_manager.Integer(32, true));
+            let (mut width: u32, mut signed) = (32, true);
+
+            if this.integer_literal >= (1 << 31) {
+                width = 64;
+
+                if this.integer_literal > (1 << 63) - 1 {
+                    signed = false;
+                }
+            }
+
+            ret this.Materialize(compiler->type_manager.Integer(width, signed));
         } else if this.Type().kind == TypeKind::FloatLiteral {
             ret this.Materialize(compiler->type_manager.Float(64));
         } else {

@@ -403,7 +403,13 @@ func FatalErrorHandler(reason: *const i8) {
 }
 
 func main(args: &mut Vector<String>) -> i32 {
-    let mut logger: Logger;
+    let executable = SplitPath(args[0]).right;
+    let mut logger = Logger(executable);
+
+    if args.Size() < 2 {
+        PrintUsage(executable);
+        ret 1;
+    }
 
     LLVMEnablePrettyStackTrace();
     LLVMInstallFatalErrorHandler(FatalErrorHandler);
@@ -415,13 +421,6 @@ func main(args: &mut Vector<String>) -> i32 {
     LLVMInitializeAllAsmParsers();
     LLVMInitializeAllDisassemblers();
 
-    let executable = SplitPath(args[0]).right;
-
-    if args.Size() < 2 {
-        PrintUsage(executable);
-        ret 1;
-    }
-
     let (mut input_files: Vector<String>, mut output_file: String);
     let (mut include_paths: Vector<String>, mut lib_paths: Vector<String>);
     let (mut defines: Vector<String>, mut libs: Vector<String>);
@@ -432,7 +431,7 @@ func main(args: &mut Vector<String>) -> i32 {
     let mut features: String;
     let mut triple = LLVMGetDefaultTargetTriple().ToString();
     let (mut arch, mut code_model) = ("generic".ToString(), "default".ToString());
-    let mut opt_level = LLVMCodeGenOptLevel::LLVMCodeGenLevelLess;
+    let mut opt_level = LLVMCodeGenOptLevel::LLVMCodeGenLevelNone;
     let (mut emit_object, mut emit_asm, mut emit_llvm, mut emit_bc) = (false, false, false, false);
     let (mut run, mut debug, mut verbose, mut check) = (false, false, false, false);
     let (mut freestanding, mut no_red_zone) = (false, false);
@@ -488,7 +487,7 @@ func main(args: &mut Vector<String>) -> i32 {
             if i < args.Size() {
                 output_file = args[i];
             } else {
-                Logger::Log(executable, "Missing argument to '-o'.", LogSeverity::Error);
+                Logger::Log("Missing argument to '-o'.", LogSeverity::Error);
                 ret 1;
             }
         } else if arg.StartsWith("-I") {
@@ -500,7 +499,7 @@ func main(args: &mut Vector<String>) -> i32 {
                 if i < args.Size() {
                     path = args[i];
                 } else {
-                    Logger::Log(executable, "Missing argument to '-I'.", LogSeverity::Error);
+                    Logger::Log("Missing argument to '-I'.", LogSeverity::Error);
                     ret 1;
                 }
             }
@@ -515,7 +514,7 @@ func main(args: &mut Vector<String>) -> i32 {
                 if i < args.Size() {
                     path = args[i];
                 } else {
-                    Logger::Log(executable, "Missing argument to '-L'.", LogSeverity::Error);
+                    Logger::Log("Missing argument to '-L'.", LogSeverity::Error);
                     ret 1;
                 }
             }
@@ -530,7 +529,7 @@ func main(args: &mut Vector<String>) -> i32 {
                 if i < args.Size() {
                     name = args[i];
                 } else {
-                    Logger::Log(executable, "Missing argument to '-l'.", LogSeverity::Error);
+                    Logger::Log("Missing argument to '-l'.", LogSeverity::Error);
                     ret 1;
                 }
             }
@@ -545,7 +544,7 @@ func main(args: &mut Vector<String>) -> i32 {
                 if i < args.Size() {
                     define = args[i];
                 } else {
-                    Logger::Log(executable, "Missing argument to '-D'.", LogSeverity::Error);
+                    Logger::Log("Missing argument to '-D'.", LogSeverity::Error);
                     ret 1;
                 }
             }
@@ -557,7 +556,7 @@ func main(args: &mut Vector<String>) -> i32 {
             if i < args.Size() {
                 triple = args[i];
             } else {
-                Logger::Log(executable, "Missing argument to '-target'.", LogSeverity::Error);
+                Logger::Log("Missing argument to '-target'.", LogSeverity::Error);
                 ret 1;
             }
         } else if arg == "-march" {
@@ -566,7 +565,7 @@ func main(args: &mut Vector<String>) -> i32 {
             if i < args.Size() {
                 arch = args[i];
             } else {
-                Logger::Log(executable, "Missing argument to '-march'.", LogSeverity::Error);
+                Logger::Log("Missing argument to '-march'.", LogSeverity::Error);
                 ret 1;
             }
         } else if arg == "-mcmodel" {
@@ -575,29 +574,29 @@ func main(args: &mut Vector<String>) -> i32 {
             if i < args.Size() {
                 code_model = args[i];
             } else {
-                Logger::Log(executable, "Missing argument to '-mcmodel'.", LogSeverity::Error);
+                Logger::Log("Missing argument to '-mcmodel'.", LogSeverity::Error);
                 ret 1;
             }
         } else if arg.StartsWith("-") {
-            Logger::Log(executable, "Unknown option '" + arg + "'.", LogSeverity::Error);
+            Logger::Log("Unknown option '" + arg + "'.", LogSeverity::Error);
             ret 1;
         } else {
             if FileExists(arg) {
                 input_files.PushBack(arg);
             } else {
-                Logger::Log(executable, "Cannot find '" + arg + "'.", LogSeverity::Error);
+                Logger::Log("Cannot find '" + arg + "'.", LogSeverity::Error);
                 ret 1;
             }
         } i += 1;
     }
 
     if input_files.Empty() {
-        Logger::Log(executable, "No input files.", LogSeverity::Error);
+        Logger::Log("No input files.", LogSeverity::Error);
         ret 1;
     }
 
     if !output_file.Empty() && input_files.Size() > 1 && (emit_object || emit_asm) {
-        Logger::Log(executable, "Cannot specify '-o' when generating multiple output files.", LogSeverity::Error);
+        Logger::Log("Cannot specify '-o' when generating multiple output files.", LogSeverity::Error);
         ret 1;
     }
 
@@ -637,7 +636,7 @@ func main(args: &mut Vector<String>) -> i32 {
 
         if extension == ".zir" {
             if verbose {
-                Logger::Log(executable, "Compiling: '" + input_file + "'.", LogSeverity::Info);
+                Logger::Log("Compiling: '" + input_file + "'.", LogSeverity::Info);
             }
 
             let mut lexer: Lexer;
@@ -659,7 +658,7 @@ func main(args: &mut Vector<String>) -> i32 {
             module = compiler.Compile(node, input_file);
         } else if extension == ".ll" || extension == ".bc" {
             if verbose {
-                Logger::Log(executable, "Compiling: '" + input_file + "'.", LogSeverity::Info);
+                Logger::Log("Compiling: '" + input_file + "'.", LogSeverity::Info);
             }
 
             let mut buffer: LLVMMemoryBufferRef = null;
@@ -712,16 +711,16 @@ func main(args: &mut Vector<String>) -> i32 {
             }
         } else if extension == ".asm" || extension == ".s" {
             if emit_asm {
-                Logger::Log(executable, "Skipping input: '" + input_file + "'.", LogSeverity::Warning);
+                Logger::Log("Skipping input: '" + input_file + "'.", LogSeverity::Warning);
                 continue;
             }
 
             if verbose {
-                Logger::Log(executable, "Assembling: '" + input_file + "'.", LogSeverity::Info);
+                Logger::Log("Assembling: '" + input_file + "'.", LogSeverity::Info);
             } module = assembler.Assemble(_ReadFile(input_file), input_file);
         } else if extension == ".obj" || extension == ".o" {
             if emit_object {
-                Logger::Log(executable, "Skipping input: '" + input_file + "'.", LogSeverity::Warning);
+                Logger::Log("Skipping input: '" + input_file + "'.", LogSeverity::Warning);
             } else {
                 objects.PushBack(input_file);
             } continue;
@@ -741,13 +740,14 @@ func main(args: &mut Vector<String>) -> i32 {
             let mut passes: String;
 
             if opt_level == LLVMCodeGenOptLevel::LLVMCodeGenLevelLess {
+                Logger::Log(input_file, "Optimizing at less level which may break your program in this version. (\x1b[36m-O1\x1b[0m)", LogSeverity::Warning);
                 passes = "default<O1>";
             } else if opt_level == LLVMCodeGenOptLevel::LLVMCodeGenLevelDefault {
-                passes = "default<O2>";
                 Logger::Log(input_file, "Optimizing at default level which may break your program in this version. (\x1b[36m-O2\x1b[0m)", LogSeverity::Warning);
+                passes = "default<O2>";
             } else if opt_level == LLVMCodeGenOptLevel::LLVMCodeGenLevelAggressive {
-                passes = "default<O3>";
                 Logger::Log(input_file, "Optimizing at aggressive level which may break your program in this version. (\x1b[36m-O3\x1b[0m)", LogSeverity::Warning);
+                passes = "default<O3>";
             }
 
             if passes.Size() > 1 {
@@ -865,11 +865,11 @@ func main(args: &mut Vector<String>) -> i32 {
             }
         }
 #[else]
-        Logger::Log(executable, "Cannot link to windows from another platform.", LogSeverity::Error);
+        Logger::Log("Cannot link to windows from another platform.", LogSeverity::Error);
         ret 1;
 #[endif]
     } else if triple.Contains("darwin") || triple.Contains("apple") {
-        Logger::Log(executable, "Cannot link to darwin.", LogSeverity::Error);
+        Logger::Log("Cannot link to darwin.", LogSeverity::Error);
         ret 1;
     } else if triple.Contains("linux") {
         command = lld_exe + " --nostdlib --entry _start";
@@ -888,12 +888,12 @@ func main(args: &mut Vector<String>) -> i32 {
             command += " -l" + lib;
         }
     } else {
-        Logger::Log(executable, "Invalid target: '" + triple + "'.", LogSeverity::Error);
+        Logger::Log("Invalid target: '" + triple + "'.", LogSeverity::Error);
         ret 1;
     }
 
     if verbose {
-        Logger::Log(executable, "Link: '" + command.Replace("\"", "") + "'.", LogSeverity::Info);
+        Logger::Log("Link: '" + command.Replace("\"", "") + "'.", LogSeverity::Info);
     }
 
     Execute(command.Data());

@@ -57,8 +57,10 @@ extern "C" {
 }
 
 static mut sym_initialized: bool = false;
+#[endif]
 
 func StackDump() {
+#[if WINDOWS]
     let mut backtrace[64]: *mut void;
     let frames = RtlCaptureStackBackTrace(2, 62, backtrace, null);
     let longest = String((frames - 1) as i64).Length();
@@ -78,8 +80,7 @@ func StackDump() {
     memset(&mut module, 0, sizeof(module));
     module.SizeOfStruct = sizeof(module) as u32;
 
-    let start: u16 = 0;
-    for i in start..frames {
+    for i in 0..frames {
         let address = backtrace[i as usize] as u64;
         let mut line: String;
 
@@ -101,8 +102,8 @@ func StackDump() {
 
         WriteLine(line);
     }
-}
 #[endif]
+}
 
 enum LogSeverity: i32 {
     Info, Warning, Error, Fatal
@@ -118,10 +119,11 @@ class Log {
 
 class Logger {
     pub logs: Vector<Log>,
-    pub has_error: bool = false;
+    priv has_error: bool = false,
+    priv executable: String;
 
-    Logger(&mut this) {
-        logger = this;
+    Logger(&mut this, executable: &String) {
+        (logger, this.executable) = (this, executable);
     }
 
     ~Logger(&mut this) {
@@ -163,27 +165,17 @@ class Logger {
         WriteLine(log.message);
 
         if severity == LogSeverity::Fatal {
-#[if WINDOWS]
             StackDump();
-#[endif]
             Exit(1);
         }
     }
 
-    pub Log(file: &String, row: u32, column: u32, message: &String, severity: LogSeverity) {
-        Logger::Log(file.Data(), row, column, -1 as u32, -1 as u32, message.Data(), severity);
+    pub Log(message: &String, severity: LogSeverity) {
+        Logger::Log(logger->executable.Data(), -1 as u32, -1 as u32, -1 as u32, -1 as u32, message.Data(), severity);
     }
 
-    pub Log(file: &String, row: u32, column: u32, message: *const i8, severity: LogSeverity) {
-        Logger::Log(file.Data(), row, column, -1 as u32, -1 as u32, message, severity);
-    }
-
-    pub Log(file: *const i8, row: u32, column: u32, message: &String, severity: LogSeverity) {
-        Logger::Log(file, row, column, -1 as u32, -1 as u32, message.Data(), severity);
-    }
-
-    pub Log(file: *const i8, row: u32, column: u32, message: *const i8, severity: LogSeverity) {
-        Logger::Log(file, row, column, -1 as u32, -1 as u32, message, severity);
+    pub Log(message: *const i8, severity: LogSeverity) {
+        Logger::Log(logger->executable.Data(), -1 as u32, -1 as u32, -1 as u32, -1 as u32, message, severity);
     }
 
     pub Log(file: &String, message: &String, severity: LogSeverity) {
@@ -200,14 +192,6 @@ class Logger {
 
     pub Log(file: *const i8, message: *const i8, severity: LogSeverity) {
         Logger::Log(file, -1 as u32, -1 as u32, -1 as u32, -1 as u32, message, severity);
-    }
-
-    pub Log(message: &String, start: Token, end: Token, severity: LogSeverity) {
-        Logger::Log(start.file.Data(), start.row, start.column, end.row, end.column, message.Data(), severity);
-    }
-
-    pub Log(message: *const i8, start: Token, end: Token, severity: LogSeverity) {
-        Logger::Log(start.file.Data(), start.row, start.column, end.row, end.column, message, severity);
     }
 
     pub Log(message: &String, token: Token, severity: LogSeverity) {

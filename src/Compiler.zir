@@ -187,7 +187,7 @@ class Compiler {
             LLVMPositionBuilderAtEnd(this.builder, entry);
             let mut j: usize = 0;
 
-            while (has_instance && j == 0) || j < forward.declaration->_type->parameters.Size() + (has_instance ? 1usize : 0usize) {
+            while (has_instance && j == 0) || j < forward.declaration->_type->parameters.Size() + (has_instance ? 1 : 0) {
                 let (mut name: String, mut mutable: bool);
 
                 if has_instance && j == 0 {
@@ -225,7 +225,7 @@ class Compiler {
             this.current_pack_values.Clear();
 
             if this.current_pack_name != "" {
-                let offset = !params.Empty() && params[0].sret != null ? 1usize : 0usize;
+                let offset: usize = !params.Empty() && params[0].sret != null ? 1 : 0;
 
                 while j + offset < params.Size() {
                     let index = j + offset;
@@ -268,9 +268,9 @@ class Compiler {
                     }
                 }
 
-                let index = params[0].sret != null ? 1usize : 0usize;
+                let index: usize = params[0].sret != null ? 1 : 0;
                 let instance = QualifiedValue(LLVMGetParam(this.function_ref, index as u32), params[index]._type);
-                this.CompileConstructor(_class, this.CompileCast2(instance, this.type_manager.Pointer(_class, true), forward.declaration), values, forward.declaration);
+                this.CompileConstructor(_class, this.CompileResolvedCast(instance, this.type_manager.Pointer(_class, true), forward.declaration), values, forward.declaration);
             }
 
             this.CompileBlock(forward.declaration->body);
@@ -399,7 +399,7 @@ class Compiler {
         let mut has_error = false;
 
         if constant->initializer->_type != NodeType::INITIALIZER_LIST {
-            initializer = this.CompileMaterializedExpressionWithFallback(constant->initializer, _type).ToRValue();
+            initializer = this.CompileExpression(constant->initializer).MaterializeWithFallback(_type).ToRValue();
             if initializer.Null() { has_error = true; }
         } else {
             let mut values: Vector<LLVMValueRef>;
@@ -414,7 +414,7 @@ class Compiler {
 
                 for field in _type->Fields() {
                     if index < initializer_list->expressions.Size() {
-                        let value = this.CompileMaterializedExpressionWithFallback(initializer_list->expressions[index], field.right.right).ToRValue();
+                        let value = this.CompileExpression(initializer_list->expressions[index]).MaterializeWithFallback(field.right.right).ToRValue();
 
                         if !value.Null() {
                             values.PushBack(value.Value());
@@ -424,7 +424,7 @@ class Compiler {
                         }
                     } else {
                         if field.right.left.initializer != null {
-                            let value = this.CompileMaterializedExpressionWithFallback(field.right.left.initializer, field.right.right).ToRValue();
+                            let value = this.CompileExpression(field.right.left.initializer).MaterializeWithFallback(field.right.right).ToRValue();
 
                             if !value.Null() {
                                 values.PushBack(value.Value());
@@ -451,7 +451,7 @@ class Compiler {
 
                 if !has_error {
                     for expression in initializer_list->expressions {
-                        let value = this.CompileMaterializedExpressionWithFallback(expression, _type->Element()).ToRValue();
+                        let value = this.CompileExpression(expression).MaterializeWithFallback(_type->Element()).ToRValue();
 
                         if value.Null() {
                             has_error = true;
@@ -512,7 +512,7 @@ class Compiler {
 
         if _static->initializer != null {
             if _static->initializer->_type != NodeType::INITIALIZER_LIST {
-                initializer = this.CompileMaterializedExpressionWithFallback(_static->initializer, _type).ToRValue();
+                initializer = this.CompileExpression(_static->initializer).MaterializeWithFallback(_type).ToRValue();
                 if initializer.Null() { has_error = true; }
             } else {
                 let mut values: Vector<LLVMValueRef>;
@@ -527,7 +527,7 @@ class Compiler {
 
                     for field in _type->Fields() {
                         if index < initializer_list->expressions.Size() {
-                            let value = this.CompileMaterializedExpressionWithFallback(initializer_list->expressions[index], field.right.right).ToRValue();
+                            let value = this.CompileExpression(initializer_list->expressions[index]).MaterializeWithFallback(field.right.right).ToRValue();
 
                             if !value.Null() {
                                 values.PushBack(value.Value());
@@ -537,7 +537,7 @@ class Compiler {
                             }
                         } else {
                             if field.right.left.initializer != null {
-                                let value = this.CompileMaterializedExpressionWithFallback(field.right.left.initializer, field.right.right).ToRValue();
+                                let value = this.CompileExpression(field.right.left.initializer).MaterializeWithFallback(field.right.right).ToRValue();
 
                                 if !value.Null() {
                                     values.PushBack(value.Value());
@@ -564,7 +564,7 @@ class Compiler {
 
                     if !has_error {
                         for expression in initializer_list->expressions {
-                            let value = this.CompileMaterializedExpressionWithFallback(expression, _type->Element()).ToRValue();
+                            let value = this.CompileExpression(expression).MaterializeWithFallback(_type->Element()).ToRValue();
 
                             if value.Null() {
                                 has_error = true;
@@ -628,7 +628,7 @@ class Compiler {
         }
 
         if _static->alignment != null {
-            let alignment = this.CompileMaterializedExpressionWithFallback(_static->alignment, this.type_manager.IntegerPointer(false)).ToRValue();
+            let alignment = this.CompileExpression(_static->alignment).MaterializeWithFallback(this.type_manager.IntegerPointer(false)).ToRValue();
 
             if alignment.Null() {
                 ret;
@@ -936,13 +936,13 @@ class Compiler {
                     }
                 }
 
-                this.CompileAssignment2(value, QualifiedValue(LLVMBuildStructGEP2(this.builder, pointer.Type().Pointee().Value(), pointer.Value(), _class.Index(field.left) as u32, ""), this.type_manager.Pointer(field.right.right, true), true), TokenType::ASSIGN, true, node);
+                this.CompileResolvedAssignment(value, QualifiedValue(LLVMBuildStructGEP2(this.builder, pointer.Type().Pointee().Value(), pointer.Value(), _class.Index(field.left) as u32, ""), this.type_manager.Pointer(field.right.right, true), true), TokenType::ASSIGN, true, node);
             } j += 1;
         }
 
         if has_constructor && !is_constructed {
             let method = _class.Get(_class.name, param_types, node);
-            this.CompileCall2(QualifiedValue(method->left.value, method->right, pointer), params, true, node);
+            this.CompileResolvedCall(QualifiedValue(method->left.value, method->right, pointer), params, true, node);
         } else {
             if params.Size() > _class.Fields().Size() {
                 Logger::Log("Too many parameters.", node, LogSeverity::Error);
@@ -955,7 +955,7 @@ class Compiler {
 
         if _class.Has("~" + _class.name, params_types) {
             let method = _class.Get("~" + _class.name, params_types, node);
-            this.CompileCall2(QualifiedValue(method->left.value, method->right, pointer), params, true, node);
+            this.CompileResolvedCall(QualifiedValue(method->left.value, method->right, pointer), params, true, node);
         }
 
         for field in _class.Fields() {
@@ -1071,7 +1071,7 @@ class Compiler {
 
         for variant in _enum->variants {
             if variant->value != null {
-                let _value = this.CompileMaterializedExpressionWithFallback(variant->value, underlying_type).ToRValue();
+                let _value = this.CompileExpression(variant->value).MaterializeWithFallback(underlying_type).ToRValue();
 
                 if !_value.Null() {
                     if _value.Type() == *underlying_type {
@@ -1322,10 +1322,10 @@ class Compiler {
         let value = QualifiedValue(pointer, this.type_manager.Pointer(_type, false));
 
         if pattern->_type == NodeType::SCOPE_RESOLUTION {
-            let constant = this.CompileMaterializedExpressionWithFallback(pattern, _type);
+            let constant = this.CompileExpression(pattern).MaterializeWithFallback(_type);
 
             if !constant.Null() {
-                ret this.CompileBinaryOperation2(value, constant, TokenType::EQUAL, pattern).ToRValue().Value();
+                ret this.CompileResolvedBinary(value, constant, TokenType::EQUAL, pattern).ToRValue().Value();
             } else {
                 ret null;
             }
@@ -1335,7 +1335,7 @@ class Compiler {
             let constant = this.CompileExpression(pattern);
 
             if !constant.Null() {
-                ret this.CompileBinaryOperation2(value, constant, TokenType::EQUAL, pattern).ToRValue().Value();
+                ret this.CompileResolvedBinary(value, constant, TokenType::EQUAL, pattern).ToRValue().Value();
             } else {
                 ret null;
             }
@@ -1418,7 +1418,7 @@ class Compiler {
     }
 
     priv CompileMatch(&mut this, _match: *const MatchNode) {
-        let mut expression = this.CompileMaterializedExpression(_match->expression).ToRValue();
+        let mut expression = this.CompileExpression(_match->expression).Materialize().ToRValue();
         if expression.Null() { ret; }
 
         let function = LLVMGetBasicBlockParent(LLVMGetInsertBlock(this.builder));
@@ -1463,10 +1463,10 @@ class Compiler {
             if expression.Type().IsEnum() {
                 condition = this.BuildPatternCondition(case->pattern, match_pointer, expression.Type());
             } else {
-                let value = this.CompileMaterializedExpressionWithFallback(case->pattern, expression.Type());
+                let value = this.CompileExpression(case->pattern).MaterializeWithFallback(expression.Type());
 
                 if !value.Null() {
-                    condition = this.CompileBinaryOperation2(expression, value, TokenType::EQUAL, case->pattern).ToRValue().Value();
+                    condition = this.CompileResolvedBinary(expression, value, TokenType::EQUAL, case->pattern).ToRValue().Value();
                 } else {
                     ret;
                 }
@@ -1480,7 +1480,7 @@ class Compiler {
                 LLVMPositionBuilderAtEnd(this.builder, guard_block);
                 this.scope_manager.PushScope(String("guard"), false);
                 if expression.Type().IsEnum() { this.BindPattern(case->pattern, match_pointer, expression.Type()); }
-                let guard_cond = this.CompileMaterializedExpression(case->guard).ToRValue().Value();
+                let guard_cond = this.CompileExpression(case->guard).Materialize().ToRValue().Value();
                 if guard_cond == null { ret; }
                 LLVMBuildCondBr(this.builder, guard_cond, body_block, guard_fail);
 
@@ -1664,7 +1664,7 @@ class Compiler {
                     LLVMBuildRetVoid(this.builder);
                 }
             } else {
-                let mut value = this.CompileMaterializedExpressionWithFallback(return->expression, return_type._type);
+                let mut value = this.CompileExpression(return->expression).MaterializeWithFallback(return_type._type);
 
                 if value.Null() {
                     ret;
@@ -1708,7 +1708,7 @@ class Compiler {
     }
 
     priv CompileCondition(&mut this, condition: *const Node) -> LLVMValueRef {
-        let mut value = this.CompileMaterializedExpression(condition).ToRValue();
+        let mut value = this.CompileExpression(condition).Materialize().ToRValue();
 
         if value.Null() {
             ret null;
@@ -1796,7 +1796,7 @@ class Compiler {
             } else_block = end_block;
         }
 
-        let mut expression = this.CompileMaterializedExpression(if_let->expression).ToRValue();
+        let mut expression = this.CompileExpression(if_let->expression).Materialize().ToRValue();
 
         if expression.Null() {
             ret;
@@ -1861,7 +1861,7 @@ class Compiler {
         LLVMBuildBr(this.builder, compare_block);
         LLVMPositionBuilderAtEnd(this.builder, compare_block);
 
-        let mut expression = this.CompileMaterializedExpression(while_let->expression).ToRValue();
+        let mut expression = this.CompileExpression(while_let->expression).Materialize().ToRValue();
 
         if expression.Null() {
             ret;
@@ -2001,10 +2001,10 @@ class Compiler {
                         if end_method == null { ret; }
 
                         let values: Vector<QualifiedValue>;
-                        start = this.CompileCall2(QualifiedValue(begin_method->left.value, begin_method->right, iterable), values, false, _for).ToRValue();
+                        start = this.CompileResolvedCall(QualifiedValue(begin_method->left.value, begin_method->right, iterable), values, false, _for).ToRValue();
                         if start.Null() { ret; }
 
-                        end = this.CompileCall2(QualifiedValue(end_method->left.value, end_method->right, iterable), values, false, _for).ToRValue();
+                        end = this.CompileResolvedCall(QualifiedValue(end_method->left.value, end_method->right, iterable), values, false, _for).ToRValue();
                         if end.Null() { ret; }
                     } 
                 }
@@ -2065,7 +2065,7 @@ class Compiler {
                 values.PushBack(end);
                 let instance = QualifiedValue(pointer, this.type_manager.Pointer(_type, true), true);
                 let method = _type->Get(String("op!="), _for);
-                condition = this.CompileCall2(QualifiedValue(method->left.value, method->right, instance), values, false, _for).ToRValue().Value();
+                condition = this.CompileResolvedCall(QualifiedValue(method->left.value, method->right, instance), values, false, _for).ToRValue().Value();
             } else {
                 Logger::Log("For loop only supports pointer iterators or classes with '!=' operator.", _for, LogSeverity::Error);
                 ret;
@@ -2089,7 +2089,7 @@ class Compiler {
                 let mut values: Vector<QualifiedValue>;
                 let instance = QualifiedValue(pointer, this.type_manager.Pointer(_type, true), true);
                 let method = _type->Get(String("op*"), _for);
-                let result = this.CompileCall2(QualifiedValue(method->left.value, method->right, instance), values, false, _for).ToRValue();
+                let result = this.CompileResolvedCall(QualifiedValue(method->left.value, method->right, instance), values, false, _for).ToRValue();
                 this.scope_manager.Set(_for->variable, SymbolKind::Variable, result, false, _for);
             } else {
                 Logger::Log("For loop only supports pointer iterators or classes with 'op*' operator.", _for, LogSeverity::Error);
@@ -2131,7 +2131,7 @@ class Compiler {
                 values.PushBack(QualifiedValue(LLVMConstInt(param_type.Value(), 1, 0), param_type));
                 let instance = QualifiedValue(pointer, this.type_manager.Pointer(_type, true), true);
                 let method = _type->Get(String("op+="), _for);
-                this.CompileCall2(QualifiedValue(method->left.value, method->right, instance), values, false, _for);
+                this.CompileResolvedCall(QualifiedValue(method->left.value, method->right, instance), values, false, _for);
                 new_value = LLVMBuildLoad2(this.builder, _type->Value(), pointer, "");
             } else {
                 Logger::Log("For loop only supports pointer iterators or classes with '+=' operator.", _for, LogSeverity::Error);
@@ -2187,29 +2187,19 @@ class Compiler {
     }
 
     priv LiteralNeedsTypeAnnotation(&mut this, initializer: *const Node, _type: *const QualifiedType) -> bool {
-        if initializer->_type != NodeType::LITERAL {
+        let mut literal_type = this.IsDeferrableExpression(initializer);
+
+        if literal_type != null {
+            if literal_type->IsInteger() {
+                ret _type->IsInteger() && !_type->IsSame(this.type_manager.Integer(32, true));
+            } else if literal_type->IsFloat() {
+                ret _type->IsFloat() && !_type->IsSame(this.type_manager.Float(64));
+            } else {
+                ret false;
+            }
+        } else {
             ret false;
         }
-
-        let literal = initializer as *const LiteralNode;
-
-        if literal->_type == TokenType::INTEGER {
-            for character in literal->value {
-                if character == 'u' || character == 'i' {
-                    ret false;
-                }
-            }
-
-            ret _type->IsInteger() && !_type->IsSame(this.type_manager.Integer(32, true));
-        } else if literal->_type == TokenType::FLOAT {
-            for character in literal->value {
-                if character == 'f' {
-                    ret false;
-                }
-            }
-
-            ret _type->IsFloat() && !_type->IsSame(this.type_manager.Float(64));
-        } ret false;
     }
 
     priv CompileVariable(&mut this, variable: *const VariableNode) {
@@ -2222,7 +2212,7 @@ class Compiler {
                 let mut params: Vector<QualifiedValue>;
 
                 if variable->initializer != null {
-                    let mut value = this.CompileMaterializedExpressionWithFallback(variable->initializer, _type);
+                    let mut value = this.CompileExpression(variable->initializer).MaterializeWithFallback(_type);
 
                     if !value.Null() {
                         let mut value_type: *const QualifiedType = value.ToRValueType();
@@ -2289,7 +2279,7 @@ class Compiler {
 
                 if variable->initializer != null {
                     if variable->initializer->_type != NodeType::INITIALIZER_LIST {
-                        let mut initializer = this.CompileMaterializedExpressionWithFallback(variable->initializer, _type);
+                        let mut initializer = this.CompileExpression(variable->initializer).MaterializeWithFallback(_type);
 
                         if !initializer.Null() {
                             let same = _type->IsSame(initializer.ToRValueType());
@@ -2329,7 +2319,7 @@ class Compiler {
                         let mut index: u64 = 0;
 
                         for expression in (variable->initializer as *const InitializerListNode)->expressions {
-                            let value = this.CompileMaterializedExpressionWithFallback(expression, _type->Element()).ToRValue();
+                            let value = this.CompileExpression(expression).MaterializeWithFallback(_type->Element()).ToRValue();
 
                             if value.Null() {
                                 break;
@@ -2349,7 +2339,7 @@ class Compiler {
             let (mut value: QualifiedValue, mut pointer: QualifiedValue);
 
             if variable->initializer != null {
-                value = this.CompileMaterializedExpression(variable->initializer);
+                value = this.CompileExpression(variable->initializer).Materialize();
             } else {
                 Logger::Log("Type annotation required for variable '" + variable->name + "' without initializer.", variable, LogSeverity::Error);
             }
@@ -2401,13 +2391,13 @@ class Compiler {
             }
         }
 
-        let mut value = this.CompileMaterializedExpressionWithFallback(assignment->right, target);
+        let mut value = this.CompileExpression(assignment->right).MaterializeWithFallback(target);
 
         if value.Null() {
             ret QualifiedValue(null, null);
         }
 
-        value = this.CompileAssignment2(value, pointer, assignment->operator, false, assignment);
+        value = this.CompileResolvedAssignment(value, pointer, assignment->operator, false, assignment);
 
         if assignment->next != null {
             this.CompileAssignment(assignment->next);
@@ -2417,7 +2407,7 @@ class Compiler {
         }
     }
 
-    priv CompileAssignment2(&mut this, mut value: QualifiedValue, mut pointer: QualifiedValue, operator: TokenType, ignore: bool, node: *const Node) -> QualifiedValue {
+    priv CompileResolvedAssignment(&mut this, mut value: QualifiedValue, mut pointer: QualifiedValue, operator: TokenType, ignore: bool, node: *const Node) -> QualifiedValue {
         if pointer.Type().Pointee().IsReference() {
             pointer = QualifiedValue(LLVMBuildLoad2(this.builder, pointer.Type().Pointee().Value(), pointer.Value(), ""), pointer.Type().Pointee());
         }
@@ -2433,7 +2423,7 @@ class Compiler {
 
             if _class.Has(method_name, param_types) {
                 let method = _class.Get(method_name, param_types, node);
-                ret this.CompileCall2(QualifiedValue(method->left.value, method->right, pointer), params, false, node);
+                ret this.CompileResolvedCall(QualifiedValue(method->left.value, method->right, pointer), params, false, node);
             }
 
             if !pointer.Type().IsMutable() && !ignore {
@@ -2462,7 +2452,7 @@ class Compiler {
 
                     let _value = QualifiedValue(LLVMBuildStructGEP2(this.builder, value.Type().Pointee().Value(), value.Value(), _class.Index(field.left) as u32, ""), this.type_manager.Pointer(_type, true), true);
                     let _pointer = QualifiedValue(LLVMBuildStructGEP2(this.builder, pointer.Type().Pointee().Value(), pointer.Value(), _class.Index(field.left) as u32, ""), this.type_manager.Pointer(_type, true), true);
-                    this.CompileAssignment2(_value, _pointer, operator, ignore, node);
+                    this.CompileResolvedAssignment(_value, _pointer, operator, ignore, node);
                 }
             } else {
                 Logger::Log("Incompatible class assignment types. ('" + _class.ToString() + "' != '" + value.Type().Pointee().ToString() + "').", node, LogSeverity::Error);
@@ -2593,13 +2583,76 @@ class Compiler {
         } ret pointer;
     }
 
+    priv IsDeferrableExpression(&mut this, node: *const Node) -> *const QualifiedType {
+        if node->_type == NodeType::LITERAL {
+            let literal = node as *const LiteralNode;
+
+            if literal->_type == TokenType::INTEGER && !literal->value.Contains('u') && !literal->value.Contains('i') {
+                ret this.type_manager.IntegerLiteral();
+            } else if literal->_type == TokenType::FLOAT && !literal->value.Contains('f') {
+                ret this.type_manager.FloatLiteral();
+            } else {
+                ret null;
+            }
+        } else if node->_type == NodeType::TERNARY {
+            let ternary = node as *const TernaryNode;
+            let then_type = this.IsDeferrableExpression(ternary->then);
+            if then_type == null { ret null; }
+            let else_type = this.IsDeferrableExpression(ternary->_else);
+            if else_type == null { ret null; }
+
+            if *then_type == *else_type {
+                ret then_type;
+            } else {
+                ret null;
+            }
+        } else if node->_type == NodeType::BINARY {
+            let binary = node as *const BinaryNode;
+
+            if binary->operator == TokenType::EQUAL || binary->operator == TokenType::NOT_EQUAL || binary->operator == TokenType::GREATER || binary->operator == TokenType::LESS || binary->operator == TokenType::GREATER_EQUAL || binary->operator == TokenType::LESS_EQUAL || binary->operator == TokenType::AND || binary->operator == TokenType::OR {
+                ret null;
+            }
+
+            let left_type = this.IsDeferrableExpression(binary->left);
+            if left_type == null { ret null; }
+            let right_type = this.IsDeferrableExpression(binary->right);
+            if right_type == null { ret null; }
+
+            if *left_type == *right_type {
+                ret left_type;
+            } else {
+                ret null;
+            }
+        } else if node->_type == NodeType::UNARY {
+            let unary = node as *const UnaryNode;
+
+            if unary->operator == TokenType::MINUS || unary->operator == TokenType::NOT {
+                ret this.IsDeferrableExpression(unary->operand);
+            } else {
+                ret null;
+            }
+        } else {
+            ret null;
+        }
+    }
+
     priv CompileExpression(&mut this, expression: *const Node) -> QualifiedValue {
+        ret this.CompileExpression(expression, null, false);
+    }
+
+    pub CompileExpression(&mut this, expression: *const Node, target: *const QualifiedType, deferred: bool) -> QualifiedValue {
+        if !deferred && (expression->_type == NodeType::UNARY || expression->_type == NodeType::BINARY || expression->_type == NodeType::TERNARY) {
+            let deferred_type = this.IsDeferrableExpression(expression);
+
+            if deferred_type != null {
+                ret QualifiedValue(deferred_type, expression);
+            }
+        }
+
         if expression->_type == NodeType::LITERAL {
             ret this.CompileLiteral(expression as *const LiteralNode);
         } else if expression->_type == NodeType::CALL {
             ret this.CompileCall(expression as *const CallNode);
-        } else if expression->_type == NodeType::TERNARY {
-            ret this.CompileTernary(expression as *const TernaryNode, null);
         } else if expression->_type == NodeType::IDENTIFIER || expression->_type == NodeType::SCOPE_RESOLUTION {
             let symbol = this.scope_manager.Resolve(expression, false);
 
@@ -2642,10 +2695,12 @@ class Compiler {
             ret this.CompileIndexAccess(expression as *const IndexAccessNode);
         } else if expression->_type == NodeType::MEMBER_ACCESS {
             ret this.CompileMemberAccess(expression as *const MemberAccessNode);
-        } else if expression->_type == NodeType::UNARY_OPERATION {
-            ret this.CompileUnaryOperation(expression as *const UnaryOperationNode, null);
-        } else if expression->_type == NodeType::BINARY_OPERATION {
-            ret this.CompileBinaryOperation(expression as *const BinaryOperationNode, null);
+        } else if expression->_type == NodeType::UNARY {
+            ret this.CompileUnary(expression as *const UnaryNode, target);
+        } else if expression->_type == NodeType::BINARY {
+            ret this.CompileBinary(expression as *const BinaryNode, target);
+        } else if expression->_type == NodeType::TERNARY {
+            ret this.CompileTernary(expression as *const TernaryNode, target);
         } else if expression->_type == NodeType::STRUCT_INIT {
             ret this.CompileStructInit(expression as *const StructInitNode);
         } else if expression->_type == NodeType::TYPE_APPLICATION {
@@ -2653,54 +2708,6 @@ class Compiler {
         } else {
             Logger::Log("Unknown expression '" + expression->_type.ToString() + "'.", expression, LogSeverity::Error);
             ret QualifiedValue(null, null);
-        }
-    }
-
-    priv CompileMaterializedExpression(&mut this, expression: *const Node, target: &QualifiedType) -> QualifiedValue {
-        if expression->_type == NodeType::TERNARY {
-            ret this.CompileTernary(expression as *const TernaryNode, target);
-        } else if expression->_type == NodeType::BINARY_OPERATION {
-            ret this.CompileBinaryOperation(expression as *const BinaryOperationNode, target);
-        } else if expression->_type == NodeType::UNARY_OPERATION {
-            ret this.CompileUnaryOperation(expression as *const UnaryOperationNode, target);
-        } else {
-            let value = this.CompileExpression(expression);
-
-            if value.Null() {
-                ret QualifiedValue(null, null);
-            }
-
-            ret value.Materialize(target);
-        }
-    }
-
-    priv CompileMaterializedExpressionWithFallback(&mut this, expression: *const Node, target: &QualifiedType) -> QualifiedValue {
-        let mut value = this.CompileMaterializedExpression(expression, target);
-
-        if value.Null() {
-            ret value;
-        } else if value.Type().IsLiteral() {
-            ret value.Materialize();
-        } else {
-            ret value;
-        }
-    }
-
-    priv CompileMaterializedExpression(&mut this, expression: *const Node) -> QualifiedValue {
-        if expression->_type == NodeType::TERNARY {
-            ret this.CompileTernary(expression as *const TernaryNode, null);
-        } else if expression->_type == NodeType::BINARY_OPERATION {
-            ret this.CompileBinaryOperation(expression as *const BinaryOperationNode, null);
-        } else if expression->_type == NodeType::UNARY_OPERATION {
-            ret this.CompileUnaryOperation(expression as *const UnaryOperationNode, null);
-        } else {
-            let value = this.CompileExpression(expression);
-
-            if value.Null() {
-                ret QualifiedValue(null, null);
-            }
-
-            ret value.Materialize();
         }
     }
 
@@ -2815,7 +2822,7 @@ class Compiler {
                 ret QualifiedValue(null, null);
             }
 
-            let value = this.CompileMaterializedExpressionWithFallback(node->field_values[index], variant_types[field_index as usize]).ToRValue();
+            let value = this.CompileExpression(node->field_values[index]).MaterializeWithFallback(variant_types[field_index as usize]).ToRValue();
 
             if !value.Null() {
                 ordered_args[field_index as usize] = value;
@@ -2923,7 +2930,7 @@ class Compiler {
             }
         } else if literal->_type == TokenType::TRUE || literal->_type == TokenType::FALSE {
             let _type = this.type_manager.Boolean();
-            ret QualifiedValue(LLVMConstInt(_type.Value(), literal->_type == TokenType::TRUE ? 1u64 : 0u64, 0), _type);
+            ret QualifiedValue(LLVMConstInt(_type.Value(), literal->_type == TokenType::TRUE ? 1 : 0, 0), _type);
         } else if literal->_type == TokenType::STRING {
             let value = LLVMBuildGlobalStringPtr(this.builder, literal->value.Data(), "");
             ret QualifiedValue(value, this.type_manager.Pointer(this.type_manager.Integer(8, true), false));
@@ -3103,7 +3110,7 @@ class Compiler {
 
                     if _class.Has(method_name, param_types) {
                         let method = _class.Get(method_name, param_types, member_access);
-                        instance = this.CompileCall2(QualifiedValue(method->left.value, method->right, instance), values, false, member_access);
+                        instance = this.CompileResolvedCall(QualifiedValue(method->left.value, method->right, instance), values, false, member_access);
                     }
                 } else if instance.IsLValue() || instance.Type().IsReference() {
                     if member_access->arrow {
@@ -3137,13 +3144,13 @@ class Compiler {
                 let symbol = this.scope_manager.Resolve(member_access->member, this.ValueToType(values), call, false);
 
                 if symbol != null {
-                    ret this.CompileCall2(symbol->value, values, false, call);
+                    ret this.CompileResolvedCall(symbol->value, values, false, call);
                 } else {
                     ret QualifiedValue(null, null);
                 }
             } else {
                 let mut _state = true;
-                let index: isize = instance.Type().Pointee().IsClass() ? instance.Type().Pointee().Index(member_access->member) : -1;
+                let index = instance.Type().Pointee().IsClass() ? instance.Type().Pointee().Index(member_access->member) : -1;
                 if this._class != null { _state = *this._class != instance.Type().Pointee(); }
 
                 if index != -1 {
@@ -3155,12 +3162,12 @@ class Compiler {
                     }
 
                     let field_pointer = LLVMBuildStructGEP2(this.builder, instance.Type().Pointee().Value(), instance.Value(), index as u32, "");
-                    ret this.CompileCall2(QualifiedValue(LLVMBuildLoad2(this.builder, field.right->Value(), field_pointer, ""), field.right), values, false, call);
+                    ret this.CompileResolvedCall(QualifiedValue(LLVMBuildLoad2(this.builder, field.right->Value(), field_pointer, ""), field.right), values, false, call);
                 } else {
                     let method = instance.Type().Pointee().Get(member_access->member, this.ValueToType(values), call);
 
                     if method != null {
-                        ret this.CompileCall2(QualifiedValue(method->left.value, method->right, instance), values, false, call);
+                        ret this.CompileResolvedCall(QualifiedValue(method->left.value, method->right, instance), values, false, call);
                     } else {
                         ret QualifiedValue(null, null);
                     }
@@ -3182,7 +3189,7 @@ class Compiler {
                         let generic = this.scope_manager.Get(primitive_type->name, SymbolKind::Generic)->pointer as *mut Generic;
 
                         if generic->node->_type == NodeType::FUNCTION {
-                            ret this.CompileCall2(generic->Get(types).left, values, false, call);
+                            ret this.CompileResolvedCall(generic->Get(types).left, values, false, call);
                         }
                     } else {
                         if this.scope_manager.Has(primitive_type->name) {
@@ -3215,7 +3222,7 @@ class Compiler {
                         if symbol != null {
                             let mut method = (symbol->pointer as *mut Generic)->Get(types).left;
                             (method.instance, method.instance_type) = (instance.Value(), instance.Type());
-                            ret this.CompileCall2(method, values, false, call);
+                            ret this.CompileResolvedCall(method, values, false, call);
                         } else {
                             ret QualifiedValue(null, null);
                         }
@@ -3228,7 +3235,7 @@ class Compiler {
                         let symbol = scope->Get(resolution->identifier->name, SymbolKind::Generic);
 
                         if symbol != null {
-                            ret this.CompileCall2((symbol->pointer as *mut Generic)->Get(types).left, values, false, call);
+                            ret this.CompileResolvedCall((symbol->pointer as *mut Generic)->Get(types).left, values, false, call);
                         } else {
                             ret QualifiedValue(null, null);
                         }
@@ -3312,7 +3319,7 @@ class Compiler {
                     symbol = this.scope_manager.Resolve(call->expression, this.ValueToType(values), false);
 
                     if symbol != null {
-                        ret this.CompileCall2(symbol->value, values, false, call);
+                        ret this.CompileResolvedCall(symbol->value, values, false, call);
                     } else {
                         ret QualifiedValue(null, null);
                     }
@@ -3321,7 +3328,7 @@ class Compiler {
                 let value = this.CompileExpression(call->expression).ToRValue();
 
                 if !value.Null() {
-                    ret this.CompileCall2(value, values, false, call);
+                    ret this.CompileResolvedCall(value, values, false, call);
                 } else {
                     ret QualifiedValue(null, null);
                 }
@@ -3402,7 +3409,7 @@ class Compiler {
         } ret result;
     }
 
-    priv CompileCall2(&mut this, mut _func: QualifiedValue, values: &Vector<QualifiedValue>, ignore: bool, node: *const Node) -> QualifiedValue {
+    priv CompileResolvedCall(&mut this, mut _func: QualifiedValue, values: &Vector<QualifiedValue>, ignore: bool, node: *const Node) -> QualifiedValue {
         if _func.Type().Pointee().IsPointer() {
             if _func.Type().Pointee().Pointee().IsFunction() {
                 _func = QualifiedValue(LLVMBuildLoad2(this.builder, _func.Type().Pointee().Value(), _func.Value(), ""), _func.Type().Pointee());
@@ -3435,7 +3442,7 @@ class Compiler {
         }
 
         if _func.instance != null {
-            let mut param = params[params[0].sret != null ? 1usize : 0usize]._type;
+            let mut param = params[params[0].sret != null ? 1 : 0]._type;
 
             if param->IsMutable() && !_func.instance_type->IsMutable() && !ignore {
                 Logger::Log("Cannot call mutable method '" + _func.Type().Pointee().name + "' on immutable instance.", node, LogSeverity::Error);
@@ -3449,7 +3456,7 @@ class Compiler {
 
         while i < values.Size() {
             let mut value = values[i];
-            let mut index = params[0].sret != null ? i + 1usize : i;
+            let mut index = params[0].sret != null ? i + 1 : i;
 
             if _func.instance != null {
                 index += 1;
@@ -3566,75 +3573,6 @@ class Compiler {
         }
     }
 
-    priv CompileTernary(&mut this, ternary: *const TernaryNode, target: *const QualifiedType) -> QualifiedValue {
-        let function = LLVMGetBasicBlockParent(LLVMGetInsertBlock(this.builder));
-        let mut then_block = LLVMAppendBasicBlockInContext(this.context, function, "");
-        let mut else_block = LLVMAppendBasicBlockInContext(this.context, function, "");
-        let merge_block = LLVMAppendBasicBlockInContext(this.context, function, "");
-        let condition = this.CompileCondition(ternary->condition);
-
-        if condition != null {
-            LLVMBuildCondBr(this.builder, condition, then_block, else_block);
-        } else { ret; }
-
-        LLVMPositionBuilderAtEnd(this.builder, then_block);
-        let mut then_value = target != null ? this.CompileMaterializedExpression(ternary->then, target) : this.CompileExpression(ternary->then);
-        if then_value.Null() { ret QualifiedValue(null, null); }
-        then_block = LLVMGetInsertBlock(this.builder);
-
-        LLVMPositionBuilderAtEnd(this.builder, else_block);
-        let mut else_value = target != null ? this.CompileMaterializedExpression(ternary->_else, target) : this.CompileExpression(ternary->_else);
-        if else_value.Null() { ret QualifiedValue(null, null); }
-        else_block = LLVMGetInsertBlock(this.builder);
-
-        if target == null {
-            if then_value.Type().IsLiteral() {
-                let else_type = else_value.ToRValueType();
-
-                if !else_type->IsLiteral() && (else_type->IsInteger() || else_type->IsFloat()) {
-                    then_value = then_value.Materialize(else_type);
-                }
-            } else if else_value.Type().IsLiteral() {
-                let then_type = then_value.ToRValueType();
-
-                if then_type->IsInteger() || then_type->IsFloat() {
-                    else_value = else_value.Materialize(then_type);
-                }
-            }
-        }
-
-        LLVMPositionBuilderAtEnd(this.builder, else_block);
-        if then_value.IsRValue() { else_value = else_value.ToRValue(); }
-        LLVMBuildBr(this.builder, merge_block);
-
-        LLVMPositionBuilderAtEnd(this.builder, then_block);
-        if else_value.IsRValue() { then_value = then_value.ToRValue(); }
-        then_block = LLVMGetInsertBlock(this.builder);
-        LLVMBuildBr(this.builder, merge_block);
-        let mut state = false;
-
-        then_value = then_value.Materialize();
-        else_value = else_value.Materialize();
-
-        if then_value.Type().IsPointer() && else_value.Type().IsPointer() {
-            if then_value.Type().IsNullPointer() || else_value.Type().IsNullPointer() {
-                state = true;
-            }
-        }
-
-        if then_value.Type() != else_value.Type() && !state {
-            Logger::Log("Incompatible ternary types. ('" + then_value.Type().ToString() + "' != '" + else_value.Type().ToString() + "').", ternary, LogSeverity::Error);
-            ret QualifiedValue(null, null);
-        }
-
-        LLVMPositionBuilderAtEnd(this.builder, merge_block);
-        let phi = LLVMBuildPhi(this.builder, then_value.Type().Value(), "");
-        let incoming_blocks[]: LLVMBasicBlockRef = { then_block, else_block };
-        let incoming_values[]: LLVMValueRef = { then_value.Value(), else_value.Value() };
-        LLVMAddIncoming(phi, incoming_values, incoming_blocks, 2);
-        ret QualifiedValue(phi, then_value.Type(), then_value.IsLValue());
-    }
-
     priv CompileIndexAccess(&mut this, index_access: *const IndexAccessNode) -> QualifiedValue {
         let mut value = this.CompileExpression(index_access->expression).ToRValue();
 
@@ -3669,13 +3607,13 @@ class Compiler {
             let method = value.Type().Pointee().Get(String("op[]"), this.ValueToType(params), index_access);
 
             if method != null {
-                ret this.CompileCall2(QualifiedValue(method->left.value, method->right, value), params, false, index_access);
+                ret this.CompileResolvedCall(QualifiedValue(method->left.value, method->right, value), params, false, index_access);
             } else {
                 ret QualifiedValue(null, null);
             }
         }
 
-        let mut index = this.CompileMaterializedExpressionWithFallback(index_access->index, this.type_manager.IntegerPointer(false));
+        let mut index = this.CompileExpression(index_access->index).MaterializeWithFallback(this.type_manager.IntegerPointer(false));
 
         if index.Null() {
             ret QualifiedValue(null, null);
@@ -3718,7 +3656,7 @@ class Compiler {
 
                 if _class.Has(method_name, param_types) {
                     let method = _class.Get(method_name, param_types, member_access);
-                    instance = this.CompileCall2(QualifiedValue(method->left.value, method->right, instance), values, false, member_access);
+                    instance = this.CompileResolvedCall(QualifiedValue(method->left.value, method->right, instance), values, false, member_access);
                 }
             } else if instance.IsLValue() || instance.Type().IsReference() {
                 if member_access->arrow {
@@ -3743,7 +3681,7 @@ class Compiler {
         }
 
         let mut state = true;
-        let index: isize = instance.Type().Pointee().IsClass() ? instance.Type().Pointee().Index(member_access->member) : -1;
+        let index = instance.Type().Pointee().IsClass() ? instance.Type().Pointee().Index(member_access->member) : -1;
         if this._class != null { state = *this._class != instance.Type().Pointee(); }
 
         if index != -1 {
@@ -3773,7 +3711,7 @@ class Compiler {
         let mut pointer: LLVMValueRef = null;
 
         if _new->size != null {
-            let size = this.CompileMaterializedExpressionWithFallback(_new->size, this.type_manager.IntegerPointer(false)).ToRValue();
+            let size = this.CompileExpression(_new->size).MaterializeWithFallback(this.type_manager.IntegerPointer(false)).ToRValue();
 
             if size.Null() {
                 ret QualifiedValue(null, null);
@@ -3923,16 +3861,16 @@ class Compiler {
             ret QualifiedValue(null, null);
         }
 
-        let value = this.CompileMaterializedExpressionWithFallback(cast->expression, target).ToRValue();
+        let value = this.CompileExpression(cast->expression).MaterializeWithFallback(target).ToRValue();
 
         if !value.Null() {
-            ret this.CompileCast2(value, target, cast);
+            ret this.CompileResolvedCast(value, target, cast);
         } else {
             ret QualifiedValue(null, null);
         }
     }
 
-    priv CompileCast2(&mut this, mut value: QualifiedValue, target: &QualifiedType, node: *const Node) -> QualifiedValue {
+    priv CompileResolvedCast(&mut this, mut value: QualifiedValue, target: &QualifiedType, node: *const Node) -> QualifiedValue {
         if value.Type().IsReference() && !target.IsPointer() {
             value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
         }
@@ -4063,7 +4001,7 @@ class Compiler {
         }
     }
 
-    priv CompileUnaryOperation(&mut this, unary: *const UnaryOperationNode, target: *const QualifiedType) -> QualifiedValue {
+    priv CompileUnary(&mut this, unary: *const UnaryNode, target: *const QualifiedType) -> QualifiedValue {
         if unary->operator == TokenType::BITWISE_AND {
             let pointer = this.CompileExpression(unary->operand);
 
@@ -4080,7 +4018,7 @@ class Compiler {
             let symbol = this.scope_manager.Resolve(method_name, this.ValueToType(values), unary, true);
 
             if symbol != null {
-                ret this.CompileCall2(symbol->value, values, false, unary);
+                ret this.CompileResolvedCall(symbol->value, values, false, unary);
             }
 
             if pointer.Type().Pointee().IsClass() {
@@ -4090,7 +4028,7 @@ class Compiler {
 
                 if _class.Has(method_name, param_types) {
                     let method = _class.Get(method_name, param_types, unary);
-                    ret this.CompileCall2(QualifiedValue(method->left.value, method->right, pointer), values, false, unary);
+                    ret this.CompileResolvedCall(QualifiedValue(method->left.value, method->right, pointer), values, false, unary);
                 }
             }
 
@@ -4113,12 +4051,12 @@ class Compiler {
                 }
             }
 
-            let mut value: QualifiedValue;
+            let mut value = this.CompileExpression(unary->operand);
 
             if operand_target != null {
-                value = this.CompileMaterializedExpressionWithFallback(unary->operand, target);
+                value = value.MaterializeWithFallback(operand_target);
             } else {
-                value = this.CompileMaterializedExpression(unary->operand);
+                value = value.Materialize();
             }
 
             if value.Null() {
@@ -4139,7 +4077,7 @@ class Compiler {
                 let symbol = this.scope_manager.Resolve(method_name, this.ValueToType(values), unary, true);
 
                 if symbol != null {
-                    ret this.CompileCall2(symbol->value, values, false, unary);
+                    ret this.CompileResolvedCall(symbol->value, values, false, unary);
                 }
 
                 if value.Type().Pointee().IsClass() {
@@ -4149,7 +4087,7 @@ class Compiler {
 
                     if _class.Has(method_name, param_types) {
                         let method = _class.Get(method_name, param_types, unary);
-                        ret this.CompileCall2(QualifiedValue(method->left.value, method->right, value), values, false, unary);
+                        ret this.CompileResolvedCall(QualifiedValue(method->left.value, method->right, value), values, false, unary);
                     }
                 }
             } else if value.Type().IsReference() {
@@ -4205,7 +4143,7 @@ class Compiler {
         }
     }
 
-    priv CompileBinaryOperation(&mut this, binary: *const BinaryOperationNode, target: *const QualifiedType) -> QualifiedValue {
+    priv CompileBinary(&mut this, binary: *const BinaryNode, target: *const QualifiedType) -> QualifiedValue {
         let mut operand_target: *const QualifiedType = null;
 
         if target != null && binary->operator != TokenType::EQUAL && binary->operator != TokenType::NOT_EQUAL && binary->operator != TokenType::GREATER && binary->operator != TokenType::LESS && binary->operator != TokenType::GREATER_EQUAL && binary->operator != TokenType::LESS_EQUAL && binary->operator != TokenType::AND && binary->operator != TokenType::OR {
@@ -4214,12 +4152,10 @@ class Compiler {
             }
         }
 
-        let mut left: QualifiedValue;
+        let mut left = this.CompileExpression(binary->left);
 
         if operand_target != null {
-            left = this.CompileMaterializedExpression(binary->left, operand_target);
-        } else {
-            left = this.CompileExpression(binary->left);
+            left = left.Materialize(operand_target);
         }
         
         if left.Null() {
@@ -4247,7 +4183,7 @@ class Compiler {
             }
 
             LLVMPositionBuilderAtEnd(this.builder, right_block);
-            let right = this.CompileMaterializedExpression(binary->right).ToRValue();
+            let right = this.CompileExpression(binary->right).Materialize().ToRValue();
             if right.Null() { ret QualifiedValue(null, null); }
             right_block = LLVMGetInsertBlock(this.builder);
             LLVMBuildBr(this.builder, merge_block);
@@ -4271,11 +4207,11 @@ class Compiler {
         let mut has_right = false;
 
         if !left.Type().IsLiteral() {
-            right = this.CompileMaterializedExpression(binary->right, left.ToRValueType());
+            right = this.CompileExpression(binary->right).Materialize(left.ToRValueType());
             has_right = true;
         } else if target != null {
             if target->IsInteger() || target->IsFloat() || target->IsBoolean() {
-                right = this.CompileMaterializedExpression(binary->right, *target);
+                right = this.CompileExpression(binary->right).Materialize(target);
                 has_right = true;
             }
         }
@@ -4288,10 +4224,10 @@ class Compiler {
             ret QualifiedValue(null, null);
         }
 
-        ret this.CompileBinaryOperation2(left, right, binary->operator, binary);
+        ret this.CompileResolvedBinary(left, right, binary->operator, binary);
     }
 
-    priv CompileBinaryOperation2(&mut this, mut left: QualifiedValue, mut right: QualifiedValue, operator: TokenType, node: *const Node) -> QualifiedValue {
+    priv CompileResolvedBinary(&mut this, mut left: QualifiedValue, mut right: QualifiedValue, operator: TokenType, node: *const Node) -> QualifiedValue {
         let mut method_name = "op".ToString();
         method_name += operator.ToBinaryOperatorString();
 
@@ -4302,7 +4238,7 @@ class Compiler {
         let symbol = this.scope_manager.Resolve(method_name, this.ValueToType(values), node, true);
 
         if symbol != null {
-            ret this.CompileCall2(symbol->value, values, false, node);
+            ret this.CompileResolvedCall(symbol->value, values, false, node);
         } else if left.Type().IsPointer() || right.Type().IsPointer() {
             let (mut left_state, mut right_state) = (false, false);
 
@@ -4344,7 +4280,7 @@ class Compiler {
 
                 if _class.Has(method_name, param_types) {
                     let method = _class.Get(method_name, param_types, node);
-                    ret this.CompileCall2(QualifiedValue(method->left.value, method->right, instance), values, false, node);
+                    ret this.CompileResolvedCall(QualifiedValue(method->left.value, method->right, instance), values, false, node);
                 }
 
                 if left.Type() == right.Type() {
@@ -4358,7 +4294,7 @@ class Compiler {
                     for field in _class.Fields() {
                         let _left = QualifiedValue(LLVMBuildStructGEP2(this.builder, left.Type().Pointee().Value(), left.Value(), _class.Index(field.left) as u32, ""), this.type_manager.Pointer(field.right.right, left.Type().IsMutable()), true);
                         let _right = QualifiedValue(LLVMBuildStructGEP2(this.builder, right.Type().Pointee().Value(), right.Value(), _class.Index(field.left) as u32, ""), this.type_manager.Pointer(field.right.right, right.Type().IsMutable()), true);
-                        let _result = this.CompileBinaryOperation2(_left, _right, operator, node).ToRValue().Value();
+                        let _result = this.CompileResolvedBinary(_left, _right, operator, node).ToRValue().Value();
 
                         if result != null {
                             result = LLVMBuildAnd(this.builder, result, _result, "");
@@ -4554,6 +4490,75 @@ class Compiler {
         }
     }
 
+    priv CompileTernary(&mut this, ternary: *const TernaryNode, target: *const QualifiedType) -> QualifiedValue {
+        let function = LLVMGetBasicBlockParent(LLVMGetInsertBlock(this.builder));
+        let mut then_block = LLVMAppendBasicBlockInContext(this.context, function, "");
+        let mut else_block = LLVMAppendBasicBlockInContext(this.context, function, "");
+        let merge_block = LLVMAppendBasicBlockInContext(this.context, function, "");
+        let condition = this.CompileCondition(ternary->condition);
+
+        if condition != null {
+            LLVMBuildCondBr(this.builder, condition, then_block, else_block);
+        } else { ret; }
+
+        LLVMPositionBuilderAtEnd(this.builder, then_block);
+        let mut then_value = target != null ? this.CompileExpression(ternary->then).Materialize(target) : this.CompileExpression(ternary->then);
+        if then_value.Null() { ret QualifiedValue(null, null); }
+        then_block = LLVMGetInsertBlock(this.builder);
+
+        LLVMPositionBuilderAtEnd(this.builder, else_block);
+        let mut else_value = target != null ? this.CompileExpression(ternary->_else).Materialize(target) : this.CompileExpression(ternary->_else);
+        if else_value.Null() { ret QualifiedValue(null, null); }
+        else_block = LLVMGetInsertBlock(this.builder);
+
+        if target == null {
+            if then_value.Type().IsLiteral() {
+                let else_type = else_value.ToRValueType();
+
+                if !else_type->IsLiteral() && (else_type->IsInteger() || else_type->IsFloat()) {
+                    then_value = then_value.Materialize(else_type);
+                }
+            } else if else_value.Type().IsLiteral() {
+                let then_type = then_value.ToRValueType();
+
+                if then_type->IsInteger() || then_type->IsFloat() {
+                    else_value = else_value.Materialize(then_type);
+                }
+            }
+        }
+
+        LLVMPositionBuilderAtEnd(this.builder, else_block);
+        if then_value.IsRValue() { else_value = else_value.ToRValue(); }
+        LLVMBuildBr(this.builder, merge_block);
+
+        LLVMPositionBuilderAtEnd(this.builder, then_block);
+        if else_value.IsRValue() { then_value = then_value.ToRValue(); }
+        then_block = LLVMGetInsertBlock(this.builder);
+        LLVMBuildBr(this.builder, merge_block);
+        let mut state = false;
+
+        then_value = then_value.Materialize();
+        else_value = else_value.Materialize();
+
+        if then_value.Type().IsPointer() && else_value.Type().IsPointer() {
+            if then_value.Type().IsNullPointer() || else_value.Type().IsNullPointer() {
+                state = true;
+            }
+        }
+
+        if then_value.Type() != else_value.Type() && !state {
+            Logger::Log("Incompatible ternary types. ('" + then_value.Type().ToString() + "' != '" + else_value.Type().ToString() + "').", ternary, LogSeverity::Error);
+            ret QualifiedValue(null, null);
+        }
+
+        LLVMPositionBuilderAtEnd(this.builder, merge_block);
+        let phi = LLVMBuildPhi(this.builder, then_value.Type().Value(), "");
+        let incoming_blocks[]: LLVMBasicBlockRef = { then_block, else_block };
+        let incoming_values[]: LLVMValueRef = { then_value.Value(), else_value.Value() };
+        LLVMAddIncoming(phi, incoming_values, incoming_blocks, 2);
+        ret QualifiedValue(phi, then_value.Type(), then_value.IsLValue());
+    }
+
     priv CompileAssembly(&mut this, assembly: *const AssemblyNode) {
         if this.scope_manager.current->global {
             if !assembly->inputs.Empty() {
@@ -4595,7 +4600,7 @@ class Compiler {
                 constraints += "{";
                 constraints += input.left;
                 constraints += "}";
-                let value = this.CompileMaterializedExpression(input.right).ToRValue();
+                let value = this.CompileExpression(input.right).Materialize().ToRValue();
                 if value.Null() { ret; }
                 types.PushBack(value.Type().Value());
                 values.PushBack(value.Value());
@@ -4697,7 +4702,7 @@ class Compiler {
             if array_type->size == null {
                 ret this.type_manager.Pointer(element_type, element_type->IsMutable());
             } else {
-                let size = this.CompileMaterializedExpressionWithFallback(array_type->size, this.type_manager.IntegerPointer(false)).ToRValue();
+                let size = this.CompileExpression(array_type->size).MaterializeWithFallback(this.type_manager.IntegerPointer(false)).ToRValue();
 
                 if size.Null() {
                     ret null;

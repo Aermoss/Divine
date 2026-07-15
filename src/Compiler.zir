@@ -2186,17 +2186,15 @@ class Compiler {
         LLVMBuildBr(this.builder, this.loop_blocks.Back().right);
     }
 
-    priv LiteralNeedsTypeAnnotation(&mut this, initializer: *const Node, _type: *const QualifiedType) -> bool {
-        let mut literal_type = this.IsDeferrableExpression(initializer);
+    priv LiteralNeedsExplicitType(&mut this, expression: *const Node, target: *const QualifiedType) -> bool {
+        let _type = this.IsDeferrableExpression(expression);
 
-        if literal_type != null {
-            if literal_type->IsInteger() {
-                ret _type->IsInteger() && !_type->IsSame(this.type_manager.Integer(32, true));
-            } else if literal_type->IsFloat() {
-                ret _type->IsFloat() && !_type->IsSame(this.type_manager.Float(64));
-            } else {
-                ret false;
-            }
+        if _type == null {
+            ret false;
+        } else if _type->IsInteger() {
+            ret target->IsInteger() && !target->IsSame(this.type_manager.Integer(32, true));
+        } else if _type->IsFloat() {
+            ret target->IsFloat() && !target->IsSame(this.type_manager.Float(64));
         } else {
             ret false;
         }
@@ -2232,7 +2230,7 @@ class Compiler {
                                 skip = true;
                             }
 
-                            if same && !this.LiteralNeedsTypeAnnotation(variable->initializer, _type) {
+                            if same && !this.LiteralNeedsExplicitType(variable->initializer, _type) {
                                 Logger::Log("Unnecessary type annotation, type can be inferred from initializer.", variable, LogSeverity::Warning);
                             }
                         } else {
@@ -2303,7 +2301,7 @@ class Compiler {
 
                             if _type->IsCompatible(initializer.Type()) {
                                 if _type->IsMutabilityCompatible(initializer.Type()) {
-                                    if same && !this.LiteralNeedsTypeAnnotation(variable->initializer, _type) {
+                                    if same && !this.LiteralNeedsExplicitType(variable->initializer, _type) {
                                         Logger::Log("Unnecessary type annotation, type can be inferred from initializer.", variable, LogSeverity::Warning);
                                     }
 
@@ -3861,11 +3859,15 @@ class Compiler {
 
         let value = this.CompileExpression(cast->expression).MaterializeWithFallback(target).ToRValue();
 
-        if !value.Null() {
-            ret this.CompileResolvedCast(value, target, cast);
-        } else {
+        if value.Null() {
             ret QualifiedValue(null, null);
         }
+
+        if value.Type() == *target && this.LiteralNeedsExplicitType(cast->expression, target) {
+            ret value;
+        }
+
+        ret this.CompileResolvedCast(value, target, cast);
     }
 
     priv CompileResolvedCast(&mut this, mut value: QualifiedValue, target: &QualifiedType, node: *const Node) -> QualifiedValue {

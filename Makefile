@@ -26,6 +26,9 @@ bootstrap: bin/zirconc2.exe
 	copy /Y bin\zirconc2.exe bin\zirconc.exe
 	del /Q bin\zirconc2.*
 
+restore:
+	git restore bin/zirconc.exe
+
 bin/Test.exe: bin/zirconc2.exe examples/Test.zir
 	$^ -o $@ -g -v
 

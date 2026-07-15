@@ -2853,80 +2853,78 @@ class Compiler {
 
     priv CompileLiteral(&mut this, literal: *const LiteralNode) -> QualifiedValue {
         if literal->_type == TokenType::INTEGER {
-            let (mut state, mut base: u64) = (false, 10);
-            let (mut signed, mut has_suffix) = (true, false);
-            let (mut value: String, mut size: String);
-            let mut i: usize = 0;
+            let (mut value: String, mut suffix: String);
+            let (mut signed, mut base: u64) = (false, 10);
+            let negative = literal->value[0] == '-';
+            let mut i: usize = (negative ? 1 : 0);
+            let mut state = false;
 
             while i < literal->value.Length() {
                 if !state {
-                    if i == 0 && literal->value[i] == '0' && (literal->value[i + 1] == 'x' || literal->value[i + 1] == 'o' || literal->value[i + 1] == 'b') {
-                        if base != 10 {
+                    if i == (negative ? 1 : 0) && literal->value[i] == '0' && (literal->value[i + 1] == 'x' || literal->value[i + 1] == 'o' || literal->value[i + 1] == 'b') {
+                        if base == 10 {
+                            base = literal->value[i + 1] == 'x' ? 16 : (literal->value[i + 1] == 'o' ? 8 : 2);
+                        } else {
                             Logger::Log("Invalid integer literal '" + literal->value + "'.", literal, LogSeverity::Error);
                             ret QualifiedValue(null, null);
-                        } else {
-                            base = literal->value[i + 1] == 'x' ? 16 : (literal->value[i + 1] == 'o' ? 8 : 2);
                         } i += 1;
-                    } else if literal->value[i] == 'u' {
-                        (signed, state, has_suffix) = (false, true, true);
-                    } else if literal->value[i] == 'i' {
-                        (signed, state, has_suffix) = (true, true, true);
+                    } else if literal->value[i] == 'u' || literal->value[i] == 'i' {
+                        (state, signed) = (true, literal->value[i] == 'i');
                     } else {
                         value += literal->value[i];
                     }
                 } else {
-                    size += literal->value[i];
+                    suffix += literal->value[i];
                 } i += 1;
             }
 
-            if has_suffix {
-                let mut _type: *const QualifiedType;
+            let result = QualifiedValue(this.type_manager.IntegerLiteral(), value.ToUnsignedInteger(base), negative);
 
-                if size == "size" {
-                    _type = this.type_manager.IntegerPointer(signed);
+            if state {
+                if suffix == "size" {
+                    ret result.Materialize(this.type_manager.IntegerPointer(signed));
                 } else {
-                    let width = size.ToInteger() as u32;
+                    let width = suffix.ToInteger() as u32;
 
                     if width == 128 || width == 64 || width == 32 || width == 16 || width == 8 {
-                        _type = this.type_manager.Integer(width, signed);
+                        ret result.Materialize(this.type_manager.Integer(width, signed));
                     } else {
-                        Logger::Log("Invalid integer size '" + size +  "'.", literal, LogSeverity::Error);
+                        Logger::Log("Invalid integer suffix '" + (signed ? 'u' : 'i').ToString() + suffix +  "'.", literal, LogSeverity::Error);
                         ret QualifiedValue(null, null);
                     }
                 }
-
-                ret QualifiedValue(LLVMConstInt(_type->Value(), value.ToUnsignedInteger(base), signed ? 1 : 0), _type);
             } else {
-                ret QualifiedValue(this.type_manager.IntegerLiteral(), value.ToUnsignedInteger(base));
+                ret result;
             }
         } else if literal->_type == TokenType::FLOAT {
-            let (mut state, mut has_suffix) = (false, false);
-            let (mut value: String, mut size: String);
+            let (mut value: String, mut suffix: String);
+            let mut state = false;
 
             for character in literal->value {
                 if !state {
                     if character == 'f' {
-                        (state, has_suffix) = (true, true);
+                        state = true;
                     } else {
                         value += character;
                     }
                 } else {
-                    size += character;
+                    suffix += character;
                 }
             }
 
-            if has_suffix {
-                let width = size.ToInteger() as u32;
+            let result = QualifiedValue(this.type_manager.FloatLiteral(), value.ToFloat());
+
+            if state {
+                let width = suffix.ToInteger() as u32;
 
                 if width == 64 || width == 32 {
-                    let _type = this.type_manager.Float(width);
-                    ret QualifiedValue(LLVMConstReal(_type->Value(), value.ToFloat()), _type);
+                    ret result.Materialize(this.type_manager.Float(width));
                 } else {
-                    Logger::Log("Invalid float size '" + size +  "'.", literal, LogSeverity::Error);
+                    Logger::Log("Invalid float suffix 'f" + suffix +  "'.", literal, LogSeverity::Error);
                     ret QualifiedValue(null, null);
                 }
             } else {
-                ret QualifiedValue(this.type_manager.FloatLiteral(), value.ToFloat());
+                ret result;
             }
         } else if literal->_type == TokenType::TRUE || literal->_type == TokenType::FALSE {
             let _type = this.type_manager.Boolean();

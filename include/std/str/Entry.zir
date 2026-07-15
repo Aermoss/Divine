@@ -149,30 +149,6 @@ class String {
         memcpy(this.data, (other.data + start), length);
     }
 
-    String(&mut this, integer: i64) {
-        this.FromInteger(integer, 10);
-    }
-
-    String(&mut this, integer: i64, base: i64) {
-        this.FromInteger(integer, base);
-    }
-
-    String(&mut this, integer: u64) {
-        this.FromInteger(integer, 10);
-    }
-
-    String(&mut this, integer: u64, base: u64) {
-        this.FromInteger(integer, base);
-    }
-
-    String(&mut this, float: f64) {
-        this.FromFloat(float, 6);
-    }
-
-    String(&mut this, float: f64, precision: usize) {
-        this.FromFloat(float, precision);
-    }
-
     ~String(&mut this) {
         this.Release();
     }
@@ -197,48 +173,105 @@ class String {
         this.Allocate(0);
     }
 
-    priv FromInteger(&mut this, value: u64, base: u64) {
-        if base < 2 || base > 36 { this.Clear(); }
-        else if value == 0 { this = "0"; }
+    pub FromInteger(mut value: u64, base: u64) -> String {
+        if base < 2 || base > 36 { ret String(); }
+        else if value == 0 { ret String("0"); }
         else {
-            let mut n = value;
-            let mut size: usize = 0;
+            let mut result = String();
 
-            while n > 0 {
-                size += 1;
-                n /= base;
+            while value > 0 {
+                result += "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"[(value % base) as usize];
+                value /= base;
             }
 
-            this.Allocate(size);
-            n = value;
-
-            while n > 0 {
-                size -= 1;
-                this.data[size] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"[(n % base) as usize];
-                n /= base;
-            }
+            ret result.Reverse();
         }
     }
 
-    pub FromInteger(&mut this, value: u64) {
-        this.FromInteger(value, 10);
+    pub FromInteger(value: u64) -> String {
+        ret String::FromInteger(value, 10);
     }
 
-    priv FromInteger(&mut this, value: i64, base: i64) {
+    pub FromInteger(value: i64, base: i64) -> String {
         if base < 2 || base > 36 {
-            this.Clear();
+            ret String();
         } else if value >= 0 {
-            this.FromInteger(value as u64, base as u64);
+            ret String::FromInteger(value as u64, base as u64);
         } else if base != 10 {
-            this.FromInteger((!value + 1) as u64, base as u64);
+            ret String::FromInteger((!value + 1) as u64, base as u64);
         } else {
-            this.FromInteger((!value + 1) as u64, base as u64);
-            this = "-" + this;
+            ret '-' + String::FromInteger((!value + 1) as u64, base as u64);
         }
     }
 
-    pub FromInteger(&mut this, value: i64) {
-        this.FromInteger(value, 10);
+    pub FromInteger(value: i64) -> String {
+        ret String::FromInteger(value, 10);
+    }
+
+    pub FromFloat(mut value: f64, precision: usize) -> String {
+        if value != value { ret "nan".ToString(); }
+        else if value == (1.0 / 0.0) { ret "inf".ToString(); }
+        else if value == (-1.0 / 0.0) { ret "-inf".ToString(); }
+        else if value == 0.0 { ret "0.0".ToString(); }
+        else if value < 0.0 {
+            ret '-' + String::FromFloat(-value, precision);
+        } else {
+            let mut exponent: i64 = 0;
+
+            if value >= 1e9 {
+                while value >= 10.0 {
+                    value /= 10.0;
+                    exponent += 1;
+                }
+            } else if value < 1e-4 {
+                while value < 1.0 {
+                    value *= 10.0;
+                    exponent -= 1;
+                }
+            }
+
+            let mut integer = value as u64;
+            let mut fraction = value - (integer as f64);
+            let mut round = 0.5;
+
+            for _ in 0..precision {
+                round /= 10.0;
+            }
+
+            fraction += round;
+
+            if fraction >= 1.0 {
+                fraction -= 1.0;
+                integer += 1;
+            }
+
+            let result = String::FromInteger(integer);
+
+            if precision != 0 {
+                result += '.';
+            }
+
+            for i in 0..precision {
+                fraction *= 10.0;
+                let digit = fraction as i8;
+                fraction -= digit as f64;
+                result += '0' + digit;
+            }
+
+            if exponent != 0 {
+                result += 'e';
+
+                if exponent < 0 {
+                    result += '-' + String::FromInteger(-exponent);
+                } else {
+                    result += '+' + String::FromInteger(exponent);
+                }
+            } ret result;
+        }
+    }
+
+    pub FromFloat(mut value: f64) -> String {
+        ret String::FromFloat(value, 6);
     }
 
     priv ParseUnsigned(&this, base: u64, negative: &mut bool) -> u64 {
@@ -372,69 +405,6 @@ class String {
         if negative {
             ret -value;
         } ret value;
-    }
-
-    priv FromFloat(&mut this, mut value: f64, precision: usize) {
-        if value != value { this = "nan"; }
-        else if value == (1.0 / 0.0) { this = "inf"; }
-        else if value == (-1.0 / 0.0) { this = "-inf"; }
-        else if value == 0.0 { this = "0.0"; }
-        else if value < 0.0 {
-            this.FromFloat(-value, precision);
-            this = "-" + this;
-        } else {
-            let mut exponent: i64 = 0;
-
-            if value >= 1e9 {
-                while value >= 10.0 {
-                    value /= 10.0;
-                    exponent += 1;
-                }
-            } else if value < 1e-4 {
-                while value < 1.0 {
-                    value *= 10.0;
-                    exponent -= 1;
-                }
-            }
-
-            let mut integer = value as u64;
-            let mut fraction = value - (integer as f64);
-            let mut round = 0.5;
-
-            for _ in 0..precision {
-                round /= 10.0;
-            }
-
-            fraction += round;
-
-            if fraction >= 1.0 {
-                fraction -= 1.0;
-                integer += 1;
-            }
-
-            this.FromInteger(integer);
-
-            if precision != 0 {
-                this += '.';
-            }
-
-            for i in 0..precision {
-                fraction *= 10.0;
-                let digit = fraction as i8;
-                fraction -= digit as f64;
-                this += '0' + digit;
-            }
-
-            if exponent != 0 {
-                this += 'e';
-
-                if exponent < 0 {
-                    this += '-' + String(-exponent);
-                } else {
-                    this += '+' + String(exponent);
-                }
-            }
-        }
     }
 
     pub ToLower(&this) -> String {

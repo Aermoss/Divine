@@ -23,7 +23,9 @@ class QualifiedValue {
     priv value: LLVMValueRef = null, priv _type: *const QualifiedType = null,
     pub instance: LLVMValueRef = null, pub instance_type: *const QualifiedType = null,
     priv lvalue: bool = false, pub return: bool = false,
+
     priv deferred_integer: u64 = 0, priv deferred_float: f64 = 0.0,
+    priv deferred_negative: bool = false, priv deferred_bitpattern: bool = false,
     priv deferred_node: *const Node = null;
 
     QualifiedValue(&mut this, value: LLVMValueRef, _type: *const QualifiedType) {
@@ -42,16 +44,24 @@ class QualifiedValue {
         (this.value, this._type, this.lvalue) = (value, _type, lvalue);
     }
 
-    QualifiedValue(&mut this, _type: *const QualifiedType, deferred_integer: u64) {
-        (this._type, this.deferred_integer) = (_type, deferred_integer);
+    QualifiedValue(&mut this, _type: *const QualifiedType, integer: u64) {
+        (this._type, this.deferred_integer) = (_type, integer);
     }
 
-    QualifiedValue(&mut this, _type: *const QualifiedType, deferred_float: f64) {
-        (this._type, this.deferred_float) = (_type, deferred_float);
+    QualifiedValue(&mut this, _type: *const QualifiedType, integer: u64, negative: bool) {
+        (this._type, this.deferred_integer, this.deferred_negative) = (_type, integer, negative);
     }
 
-    QualifiedValue(&mut this, _type: *const QualifiedType, deferred_node: *const Node) {
-        (this._type, this.deferred_node) = (_type, deferred_node);
+    QualifiedValue(&mut this, _type: *const QualifiedType, integer: u64, negative: bool, bitpattern: bool) {
+        (this._type, this.deferred_integer, this.deferred_negative, this.deferred_bitpattern) = (_type, integer, negative, bitpattern);
+    }
+
+    QualifiedValue(&mut this, _type: *const QualifiedType, float: f64) {
+        (this._type, this.deferred_float) = (_type, float);
+    }
+
+    QualifiedValue(&mut this, _type: *const QualifiedType, node: *const Node) {
+        (this._type, this.deferred_node) = (_type, node);
     }
 
     pub Null(&this) -> bool {
@@ -85,12 +95,36 @@ class QualifiedValue {
             let mut value = this.deferred_integer;
             let size = LLVMPointerSize(compiler->target->layout) as usize * 8;
             let width = target.width == 0 ? size : target.width as usize;
+            let mut overflow = false;
 
-            if width < size {
-                if value as usize >= (target.IsSigned() ? 1 << (width - 1) : 1 << width) {
-                    Logger::Log("Integer literal '" + String(value) + "' overflows target type '" + target.ToString() + "'.", LogSeverity::Error);
-                    value = 0;
+            if width < 64 {
+                let signed_limit = 1 << (width as u64 - 1);
+                let unsigned_limit = 1 << width as u64;
+
+                if this.deferred_bitpattern {
+                    overflow = value >= unsigned_limit;
+                } else if this.deferred_negative {
+                    overflow = target.IsSigned() ? value > signed_limit : value >= unsigned_limit;
+                } else {
+                    overflow = target.IsSigned() ? value >= signed_limit : value >= unsigned_limit;
                 }
+
+                if !overflow && this.deferred_negative {
+                    value = (!value + 1) & (unsigned_limit - 1);
+                }
+            } else {
+                if !this.deferred_bitpattern && this.deferred_negative && target.IsSigned() {
+                    overflow = value > (1 << 63);
+                }
+
+                if !overflow && this.deferred_negative {
+                    value = !value + 1;
+                }
+            }
+
+            if overflow {
+                Logger::Log("Integer literal '" + (this.deferred_negative ? "-" : "").ToString() + String(this.deferred_integer) + "' overflows target type '" + target.ToString() + "'.", LogSeverity::Error);
+                value = 0;
             }
 
             ret QualifiedValue(LLVMConstInt(target.Value(), value, target.IsSigned() ? 1 : 0), target);

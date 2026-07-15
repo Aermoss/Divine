@@ -26,11 +26,17 @@ bootstrap: bin/zirconc2.exe
 	copy /Y bin\zirconc2.exe bin\zirconc.exe
 	del /Q bin\zirconc2.*
 
-bin/Count.exe: scripts/Count.zir
-	bin/zirconc.exe $< -o $@
+bin/Test.exe: bin/zirconc2.exe examples/Test.zir
+	$^ -o $@ -g -v
+
+test: bin/Test.exe
+	$<
+
+bin/Count.exe: bin/zirconc2.exe scripts/Count.zir
+	$^ -o $@ -g -v
 
 count: bin/Count.exe
 	$<
 
 clean:
-	del /Q bin\zirconc2.* bin\zircraft.* bin\zirgen.* bin\Count.*
+	del /Q bin\zirconc2.* bin\zircraft.* bin\zirgen.* bin\Count.* bin\Test.*

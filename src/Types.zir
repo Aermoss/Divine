@@ -61,7 +61,7 @@ enum TypeKind: i32 {
     Integer, IntegerLiteral, Float, FloatLiteral,
     Pointer, Reference, Array,
     Function, PackSpecializedFunction,
-    Class, Enum
+    Class, Enumeration, Variant
 }
 
 class QualifiedType {
@@ -115,7 +115,8 @@ class QualifiedType {
     pub IsFunction(&this) -> bool { ret this.kind == TypeKind::Function || this.kind == TypeKind::PackSpecializedFunction; }
     pub IsPackSpecializedFunction(&this) -> bool { ret this.kind == TypeKind::PackSpecializedFunction; }
     pub IsClass(&this) -> bool { ret this.kind == TypeKind::Class; }
-    pub IsEnum(&this) -> bool { ret this.kind == TypeKind::Enum; }
+    pub IsEnumeration(&this) -> bool { ret this.kind == TypeKind::Enumeration; }
+    pub IsVariant(&this) -> bool { ret this.kind == TypeKind::Variant; }
 
     pub IsTrivial(&this) -> bool {
         if this.IsBoolean() || this.IsCharacter() || this.IsInteger() || this.IsFloat() || this.IsPointer() || this.IsReference() {
@@ -142,7 +143,7 @@ class QualifiedType {
             } ret true;
         }
 
-        if this.IsEnum() {
+        if this.IsVariant() {
             if !this.methods.Empty() {
                 ret false;
             }
@@ -263,6 +264,18 @@ class QualifiedType {
         } ret 0;
     }
 
+    pub UnderlyingType(&this) -> &QualifiedType {
+        if !this.IsEnumeration() {
+            Logger::Log("QualifiedType", "Not an enumeration!", LogSeverity::Fatal);
+        }
+
+        if this.width == 0 {
+            ret compiler->type_manager.IntegerPointer(this.signed);
+        } else {
+            ret compiler->type_manager.Integer(this.width, this.signed);
+        }
+    }
+
     pub Value(&this) -> LLVMTypeRef {
         if this.value == null {
             Logger::Log("QualifiedType", "Null type!", LogSeverity::Fatal);
@@ -278,8 +291,8 @@ class QualifiedType {
     }
 
     pub Width(&this) -> u32 {
-        if !this.IsBoolean() && !this.IsCharacter() && !this.IsInteger() && !this.IsFloat() {
-            Logger::Log("QualifiedType", "Not a boolean, character, integer, or float!", LogSeverity::Fatal);
+        if !this.IsBoolean() && !this.IsCharacter() && !this.IsInteger() && !this.IsFloat() && !this.IsEnumeration() {
+            Logger::Log("QualifiedType", "Not a boolean, character, integer, float, or enumeration!", LogSeverity::Fatal);
         } ret this.width == 0 ? LLVMPointerSize(compiler->target->layout) * 8 : this.width;
     }
 
@@ -320,8 +333,8 @@ class QualifiedType {
     }
 
     pub Methods(&this) -> &Vector<Pair<Method, *const QualifiedType>> {
-        if !this.IsClass() && !this.IsEnum() {
-            Logger::Log("QualifiedType", "Not a class or enum!", LogSeverity::Fatal);
+        if !this.IsClass() && !this.IsVariant() {
+            Logger::Log("QualifiedType", "Not a class or variant!", LogSeverity::Fatal);
         } ret this.methods;
     }
 
@@ -488,8 +501,6 @@ class QualifiedType {
             if this.pointee == other.pointee { ret true; }
             if this.pointee == null || other.pointee == null { ret false; }
             ret *this.pointee == *other.pointee;
-        } else if (this.IsClass() || this.IsEnum()) && (other.IsClass() || other.IsEnum()) {
-            ret this.name == other.name;
         } else if this.IsFunction() && other.IsFunction() {
             if this.params.Size() != other.params.Size() {
                 ret false;
@@ -511,7 +522,7 @@ class QualifiedType {
                 if *left != *right { ret false; }
             } ret true;
         } else {
-            ret this.kind == other.kind;
+            ret this.kind == other.kind && this.name == other.name;
         }
     }
 

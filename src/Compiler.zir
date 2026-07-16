@@ -740,7 +740,7 @@ class Compiler {
                 i += 1;
             }
 
-            let mut param_type = ParameterType(real_type->IsEnum() ? real_type : this.ProcessType(real_type));
+            let mut param_type = ParameterType(this.ProcessType(real_type));
 
             if *real_type != *param_type._type {
                 attributes.PushBack(param_type._type->IsPointer() && !this.mangling ? real_type->Value() : null);
@@ -755,7 +755,7 @@ class Compiler {
 
         if function->_type->pack_name != "" && this.pack_specializing {
             for real_type in this.pack_types {
-                let mut param_type = ParameterType(real_type->IsEnum() ? real_type : this.ProcessType(real_type));
+                let mut param_type = ParameterType(this.ProcessType(real_type));
 
                 if *real_type != *param_type._type {
                     attributes.PushBack(param_type._type->IsPointer() && !this.mangling ? real_type->Value() : null);
@@ -813,7 +813,7 @@ class Compiler {
         for j in 0..attributes.Size() {
             if attributes[j] != null {
                 let attribute_kind = sret && j == 0 ? LLVMGetEnumAttributeKindForName("sret", 4) : LLVMGetEnumAttributeKindForName("byval", 5);
-                LLVMAddAttributeAtIndex(value_ref, (j + 1) as u32, LLVMCreateTypeAttribute(this.context, attribute_kind, attributes[j]));
+                LLVMAddAttributeAtIndex(value_ref, (j + 1) as LLVMAttributeIndex, LLVMCreateTypeAttribute(this.context, attribute_kind, attributes[j]));
             }
         }
 
@@ -1068,13 +1068,15 @@ class Compiler {
             ret null;
         }
 
-        this.scope_manager.Set(_enum->name, SymbolKind::Type, QualifiedValue(null, underlying_type), false, _enum);
-        ret underlying_type;
+        let _type = this.type_manager.Enumeration(underlying_type, _enum->name);
+        this.scope_manager.Set(_enum->name, SymbolKind::Type, QualifiedValue(null, _type), false, _enum);
+        ret _type;
     }
 
-    priv CompileEnumerationSecondPass(&mut this, _enum: *const EnumNode, underlying_type: *const QualifiedType) {
+    priv CompileEnumerationSecondPass(&mut this, _enum: *const EnumNode, _type: *const QualifiedType) {
         this.scope_manager.PushScope(_enum->name, true);
-        let mut value = LLVMConstInt(underlying_type->Value(), 0, underlying_type->IsSigned() ? 1 : 0);
+        let mut value = LLVMConstInt(_type->Value(), 0, _type->IsSigned() ? 1 : 0);
+        let underlying_type = _type->UnderlyingType();
         let mut has_error = false;
 
         for variant in _enum->variants {
@@ -1082,10 +1084,10 @@ class Compiler {
                 let _value = this.CompileExpression(variant->value).MaterializeWithFallback(underlying_type).ToRValue();
 
                 if !_value.Null() {
-                    if _value.Type() == *underlying_type {
+                    if _value.Type() == *_type || _value.Type() == underlying_type {
                         value = _value.Value();
                     } else {
-                        Logger::Log("Incompatible enum value types. ('" + _value.Type().ToString() + "' != '" + underlying_type->ToString() + "').", _enum, LogSeverity::Error);
+                        Logger::Log("Incompatible enum value types. ('" + _value.Type().ToString() + "' != '" + underlying_type.ToString() + "').", _enum, LogSeverity::Error);
                         has_error = true;
                     }
                 } else {
@@ -1094,8 +1096,8 @@ class Compiler {
             }
 
             if !has_error {
-                this.scope_manager.Set(variant->name, SymbolKind::Constant, QualifiedValue(value, underlying_type), false, _enum);
-                value = LLVMConstAdd(value, LLVMConstInt(underlying_type->Value(), 1, underlying_type->IsSigned() ? 1 : 0));
+                this.scope_manager.Set(variant->name, SymbolKind::Constant, QualifiedValue(value, _type), false, _enum);
+                value = LLVMConstAdd(value, LLVMConstInt(_type->Value(), 1, _type->IsSigned() ? 1 : 0));
             } else {
                 this.scope_manager.Set(variant->name, SymbolKind::Constant, QualifiedValue(null, null), false, _enum);
             }
@@ -1112,7 +1114,7 @@ class Compiler {
         }
 
         let struct_name = generic != null ? generic->current.Data() : _enum->name.Data();
-        let _type = this.type_manager.Enum(LLVMStructCreateNamed(this.context, struct_name), _enum->name);
+        let _type = this.type_manager.Variant(LLVMStructCreateNamed(this.context, struct_name), _enum->name);
 
         if generic != null {
             this.scope_manager.PushScope(generic->current, true);
@@ -1242,7 +1244,7 @@ class Compiler {
             ret LLVMBuildOr(this.builder, left, right, "");
         }
 
-        if _type->IsEnum() {
+        if _type->IsVariant() {
             let mut variant_name: String;
             let mut arguments: Vector<*const Node>;
             let mut is_struct_pattern = false;
@@ -1297,8 +1299,8 @@ class Compiler {
                 ret null;
             }
 
-            let tag_ptr = LLVMBuildStructGEP2(this.builder, _type->Value(), pointer, 0, "");
-            let tag = LLVMBuildLoad2(this.builder, LLVMInt32TypeInContext(this.context), tag_ptr, "");
+            let tag_pointer = LLVMBuildStructGEP2(this.builder, _type->Value(), pointer, 0, "");
+            let tag = LLVMBuildLoad2(this.builder, LLVMInt32TypeInContext(this.context), tag_pointer, "");
             let mut result = LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntEQ, tag, LLVMConstInt(LLVMInt32TypeInContext(this.context), variant_index as u64, 0), "");
             let mut index: usize = 0;
 
@@ -1316,8 +1318,8 @@ class Compiler {
                     }
                 }
 
-                let field_ptr = this.BuildPayloadFieldPointer(pointer, _type, variant_index as usize, field_index);
-                let field_result = this.BuildPatternCondition(argument, field_ptr, variant_types[field_index]);
+                let field_pointer = this.BuildPayloadFieldPointer(pointer, _type, variant_index as usize, field_index);
+                let field_result = this.BuildPatternCondition(argument, field_pointer, variant_types[field_index]);
                 result = LLVMBuildAnd(this.builder, result, field_result, "");
                 index += 1;
             } ret result;
@@ -1363,7 +1365,7 @@ class Compiler {
             ret;
         }
 
-        if _type->IsEnum() {
+        if _type->IsVariant() {
             if pattern->_type == NodeType::CALL {
                 let call = pattern as *const CallNode;
                 let mut variant_name: String;
@@ -1378,8 +1380,8 @@ class Compiler {
                 let mut index: usize = 0;
 
                 for variant_type in _type->variants[variant_index as usize].right {
-                    let field_ptr = this.BuildPayloadFieldPointer(pointer, _type, variant_index as usize, index);
-                    this.BindPattern(call->arguments[index], field_ptr, variant_type);
+                    let field_pointer = this.BuildPayloadFieldPointer(pointer, _type, variant_index as usize, index);
+                    this.BindPattern(call->arguments[index], field_pointer, variant_type);
                     index += 1;
                 } ret;
             }
@@ -1405,8 +1407,8 @@ class Compiler {
                         ret;
                     }
 
-                    let field_ptr = this.BuildPayloadFieldPointer(pointer, _type, variant_index as usize, field_index as usize);
-                    this.BindPattern(struct_init->field_values[index], field_ptr, _type->variants[variant_index as usize].right[field_index as usize]);
+                    let field_pointer = this.BuildPayloadFieldPointer(pointer, _type, variant_index as usize, field_index as usize);
+                    this.BindPattern(struct_init->field_values[index], field_pointer, _type->variants[variant_index as usize].right[field_index as usize]);
                     index += 1;
                 } ret;
             }
@@ -1441,7 +1443,7 @@ class Compiler {
         let mut match_pointer = null;
 
         if expression.Type().IsReference() {
-            if expression.Type().Pointee().IsEnum() {
+            if expression.Type().Pointee().IsVariant() {
                 match_pointer = expression.Value();
                 expression = QualifiedValue(LLVMBuildLoad2(this.builder, expression.Type().Pointee().Value(), expression.Value(), ""), expression.Type().Pointee());
             } else {
@@ -1449,7 +1451,7 @@ class Compiler {
             }
         }
 
-        if match_pointer == null && expression.Type().IsEnum() {
+        if match_pointer == null && expression.Type().IsVariant() {
             match_pointer = LLVMBuildAlloca(this.builder, expression.Type().Value(), "");
             LLVMBuildStore(this.builder, expression.Value(), match_pointer);
         }
@@ -1468,7 +1470,7 @@ class Compiler {
             LLVMPositionBuilderAtEnd(this.builder, current_block);
             let mut condition: LLVMValueRef = null;
 
-            if expression.Type().IsEnum() {
+            if expression.Type().IsVariant() {
                 condition = this.BuildPatternCondition(case->pattern, match_pointer, expression.Type());
             } else {
                 let value = this.CompileExpression(case->pattern).MaterializeWithFallback(expression.Type());
@@ -1487,7 +1489,7 @@ class Compiler {
 
                 LLVMPositionBuilderAtEnd(this.builder, guard_block);
                 this.scope_manager.PushScope(String("guard"), false);
-                if expression.Type().IsEnum() { this.BindPattern(case->pattern, match_pointer, expression.Type()); }
+                if expression.Type().IsVariant() { this.BindPattern(case->pattern, match_pointer, expression.Type()); }
                 let guard_cond = this.CompileExpression(case->guard).Materialize().ToRValue().Value();
                 if guard_cond == null { ret; }
                 LLVMBuildCondBr(this.builder, guard_cond, body_block, guard_fail);
@@ -1498,13 +1500,13 @@ class Compiler {
 
                 LLVMPositionBuilderAtEnd(this.builder, body_block);
                 this.scope_manager.PushScope(String("case"), false);
-                if expression.Type().IsEnum() { this.BindPattern(case->pattern, match_pointer, expression.Type()); }
+                if expression.Type().IsVariant() { this.BindPattern(case->pattern, match_pointer, expression.Type()); }
             } else {
                 LLVMBuildCondBr(this.builder, condition, body_block, next_block);
 
                 LLVMPositionBuilderAtEnd(this.builder, body_block);
                 this.scope_manager.PushScope(String("case"), false);
-                if expression.Type().IsEnum() { this.BindPattern(case->pattern, match_pointer, expression.Type()); }
+                if expression.Type().IsVariant() { this.BindPattern(case->pattern, match_pointer, expression.Type()); }
             }
 
             this.CompileStatement(case->body);
@@ -2127,7 +2129,7 @@ class Compiler {
             }
         } else {
             if _type->IsPointer() {
-                let indices[]: LLVMValueRef = { LLVMConstInt(LLVMInt64Type(), 1, 0) };
+                let indices[]: LLVMValueRef = { LLVMConstInt(LLVMIntPtrTypeInContext(this.context, this.target->layout), 1, 0) };
                 new_value = LLVMBuildGEP2(this.builder, _type->Pointee().Value(), current_value, indices, 1, "");
             } else if _type->IsClass() && _type->Has(String("op+=")) {
                 let mut values: Vector<QualifiedValue>;
@@ -2327,7 +2329,7 @@ class Compiler {
                                 break;
                             }
 
-                            let indices[]: LLVMValueRef = { LLVMConstInt(LLVMInt32TypeInContext(this.context), index, 0) };
+                            let indices[]: LLVMValueRef = { LLVMConstInt(LLVMIntPtrTypeInContext(this.context, this.target->layout), index, 0) };
                             LLVMBuildStore(this.builder, value.Value(), LLVMBuildGEP2(this.builder, _type->Element().Value(), pointer.Value(), indices, 1, ""));
                             let increment: u64 = 1;
                             index += increment;
@@ -2464,104 +2466,109 @@ class Compiler {
             value = value.Materialize(pointer.Type().Pointee()).ToRValue();
 
             if operator != TokenType::ASSIGN {
-                let other = QualifiedValue(LLVMBuildLoad2(this.builder, pointer.Type().Pointee().Value(), pointer.Value(), ""), pointer.Type().Pointee());
+                let current = QualifiedValue(LLVMBuildLoad2(this.builder, pointer.Type().Pointee().Value(), pointer.Value(), ""), pointer.Type().Pointee());
 
-                if value.Type().IsPointer() && other.Type().IsPointer() {
-                    if operator == TokenType::MINUS_ASSIGN {
-                        let _type = this.type_manager.IntegerPointer(false);
-                        value = QualifiedValue(LLVMBuildSub(this.builder, LLVMBuildPtrToInt(this.builder, other.Value(), _type.Value(), ""), LLVMBuildPtrToInt(this.builder, value.Value(), _type.Value(), ""), ""), _type);
+                if current.Type().IsBoolean() && value.Type().IsBoolean() {
+                    if operator == TokenType::AND_ASSIGN {
+                        value = QualifiedValue(LLVMBuildAnd(this.builder, current.Value(), value.Value(), ""), value.Type());
+                    } else if operator == TokenType::OR_ASSIGN {
+                        value = QualifiedValue(LLVMBuildOr(this.builder, current.Value(), value.Value(), ""), value.Type());
+                    } else if operator == TokenType::XOR_ASSIGN {
+                        value = QualifiedValue(LLVMBuildXor(this.builder, current.Value(), value.Value(), ""), value.Type());
                     } else {
-                        Logger::Log("Invalid pointer assignment operation '" + operator.ToString() + "' for type '" + value.Type().ToString() + "'.", node, LogSeverity::Error);
+                        Logger::Log("Invalid assignment operation '" + operator.ToString() + "' for type '" + value.Type().ToString() + "'.", node, LogSeverity::Error);
                         ret QualifiedValue(null, null);
                     }
-                } else if (value.Type().IsPointer() && other.Type().IsInteger()) || (value.Type().IsInteger() && other.Type().IsPointer()) {
-                    let ptr = value.Type().IsPointer() ? value : other;
-                    let index = value.Type().IsPointer() ? other : value;
-
-                    if !index.Type().IsIntegerPointer() || index.Type().IsSigned() {
-                        Logger::Log("Pointer arithmetic requires an operand of type 'usize'.", node, LogSeverity::Error);
+                } else if current.Type().IsInteger() && value.Type().IsInteger() {
+                    if value.Type() != current.Type() {
+                        Logger::Log("Incompatible assignment operation types. ('" + value.Type().ToString() + "' != '" + current.Type().ToString() + "').", node, LogSeverity::Error);
                         ret QualifiedValue(null, null);
                     }
 
                     if operator == TokenType::PLUS_ASSIGN {
-                        let indices[]: LLVMValueRef = { index.Value() };
-                        value = QualifiedValue(LLVMBuildGEP2(this.builder, ptr.Type().Pointee().Value(), ptr.Value(), indices, 1, ""), ptr.Type());
+                        value = QualifiedValue(LLVMBuildAdd(this.builder, current.Value(), value.Value(), ""), value.Type());
                     } else if operator == TokenType::MINUS_ASSIGN {
-                        let indices[]: LLVMValueRef = { LLVMBuildNeg(this.builder, index.Value(), "") };
-                        value = QualifiedValue(LLVMBuildGEP2(this.builder, ptr.Type().Pointee().Value(), ptr.Value(), indices, 1, ""), ptr.Type());
-                    } else {
-                        Logger::Log("Invalid pointer assignment operation '" + operator.ToString() + "' for type '" + ptr.Type().ToString() + "'.", node, LogSeverity::Error);
-                        ret QualifiedValue(null, null);
-                    }
-                } else if value.Type().IsInteger() && other.Type().IsInteger() {
-                    if value.Type() != other.Type() {
-                        Logger::Log("Incompatible assignment operation types. ('" + value.Type().ToString() + "' != '" + other.Type().ToString() + "').", node, LogSeverity::Error);
-                        ret QualifiedValue(null, null);
-                    }
-
-                    if operator == TokenType::PLUS_ASSIGN {
-                        value = QualifiedValue(LLVMBuildAdd(this.builder, other.Value(), value.Value(), ""), value.Type());
-                    } else if operator == TokenType::MINUS_ASSIGN {
-                        value = QualifiedValue(LLVMBuildSub(this.builder, other.Value(), value.Value(), ""), value.Type());
+                        value = QualifiedValue(LLVMBuildSub(this.builder, current.Value(), value.Value(), ""), value.Type());
                     } else if operator == TokenType::MUL_ASSIGN {
-                        value = QualifiedValue(LLVMBuildMul(this.builder, other.Value(), value.Value(), ""), value.Type());
+                        value = QualifiedValue(LLVMBuildMul(this.builder, current.Value(), value.Value(), ""), value.Type());
                     } else if operator == TokenType::DIV_ASSIGN {
                         if value.Type().IsSigned() {
-                            value = QualifiedValue(LLVMBuildSDiv(this.builder, other.Value(), value.Value(), ""), value.Type());
+                            value = QualifiedValue(LLVMBuildSDiv(this.builder, current.Value(), value.Value(), ""), value.Type());
                         } else {
-                            value = QualifiedValue(LLVMBuildUDiv(this.builder, other.Value(), value.Value(), ""), value.Type());
+                            value = QualifiedValue(LLVMBuildUDiv(this.builder, current.Value(), value.Value(), ""), value.Type());
                         }
                     } else if operator == TokenType::MOD_ASSIGN {
                         if value.Type().IsSigned() {
-                            value = QualifiedValue(LLVMBuildSRem(this.builder, other.Value(), value.Value(), ""), value.Type());
+                            value = QualifiedValue(LLVMBuildSRem(this.builder, current.Value(), value.Value(), ""), value.Type());
                         } else {
-                            value = QualifiedValue(LLVMBuildURem(this.builder, other.Value(), value.Value(), ""), value.Type());
+                            value = QualifiedValue(LLVMBuildURem(this.builder, current.Value(), value.Value(), ""), value.Type());
                         }
                     } else if operator == TokenType::AND_ASSIGN {
-                        value = QualifiedValue(LLVMBuildAnd(this.builder, other.Value(), value.Value(), ""), value.Type());
+                        value = QualifiedValue(LLVMBuildAnd(this.builder, current.Value(), value.Value(), ""), value.Type());
                     } else if operator == TokenType::OR_ASSIGN {
-                        value = QualifiedValue(LLVMBuildOr(this.builder, other.Value(), value.Value(), ""), value.Type());
+                        value = QualifiedValue(LLVMBuildOr(this.builder, current.Value(), value.Value(), ""), value.Type());
                     } else if operator == TokenType::XOR_ASSIGN {
-                        value = QualifiedValue(LLVMBuildXor(this.builder, other.Value(), value.Value(), ""), value.Type());
+                        value = QualifiedValue(LLVMBuildXor(this.builder, current.Value(), value.Value(), ""), value.Type());
                     } else if operator == TokenType::LSHIFT_ASSIGN {
-                        value = QualifiedValue(LLVMBuildShl(this.builder, other.Value(), value.Value(), ""), value.Type());
+                        value = QualifiedValue(LLVMBuildShl(this.builder, current.Value(), value.Value(), ""), value.Type());
                     } else if operator == TokenType::RSHIFT_ASSIGN {
                         if value.Type().IsSigned() {
-                            value = QualifiedValue(LLVMBuildAShr(this.builder, other.Value(), value.Value(), ""), value.Type());
+                            value = QualifiedValue(LLVMBuildAShr(this.builder, current.Value(), value.Value(), ""), value.Type());
                         } else {
-                            value = QualifiedValue(LLVMBuildLShr(this.builder, other.Value(), value.Value(), ""), value.Type());
+                            value = QualifiedValue(LLVMBuildLShr(this.builder, current.Value(), value.Value(), ""), value.Type());
                         }
                     } else {
                         Logger::Log("Invalid assignment operation '" + operator.ToString() + "' for type '" + value.Type().ToString() + "'.", node, LogSeverity::Error);
                         ret QualifiedValue(null, null);
                     }
-                } else if value.Type().IsBoolean() && other.Type().IsBoolean() {
-                    if operator == TokenType::AND_ASSIGN {
-                        value = QualifiedValue(LLVMBuildAnd(this.builder, other.Value(), value.Value(), ""), value.Type());
-                    } else if operator == TokenType::OR_ASSIGN {
-                        value = QualifiedValue(LLVMBuildOr(this.builder, other.Value(), value.Value(), ""), value.Type());
-                    } else if operator == TokenType::XOR_ASSIGN {
-                        value = QualifiedValue(LLVMBuildXor(this.builder, other.Value(), value.Value(), ""), value.Type());
-                    } else {
-                        Logger::Log("Invalid assignment operation '" + operator.ToString() + "' for type '" + value.Type().ToString() + "'.", node, LogSeverity::Error);
-                        ret QualifiedValue(null, null);
-                    }
-                } else if value.Type().IsFloat() && other.Type().IsFloat() {
-                    if value.Type() != other.Type() {
-                        Logger::Log("Incompatible assignment operation types. ('" + value.Type().ToString() + "' != '" + other.Type().ToString() + "').", node, LogSeverity::Error);
+                } else if current.Type().IsFloat() && value.Type().IsFloat() {
+                    if value.Type() != current.Type() {
+                        Logger::Log("Incompatible assignment operation types. ('" + value.Type().ToString() + "' != '" + current.Type().ToString() + "').", node, LogSeverity::Error);
                         ret QualifiedValue(null, null);
                     }
 
                     if operator == TokenType::PLUS_ASSIGN {
-                        value = QualifiedValue(LLVMBuildFAdd(this.builder, other.Value(), value.Value(), ""), value.Type());
+                        value = QualifiedValue(LLVMBuildFAdd(this.builder, current.Value(), value.Value(), ""), value.Type());
                     } else if operator == TokenType::MINUS_ASSIGN {
-                        value = QualifiedValue(LLVMBuildFSub(this.builder, other.Value(), value.Value(), ""), value.Type());
+                        value = QualifiedValue(LLVMBuildFSub(this.builder, current.Value(), value.Value(), ""), value.Type());
                     } else if operator == TokenType::MUL_ASSIGN {
-                        value = QualifiedValue(LLVMBuildFMul(this.builder, other.Value(), value.Value(), ""), value.Type());
+                        value = QualifiedValue(LLVMBuildFMul(this.builder, current.Value(), value.Value(), ""), value.Type());
                     } else if operator == TokenType::DIV_ASSIGN {
-                        value = QualifiedValue(LLVMBuildFDiv(this.builder, other.Value(), value.Value(), ""), value.Type());
+                        value = QualifiedValue(LLVMBuildFDiv(this.builder, current.Value(), value.Value(), ""), value.Type());
                     } else if operator == TokenType::MOD_ASSIGN {
-                        value = QualifiedValue(LLVMBuildFRem(this.builder, other.Value(), value.Value(), ""), value.Type());
+                        value = QualifiedValue(LLVMBuildFRem(this.builder, current.Value(), value.Value(), ""), value.Type());
+                    } else {
+                        Logger::Log("Invalid assignment operation '" + operator.ToString() + "' for type '" + value.Type().ToString() + "'.", node, LogSeverity::Error);
+                        ret QualifiedValue(null, null);
+                    }
+                } else if current.Type().IsPointer() && value.Type().IsInteger() {
+                    if !value.Type().IsIntegerPointer() {
+                        Logger::Log("Pointer arithmetic requires an operand of pointer-sized type.", node, LogSeverity::Error);
+                        ret QualifiedValue(null, null);
+                    }
+
+                    if operator == TokenType::PLUS_ASSIGN {
+                        let indices[]: LLVMValueRef = { value.Value() };
+                        value = QualifiedValue(LLVMBuildGEP2(this.builder, current.Type().Pointee().Value(), current.Value(), indices, 1, ""), current.Type());
+                    } else if operator == TokenType::MINUS_ASSIGN {
+                        let indices[]: LLVMValueRef = { LLVMBuildNeg(this.builder, value.Value(), "") };
+                        value = QualifiedValue(LLVMBuildGEP2(this.builder, current.Type().Pointee().Value(), current.Value(), indices, 1, ""), current.Type());
+                    } else {
+                        Logger::Log("Invalid pointer assignment operation '" + operator.ToString() + "' for type '" + current.Type().ToString() + "'.", node, LogSeverity::Error);
+                        ret QualifiedValue(null, null);
+                    }
+                } else if current.Type().IsEnumeration() && value.Type().IsEnumeration() {
+                    if value.Type() != current.Type() {
+                        Logger::Log("Incompatible assignment operation types. ('" + value.Type().ToString() + "' != '" + current.Type().ToString() + "').", node, LogSeverity::Error);
+                        ret QualifiedValue(null, null);
+                    }
+
+                    if operator == TokenType::AND_ASSIGN {
+                        value = QualifiedValue(LLVMBuildAnd(this.builder, current.Value(), value.Value(), ""), value.Type());
+                    } else if operator == TokenType::OR_ASSIGN {
+                        value = QualifiedValue(LLVMBuildOr(this.builder, current.Value(), value.Value(), ""), value.Type());
+                    } else if operator == TokenType::XOR_ASSIGN {
+                        value = QualifiedValue(LLVMBuildXor(this.builder, current.Value(), value.Value(), ""), value.Type());
                     } else {
                         Logger::Log("Invalid assignment operation '" + operator.ToString() + "' for type '" + value.Type().ToString() + "'.", node, LogSeverity::Error);
                         ret QualifiedValue(null, null);
@@ -2847,16 +2854,16 @@ class Compiler {
         let struct_type = enum_type->Value();
         let data_type = LLVMStructGetTypeAtIndex(struct_type, 1);
         let mut alloca = LLVMBuildAlloca(this.builder, struct_type, "");
-        let tag_ptr = LLVMBuildStructGEP2(this.builder, struct_type, alloca, 0, "");
-        LLVMBuildStore(this.builder, LLVMConstInt(tag_type, variant_index as u64, 0), tag_ptr);
+        let tag_pointer = LLVMBuildStructGEP2(this.builder, struct_type, alloca, 0, "");
+        LLVMBuildStore(this.builder, LLVMConstInt(tag_type, variant_index as u64, 0), tag_pointer);
 
-        let data_ptr = LLVMBuildStructGEP2(this.builder, struct_type, alloca, 1, "");
+        let data_pointer = LLVMBuildStructGEP2(this.builder, struct_type, alloca, 1, "");
         let payload_type = this.CreateVariantPayloadType(variant_types);
-        let payload_ptr = LLVMBuildBitCast(this.builder, data_ptr, LLVMPointerType(payload_type, 0), "");
+        let payload_pointer = LLVMBuildBitCast(this.builder, data_pointer, LLVMPointerType(payload_type, 0), "");
 
         for _ in variant_types {
-            let elem_ptr = LLVMBuildStructGEP2(this.builder, payload_type, payload_ptr, index as u32, "");
-            LLVMBuildStore(this.builder, ordered_args[index].Value(), elem_ptr);
+            let element_pointer = LLVMBuildStructGEP2(this.builder, payload_type, payload_pointer, index as u32, "");
+            LLVMBuildStore(this.builder, ordered_args[index].Value(), element_pointer);
             index += 1;
         }
 
@@ -3127,7 +3134,7 @@ class Compiler {
                         instance = QualifiedValue(LLVMBuildLoad2(this.builder, instance.Type().Pointee().Value(), instance.Value(), ""), instance.Type().Pointee(), false, instance.IsLValue());
                     }
                 } else {
-                    if !member_access->arrow && !instance.return && instance.Type().IsPointer() && (instance.Type().Pointee().IsClass() || instance.Type().Pointee().IsEnum()) {
+                    if !member_access->arrow && !instance.return && instance.Type().IsPointer() && (instance.Type().Pointee().IsClass() || instance.Type().Pointee().IsVariant()) {
                         Logger::Log("Expected an arrow operator.", call, LogSeverity::Error);
                         ret QualifiedValue(null, null);
                     }
@@ -3136,7 +3143,7 @@ class Compiler {
                 if !instance.Type().IsPointer() {
                     state = true;
                 } else {
-                    if !instance.Type().Pointee().IsClass() && !instance.Type().Pointee().IsEnum() {
+                    if !instance.Type().Pointee().IsClass() && !instance.Type().Pointee().IsVariant() {
                         state = true;
                     }
                 }
@@ -3686,7 +3693,7 @@ class Compiler {
             ret QualifiedValue(null, null);
         }
 
-        if !instance.Type().Pointee().IsClass() && !instance.Type().Pointee().IsEnum() {
+        if !instance.Type().Pointee().IsClass() && !instance.Type().Pointee().IsVariant() {
             Logger::Log("Cannot access member '" + member_access->member + "' of non-class type.", member_access, LogSeverity::Error);
             ret QualifiedValue(null, null);
         }
@@ -3917,22 +3924,28 @@ class Compiler {
             }
         }
 
-        if value.Type().IsPointer() && target.IsInteger() {
-            ret QualifiedValue(LLVMBuildPtrToInt(this.builder, value.Value(), target.Value(), ""), target);
-        } else if value.Type().IsInteger() {
-            if target.IsPointer() {
-                ret QualifiedValue(LLVMBuildIntToPtr(this.builder, value.Value(), target.Value(), ""), target);
+        if value.Type().IsBoolean() {
+            if target.IsInteger() {
+                ret QualifiedValue(LLVMBuildZExt(this.builder, value.Value(), target.Value(), ""), target);
             }
-
-            if target.IsFloat() {
-                if value.Type().IsSigned() {
-                    ret QualifiedValue(LLVMBuildSIToFP(this.builder, value.Value(), target.Value(), ""), target);
+        } else if value.Type().IsCharacter() {
+            if target.IsInteger() {
+                if value.Type().Width() < target.Width() {
+                    ret QualifiedValue(LLVMBuildZExt(this.builder, value.Value(), target.Value(), ""), target);
+                } else if value.Type().Width() > target.Width() {
+                    ret QualifiedValue(LLVMBuildTrunc(this.builder, value.Value(), target.Value(), ""), target);
                 } else {
-                    ret QualifiedValue(LLVMBuildUIToFP(this.builder, value.Value(), target.Value(), ""), target);
+                    ret QualifiedValue(value.Value(), target);
+                }
+            }
+        } else if value.Type().IsInteger() {
+            if target.IsCharacter() {
+                if value.Type().Width() == 8 && !value.Type().IsSigned() {
+                    ret QualifiedValue(LLVMBuildZExt(this.builder, value.Value(), target.Value(), ""), target);
                 }
             }
 
-            if target.IsInteger() {
+            if target.IsInteger() || target.IsEnumeration() {
                 if value.Type().Width() < target.Width() {
                     if value.Type().IsSigned() {
                         ret QualifiedValue(LLVMBuildSExt(this.builder, value.Value(), target.Value(), ""), target);
@@ -3945,13 +3958,17 @@ class Compiler {
                     ret QualifiedValue(value.Value(), target);
                 }
             }
-        } else if value.Type().IsBoolean() {
+
             if target.IsFloat() {
-                ret QualifiedValue(LLVMBuildUIToFP(this.builder, value.Value(), target.Value(), ""), target);
+                if value.Type().IsSigned() {
+                    ret QualifiedValue(LLVMBuildSIToFP(this.builder, value.Value(), target.Value(), ""), target);
+                } else {
+                    ret QualifiedValue(LLVMBuildUIToFP(this.builder, value.Value(), target.Value(), ""), target);
+                }
             }
 
-            if target.IsInteger() {
-                ret QualifiedValue(LLVMBuildZExt(this.builder, value.Value(), target.Value(), ""), target);
+            if target.IsPointer() {
+                ret QualifiedValue(LLVMBuildIntToPtr(this.builder, value.Value(), target.Value(), ""), target);
             }
         } else if value.Type().IsFloat() {
             if target.IsInteger() {
@@ -3967,6 +3984,22 @@ class Compiler {
                     ret QualifiedValue(LLVMBuildFPExt(this.builder, value.Value(), target.Value(), ""), target);
                 } else if value.Type().Width() > target.Width() {
                     ret QualifiedValue(LLVMBuildFPTrunc(this.builder, value.Value(), target.Value(), ""), target);
+                }
+            }
+        } else if value.Type().IsPointer() {
+            if target.IsInteger() {
+                ret QualifiedValue(LLVMBuildPtrToInt(this.builder, value.Value(), target.Value(), ""), target);
+            }
+        } else if value.Type().IsEnumeration() {
+            if target.IsInteger() {
+                if value.Type().Width() < target.Width() {
+                    if value.Type().IsSigned() {
+                        ret QualifiedValue(LLVMBuildSExt(this.builder, value.Value(), target.Value(), ""), target);
+                    } else {
+                        ret QualifiedValue(LLVMBuildZExt(this.builder, value.Value(), target.Value(), ""), target);
+                    }
+                } else if value.Type().Width() > target.Width() {
+                    ret QualifiedValue(LLVMBuildTrunc(this.builder, value.Value(), target.Value(), ""), target);
                 } else {
                     ret QualifiedValue(value.Value(), target);
                 }
@@ -4355,13 +4388,23 @@ class Compiler {
             }
         }
 
-        let (left_kind, right_kind) = (LLVMGetTypeKind(left.Type().Value()), LLVMGetTypeKind(right.Type().Value()));
-
-        if left.Type().IsPointer() && right.Type().IsPointer() {
-            if operator == TokenType::MINUS {
-                let _type = this.type_manager.IntegerPointer(false);
-                ret QualifiedValue(LLVMBuildSub(this.builder, LLVMBuildPtrToInt(this.builder, left.Value(), _type.Value(), ""), LLVMBuildPtrToInt(this.builder, right.Value(), _type.Value(), ""), ""), _type);
+        if left.Type().IsBoolean() && right.Type().IsBoolean() {
+            if operator == TokenType::AND || operator == TokenType::BITWISE_AND {
+                ret QualifiedValue(LLVMBuildAnd(this.builder, left.Value(), right.Value(), ""), left.Type());
+            } else if operator == TokenType::OR || operator == TokenType::BITWISE_OR {
+                ret QualifiedValue(LLVMBuildOr(this.builder, left.Value(), right.Value(), ""), left.Type());
+            } else if operator == TokenType::BITWISE_XOR {
+                ret QualifiedValue(LLVMBuildXor(this.builder, left.Value(), right.Value(), ""), left.Type());
             } else if operator == TokenType::EQUAL {
+                ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntEQ, left.Value(), right.Value(), ""), this.type_manager.Boolean());
+            } else if operator == TokenType::NOT_EQUAL {
+                ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntNE, left.Value(), right.Value(), ""), this.type_manager.Boolean());
+            } else {
+                Logger::Log("Invalid binary operation '" + operator.ToString() + "' for type '" + left.Type().ToString() + "'.", node, LogSeverity::Error);
+                ret QualifiedValue(null, null);
+            }
+        } else if left.Type().IsCharacter() && right.Type().IsCharacter() {
+            if operator == TokenType::EQUAL {
                 ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntEQ, left.Value(), right.Value(), ""), this.type_manager.Boolean());
             } else if operator == TokenType::NOT_EQUAL {
                 ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntNE, left.Value(), right.Value(), ""), this.type_manager.Boolean());
@@ -4374,26 +4417,7 @@ class Compiler {
             } else if operator == TokenType::LESS_EQUAL {
                 ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntULE, left.Value(), right.Value(), ""), this.type_manager.Boolean());
             } else {
-                Logger::Log("Invalid pointer binary operation '" + operator.ToString() + "' for type '" + left.Type().ToString() + "'.", node, LogSeverity::Error);
-                ret QualifiedValue(null, null);
-            }
-        } else if (left.Type().IsPointer() && right.Type().IsInteger()) || (left.Type().IsInteger() && right.Type().IsPointer()) {
-            let ptr = left.Type().IsPointer() ? left : right;
-            let index = left.Type().IsPointer() ? right : left;
-
-            if !index.Type().IsIntegerPointer() || index.Type().IsSigned() {
-                Logger::Log("Pointer arithmetic requires an operand of type 'usize'.", node, LogSeverity::Error);
-                ret QualifiedValue(null, null);
-            }
-
-            if operator == TokenType::PLUS {
-                let indices[]: LLVMValueRef = { index.Value() };
-                ret QualifiedValue(LLVMBuildGEP2(this.builder, ptr.Type().Pointee().Value(), ptr.Value(), indices, 1, ""), ptr.Type());
-            } else if operator == TokenType::MINUS {
-                let indices[]: LLVMValueRef = { LLVMBuildNeg(this.builder, index.Value(), "") };
-                ret QualifiedValue(LLVMBuildGEP2(this.builder, ptr.Type().Pointee().Value(), ptr.Value(), indices, 1, ""), ptr.Type());
-            } else {
-                Logger::Log("Invalid pointer binary operation '" + operator.ToString() + "' for type '" + left.Type().ToString() + "'.", node, LogSeverity::Error);
+                Logger::Log("Invalid binary operation '" + operator.ToString() + "' for type '" + left.Type().ToString() + "'.", node, LogSeverity::Error);
                 ret QualifiedValue(null, null);
             }
         } else if left.Type().IsInteger() && right.Type().IsInteger() {
@@ -4450,21 +4474,6 @@ class Compiler {
                 Logger::Log("Invalid binary operation '" + operator.ToString() + "' for type '" + left.Type().ToString() + "'.", node, LogSeverity::Error);
                 ret QualifiedValue(null, null);
             }
-        } else if left.Type().IsBoolean() && right.Type().IsBoolean() {
-            if operator == TokenType::AND || operator == TokenType::BITWISE_AND {
-                ret QualifiedValue(LLVMBuildAnd(this.builder, left.Value(), right.Value(), ""), left.Type());
-            } else if operator == TokenType::OR || operator == TokenType::BITWISE_OR {
-                ret QualifiedValue(LLVMBuildOr(this.builder, left.Value(), right.Value(), ""), left.Type());
-            } else if operator == TokenType::BITWISE_XOR {
-                ret QualifiedValue(LLVMBuildXor(this.builder, left.Value(), right.Value(), ""), left.Type());
-            } else if operator == TokenType::EQUAL {
-                ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntEQ, left.Value(), right.Value(), ""), this.type_manager.Boolean());
-            } else if operator == TokenType::NOT_EQUAL {
-                ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntNE, left.Value(), right.Value(), ""), this.type_manager.Boolean());
-            } else {
-                Logger::Log("Invalid binary operation '" + operator.ToString() + "' for type '" + left.Type().ToString() + "'.", node, LogSeverity::Error);
-                ret QualifiedValue(null, null);
-            }
         } else if left.Type().IsFloat() && right.Type().IsFloat() {
             if left.Type() != right.Type() {
                 Logger::Log("Incompatible binary operation types. ('" + left.Type().ToString() + "' != '" + right.Type().ToString() + "').", node, LogSeverity::Error);
@@ -4493,6 +4502,88 @@ class Compiler {
                 ret QualifiedValue(LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOLT, left.Value(), right.Value(), ""), this.type_manager.Boolean());
             } else if operator == TokenType::LESS_EQUAL {
                 ret QualifiedValue(LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOLE, left.Value(), right.Value(), ""), this.type_manager.Boolean());
+            } else {
+                Logger::Log("Invalid binary operation '" + operator.ToString() + "' for type '" + left.Type().ToString() + "'.", node, LogSeverity::Error);
+                ret QualifiedValue(null, null);
+            }
+        } else if left.Type().IsPointer() && right.Type().IsPointer() {
+            if left.Type() != right.Type() && !(left.Type().IsNullPointer() || right.Type().IsNullPointer()) {
+                Logger::Log("Incompatible binary operation types. ('" + left.Type().ToString() + "' != '" + right.Type().ToString() + "').", node, LogSeverity::Error);
+                ret QualifiedValue(null, null);
+            }
+
+            if left.Type().IsNullPointer() {
+                left = QualifiedValue(LLVMBuildPointerCast(this.builder, left.Value(), right.Type().Value(), ""), right.Type());
+            } else if right.Type().IsNullPointer() {
+                right = QualifiedValue(LLVMBuildPointerCast(this.builder, right.Value(), left.Type().Value(), ""), left.Type());
+            }
+
+            if operator == TokenType::MINUS {
+                ret QualifiedValue(LLVMBuildPtrDiff2(this.builder, left.Type().Pointee().Value(), left.Value(), right.Value(), ""), this.type_manager.IntegerPointer(false));
+            } else if operator == TokenType::EQUAL {
+                ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntEQ, left.Value(), right.Value(), ""), this.type_manager.Boolean());
+            } else if operator == TokenType::NOT_EQUAL {
+                ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntNE, left.Value(), right.Value(), ""), this.type_manager.Boolean());
+            } else if operator == TokenType::GREATER {
+                ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntUGT, left.Value(), right.Value(), ""), this.type_manager.Boolean());
+            } else if operator == TokenType::GREATER_EQUAL {
+                ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntUGE, left.Value(), right.Value(), ""), this.type_manager.Boolean());
+            } else if operator == TokenType::LESS {
+                ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntULT, left.Value(), right.Value(), ""), this.type_manager.Boolean());
+            } else if operator == TokenType::LESS_EQUAL {
+                ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntULE, left.Value(), right.Value(), ""), this.type_manager.Boolean());
+            } else {
+                Logger::Log("Invalid pointer binary operation '" + operator.ToString() + "' for type '" + left.Type().ToString() + "'.", node, LogSeverity::Error);
+                ret QualifiedValue(null, null);
+            }
+        } else if (left.Type().IsPointer() && right.Type().IsInteger()) || (left.Type().IsInteger() && right.Type().IsPointer()) {
+            let pointer = left.Type().IsPointer() ? left : right;
+            let index = left.Type().IsPointer() ? right : left;
+
+            if !index.Type().IsIntegerPointer() {
+                Logger::Log("Pointer arithmetic requires an operand of pointer-sized type.", node, LogSeverity::Error);
+                ret QualifiedValue(null, null);
+            }
+
+            if operator == TokenType::PLUS {
+                let indices[]: LLVMValueRef = { index.Value() };
+                ret QualifiedValue(LLVMBuildGEP2(this.builder, pointer.Type().Pointee().Value(), pointer.Value(), indices, 1, ""), pointer.Type());
+            } else if operator == TokenType::MINUS {
+                if left.Type().IsInteger() {
+                    Logger::Log("Cannot subtract a pointer from an integer.", node, LogSeverity::Error);
+                    ret QualifiedValue(null, null);
+                }
+
+                let indices[]: LLVMValueRef = { LLVMBuildNeg(this.builder, index.Value(), "") };
+                ret QualifiedValue(LLVMBuildGEP2(this.builder, pointer.Type().Pointee().Value(), pointer.Value(), indices, 1, ""), pointer.Type());
+            } else {
+                Logger::Log("Invalid pointer binary operation '" + operator.ToString() + "' for type '" + left.Type().ToString() + "'.", node, LogSeverity::Error);
+                ret QualifiedValue(null, null);
+            }
+        } else if left.Type().IsEnumeration() && right.Type().IsEnumeration() {
+            if left.Type() != right.Type() {
+                Logger::Log("Incompatible binary operation types. ('" + left.Type().ToString() + "' != '" + right.Type().ToString() + "').", node, LogSeverity::Error);
+                ret QualifiedValue(null, null);
+            }
+
+            if operator == TokenType::EQUAL {
+                ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntEQ, left.Value(), right.Value(), ""), this.type_manager.Boolean());
+            } else if operator == TokenType::NOT_EQUAL {
+                ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntNE, left.Value(), right.Value(), ""), this.type_manager.Boolean());
+            } else if operator == TokenType::GREATER {
+                ret QualifiedValue(LLVMBuildICmp(this.builder, left.Type().IsSigned() ? LLVMIntPredicate::LLVMIntSGT : LLVMIntPredicate::LLVMIntUGT, left.Value(), right.Value(), ""), this.type_manager.Boolean());
+            } else if operator == TokenType::GREATER_EQUAL {
+                ret QualifiedValue(LLVMBuildICmp(this.builder, left.Type().IsSigned() ? LLVMIntPredicate::LLVMIntSGE : LLVMIntPredicate::LLVMIntUGE, left.Value(), right.Value(), ""), this.type_manager.Boolean());
+            } else if operator == TokenType::LESS {
+                ret QualifiedValue(LLVMBuildICmp(this.builder, left.Type().IsSigned() ? LLVMIntPredicate::LLVMIntSLT : LLVMIntPredicate::LLVMIntULT, left.Value(), right.Value(), ""), this.type_manager.Boolean());
+            } else if operator == TokenType::LESS_EQUAL {
+                ret QualifiedValue(LLVMBuildICmp(this.builder, left.Type().IsSigned() ? LLVMIntPredicate::LLVMIntSLE : LLVMIntPredicate::LLVMIntULE, left.Value(), right.Value(), ""), this.type_manager.Boolean());
+            } else if operator == TokenType::BITWISE_AND {
+                ret QualifiedValue(LLVMBuildAnd(this.builder, left.Value(), right.Value(), ""), left.Type());
+            } else if operator == TokenType::BITWISE_OR {
+                ret QualifiedValue(LLVMBuildOr(this.builder, left.Value(), right.Value(), ""), left.Type());
+            } else if operator == TokenType::BITWISE_XOR {
+                ret QualifiedValue(LLVMBuildXor(this.builder, left.Value(), right.Value(), ""), left.Type());
             } else {
                 Logger::Log("Invalid binary operation '" + operator.ToString() + "' for type '" + left.Type().ToString() + "'.", node, LogSeverity::Error);
                 ret QualifiedValue(null, null);
@@ -4755,12 +4846,8 @@ class Compiler {
             for parameter in function_type->parameters {
                 let real_type = this.CompileType(parameter->_type);
                 if real_type == null { ret null; }
-                let mut param_type = ParameterType(real_type->IsEnum() ? real_type : this.ProcessType(real_type));
-
-                if real_type != *param_type._type {
-                    param_type.byval = real_type;
-                }
-
+                let mut param_type = ParameterType(this.ProcessType(real_type));
+                if real_type != *param_type._type { param_type.byval = real_type; }
                 param_types.PushBack(param_type._type->Value());
                 params.PushBack(param_type);
             }

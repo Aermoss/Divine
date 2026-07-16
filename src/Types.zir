@@ -105,10 +105,11 @@ class QualifiedType {
     pub IsCharacter(&this) -> bool { ret this.kind == TypeKind::Character; }
     pub IsInteger(&this) -> bool { ret this.kind == TypeKind::Integer || this.kind == TypeKind::IntegerLiteral; }
     pub IsIntegerPointer(&this) -> bool { ret this.kind == TypeKind::Integer && this.width == 0; }
+    pub IsIntegerLiteral(&this) -> bool { ret this.kind == TypeKind::IntegerLiteral; }
     pub IsFloat(&this) -> bool { ret this.kind == TypeKind::Float || this.kind == TypeKind::FloatLiteral; }
+    pub IsFloatLiteral(&this) -> bool { ret this.kind == TypeKind::FloatLiteral; }
     pub IsPointer(&this) -> bool { ret this.kind == TypeKind::Pointer || this.kind == TypeKind::Reference; }
-    pub IsNullPointer(&this) -> bool { if this.kind == TypeKind::Pointer { ret this.pointee->kind == TypeKind::Void; } else { ret false; } }
-    // pub IsNullPointer(&this) -> bool { ret this.kind == TypeKind::Pointer || this.pointee->kind == TypeKind::Void; }
+    pub IsNullPointer(&this) -> bool { ret this.kind == TypeKind::Pointer && this.pointee->kind == TypeKind::Void; }
     pub IsReference(&this) -> bool { ret this.kind == TypeKind::Reference; }
     pub IsArray(&this) -> bool { ret this.kind == TypeKind::Array; }
     pub IsFunction(&this) -> bool { ret this.kind == TypeKind::Function || this.kind == TypeKind::PackSpecializedFunction; }
@@ -166,7 +167,7 @@ class QualifiedType {
 
     pub IsCompatible(&this, other: &QualifiedType) -> bool {
         if this.IsPointer() && other.IsPointer() {
-            if LLVMGetTypeKind(this.Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || other.IsNullPointer() {
+            if this.Pointee().IsVoid() || other.IsNullPointer() {
                 ret true;
             } else if this.Pointee().IsClass() && other.Pointee().IsClass() {
                 if this.Pointee().IsDerivedFrom(other.Pointee()) {
@@ -252,7 +253,7 @@ class QualifiedType {
         }
 
         if this.IsPointer() && other.IsPointer() {
-            if LLVMGetTypeKind(this.Pointee().Value()) == LLVMTypeKind::LLVMVoidTypeKind || other.IsNullPointer() {
+            if this.Pointee().IsVoid() || other.IsNullPointer() {
                 ret this.ScorePointer(other, 30);
             } else if this.Pointee().IsClass() && other.Pointee().IsClass() {
                 if this.Pointee().IsDerivedFrom(other.Pointee()) {
@@ -269,21 +270,27 @@ class QualifiedType {
     }
 
     pub Pointee(&this) -> &QualifiedType {
-        if this.kind != TypeKind::Pointer && this.kind != TypeKind::Reference {
+        if !this.IsPointer() {
             Logger::Log("QualifiedType", "Not a pointer!", LogSeverity::Fatal);
         } else if this.pointee == null {
             Logger::Log("QualifiedType", "Null pointee!", LogSeverity::Fatal);
         } ret this.pointee;
     }
 
-    pub Size(&this) -> usize {
-        if this.kind != TypeKind::Array {
+    pub Width(&this) -> u32 {
+        if !this.IsBoolean() && !this.IsCharacter() && !this.IsInteger() && !this.IsFloat() {
+            Logger::Log("QualifiedType", "Not a boolean, character, integer, or float!", LogSeverity::Fatal);
+        } ret this.width == 0 ? LLVMPointerSize(compiler->target->layout) * 8 : this.width;
+    }
+
+    pub Length(&this) -> usize {
+        if !this.IsArray() {
             Logger::Log("QualifiedType", "Not an array!", LogSeverity::Fatal);
         } ret this.length;
     }
 
     pub Element(&this) -> &QualifiedType {
-        if this.kind != TypeKind::Array {
+        if !this.IsArray() {
             Logger::Log("QualifiedType", "Not an array!", LogSeverity::Fatal);
         } else if this.pointee == null {
             Logger::Log("QualifiedType", "Null pointee!", LogSeverity::Fatal);
@@ -291,19 +298,19 @@ class QualifiedType {
     }
 
     pub Parameters(&this) -> &Vector<ParameterType> {
-        if this.kind != TypeKind::Function && this.kind != TypeKind::PackSpecializedFunction {
+        if !this.IsFunction() {
             Logger::Log("QualifiedType", "Not a function!", LogSeverity::Fatal);
         } ret this.params;
     }
 
     pub Return(&this) -> &ReturnType {
-        if this.kind != TypeKind::Function && this.kind != TypeKind::PackSpecializedFunction {
+        if !this.IsFunction() {
             Logger::Log("QualifiedType", "Not a function!", LogSeverity::Fatal);
         } ret this.return;
     }
 
     pub Fields(&this) -> &mut Map<String, Pair<Field, *const QualifiedType>> {
-        if this.kind != TypeKind::Class {
+        if !this.IsClass() {
             Logger::Log("QualifiedType", "Not a class!", LogSeverity::Fatal);
         }
 
@@ -313,8 +320,8 @@ class QualifiedType {
     }
 
     pub Methods(&this) -> &Vector<Pair<Method, *const QualifiedType>> {
-        if this.kind != TypeKind::Class && this.kind != TypeKind::Enum {
-            Logger::Log("QualifiedType", "Not a class!", LogSeverity::Fatal);
+        if !this.IsClass() && !this.IsEnum() {
+            Logger::Log("QualifiedType", "Not a class or enum!", LogSeverity::Fatal);
         } ret this.methods;
     }
 
@@ -473,17 +480,17 @@ class QualifiedType {
     }
 
     pub op==(&this, other: &QualifiedType) -> bool {
-        if (this.kind == TypeKind::Integer || this.kind == TypeKind::IntegerLiteral) && this.kind == other.kind {
+        if this.IsInteger() && other.IsInteger() {
             ret this.signed == other.signed && this.width == other.width;
-        } else if (this.kind == TypeKind::Float || this.kind == TypeKind::FloatLiteral) && this.kind == other.kind {
+        } else if this.IsFloat() && other.IsFloat() {
             ret this.width == other.width;
-        } else if (this.kind == TypeKind::Pointer || this.kind == TypeKind::Reference || this.kind == TypeKind::Array) && (other.kind == TypeKind::Pointer || other.kind == TypeKind::Reference || other.kind == TypeKind::Array) {
+        } else if (this.IsPointer() || this.IsArray()) && (other.IsPointer() || other.IsArray()) {
             if this.pointee == other.pointee { ret true; }
             if this.pointee == null || other.pointee == null { ret false; }
             ret *this.pointee == *other.pointee;
-        } else if (this.kind == TypeKind::Class || this.kind == TypeKind::Enum) && (other.kind == TypeKind::Class || other.kind == TypeKind::Enum) {
+        } else if (this.IsClass() || this.IsEnum()) && (other.IsClass() || other.IsEnum()) {
             ret this.name == other.name;
-        } else if (this.kind == TypeKind::Function || this.kind == TypeKind::PackSpecializedFunction) && (other.kind == TypeKind::Function || other.kind == TypeKind::PackSpecializedFunction) {
+        } else if this.IsFunction() && other.IsFunction() {
             if this.params.Size() != other.params.Size() {
                 ret false;
             }
@@ -513,31 +520,35 @@ class QualifiedType {
     }
 
     pub ToString(&this) -> String {
-        if this.kind == TypeKind::Void {
+        if this.IsVoid() {
             ret "void".ToString();
-        } else if this.kind == TypeKind::Boolean {
+        } else if this.IsBoolean() {
             ret "bool".ToString();
-        } else if this.kind == TypeKind::Character {
+        } else if this.IsCharacter() {
             ret "char".ToString();
-        } else if this.kind == TypeKind::Integer {
-            if this.width != 0 {
+        } else if this.IsInteger() {
+            if this.IsLiteral() {
+                ret "(integer literal)".ToString();
+            } else if this.width != 0 {
                 ret (this.signed ? 'i' : 'u') + String::FromInteger(this.width as u64);
             } else {
                 ret (this.signed ? "isize" : "usize").ToString();
             }
-        } else if this.kind == TypeKind::IntegerLiteral {
-            ret "(integer literal)".ToString();
-        } else if this.kind == TypeKind::Float {
-            ret 'f' + String::FromInteger(this.width as u64);
-        } else if this.kind == TypeKind::FloatLiteral {
-            ret "(float literal)".ToString();
-        } else if this.kind == TypeKind::Pointer {
-            ret (this.mutable ? "*mut " : "*const ") + this.pointee->ToString();
-        } else if this.kind == TypeKind::Reference {
-            ret (this.mutable ? "&mut " : "&") + this.pointee->ToString();
-        } else if this.kind == TypeKind::Array {
+        } else if this.IsFloat() {
+            if this.IsLiteral() {
+                ret "(float literal)".ToString();
+            } else {
+                ret 'f' + String::FromInteger(this.width as u64);
+            }
+        } else if this.IsPointer() {
+            if this.IsReference() {
+                ret (this.mutable ? "&mut " : "&") + this.pointee->ToString();
+            } else {
+                ret (this.mutable ? "*mut " : "*const ") + this.pointee->ToString();
+            }
+        } else if this.IsArray() {
             ret '(' + this.pointee->ToString() + ")[" + String::FromInteger(this.length as u64) + ']';
-        } else if this.kind == TypeKind::Function || this.kind == TypeKind::PackSpecializedFunction {
+        } else if this.IsFunction() {
             let mut result = "func(".ToString();
 
             for param in this.params {

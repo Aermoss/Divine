@@ -22,23 +22,33 @@ class Mangler {
     }
 
     priv MangleType(_type: *const QualifiedType) -> String {
-        let mut result: String;
-        if _type->IsMutable() { result += "M"; }
-        let kind = LLVMGetTypeKind(_type->Value());
+        let mut result = String();
 
-        if kind == LLVMTypeKind::LLVMVoidTypeKind {
-            result += "v";
-        } else if kind == LLVMTypeKind::LLVMPointerTypeKind {
-            result += (_type->IsReference() ? "R" : "P") + Mangler::MangleType(_type->Pointee());
-        } else if kind == LLVMTypeKind::LLVMFunctionTypeKind {
-            result += "F";
+        if _type->IsMutable() {
+            result += 'M';
+        }
+
+        if _type->IsVoid() {
+            result += 'v';
+        } else if _type->IsBoolean() {
+            result += 'b';
+        } else if _type->IsCharacter() {
+            result += 'c';
+        } else if _type->IsInteger() {
+            result += (_type->IsSigned() ? 's' : 'u') + String::FromInteger(_type->Width() as u64);
+        } else if _type->IsFloat() {
+            result += 'f' + String::FromInteger(_type->Width() as u64);
+        } else if _type->IsPointer() {
+            result += (_type->IsReference() ? 'R' : 'P') + Mangler::MangleType(_type->Pointee());
+        } else if _type->IsFunction() {
+            result += 'F';
             let return = _type->Return();
             result += Mangler::MangleType(return.sret != null ? return.sret : return._type);
 
             for param in _type->Parameters() {
                 result += Mangler::MangleType(param.sret != null ? param.sret : param.byval != null ? param.byval : param._type);
             }
-        } else if kind == LLVMTypeKind::LLVMStructTypeKind {
+        } else if _type->IsClass() || _type->IsEnum() {
             let mut name = LLVMGetStructName(_type->Value()).ToString();
 
             if !Mangler::IsMangled(name) {
@@ -52,13 +62,6 @@ class Mangler {
             }
 
             result += name.SubString(start, end - start + 1);
-        } else if kind == LLVMTypeKind::LLVMIntegerTypeKind {
-            let width = LLVMGetIntTypeWidth(_type->Value());
-            result += width == 1 ? "b" : (width == 8 ? "c" : (width == 16 ? "s" : (width == 32 ? "i" : "l")));
-        } else if kind == LLVMTypeKind::LLVMDoubleTypeKind {
-            result += "d";
-        } else if kind == LLVMTypeKind::LLVMFloatTypeKind {
-            result += "f";
         } else {
             Logger::Log("Mangler", "Unknown type '" + _type->ToString() + "'.", LogSeverity::Error);
         } ret result;

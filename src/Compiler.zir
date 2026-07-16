@@ -201,7 +201,7 @@ class Compiler {
                 let index = params[0].sret != null ? j + 1 : j;
                 let mut _type = params[index]._type;
 
-                if params[index].byval != null && LLVMGetTypeKind(_type->Value()) == LLVMTypeKind::LLVMPointerTypeKind {
+                if params[index].byval != null && _type->IsPointer() {
                     _type = this.type_manager.Pointer(params[index].byval, mutable);
                     let instance = QualifiedValue(LLVMGetParam(this.function_ref, index as u32), _type, true);
                     this.scope_manager.Set(name, SymbolKind::Parameter, instance, false, forward.declaration);
@@ -231,7 +231,7 @@ class Compiler {
                     let index = j + offset;
                     let mut _type = params[index]._type;
 
-                    if params[index].byval != null && LLVMGetTypeKind(_type->Value()) == LLVMTypeKind::LLVMPointerTypeKind {
+                    if params[index].byval != null && _type->IsPointer() {
                         _type = this.type_manager.Pointer(params[index].byval, false);
                         let instance = QualifiedValue(LLVMGetParam(this.function_ref, index as u32), _type, true);
                         if _type->Pointee().IsClass() { this.scope_manager.RegisterInstance(instance); }
@@ -280,7 +280,7 @@ class Compiler {
             if LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(this.builder)) == null {
                 let mut state = true;
 
-                if LLVMGetTypeKind(this.function->Return()._type->Value()) == LLVMTypeKind::LLVMVoidTypeKind {
+                if this.function->Return()._type->IsVoid() {
                     if !params.Empty() {
                         state = params[0].sret != null;
                     } else {
@@ -444,8 +444,8 @@ class Compiler {
                     initializer = QualifiedValue(LLVMConstNamedStruct(_type->Value(), values.Data(), values.Size() as u32), _type);
                 }
             } else if _type->IsArray() {
-                if initializer_list->expressions.Size() != _type->Size() {
-                    Logger::Log("Incompatible initializer list size. ('" + String::FromInteger(_type->Size() as u64) + "' != '" + String::FromInteger(initializer_list->expressions.Size() as u64) + "').", constant, LogSeverity::Error);
+                if initializer_list->expressions.Size() != _type->Length() {
+                    Logger::Log("Incompatible initializer list size. ('" + String::FromInteger(_type->Length() as u64) + "' != '" + String::FromInteger(initializer_list->expressions.Size() as u64) + "').", constant, LogSeverity::Error);
                     has_error = true;
                 }
 
@@ -557,8 +557,8 @@ class Compiler {
                         initializer = QualifiedValue(LLVMConstNamedStruct(_type->Value(), values.Data(), values.Size() as u32), _type);
                     }
                 } else if _type->IsArray() {
-                    if initializer_list->expressions.Size() != _type->Size() {
-                        Logger::Log("Incompatible initializer list size. ('" + String::FromInteger(_type->Size() as u64) + "' != '" + String::FromInteger(initializer_list->expressions.Size() as u64) + "').", _static, LogSeverity::Error);
+                    if initializer_list->expressions.Size() != _type->Length() {
+                        Logger::Log("Incompatible initializer list size. ('" + String::FromInteger(_type->Length() as u64) + "' != '" + String::FromInteger(initializer_list->expressions.Size() as u64) + "').", _static, LogSeverity::Error);
                         has_error = true;
                     }
 
@@ -644,7 +644,7 @@ class Compiler {
     }
 
     priv ProcessType(&mut this, _type: *const QualifiedType) -> *const QualifiedType {
-        if LLVMGetTypeKind(_type->Value()) != LLVMTypeKind::LLVMStructTypeKind {
+        if !_type->IsClass() {
             ret _type;
         } else {
             let size = LLVMABISizeOfType(this.target->layout, _type->Value());
@@ -694,13 +694,14 @@ class Compiler {
 
         let (mut params: Vector<ParameterType>, mut param_types: Vector<LLVMTypeRef>);
         let mut return_type = ReturnType(this.CompileType(function->_type->return_type));
+        if return_type._type == null { ret QualifiedValue(null, null); }
         let mut attributes: Vector<LLVMTypeRef>;
         let mut sret = false;
 
-        if LLVMGetTypeKind(return_type._type->Value()) == LLVMTypeKind::LLVMStructTypeKind && !return_type._type->IsEnum() {
+        if return_type._type->IsClass() {
             let processed_type = this.ProcessType(return_type._type);
 
-            if LLVMGetTypeKind(processed_type->Value()) != LLVMTypeKind::LLVMPointerTypeKind {
+            if !processed_type->IsPointer() {
                 (return_type.sret, return_type._type) = (return_type._type, processed_type);
             } else {
                 let mut param_type = ParameterType(processed_type);
@@ -742,7 +743,7 @@ class Compiler {
             let mut param_type = ParameterType(real_type->IsEnum() ? real_type : this.ProcessType(real_type));
 
             if *real_type != *param_type._type {
-                attributes.PushBack(LLVMGetTypeKind(param_type._type->Value()) == LLVMTypeKind::LLVMPointerTypeKind && !real_type->IsClass() ? real_type->Value() : null);
+                attributes.PushBack(param_type._type->IsPointer() && !this.mangling ? real_type->Value() : null);
                 param_type.byval = real_type;
             } else {
                 attributes.PushBack(null);
@@ -757,7 +758,7 @@ class Compiler {
                 let mut param_type = ParameterType(real_type->IsEnum() ? real_type : this.ProcessType(real_type));
 
                 if *real_type != *param_type._type {
-                    attributes.PushBack(LLVMGetTypeKind(param_type._type->Value()) == LLVMTypeKind::LLVMPointerTypeKind && !real_type->IsClass() ? real_type->Value() : null);
+                    attributes.PushBack(param_type._type->IsPointer() && !this.mangling ? real_type->Value() : null);
                     param_type.byval = real_type;
                 } else {
                     attributes.PushBack(null);
@@ -797,6 +798,8 @@ class Compiler {
 
         if this.mangling {
             LLVMSetFunctionCallConv(value_ref, LLVMCallConv::LLVMFastCallConv as u32);
+        } else {
+            LLVMSetFunctionCallConv(value_ref, LLVMCallConv::LLVMCCallConv as u32);
         }
 
         this.AddAttributes(value_ref);
@@ -1060,7 +1063,7 @@ class Compiler {
             ret null;
         }
 
-        if LLVMGetTypeKind(underlying_type->Value()) != LLVMTypeKind::LLVMIntegerTypeKind {
+        if !underlying_type->IsInteger() {
             Logger::Log("Expected an integer type.", _enum, LogSeverity::Error);
             ret null;
         }
@@ -1647,7 +1650,7 @@ class Compiler {
                     value = value.Load(value.IsLValue());
                 }
 
-                if LLVMGetTypeKind(return_type._type->Value()) == LLVMTypeKind::LLVMIntegerTypeKind {
+                if return_type._type->IsInteger() {
                     if *return_type.sret != value.Type().Pointee() {
                         Logger::Log("Incompatible return types. ('" + return_type.sret->ToString() + "' != '" + value.Type().Pointee().ToString() + "').", return, LogSeverity::Error);
                         ret;
@@ -1723,7 +1726,7 @@ class Compiler {
             value = QualifiedValue(LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), value.Value(), ""), value.Type().Pointee());
         }
 
-        if LLVMGetTypeKind(value.Type().Value()) != LLVMTypeKind::LLVMIntegerTypeKind || LLVMGetIntTypeWidth(value.Type().Value()) != 1 {
+        if !value.Type().IsBoolean() {
             Logger::Log("Invalid condition type '" + value.Type().ToString() + "'.", condition, LogSeverity::Error);
         }
 
@@ -2044,15 +2047,13 @@ class Compiler {
         let mut condition = null;
 
         if is_range {
-            let type_kind = LLVMGetTypeKind(_type->Value());
-
-            if type_kind == LLVMTypeKind::LLVMFloatTypeKind || type_kind == LLVMTypeKind::LLVMDoubleTypeKind {
+            if _type->IsFloat() {
                 if is_inclusive {
                     condition = LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOLE, value, end.Value(), "");
                 } else {
                     condition = LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOLT, value, end.Value(), "");
                 }
-            } else if type_kind == LLVMTypeKind::LLVMIntegerTypeKind {
+            } else if _type->IsInteger() {
                 if is_inclusive {
                     condition = LLVMBuildICmp(this.builder, _type->IsSigned() ? LLVMIntPredicate::LLVMIntSLE : LLVMIntPredicate::LLVMIntULE, value, end.Value(), "");
                 } else {
@@ -2116,11 +2117,9 @@ class Compiler {
         let mut new_value = null;
 
         if is_range {
-            let type_kind = LLVMGetTypeKind(_type->Value());
-
-            if type_kind == LLVMTypeKind::LLVMFloatTypeKind || type_kind == LLVMTypeKind::LLVMDoubleTypeKind {
+            if _type->IsFloat() {
                 new_value = LLVMBuildFAdd(this.builder, current_value, LLVMConstReal(_type->Value(), 1.0), "");
-            } else if type_kind == LLVMTypeKind::LLVMIntegerTypeKind {
+            } else if _type->IsInteger() {
                 new_value = LLVMBuildAdd(this.builder, current_value, LLVMConstInt(_type->Value(), 1, 0), "");
             } else {
                 Logger::Log("For loop only supports range expressions of integer or floating point types.", _for, LogSeverity::Error);
@@ -2466,7 +2465,6 @@ class Compiler {
 
             if operator != TokenType::ASSIGN {
                 let other = QualifiedValue(LLVMBuildLoad2(this.builder, pointer.Type().Pointee().Value(), pointer.Value(), ""), pointer.Type().Pointee());
-                let (value_kind, other_kind) = (LLVMGetTypeKind(value.Type().Value()), LLVMGetTypeKind(pointer.Type().Pointee().Value()));
 
                 if value.Type().IsPointer() && other.Type().IsPointer() {
                     if operator == TokenType::MINUS_ASSIGN {
@@ -2476,7 +2474,7 @@ class Compiler {
                         Logger::Log("Invalid pointer assignment operation '" + operator.ToString() + "' for type '" + value.Type().ToString() + "'.", node, LogSeverity::Error);
                         ret QualifiedValue(null, null);
                     }
-                } else if (value.Type().IsPointer() && other_kind == LLVMTypeKind::LLVMIntegerTypeKind) || (value_kind == LLVMTypeKind::LLVMIntegerTypeKind && other.Type().IsPointer()) {
+                } else if (value.Type().IsPointer() && other.Type().IsInteger()) || (value.Type().IsInteger() && other.Type().IsPointer()) {
                     let ptr = value.Type().IsPointer() ? value : other;
                     let index = value.Type().IsPointer() ? other : value;
 
@@ -2495,7 +2493,7 @@ class Compiler {
                         Logger::Log("Invalid pointer assignment operation '" + operator.ToString() + "' for type '" + ptr.Type().ToString() + "'.", node, LogSeverity::Error);
                         ret QualifiedValue(null, null);
                     }
-                } else if value_kind == LLVMTypeKind::LLVMIntegerTypeKind && other_kind == LLVMTypeKind::LLVMIntegerTypeKind {
+                } else if value.Type().IsInteger() && other.Type().IsInteger() {
                     if value.Type() != other.Type() {
                         Logger::Log("Incompatible assignment operation types. ('" + value.Type().ToString() + "' != '" + other.Type().ToString() + "').", node, LogSeverity::Error);
                         ret QualifiedValue(null, null);
@@ -2537,7 +2535,18 @@ class Compiler {
                         Logger::Log("Invalid assignment operation '" + operator.ToString() + "' for type '" + value.Type().ToString() + "'.", node, LogSeverity::Error);
                         ret QualifiedValue(null, null);
                     }
-                } else if (value_kind == LLVMTypeKind::LLVMFloatTypeKind || value_kind == LLVMTypeKind::LLVMDoubleTypeKind) && (other_kind == LLVMTypeKind::LLVMFloatTypeKind || other_kind == LLVMTypeKind::LLVMDoubleTypeKind) {
+                } else if value.Type().IsBoolean() && other.Type().IsBoolean() {
+                    if operator == TokenType::AND_ASSIGN {
+                        value = QualifiedValue(LLVMBuildAnd(this.builder, other.Value(), value.Value(), ""), value.Type());
+                    } else if operator == TokenType::OR_ASSIGN {
+                        value = QualifiedValue(LLVMBuildOr(this.builder, other.Value(), value.Value(), ""), value.Type());
+                    } else if operator == TokenType::XOR_ASSIGN {
+                        value = QualifiedValue(LLVMBuildXor(this.builder, other.Value(), value.Value(), ""), value.Type());
+                    } else {
+                        Logger::Log("Invalid assignment operation '" + operator.ToString() + "' for type '" + value.Type().ToString() + "'.", node, LogSeverity::Error);
+                        ret QualifiedValue(null, null);
+                    }
+                } else if value.Type().IsFloat() && other.Type().IsFloat() {
                     if value.Type() != other.Type() {
                         Logger::Log("Incompatible assignment operation types. ('" + value.Type().ToString() + "' != '" + other.Type().ToString() + "').", node, LogSeverity::Error);
                         ret QualifiedValue(null, null);
@@ -2945,7 +2954,7 @@ class Compiler {
                 ret QualifiedValue(null, null);
             }
         } else if literal->_type == TokenType::NULL {
-            let _type = this.type_manager.NullPointer(LLVMVoidTypeInContext(this.context));
+            let _type = this.type_manager.NullPointer();
             ret QualifiedValue(LLVMConstNull(_type.Value()), _type);
         } else {
             Logger::Log("Unknown literal type '" + literal->_type.ToString() + "'.", literal, LogSeverity::Error);
@@ -3506,7 +3515,7 @@ class Compiler {
                         LLVMBuildStore(this.builder, LLVMBuildLoad2(this.builder, value.Type().Pointee().Value(), _params[0].Value(), ""), value.Value());
                     }
 
-                    if LLVMGetTypeKind(param._type->Value()) != LLVMTypeKind::LLVMPointerTypeKind {
+                    if !param._type->IsPointer() {
                         args.PushBack(LLVMBuildLoad2(this.builder, param._type->Value(), value.Value(), ""));
                     } else {
                         args.PushBack(value.Value());
@@ -3553,7 +3562,6 @@ class Compiler {
         }
 
         let value = LLVMBuildCall2(this.builder, _func.Type().Pointee().Value(), _func.Value(), args.Data(), args.Size() as u32, "");
-
         LLVMSetInstructionCallConv(value, LLVMGetFunctionCallConv(_func.Value()));
 
         if ret_type.sret != null {
@@ -3815,7 +3823,7 @@ class Compiler {
 
         let mut _pointer = pointer.Value();
 
-        if LLVMGetTypeKind(pointer.Type().Pointee().Value()) != LLVMTypeKind::LLVMIntegerTypeKind || LLVMGetIntTypeWidth(pointer.Type().Pointee().Value()) != 8 {
+        if !pointer.Type().Pointee().IsInteger() || pointer.Type().Pointee().Width() != 8 {
             _pointer = LLVMBuildBitCast(this.builder, _pointer, LLVMPointerType(LLVMInt8TypeInContext(this.context), 0), "");
         }
 
@@ -3909,41 +3917,14 @@ class Compiler {
             }
         }
 
-        let target_kind = LLVMGetTypeKind(target.Value());
-        let value_kind = LLVMGetTypeKind(value.Type().Value());
-
-        if value.Type().IsPointer() && target_kind == LLVMTypeKind::LLVMIntegerTypeKind {
+        if value.Type().IsPointer() && target.IsInteger() {
             ret QualifiedValue(LLVMBuildPtrToInt(this.builder, value.Value(), target.Value(), ""), target);
-        } else if value_kind == LLVMTypeKind::LLVMFloatTypeKind {
-            if target_kind == LLVMTypeKind::LLVMIntegerTypeKind {
-                if target.IsSigned() {
-                    ret QualifiedValue(LLVMBuildFPToSI(this.builder, value.Value(), target.Value(), ""), target);
-                } else {
-                    ret QualifiedValue(LLVMBuildFPToUI(this.builder, value.Value(), target.Value(), ""), target);
-                }
-            }
-
-            if target_kind == LLVMTypeKind::LLVMDoubleTypeKind {
-                ret QualifiedValue(LLVMBuildFPExt(this.builder, value.Value(), target.Value(), ""), target);
-            }
-        } else if value_kind == LLVMTypeKind::LLVMDoubleTypeKind {
-            if target_kind == LLVMTypeKind::LLVMIntegerTypeKind {
-                if target.IsSigned() {
-                    ret QualifiedValue(LLVMBuildFPToSI(this.builder, value.Value(), target.Value(), ""), target);
-                } else {
-                    ret QualifiedValue(LLVMBuildFPToUI(this.builder, value.Value(), target.Value(), ""), target);
-                }
-            }
-            
-            if target_kind == LLVMTypeKind::LLVMFloatTypeKind {
-                ret QualifiedValue(LLVMBuildFPTrunc(this.builder, value.Value(), target.Value(), ""), target);
-            }
-        } else if value_kind == LLVMTypeKind::LLVMIntegerTypeKind {
+        } else if value.Type().IsInteger() {
             if target.IsPointer() {
                 ret QualifiedValue(LLVMBuildIntToPtr(this.builder, value.Value(), target.Value(), ""), target);
             }
 
-            if target_kind == LLVMTypeKind::LLVMFloatTypeKind || target_kind == LLVMTypeKind::LLVMDoubleTypeKind {
+            if target.IsFloat() {
                 if value.Type().IsSigned() {
                     ret QualifiedValue(LLVMBuildSIToFP(this.builder, value.Value(), target.Value(), ""), target);
                 } else {
@@ -3951,18 +3932,41 @@ class Compiler {
                 }
             }
 
-            if target_kind == LLVMTypeKind::LLVMIntegerTypeKind {
-                let value_width = LLVMGetIntTypeWidth(value.Type().Value());
-                let target_width = LLVMGetIntTypeWidth(target.Value());
-
-                if target_width > value_width {
+            if target.IsInteger() {
+                if value.Type().Width() < target.Width() {
                     if value.Type().IsSigned() {
                         ret QualifiedValue(LLVMBuildSExt(this.builder, value.Value(), target.Value(), ""), target);
                     } else {
                         ret QualifiedValue(LLVMBuildZExt(this.builder, value.Value(), target.Value(), ""), target);
                     }
-                } else if target_width < value_width {
+                } else if value.Type().Width() > target.Width() {
                     ret QualifiedValue(LLVMBuildTrunc(this.builder, value.Value(), target.Value(), ""), target);
+                } else {
+                    ret QualifiedValue(value.Value(), target);
+                }
+            }
+        } else if value.Type().IsBoolean() {
+            if target.IsFloat() {
+                ret QualifiedValue(LLVMBuildUIToFP(this.builder, value.Value(), target.Value(), ""), target);
+            }
+
+            if target.IsInteger() {
+                ret QualifiedValue(LLVMBuildZExt(this.builder, value.Value(), target.Value(), ""), target);
+            }
+        } else if value.Type().IsFloat() {
+            if target.IsInteger() {
+                if target.IsSigned() {
+                    ret QualifiedValue(LLVMBuildFPToSI(this.builder, value.Value(), target.Value(), ""), target);
+                } else {
+                    ret QualifiedValue(LLVMBuildFPToUI(this.builder, value.Value(), target.Value(), ""), target);
+                }
+            }
+
+            if target.IsFloat() {
+                if value.Type().Width() < target.Width() {
+                    ret QualifiedValue(LLVMBuildFPExt(this.builder, value.Value(), target.Value(), ""), target);
+                } else if value.Type().Width() > target.Width() {
+                    ret QualifiedValue(LLVMBuildFPTrunc(this.builder, value.Value(), target.Value(), ""), target);
                 } else {
                     ret QualifiedValue(value.Value(), target);
                 }
@@ -4120,24 +4124,22 @@ class Compiler {
                 value = value.Load();
             }
 
-            let type_kind = LLVMGetTypeKind(value.Type().Value());
-            
             if unary->operator == TokenType::MINUS {
-                if type_kind == LLVMTypeKind::LLVMIntegerTypeKind {
+                if value.Type().IsInteger() {
                     if value.Type().IsSigned() {
                         ret QualifiedValue(LLVMBuildNeg(this.builder, value.Value(), ""), value.Type());
                     } else {
                         Logger::Log("Cannot negate unsigned type '" + value.Type().ToString() + "'.", unary, LogSeverity::Error);
                         ret QualifiedValue(null, null);
                     }
-                } else if type_kind == LLVMTypeKind::LLVMFloatTypeKind || type_kind == LLVMTypeKind::LLVMDoubleTypeKind {
+                } else if value.Type().IsFloat() {
                     ret QualifiedValue(LLVMBuildFNeg(this.builder, value.Value(), ""), value.Type());
                 } else {
                     Logger::Log("Cannot negate type '" + value.Type().ToString() + "'.", unary, LogSeverity::Error);
                     ret QualifiedValue(null, null);
                 }
             } else if unary->operator == TokenType::NOT {
-                if type_kind == LLVMTypeKind::LLVMIntegerTypeKind {
+                if value.Type().IsInteger() || value.Type().IsBoolean() {
                     ret QualifiedValue(LLVMBuildNot(this.builder, value.Value(), ""), value.Type());
                 } else {
                     Logger::Log("Cannot invert type '" + value.Type().ToString() + "'.", unary, LogSeverity::Error);
@@ -4172,7 +4174,7 @@ class Compiler {
         if binary->operator == TokenType::AND || binary->operator == TokenType::OR {
             left = left.Materialize().ToRValue();
 
-            if LLVMGetTypeKind(left.Type().Value()) != LLVMTypeKind::LLVMIntegerTypeKind || LLVMGetIntTypeWidth(left.Type().Value()) != 1 {
+            if !left.Type().IsBoolean() {
                 Logger::Log("Invalid type '" + left.Type().ToString() + "' for binary operation '" + binary->operator.ToString() + "'.", binary, LogSeverity::Error);
                 ret QualifiedValue(null, null);
             }
@@ -4196,7 +4198,7 @@ class Compiler {
             right_block = LLVMGetInsertBlock(this.builder);
             LLVMBuildBr(this.builder, merge_block);
 
-            if LLVMGetTypeKind(right.Type().Value()) != LLVMTypeKind::LLVMIntegerTypeKind || LLVMGetIntTypeWidth(right.Type().Value()) != 1 {
+            if !right.Type().IsBoolean() {
                 Logger::Log("Invalid type '" + right.Type().ToString() + "' for binary operation '" + binary->operator.ToString() + "'.", binary, LogSeverity::Error);
                 ret QualifiedValue(null, null);
             }
@@ -4375,7 +4377,7 @@ class Compiler {
                 Logger::Log("Invalid pointer binary operation '" + operator.ToString() + "' for type '" + left.Type().ToString() + "'.", node, LogSeverity::Error);
                 ret QualifiedValue(null, null);
             }
-        } else if (left.Type().IsPointer() && right_kind == LLVMTypeKind::LLVMIntegerTypeKind) || (left_kind == LLVMTypeKind::LLVMIntegerTypeKind && right.Type().IsPointer()) {
+        } else if (left.Type().IsPointer() && right.Type().IsInteger()) || (left.Type().IsInteger() && right.Type().IsPointer()) {
             let ptr = left.Type().IsPointer() ? left : right;
             let index = left.Type().IsPointer() ? right : left;
 
@@ -4394,7 +4396,7 @@ class Compiler {
                 Logger::Log("Invalid pointer binary operation '" + operator.ToString() + "' for type '" + left.Type().ToString() + "'.", node, LogSeverity::Error);
                 ret QualifiedValue(null, null);
             }
-        } else if left_kind == LLVMTypeKind::LLVMIntegerTypeKind && right_kind == LLVMTypeKind::LLVMIntegerTypeKind {
+        } else if left.Type().IsInteger() && right.Type().IsInteger() {
             if left.Type() != right.Type() {
                 Logger::Log("Incompatible binary operation types. ('" + left.Type().ToString() + "' != '" + right.Type().ToString() + "').", node, LogSeverity::Error);
                 ret QualifiedValue(null, null);
@@ -4430,20 +4432,10 @@ class Compiler {
                 ret QualifiedValue(LLVMBuildICmp(this.builder, left.Type().IsSigned() ? LLVMIntPredicate::LLVMIntSLT : LLVMIntPredicate::LLVMIntULT, left.Value(), right.Value(), ""), this.type_manager.Boolean());
             } else if operator == TokenType::LESS_EQUAL {
                 ret QualifiedValue(LLVMBuildICmp(this.builder, left.Type().IsSigned() ? LLVMIntPredicate::LLVMIntSLE : LLVMIntPredicate::LLVMIntULE, left.Value(), right.Value(), ""), this.type_manager.Boolean());
-            } else if operator == TokenType::AND || operator == TokenType::BITWISE_AND {
-                if LLVMGetIntTypeWidth(left.Type().Value()) != 1 && operator == TokenType::AND {
-                    Logger::Log("Invalid type '" + left.Type().ToString() + "' for binary operation '" + operator.ToString() + "'.", node, LogSeverity::Error);
-                    ret QualifiedValue(null, null);
-                } else {
-                    ret QualifiedValue(LLVMBuildAnd(this.builder, left.Value(), right.Value(), ""), left.Type());
-                }
-            } else if operator == TokenType::OR || operator == TokenType::BITWISE_OR {
-                if LLVMGetIntTypeWidth(left.Type().Value()) != 1 && operator == TokenType::OR {
-                    Logger::Log("Invalid type '" + left.Type().ToString() + "' for binary operation '" + operator.ToString() + "'.", node, LogSeverity::Error);
-                    ret QualifiedValue(null, null);
-                } else {
-                    ret QualifiedValue(LLVMBuildOr(this.builder, left.Value(), right.Value(), ""), left.Type());
-                }
+            } else if operator == TokenType::BITWISE_AND {
+                ret QualifiedValue(LLVMBuildAnd(this.builder, left.Value(), right.Value(), ""), left.Type());
+            } else if operator == TokenType::BITWISE_OR {
+                ret QualifiedValue(LLVMBuildOr(this.builder, left.Value(), right.Value(), ""), left.Type());
             } else if operator == TokenType::BITWISE_XOR {
                 ret QualifiedValue(LLVMBuildXor(this.builder, left.Value(), right.Value(), ""), left.Type());
             } else if operator == TokenType::LSHIFT {
@@ -4458,7 +4450,22 @@ class Compiler {
                 Logger::Log("Invalid binary operation '" + operator.ToString() + "' for type '" + left.Type().ToString() + "'.", node, LogSeverity::Error);
                 ret QualifiedValue(null, null);
             }
-        } else if (left_kind == LLVMTypeKind::LLVMFloatTypeKind || left_kind == LLVMTypeKind::LLVMDoubleTypeKind) && (right_kind == LLVMTypeKind::LLVMFloatTypeKind || right_kind == LLVMTypeKind::LLVMDoubleTypeKind) {
+        } else if left.Type().IsBoolean() && right.Type().IsBoolean() {
+            if operator == TokenType::AND || operator == TokenType::BITWISE_AND {
+                ret QualifiedValue(LLVMBuildAnd(this.builder, left.Value(), right.Value(), ""), left.Type());
+            } else if operator == TokenType::OR || operator == TokenType::BITWISE_OR {
+                ret QualifiedValue(LLVMBuildOr(this.builder, left.Value(), right.Value(), ""), left.Type());
+            } else if operator == TokenType::BITWISE_XOR {
+                ret QualifiedValue(LLVMBuildXor(this.builder, left.Value(), right.Value(), ""), left.Type());
+            } else if operator == TokenType::EQUAL {
+                ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntEQ, left.Value(), right.Value(), ""), this.type_manager.Boolean());
+            } else if operator == TokenType::NOT_EQUAL {
+                ret QualifiedValue(LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntNE, left.Value(), right.Value(), ""), this.type_manager.Boolean());
+            } else {
+                Logger::Log("Invalid binary operation '" + operator.ToString() + "' for type '" + left.Type().ToString() + "'.", node, LogSeverity::Error);
+                ret QualifiedValue(null, null);
+            }
+        } else if left.Type().IsFloat() && right.Type().IsFloat() {
             if left.Type() != right.Type() {
                 Logger::Log("Incompatible binary operation types. ('" + left.Type().ToString() + "' != '" + right.Type().ToString() + "').", node, LogSeverity::Error);
                 ret QualifiedValue(null, null);
@@ -4731,10 +4738,10 @@ class Compiler {
             let mut return_type = ReturnType(this.CompileType(function_type->return_type));
             if return_type._type == null { ret null; }
 
-            if LLVMGetTypeKind(return_type._type->Value()) == LLVMTypeKind::LLVMStructTypeKind && !return_type._type->IsEnum() {
+            if return_type._type->IsClass() {
                 let processed_type = this.ProcessType(return_type._type);
 
-                if LLVMGetTypeKind(processed_type->Value()) != LLVMTypeKind::LLVMPointerTypeKind {
+                if !processed_type->IsPointer() {
                     (return_type.sret, return_type._type) = (return_type._type, processed_type);
                 } else {
                     let mut param_type = ParameterType(processed_type);

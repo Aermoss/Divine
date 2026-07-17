@@ -1,0 +1,992 @@
+/*
+ * Copyright 2026 Yusuf Rençber
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#[include "std/str", "std/vec", "std/map", "std/pair", "src/Logger.zir", "src/Tokens.zir", "src/Nodes.zir" : *]
+
+class VariableInfo {
+    pub has_fields: bool = false,
+    pub is_class: bool = false;
+
+    VariableInfo(&mut this) {}
+
+    VariableInfo(&mut this, has_fields: bool, is_class: bool) {
+        (this.has_fields, this.is_class) = (has_fields, is_class);
+    }
+}
+
+class DefiniteAssignmentState {
+    initialized: Map<String, bool>,
+    scoped: Map<u64, Vector<String>>;
+
+    DefiniteAssignmentState(&mut this) {}
+
+    DefiniteAssignmentState(&mut this, other: &DefiniteAssignmentState) {
+        for pair in other.initialized {
+            this.initialized[pair.left] = pair.right;
+        }
+
+        for pair in other.scoped {
+            this.scoped[pair.left] = pair.right;
+        }
+    }
+
+    pub fn Clone(&this) -> DefiniteAssignmentState {
+        return DefiniteAssignmentState(this);
+    }
+
+    pub fn Equals(&this, other: &DefiniteAssignmentState) -> bool {
+        if this.initialized.Size() != other.initialized.Size() {
+            return false;
+        }
+
+        for pair in this.initialized {
+            if this.initialized.Get(pair.left, false) != other.initialized.Get(pair.left, false) {
+                return false;
+            }
+        } return true;
+    }
+
+    pub fn MarkInitialized(&mut this, name: &String) {
+        this.initialized[name] = true;
+    }
+
+    pub fn MarkUninitialized(&mut this, name: &String) {
+        this.initialized[name] = false;
+    }
+
+    pub fn IsInitialized(&this, name: &String) -> bool {
+        return this.initialized.Get(name, false);
+    }
+
+    pub fn Intersect(&this, other: &DefiniteAssignmentState) -> DefiniteAssignmentState {
+        let mut result = DefiniteAssignmentState();
+
+        for pair in this.initialized {
+            result.initialized[pair.left] = pair.right && other.initialized.Get(pair.left, false);
+        }
+
+        for pair in other.initialized {
+            if !result.initialized.Has(pair.left) {
+                result.initialized[pair.left] = false;
+            }
+        }
+
+        result.scoped = this.scoped;
+        return result;
+    }
+
+    pub fn EnterScope(&mut this, scope_id: u64) {
+        this.scoped[scope_id] = Vector<String>();
+    }
+
+    pub fn ExitScope(&mut this, scope_id: u64) {
+        if !this.scoped.Has(scope_id) {
+            return;
+        }
+
+        for name in this.scoped[scope_id] {
+            this.initialized.Remove(name);
+        }
+
+        this.scoped.Remove(scope_id);
+    }
+
+    pub fn TrackScoped(&mut this, scope_id: u64, name: &String) {
+        if this.scoped.Has(scope_id) {
+            this.scoped[scope_id].PushBack(name);
+        }
+    }
+}
+
+enum ControlFlowGraphBranchKind: i32 {
+    None, If, While, Loop
+}
+
+class ControlFlowGraphBlock {
+    pub id: u64,
+    pub statements: Vector<*Node>,
+    pub branch: *Node = null,
+    pub branch_kind: ControlFlowGraphBranchKind = ControlFlowGraphBranchKind::None,
+    pub successors: Vector<*ControlFlowGraphBlock>,
+    pub predecessors: Vector<*ControlFlowGraphBlock>,
+    pub scope_enter: u64 = 0,
+    pub scope_exit: u64 = 0,
+    pub loop_header: bool = false,
+    pub for_variable: String,
+    pub for_initialized: bool = false;
+
+    ControlFlowGraphBlock(&mut this, id: u64) {
+        this.id = id;
+    }
+
+    ~ControlFlowGraphBlock(&this) {}
+}
+
+class ControlFlowGraph {
+    pub entry: *mut ControlFlowGraphBlock = null,
+    pub exit: *mut ControlFlowGraphBlock = null,
+    pub blocks: Vector<*ControlFlowGraphBlock>,
+    next_id: u64 = 0,
+    next_scope_id: u64 = 1;
+
+    ControlFlowGraph(&mut this) {}
+
+    ~ControlFlowGraph(&mut this) {
+        for block in this.blocks {
+            delete block;
+        }
+    }
+
+    pub fn NewBlock(&mut this) -> *mut ControlFlowGraphBlock {
+        let block = new ControlFlowGraphBlock(this.next_id);
+        this.next_id += 1;
+        this.blocks.PushBack(block);
+        return block;
+    }
+
+    pub fn NewScopeId(&mut this) -> u64 {
+        let id = this.next_scope_id;
+        this.next_scope_id += 1;
+        return id;
+    }
+
+    pub fn Connect(&this, from: *mut ControlFlowGraphBlock, to: *mut ControlFlowGraphBlock) {
+        if from == null || to == null {
+            return;
+        }
+
+        from->successors.PushBack(to);
+        to->predecessors.PushBack(from);
+    }
+}
+
+class TypeRegistry {
+    types: Map<String, VariableInfo>;
+
+    TypeRegistry(&mut this) {}
+
+    pub fn Register(&mut this, declaration: *Node) {
+        if declaration->_type == NodeType::CLASS {
+            let _class = declaration as *ClassNode;
+            this.types[_class->name] = VariableInfo(true, true);
+        } else if declaration->_type == NodeType::STRUCTURE {
+            let _struct = declaration as *StructureNode;
+            this.types[_struct->name] = VariableInfo(true, false);
+        }
+    }
+
+    pub fn Lookup(&mut this, name: &String) -> VariableInfo {
+        if this.types.Has(name) {
+            return this.types[name];
+        } else {
+            return VariableInfo(false, false);
+        }
+    }
+}
+
+class SemanticAnalyzer {
+    type_registry: TypeRegistry,
+    scope_depth: u64 = 0;
+
+    SemanticAnalyzer(&mut this) {}
+
+    pub fn Analyze(&mut this, root: *RootNode) {
+        for declaration in root->declarations {
+            this.RegisterDeclaration(declaration);
+        }
+
+        for declaration in root->declarations {
+            this.AnalyzeDeclaration(declaration);
+        }
+    }
+
+    fn RegisterDeclaration(&mut this, declaration: *Node) {
+        if declaration->_type == NodeType::CLASS {
+            this.type_registry.Register(declaration);
+            let _class = declaration as *ClassNode;
+
+            for method in _class->methods {
+                if method.right->body != null {
+                    this.type_registry.Register(method.right);
+                }
+            }
+        } else if declaration->_type == NodeType::STRUCTURE {
+            this.type_registry.Register(declaration);
+            let structure = declaration as *StructureNode;
+
+            for method in structure->methods {
+                if method.right->body != null {
+                    this.type_registry.Register(method.right);
+                }
+            }
+        }
+    }
+
+    fn AnalyzeDeclaration(&mut this, declaration: *Node) {
+        if declaration->_type == NodeType::FUNCTION {
+            this.AnalyzeFunction(declaration as *FunctionNode);
+        } else if declaration->_type == NodeType::CLASS {
+            let _class = declaration as *ClassNode;
+
+            for method in _class->methods {
+                if method.right->body != null {
+                    this.AnalyzeFunction(method.right);
+                }
+            }
+
+            if _class->destructor != null && _class->destructor->body != null {
+                this.AnalyzeFunction(_class->destructor);
+            }
+        } else if declaration->_type == NodeType::STRUCTURE {
+            let _struct = declaration as *StructureNode;
+
+            for method in _struct->methods {
+                if method.right->body != null {
+                    this.AnalyzeFunction(method.right);
+                }
+            }
+        } else if declaration->_type == NodeType::ENUMERATION {
+            let _enum = declaration as *EnumNode;
+
+            for method in _enum->methods {
+                if method.right->body != null {
+                    this.AnalyzeFunction(method.right);
+                }
+            }
+        }
+    }
+
+    fn AnalyzeFunction(&mut this, function: *FunctionNode) {
+        if function->body == null {
+            return;
+        }
+
+        let mut entry_state: DefiniteAssignmentState;
+
+        for parameter in function->_type->parameters {
+            entry_state.MarkInitialized(parameter->name);
+        }
+
+        if function->_type->instance_kind != InstanceKind::None {
+            entry_state.MarkInitialized(String("this"));
+        }
+
+        let mut builder: ControlFlowGraphBuilder;
+        builder.analyzer = this;
+        builder.graph.entry = builder.graph.NewBlock();
+        builder.graph.exit = builder.graph.NewBlock();
+        builder.current = builder.graph.entry;
+        builder.exit_block = builder.graph.exit;
+        builder.BuildBlock(function->body);
+        builder.CloseCurrent(builder.exit_block);
+
+        this.AnalyzeDefiniteAssignment(builder.graph, entry_state);
+    }
+
+    fn ResolveVariableInfo(&mut this, _type: *Node) -> VariableInfo {
+        if _type == null {
+            return VariableInfo(false, false);
+        }
+
+        if _type->_type == NodeType::IDENTIFIER || _type->_type == NodeType::PRIMITIVE_TYPE {
+            let mut name: String;
+
+            if _type->_type == NodeType::IDENTIFIER {
+                name = (_type as *IdentifierNode)->name;
+            } else {
+                name = (_type as *PrimitiveTypeNode)->name;
+            }
+
+            return this.type_registry.Lookup(name);
+        } else if _type->_type == NodeType::POINTER_TYPE || _type->_type == NodeType::REFERENCE_TYPE {
+            return VariableInfo(false, false);
+        } else if _type->_type == NodeType::ARRAY_TYPE {
+            return this.ResolveVariableInfo((_type as *ArrayTypeNode)->element_type);
+        } else if _type->_type == NodeType::TYPE_APPLICATION {
+            return this.ResolveVariableInfo((_type as *TypeApplicationNode)->expression);
+        } else {
+            return VariableInfo(false, false);
+        }
+    }
+
+    fn ResolveVariableName(&this, expression: *Node) -> String {
+        if expression->_type == NodeType::IDENTIFIER {
+            return (expression as *IdentifierNode)->name;
+        } else if expression->_type == NodeType::SCOPE_RESOLUTION {
+            return (expression as *ScopeResolutionNode)->identifier->name;
+        } else {
+            return String("");
+        }
+    }
+
+    fn ResolveLValueRoot(&this, expression: *Node) -> String {
+        if expression->_type == NodeType::IDENTIFIER {
+            return (expression as *IdentifierNode)->name;
+        } else if expression->_type == NodeType::SCOPE_RESOLUTION {
+            return (expression as *ScopeResolutionNode)->identifier->name;
+        } else if expression->_type == NodeType::MEMBER_ACCESS {
+            return this.ResolveLValueRoot((expression as *MemberAccessNode)->expression);
+        } else if expression->_type == NodeType::UNARY && (expression as *UnaryNode)->_operator == TokenType::MUL {
+            return this.ResolveLValueRoot((expression as *UnaryNode)->operand);
+        } else if expression->_type == NodeType::INDEX_ACCESS {
+            return this.ResolveLValueRoot((expression as *IndexAccessNode)->expression);
+        } else {
+            return String("");
+        }
+    }
+
+    fn IsAssignmentOperator(&this, _operator: TokenType) -> bool {
+        return _operator == TokenType::ASSIGN || _operator == TokenType::PLUS_ASSIGN || _operator == TokenType::MINUS_ASSIGN
+            || _operator == TokenType::MUL_ASSIGN || _operator == TokenType::DIV_ASSIGN || _operator == TokenType::MOD_ASSIGN
+            || _operator == TokenType::AND_ASSIGN || _operator == TokenType::OR_ASSIGN || _operator == TokenType::XOR_ASSIGN
+            || _operator == TokenType::LSHIFT_ASSIGN || _operator == TokenType::RSHIFT_ASSIGN;
+    }
+
+    fn CheckExpressionUses(&mut this, expression: *Node, state: &mut DefiniteAssignmentState) {
+        if expression == null {
+            return;
+        }
+
+        if expression->_type == NodeType::IDENTIFIER || expression->_type == NodeType::SCOPE_RESOLUTION {
+            let name = this.ResolveVariableName(expression);
+
+            if name != "" && !state.IsInitialized(name) {
+                Logger::Log("Use of possibly uninitialized variable '" + name + "'.", expression, LogSeverity::Error);
+            }
+        } else if expression->_type == NodeType::MEMBER_ACCESS {
+            let access = expression as *MemberAccessNode;
+            this.CheckExpressionUses(access->expression, state);
+        } else if expression->_type == NodeType::INDEX_ACCESS {
+            let access = expression as *IndexAccessNode;
+            this.CheckExpressionUses(access->expression, state);
+            this.CheckExpressionUses(access->index, state);
+        } else if expression->_type == NodeType::UNARY {
+            let unary = expression as *UnaryNode;
+            this.CheckExpressionUses(unary->operand, state);
+        } else if expression->_type == NodeType::BINARY {
+            let binary = expression as *BinaryNode;
+            this.CheckExpressionUses(binary->left, state);
+            this.CheckExpressionUses(binary->right, state);
+        } else if expression->_type == NodeType::TERNARY {
+            let ternary = expression as *TernaryNode;
+            this.CheckExpressionUses(ternary->condition, state);
+            this.CheckExpressionUses(ternary->then, state);
+            this.CheckExpressionUses(ternary->_else, state);
+        } else if expression->_type == NodeType::CALL {
+            let call = expression as *CallNode;
+            this.CheckExpressionUses(call->expression, state);
+
+            for argument in call->arguments {
+                this.CheckExpressionUses(argument, state);
+            }
+        } else if expression->_type == NodeType::ASSIGNMENT {
+            this.AnalyzeAssignment(expression as *AssignmentNode, state);
+        } else if expression->_type == NodeType::CAST {
+            let cast = expression as *CastNode;
+            this.CheckExpressionUses(cast->expression, state);
+        } else if expression->_type == NodeType::NEW {
+            let _new = expression as *NewNode;
+
+            for argument in _new->arguments {
+                this.CheckExpressionUses(argument, state);
+            }
+
+            this.CheckExpressionUses(_new->size, state);
+        } else if expression->_type == NodeType::DELETE {
+            this.CheckExpressionUses((expression as *DeleteNode)->expression, state);
+        } else if expression->_type == NodeType::INITIALIZER_LIST {
+            for element in (expression as *InitializerListNode)->expressions {
+                this.CheckExpressionUses(element, state);
+            }
+        } else if expression->_type == NodeType::STRUCT_INIT {
+            let init = expression as *StructInitNode;
+            this.CheckExpressionUses(init->expression, state);
+
+            for value in init->field_values {
+                this.CheckExpressionUses(value, state);
+            }
+        } else if expression->_type == NodeType::TYPE_APPLICATION {
+            let application = expression as *TypeApplicationNode;
+            this.CheckExpressionUses(application->expression, state);
+
+            for _type in application->types {
+                this.CheckExpressionUses(_type, state);
+            }
+        } else if expression->_type == NodeType::TUPLE {
+            for value in (expression as *TupleNode)->values {
+                this.CheckExpressionUses(value, state);
+            }
+        } else if expression->_type == NodeType::AWAIT {
+            this.CheckExpressionUses((expression as *AwaitNode)->expression, state);
+        } else if expression->_type == NodeType::PACK_SPLAT {
+            this.CheckExpressionUses((expression as *PackSplatNode)->expression, state);
+        } else if expression->_type == NodeType::RANGE {
+            let range = expression as *RangeNode;
+            this.CheckExpressionUses(range->start, state);
+            this.CheckExpressionUses(range->end, state);
+        }
+    }
+
+    fn AnalyzeAssignment(&mut this, assignment: *AssignmentNode, state: &mut DefiniteAssignmentState) {
+        this.CheckExpressionUses(assignment->right, state);
+
+        let root = this.ResolveLValueRoot(assignment->left);
+        let mut is_member = false;
+
+        if assignment->left->_type == NodeType::MEMBER_ACCESS {
+            is_member = true;
+        } else if assignment->left->_type == NodeType::INDEX_ACCESS {
+            is_member = true;
+        }
+
+        if root != "" {
+            if is_member {
+                if !state.IsInitialized(root) {
+                    Logger::Log("Partial initialization of variable '" + root + "' is not allowed.", assignment, LogSeverity::Error);
+                }
+            } else if this.IsAssignmentOperator(assignment->_operator) {
+                if assignment->_operator == TokenType::ASSIGN {
+                    state.MarkInitialized(root);
+                } else if !state.IsInitialized(root) {
+                    Logger::Log("Use of possibly uninitialized variable '" + root + "'.", assignment->left, LogSeverity::Error);
+                }
+            }
+        } else {
+            this.CheckExpressionUses(assignment->left, state);
+        }
+
+        if assignment->next != null {
+            this.AnalyzeAssignment(assignment->next, state);
+        }
+    }
+
+    fn ProcessVariable(&mut this, variable: *VariableNode, state: &mut DefiniteAssignmentState, scope_id: u64) {
+        let info = this.ResolveVariableInfo(variable->_type);
+
+        if variable->initializer != null {
+            this.CheckExpressionUses(variable->initializer, state);
+            state.MarkInitialized(variable->name);
+        } else if variable->_type != null {
+            state.MarkUninitialized(variable->name);
+
+            if info.has_fields {
+                if info.is_class && variable->initializer == null {
+
+                }
+            }
+        } else {
+            Logger::Log("Type annotation required for variable '" + variable->name + "' without initializer.", variable, LogSeverity::Error);
+        }
+
+        if scope_id != 0 {
+            state.TrackScoped(scope_id, variable->name);
+        }
+
+        if variable->next != null {
+            this.ProcessVariable(variable->next, state, scope_id);
+        }
+    }
+
+    fn ProcessStatement(&mut this, statement: *Node, state: &mut DefiniteAssignmentState, scope_id: u64) -> bool {
+        if statement->_type == NodeType::VARIABLE {
+            this.ProcessVariable(statement as *VariableNode, state, scope_id);
+        } else if statement->_type == NodeType::ASSIGNMENT {
+            this.AnalyzeAssignment(statement as *AssignmentNode, state);
+        } else if statement->_type == NodeType::EXPRESSION {
+            this.CheckExpressionUses((statement as *ExpressionNode)->expression, state);
+        } else if statement->_type == NodeType::RETURN {
+            this.CheckExpressionUses((statement as *ReturnNode)->expression, state);
+            return true;
+        } else if statement->_type == NodeType::BLOCK {
+            for nested in (statement as *BlockNode)->statements {
+                if this.ProcessStatement(nested, state, scope_id) {
+                    return true;
+                }
+            }
+        } else if statement->_type == NodeType::UNSAFE {
+            for nested in (statement as *UnsafeNode)->body->statements {
+                if this.ProcessStatement(nested, state, scope_id) {
+                    return true;
+                }
+            }
+        } else if statement->_type == NodeType::BREAK || statement->_type == NodeType::CONTINUE {
+            return true;
+        } else if statement->_type == NodeType::IF || statement->_type == NodeType::WHILE
+            || statement->_type == NodeType::FOR || statement->_type == NodeType::LOOP
+            || statement->_type == NodeType::IF_LET || statement->_type == NodeType::WHILE_LET
+            || statement->_type == NodeType::MATCH {
+            return false;
+        } else if statement->_type == NodeType::ASSEMBLY {
+            let assembly = statement as *AssemblyNode;
+
+            for input in assembly->inputs {
+                this.CheckExpressionUses(input.right, state);
+            }
+
+            for output in assembly->outputs {
+                this.CheckExpressionUses(output.right, state);
+            }
+        }
+
+        return false;
+    }
+
+    fn ProcessBlock(&mut this, block: *ControlFlowGraphBlock, state: &mut DefiniteAssignmentState) {
+        if block->scope_enter != 0 {
+            state.EnterScope(block->scope_enter);
+        }
+
+        if block->branch != null {
+            this.CheckExpressionUses(block->branch, state);
+        }
+
+        if block->for_initialized && block->for_variable != "" {
+            state.MarkInitialized(block->for_variable);
+            state.TrackScoped(block->scope_enter, block->for_variable);
+        }
+
+        for statement in block->statements {
+            if this.ProcessStatement(statement, state, block->scope_enter) {
+                break;
+            }
+        }
+
+        if block->scope_exit != 0 {
+            state.ExitScope(block->scope_exit);
+        }
+    }
+
+    fn AnalyzeDefiniteAssignment(&mut this, cfg: &ControlFlowGraph, entry_state: &DefiniteAssignmentState) {
+        let mut in_states: Map<u64, DefiniteAssignmentState>;
+        let mut out_states: Map<u64, DefiniteAssignmentState>;
+
+        in_states[cfg.entry->id] = entry_state;
+        let mut changed = true;
+
+        while changed {
+            changed = false;
+
+            for block in cfg.blocks {
+                let mut in_state: DefiniteAssignmentState;
+
+                if block->predecessors.Empty() {
+                    if in_states.Has(block->id) {
+                        in_state = in_states[block->id];
+                    } else {
+                        continue;
+                    }
+                } else {
+                    let mut has_any_valid_predecessor = false;
+                    let mut is_first_predecessor = true;
+
+                    for predecessor in block->predecessors {
+                        if !out_states.Has(predecessor->id) {
+                            continue;
+                        }
+
+                        has_any_valid_predecessor = true;
+
+                        if is_first_predecessor {
+                            in_state = out_states[predecessor->id].Clone();
+                            is_first_predecessor = false;
+                        } else {
+                            in_state = in_state.Intersect(out_states[predecessor->id]);
+                        }
+                    }
+
+                    if !has_any_valid_predecessor {
+                        continue;
+                    }
+                }
+
+                let mut out_state = in_state.Clone();
+                this.ProcessBlock(block, out_state);
+
+                if !out_states.Has(block->id) || !out_states[block->id].Equals(out_state) {
+                    out_states[block->id] = out_state;
+                    changed = true;
+                }
+
+                in_states[block->id] = in_state;
+            }
+        }
+    }
+
+    fn BuildControlFlowGraph(&mut this, block: *BlockNode) -> ControlFlowGraph {
+        let mut builder: ControlFlowGraphBuilder;
+        builder.analyzer = this;
+        builder.graph.entry = builder.graph.NewBlock();
+        builder.graph.exit = builder.graph.NewBlock();
+        builder.current = builder.graph.entry;
+        builder.exit_block = builder.graph.exit;
+        builder.BuildBlock(block);
+        builder.CloseCurrent(builder.graph.exit);
+        return builder.graph;
+    }
+}
+
+class ControlFlowGraphBuilder {
+    pub analyzer: *mut SemanticAnalyzer = null,
+    pub graph: ControlFlowGraph,
+    pub current: *mut ControlFlowGraphBlock = null,
+    pub exit_block: *mut ControlFlowGraphBlock = null,
+    break_target: *ControlFlowGraphBlock = null,
+    continue_target: *ControlFlowGraphBlock = null;
+
+    ControlFlowGraphBuilder(&mut this) {}
+
+    pub fn CloseCurrent(&mut this, target: *mut ControlFlowGraphBlock) {
+        if this.current != null && this.current != target {
+            this.graph.Connect(this.current, target);
+            this.current = target;
+        }
+    }
+
+    fn AppendStatement(&mut this, statement: *Node) {
+        this.current->statements.PushBack(statement);
+    }
+
+    pub fn BuildBlock(&mut this, block: *BlockNode) {
+        for statement in block->statements {
+            if this.BuildStatement(statement) {
+                return;
+            }
+        }
+    }
+
+    fn BuildStatement(&mut this, statement: *Node) -> bool {
+        if statement->_type == NodeType::IF {
+            this.BuildIf(statement as *IfNode);
+        } else if statement->_type == NodeType::IF_LET {
+            this.BuildIfLet(statement as *IfLetNode);
+        } else if statement->_type == NodeType::WHILE {
+            this.BuildWhile(statement as *WhileNode);
+        } else if statement->_type == NodeType::WHILE_LET {
+            this.BuildWhileLet(statement as *WhileLetNode);
+        } else if statement->_type == NodeType::FOR {
+            this.BuildFor(statement as *ForNode);
+        } else if statement->_type == NodeType::LOOP {
+            this.BuildLoop(statement as *LoopNode);
+        } else if statement->_type == NodeType::MATCH {
+            this.BuildMatch(statement as *MatchNode);
+        } else if statement->_type == NodeType::BLOCK {
+            let scope_id = this.graph.NewScopeId();
+            let scoped = this.graph.NewBlock();
+            scoped->scope_enter = scope_id;
+            this.graph.Connect(this.current, scoped);
+            this.current = scoped;
+
+            this.BuildBlock(statement as *BlockNode);
+
+            let exit = this.graph.NewBlock();
+            exit->scope_exit = scope_id;
+            this.graph.Connect(this.current, exit);
+            this.current = exit;
+        } else if statement->_type == NodeType::UNSAFE {
+            this.BuildBlock((statement as *UnsafeNode)->body);
+        } else if statement->_type == NodeType::RETURN || statement->_type == NodeType::BREAK || statement->_type == NodeType::CONTINUE {
+            this.AppendStatement(statement);
+            return true;
+        } else {
+            this.AppendStatement(statement);
+        }
+
+        return false;
+    }
+
+    fn BuildIf(&mut this, _if: *IfNode) {
+        let merge = this.graph.NewBlock();
+        let branch_block = this.current;
+        branch_block->branch = _if->condition;
+        branch_block->branch_kind = ControlFlowGraphBranchKind::If;
+
+        let then_scope = this.graph.NewScopeId();
+        let then_entry = this.graph.NewBlock();
+        then_entry->scope_enter = then_scope;
+        this.graph.Connect(branch_block, then_entry);
+        this.current = then_entry;
+        this.BuildBlock(_if->body as *BlockNode);
+
+        let then_exit = this.graph.NewBlock();
+        then_exit->scope_exit = then_scope;
+        this.graph.Connect(this.current, then_exit);
+        this.graph.Connect(then_exit, merge);
+
+        if _if->_else != null {
+            let else_scope = this.graph.NewScopeId();
+            let else_entry = this.graph.NewBlock();
+            else_entry->scope_enter = else_scope;
+            this.graph.Connect(branch_block, else_entry);
+            this.current = else_entry;
+
+            if _if->_else->_type == NodeType::IF {
+                this.BuildIf(_if->_else as *IfNode);
+            } else if _if->_else->_type == NodeType::IF_LET {
+                this.BuildIfLet(_if->_else as *IfLetNode);
+            } else if _if->_else->_type == NodeType::BLOCK {
+                this.BuildBlock(_if->_else as *BlockNode);
+            } else {
+                this.BuildStatement(_if->_else);
+            }
+
+            let else_exit = this.graph.NewBlock();
+            else_exit->scope_exit = else_scope;
+            this.graph.Connect(this.current, else_exit);
+            this.graph.Connect(else_exit, merge);
+        } else {
+            this.graph.Connect(branch_block, merge);
+        }
+
+        this.current = merge;
+    }
+
+    fn BuildIfLet(&mut this, if_let: *IfLetNode) {
+        let merge = this.graph.NewBlock();
+        let branch_block = this.current;
+        branch_block->branch = if_let->expression;
+        branch_block->branch_kind = ControlFlowGraphBranchKind::If;
+
+        let then_scope = this.graph.NewScopeId();
+        let then_entry = this.graph.NewBlock();
+        then_entry->scope_enter = then_scope;
+        this.graph.Connect(branch_block, then_entry);
+        this.current = then_entry;
+        this.BuildBlock(if_let->body as *BlockNode);
+
+        let then_exit = this.graph.NewBlock();
+        then_exit->scope_exit = then_scope;
+        this.graph.Connect(this.current, then_exit);
+        this.graph.Connect(then_exit, merge);
+
+        if if_let->_else != null {
+            let else_scope = this.graph.NewScopeId();
+            let else_entry = this.graph.NewBlock();
+            else_entry->scope_enter = else_scope;
+            this.graph.Connect(branch_block, else_entry);
+            this.current = else_entry;
+
+            if if_let->_else->_type == NodeType::IF {
+                this.BuildIf(if_let->_else as *IfNode);
+            } else if if_let->_else->_type == NodeType::IF_LET {
+                this.BuildIfLet(if_let->_else as *IfLetNode);
+            } else if if_let->_else->_type == NodeType::BLOCK {
+                this.BuildBlock(if_let->_else as *BlockNode);
+            } else {
+                this.BuildStatement(if_let->_else);
+            }
+
+            let else_exit = this.graph.NewBlock();
+            else_exit->scope_exit = else_scope;
+            this.graph.Connect(this.current, else_exit);
+            this.graph.Connect(else_exit, merge);
+        } else {
+            this.graph.Connect(branch_block, merge);
+        }
+
+        this.current = merge;
+    }
+
+    fn BuildWhile(&mut this, _while: *WhileNode) {
+        let compare = this.graph.NewBlock();
+        compare->branch = _while->condition;
+        compare->branch_kind = ControlFlowGraphBranchKind::While;
+        compare->loop_header = true;
+        this.graph.Connect(this.current, compare);
+
+        let end = this.graph.NewBlock();
+        let saved_break = this.break_target;
+        let saved_continue = this.continue_target;
+        this.break_target = end;
+        this.continue_target = compare;
+
+        if _while->_else != null {
+            let else_scope = this.graph.NewScopeId();
+            let else_entry = this.graph.NewBlock();
+            else_entry->scope_enter = else_scope;
+            this.graph.Connect(this.current, else_entry);
+            this.current = else_entry;
+            this.BuildBlock(_while->_else as *BlockNode);
+
+            let else_exit = this.graph.NewBlock();
+            else_exit->scope_exit = else_scope;
+            this.graph.Connect(this.current, else_exit);
+            this.graph.Connect(else_exit, end);
+        }
+
+        let body_scope = this.graph.NewScopeId();
+        let body_entry = this.graph.NewBlock();
+        body_entry->scope_enter = body_scope;
+        this.graph.Connect(compare, body_entry);
+        this.current = body_entry;
+        this.BuildBlock(_while->body as *BlockNode);
+
+        let body_exit = this.graph.NewBlock();
+        body_exit->scope_exit = body_scope;
+        this.graph.Connect(this.current, body_exit);
+        this.graph.Connect(body_exit, compare);
+        this.graph.Connect(compare, end);
+
+        this.break_target = saved_break;
+        this.continue_target = saved_continue;
+        this.current = end;
+    }
+
+    fn BuildWhileLet(&mut this, while_let: *WhileLetNode) {
+        let compare = this.graph.NewBlock();
+        compare->branch = while_let->expression;
+        compare->branch_kind = ControlFlowGraphBranchKind::While;
+        compare->loop_header = true;
+        this.graph.Connect(this.current, compare);
+
+        let end = this.graph.NewBlock();
+        let saved_break = this.break_target;
+        let saved_continue = this.continue_target;
+        this.break_target = end;
+        this.continue_target = compare;
+
+        let body_scope = this.graph.NewScopeId();
+        let body_entry = this.graph.NewBlock();
+        body_entry->scope_enter = body_scope;
+        this.graph.Connect(compare, body_entry);
+        this.current = body_entry;
+        this.BuildBlock(while_let->body as *BlockNode);
+
+        let body_exit = this.graph.NewBlock();
+        body_exit->scope_exit = body_scope;
+        this.graph.Connect(this.current, body_exit);
+        this.graph.Connect(body_exit, compare);
+        this.graph.Connect(compare, end);
+
+        this.break_target = saved_break;
+        this.continue_target = saved_continue;
+        this.current = end;
+    }
+
+    fn BuildFor(&mut this, _for: *ForNode) {
+        let init = this.graph.NewBlock();
+        this.graph.Connect(this.current, init);
+        this.current = init;
+        this.AppendStatement(_for);
+
+        let compare = this.graph.NewBlock();
+        compare->branch = _for->iterable;
+        compare->branch_kind = ControlFlowGraphBranchKind::While;
+        compare->loop_header = true;
+        this.graph.Connect(this.current, compare);
+
+        let end = this.graph.NewBlock();
+        let saved_break = this.break_target;
+        let saved_continue = this.continue_target;
+        this.break_target = end;
+        this.continue_target = compare;
+
+        let body_scope = this.graph.NewScopeId();
+        let body_entry = this.graph.NewBlock();
+        body_entry->scope_enter = body_scope;
+        body_entry->for_variable = _for->variable;
+        body_entry->for_initialized = true;
+        this.graph.Connect(compare, body_entry);
+        this.current = body_entry;
+        this.BuildBlock(_for->body as *BlockNode);
+
+        let body_exit = this.graph.NewBlock();
+        body_exit->scope_exit = body_scope;
+        this.graph.Connect(this.current, body_exit);
+        this.graph.Connect(body_exit, compare);
+        this.graph.Connect(compare, end);
+
+        this.break_target = saved_break;
+        this.continue_target = saved_continue;
+        this.current = end;
+    }
+
+    fn BuildLoop(&mut this, _loop: *LoopNode) {
+        let header = this.graph.NewBlock();
+        header->branch_kind = ControlFlowGraphBranchKind::Loop;
+        header->loop_header = true;
+        this.graph.Connect(this.current, header);
+
+        let end = this.graph.NewBlock();
+        let saved_break = this.break_target;
+        let saved_continue = this.continue_target;
+        this.break_target = end;
+        this.continue_target = header;
+
+        let body_scope = this.graph.NewScopeId();
+        let body_entry = this.graph.NewBlock();
+        body_entry->scope_enter = body_scope;
+        this.graph.Connect(header, body_entry);
+        this.current = body_entry;
+        this.BuildBlock(_loop->body as *BlockNode);
+
+        let body_exit = this.graph.NewBlock();
+        body_exit->scope_exit = body_scope;
+        this.graph.Connect(this.current, body_exit);
+        this.graph.Connect(body_exit, header);
+
+        this.break_target = saved_break;
+        this.continue_target = saved_continue;
+        this.current = end;
+        this.graph.Connect(header, end);
+    }
+
+    fn BuildMatch(&mut this, _match: *MatchNode) {
+        let merge = this.graph.NewBlock();
+        let branch_block = this.current;
+        branch_block->branch = _match->expression;
+        branch_block->branch_kind = ControlFlowGraphBranchKind::If;
+
+        for case in _match->cases {
+            let case_scope = this.graph.NewScopeId();
+            let case_entry = this.graph.NewBlock();
+            case_entry->scope_enter = case_scope;
+            this.graph.Connect(branch_block, case_entry);
+            this.current = case_entry;
+
+            if case->guard != null {
+                let guard_block = this.graph.NewBlock();
+                guard_block->branch = case->guard;
+                this.graph.Connect(this.current, guard_block);
+                this.current = guard_block;
+            }
+
+            this.BuildStatement(case->body);
+
+            let case_exit = this.graph.NewBlock();
+            case_exit->scope_exit = case_scope;
+            this.graph.Connect(this.current, case_exit);
+            this.graph.Connect(case_exit, merge);
+        }
+
+        if _match->default != null {
+            let default_scope = this.graph.NewScopeId();
+            let default_entry = this.graph.NewBlock();
+            default_entry->scope_enter = default_scope;
+            this.graph.Connect(branch_block, default_entry);
+            this.current = default_entry;
+            this.BuildStatement(_match->default->body);
+
+            let default_exit = this.graph.NewBlock();
+            default_exit->scope_exit = default_scope;
+            this.graph.Connect(this.current, default_exit);
+            this.graph.Connect(default_exit, merge);
+        } else {
+            this.graph.Connect(branch_block, merge);
+        }
+
+        this.current = merge;
+    }
+}

@@ -56,7 +56,7 @@ class ReturnType {
     }
 }
 
-enum TypeKind: i32 {
+enum TypeKind: u8 {
     Void, Boolean, Character,
     Integer, IntegerLiteral, Float, FloatLiteral,
     Pointer, Reference, Array,
@@ -66,12 +66,11 @@ enum TypeKind: i32 {
 
 class QualifiedType {
     pub kind: TypeKind,
-    pub name: String,
-
-    pub width: u32 = 0,
     pub signed: bool = false,
     pub mutable: bool = false,
+    pub width: u32 = 0,
     pub length: usize = 0,
+    pub name: String,
 
     pub value: LLVMTypeRef,
     pub pointee: *QualifiedType = null,
@@ -120,7 +119,7 @@ class QualifiedType {
     pub fn IsVariant(&this) -> bool { return this.kind == TypeKind::Variant; }
 
     pub fn IsTrivial(&this) -> bool {
-        if this.IsBoolean() || this.IsCharacter() || this.IsInteger() || this.IsFloat() || this.IsPointer() || this.IsReference() {
+        if this.IsBoolean() || this.IsCharacter() || this.IsInteger() || this.IsFloat() || this.IsPointer() {
             return true;
         }
 
@@ -132,23 +131,29 @@ class QualifiedType {
             return false;
         }
 
-        if this.IsClass() {
-            if !this.constructed.Empty() || !this.methods.Empty() {
-                return false;
-            }
-
+        if this.HasFields() {
             for field in this.Fields() {
                 if !field.right.right->IsTrivial() {
                     return false;
                 }
-            } return true;
+            }
         }
 
-        if this.IsVariant() {
+        if this.HasMethods() {
             if !this.methods.Empty() {
                 return false;
             }
+        }
 
+        if this.IsClass() {
+            return this.constructed.Empty();
+        }
+
+        if this.IsStructure() || this.IsEnumeration() {
+            return true;
+        }
+
+        if this.IsVariant() {
             for variant in this.variants {
                 for variant_field in variant.right {
                     if !variant_field->IsTrivial() {
@@ -293,7 +298,7 @@ class QualifiedType {
 
     pub fn Width(&this) -> u32 {
         if !this.IsBoolean() && !this.IsCharacter() && !this.IsInteger() && !this.IsFloat() && !this.IsEnumeration() {
-            Logger::Log("QualifiedType", "Not a boolean, character, integer, float, or enumeration!", LogSeverity::Fatal);
+            Logger::Log("QualifiedType", "Not a boolean, character, integer, float or enumeration!", LogSeverity::Fatal);
         } return this.width == 0 ? LLVMPointerSize(compiler->target->layout) * 8 : this.width;
     }
 
@@ -324,8 +329,8 @@ class QualifiedType {
     }
 
     pub fn Fields(&this) -> &mut Map<String, Pair<Field, *QualifiedType>> {
-        if !this.IsClass() {
-            Logger::Log("QualifiedType", "Not a class!", LogSeverity::Fatal);
+        if !this.HasFields() {
+            Logger::Log("QualifiedType", "Not a class or structure!", LogSeverity::Fatal);
         }
 
         unsafe {
@@ -333,10 +338,8 @@ class QualifiedType {
         }
     }
 
-    pub fn Methods(&this) -> &Vector<Pair<Method, *QualifiedType>> {
-        if !this.IsClass() && !this.IsVariant() {
-            Logger::Log("QualifiedType", "Not a class or variant!", LogSeverity::Fatal);
-        } return this.methods;
+    pub fn HasFields(&this) -> bool {
+        return this.IsClass() || this.IsStructure();
     }
 
     pub fn Index(&this, name: &String) -> isize {
@@ -345,6 +348,16 @@ class QualifiedType {
                 return field.right.left.index as isize;
             }
         } return -1;
+    }
+
+    pub fn Methods(&this) -> &Vector<Pair<Method, *QualifiedType>> {
+        if !this.HasMethods() {
+            Logger::Log("QualifiedType", "Not a class, structure or variant!", LogSeverity::Fatal);
+        } return this.methods;
+    }
+
+    pub fn HasMethods(&this) -> bool {
+        return this.IsClass() || this.IsStructure() || this.IsVariant();
     }
 
     pub fn Has(&this, name: &String) -> bool {

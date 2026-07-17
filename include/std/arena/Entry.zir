@@ -38,10 +38,10 @@ class ArenaChunk {
 
 class ArenaDestructor {
     pub next: *mut ArenaDestructor = null,
-    pub destructor: func(*mut void),
+    pub destructor: fn(*mut void),
     pub instance: *mut void;
 
-    ArenaDestructor(&mut this, instance: *mut void, destructor: func(*mut void)) {
+    ArenaDestructor(&mut this, instance: *mut void, destructor: fn(*mut void)) {
         (this.instance, this.destructor) = (instance, destructor);
     }
 }
@@ -58,7 +58,7 @@ class Arena {
             if chunk->data != null {
                 (this.head, this.tail) = (chunk, chunk);
             } else {
-                del chunk;
+                delete chunk;
             }
         }
     }
@@ -67,19 +67,19 @@ class Arena {
         this.Reset();
     }
 
-    pub func Allocate(&mut this, size: usize) -> *mut void {
-        ret this.AllocateAligned(size, ARENA_DEFAULT_ALIGNMENT);
+    pub fn Allocate(&mut this, size: usize) -> *mut void {
+        return this.AllocateAligned(size, ARENA_DEFAULT_ALIGNMENT);
     }
 
-    pub func AllocateAligned(&mut this, size: usize, align: usize) -> *mut void {
+    pub fn AllocateAligned(&mut this, size: usize, align: usize) -> *mut void {
         if size == 0 {
-            ret null;
+            return null;
         }
 
         loop {
             if this.tail == null {
                 if !this.GrowChain(size + align) {
-                    ret null;
+                    return null;
                 }
             }
 
@@ -89,82 +89,82 @@ class Arena {
 
             if (offset + size) <= this.tail->capacity {
                 this.tail->used = offset + size;
-                ret aligned as *mut void;
+                return aligned as *mut void;
             }
 
             if this.tail->next != null {
                 this.tail = this.tail->next;
             } else {
                 if !this.GrowChain(size + align) {
-                    ret null;
+                    return null;
                 }
             }
-        } ret null;
+        } return null;
     }
 
-    pub func New<T>(&mut this, args...) -> *mut T {
+    pub fn New<T>(&mut this, args...) -> *mut T {
         let size = (sizeof(T) + ARENA_DEFAULT_ALIGNMENT - 1) & !(ARENA_DEFAULT_ALIGNMENT - 1);
         let destructor_size = (sizeof(ArenaDestructor) + ARENA_DEFAULT_ALIGNMENT - 1) & !(ARENA_DEFAULT_ALIGNMENT - 1);
         let pointer = this.Allocate(size + destructor_size) as *mut i8;
-        if pointer == null { ret null; }
+        if pointer == null { return null; }
         let destructor = (pointer + size) as *mut ArenaDestructor;
         construct(pointer as *mut T, args...);
         construct(destructor, pointer, InvokeDestructor<T>);
         destructor->next = this.destructor;
         this.destructor = destructor;
-        ret pointer as *mut T;
+        return pointer as *mut T;
     }
 
-    pub func Reset(&mut this) {
+    pub fn Reset(&mut this) {
         this.InvokeDestructors();
         this.FreeChunks();
     }
 
-    pub func Clear(&mut this) {
+    pub fn Clear(&mut this) {
         this.InvokeDestructors();
         this.RewindCursors();
     }
 
-    pub func TotalUsed(&this) -> usize {
+    pub fn TotalUsed(&this) -> usize {
         let mut total: usize = 0;
         let mut current = this.head;
 
         while current != null {
             total += current->used;
             current = current->next;
-        } ret total;
+        } return total;
     }
 
-    pub func TotalCapacity(&this) -> usize {
+    pub fn TotalCapacity(&this) -> usize {
         let mut total: usize = 0;
         let mut current = this.head;
 
         while current != null {
             total += current->capacity;
             current = current->next;
-        } ret total;
+        } return total;
     }
 
-    pub func ChunkCount(&this) -> usize {
+    pub fn ChunkCount(&this) -> usize {
         let mut count: usize = 0;
         let mut current = this.head;
 
         while current != null {
             current = current->next;
             count += 1;
-        } ret count;
+        } return count;
     }
 
-    func GrowChain(&mut this, min_bytes: usize) -> bool {
+    fn GrowChain(&mut this, min_bytes: usize) -> bool {
         let chunk = new ArenaChunk(min_bytes > ARENA_DEFAULT_CHUNK_SIZE ? min_bytes : ARENA_DEFAULT_CHUNK_SIZE);
 
         if chunk == null {
-            ret false;
+            return false;
         }
 
         if chunk->data == null {
-            del chunk;
-            ret false;
+            delete chunk;
+            return false;
         }
 
         if this.head == null {
@@ -172,10 +172,10 @@ class Arena {
         } else {
             this.tail->next = chunk;
             this.tail = chunk;
-        } ret true;
+        } return true;
     }
 
-    func InvokeDestructors(&mut this) {
+    fn InvokeDestructors(&mut this) {
         let mut current = this.destructor;
         this.destructor = null;
 
@@ -186,19 +186,19 @@ class Arena {
         }
     }
 
-    func FreeChunks(&mut this) {
+    fn FreeChunks(&mut this) {
         let mut current = this.head;
 
         while current != null {
             let next = current->next;
-            del current;
+            delete current;
             current = next;
         }
 
         (this.head, this.tail) = (null, null);
     }
 
-    func RewindCursors(&mut this) {
+    fn RewindCursors(&mut this) {
         let mut current = this.head;
 
         while current != null {
@@ -210,6 +210,6 @@ class Arena {
     }
 }
 
-func InvokeDestructor<T>(instance: *mut void) {
+fn InvokeDestructor<T>(instance: *mut void) {
     destruct(instance as *mut T);
 }

@@ -22,7 +22,7 @@ const F64_MAX: f64 = 1.7976931348623157e+308;
 class QualifiedValue {
     value: LLVMValueRef = null, _type: *QualifiedType = null,
     pub instance: LLVMValueRef = null, pub instance_type: *QualifiedType = null,
-    lvalue: bool = false, pub return: bool = false,
+    lvalue: bool = false, pub _return: bool = false,
 
     deferred_integer: u64 = 0, deferred_float: f64 = 0.0,
     deferred_negative: bool = false, deferred_bitpattern: bool = false,
@@ -36,8 +36,8 @@ class QualifiedValue {
         (this.value, this._type, this.instance, this.instance_type) = (value, _type, instance.value, instance._type);
     }
 
-    QualifiedValue(&mut this, value: LLVMValueRef, _type: *QualifiedType, lvalue: bool, return: bool) {
-        (this.value, this._type, this.lvalue, this.return) = (value, _type, lvalue, return);
+    QualifiedValue(&mut this, value: LLVMValueRef, _type: *QualifiedType, lvalue: bool, _return: bool) {
+        (this.value, this._type, this.lvalue, this._return) = (value, _type, lvalue, _return);
     }
 
     QualifiedValue(&mut this, value: LLVMValueRef, _type: *QualifiedType, lvalue: bool) {
@@ -64,30 +64,30 @@ class QualifiedValue {
         (this._type, this.deferred_node) = (_type, node);
     }
 
-    pub func Null(&this) -> bool {
-        ret this.value == null && this._type == null;
+    pub fn Null(&this) -> bool {
+        return this.value == null && this._type == null;
     }
 
-    pub func Value(&this) -> LLVMValueRef {
+    pub fn Value(&this) -> LLVMValueRef {
         if this.value == null {
             Logger::Log("QualifiedValue", "Null value!", LogSeverity::Fatal);
-        } ret this.value;
+        } return this.value;
     }
 
-    pub func Type(&this) -> &QualifiedType {
+    pub fn Type(&this) -> &QualifiedType {
         if this._type == null {
             Logger::Log("QualifiedValue", "Null type!", LogSeverity::Fatal);
-        } ret this._type;
+        } return this._type;
     }
 
-    pub func Materialize(&this, target: &QualifiedType) -> QualifiedValue {
+    pub fn Materialize(&this, target: &QualifiedType) -> QualifiedValue {
         if this.deferred_node != null {
-            ret compiler->CompileExpression(this.deferred_node, target, true).Materialize(target);
+            return compiler->CompileExpression(this.deferred_node, target, true).Materialize(target);
         }
 
         if this.Type().IsInteger() && this.Type().IsLiteral() && target.IsPointer() {
             if !(target.IsReference() && target.Pointee().IsInteger()) {
-                ret this.Materialize(compiler->type_manager.IntegerPointer(false));
+                return this.Materialize(compiler->type_manager.IntegerPointer(false));
             }
         }
 
@@ -126,7 +126,7 @@ class QualifiedValue {
                 value = 0;
             }
 
-            ret QualifiedValue(LLVMConstInt(target.Value(), value, target.IsSigned() ? 1 : 0), target);
+            return QualifiedValue(LLVMConstInt(target.Value(), value, target.IsSigned() ? 1 : 0), target);
         } else if this.Type().IsFloat() && this.Type().IsLiteral() && target.IsFloat() {
             let mut value = this.deferred_float;
 
@@ -135,79 +135,79 @@ class QualifiedValue {
                 value = 0.0;
             }
 
-            ret QualifiedValue(LLVMConstReal(target.Value(), value), target);
+            return QualifiedValue(LLVMConstReal(target.Value(), value), target);
         } else {
-            ret this;
+            return this;
         }
     }
 
-    pub func MaterializeWithFallback(&this, target: &QualifiedType) -> QualifiedValue {
+    pub fn MaterializeWithFallback(&this, target: &QualifiedType) -> QualifiedValue {
         if this.deferred_node != null {
-            ret compiler->CompileExpression(this.deferred_node, target, true).MaterializeWithFallback(target);
+            return compiler->CompileExpression(this.deferred_node, target, true).MaterializeWithFallback(target);
         }
 
         let value = this.Materialize(target);
 
         if value.Type().IsLiteral() {
-            ret value.Materialize();
+            return value.Materialize();
         } else {
-            ret value;
+            return value;
         }
     }
 
-    pub func Materialize(&this) -> QualifiedValue {
+    pub fn Materialize(&this) -> QualifiedValue {
         if this.deferred_node != null {
-            ret compiler->CompileExpression(this.deferred_node, null, true).Materialize();
+            return compiler->CompileExpression(this.deferred_node, null, true).Materialize();
         }
 
         if this.Type().kind == TypeKind::IntegerLiteral {
-            ret this.Materialize(compiler->type_manager.Integer(32, true));
+            return this.Materialize(compiler->type_manager.Integer(32, true));
         } else if this.Type().kind == TypeKind::FloatLiteral {
-            ret this.Materialize(compiler->type_manager.Float(64));
+            return this.Materialize(compiler->type_manager.Float(64));
         } else {
-            ret this;
+            return this;
         }
     }
 
-    pub func Load(&this, args...) -> QualifiedValue {
+    pub fn Load(&this, args...) -> QualifiedValue {
         if LLVMIsAGlobalVariable(this.Value()) != null {
             if LLVMIsGlobalConstant(this.Value()) != 0 && !this.Type().Pointee().IsClass() && !this.Type().Pointee().IsPointer() {
-                ret QualifiedValue(LLVMGetInitializer(this.Value()), this.Type().Pointee()); // args...
+                return QualifiedValue(LLVMGetInitializer(this.Value()), this.Type().Pointee()); // args...
             }
         }
 
-        ret QualifiedValue(LLVMBuildLoad2(compiler->builder, this.Type().Pointee().Value(), this.Value(), ""), this.Type().Pointee(), args...);
+        return QualifiedValue(LLVMBuildLoad2(compiler->builder, this.Type().Pointee().Value(), this.Value(), ""), this.Type().Pointee(), args...);
     }
 
-    pub func IsLValue(&this) -> bool { ret this.lvalue; }
-    pub func IsRValue(&this) -> bool { ret !this.lvalue; }
+    pub fn IsLValue(&this) -> bool { return this.lvalue; }
+    pub fn IsRValue(&this) -> bool { return !this.lvalue; }
 
-    pub func ToRValue(&this) -> QualifiedValue {
+    pub fn ToRValue(&this) -> QualifiedValue {
         if this.IsLValue() {
             if this.Type().Pointee().IsArray() {
                 let _type = compiler->type_manager.Pointer(this.Type().Pointee().Element(), this.Type().IsMutable());
-                ret QualifiedValue(LLVMBuildBitCast(compiler->builder, this.Value(), _type.Value(), ""), _type);
+                return QualifiedValue(LLVMBuildBitCast(compiler->builder, this.Value(), _type.Value(), ""), _type);
             } else {
-                ret this.Load();
+                return this.Load();
             }
-        } ret this;
+        } return this;
     }
 
-    pub func ToRValueType(&this) -> &QualifiedType {
+    pub fn ToRValueType(&this) -> &QualifiedType {
         if this.IsLValue() {
             if this.Type().Pointee().IsArray() {
-                ret compiler->type_manager.Pointer(this.Type().Pointee().Element(), this.Type().IsMutable());
+                return compiler->type_manager.Pointer(this.Type().Pointee().Element(), this.Type().IsMutable());
             } else {
-                ret this.Type().Pointee();
+                return this.Type().Pointee();
             }
-        } ret this.Type();
+        } return this.Type();
     }
 
-    pub func MakeLValue(&this) -> QualifiedValue {
-        ret QualifiedValue(this.value, this._type, true);
+    pub fn MakeLValue(&this) -> QualifiedValue {
+        return QualifiedValue(this.value, this._type, true);
     }
 
-    pub func MakeCompatible(&this, target: &QualifiedType) -> QualifiedValue {
+    pub fn MakeCompatible(&this, target: &QualifiedType) -> QualifiedValue {
         if target.IsPointer() && this.Type().IsPointer() {
             if target.Pointee().IsClass() && this.Type().Pointee().IsClass() {
                 let fields = this.Type().Pointee().Fields();
@@ -220,23 +220,23 @@ class QualifiedValue {
                             value_ref = LLVMBuildStructGEP2(compiler->builder, this.Type().Pointee().Value(), this.Value(), i as u32, "");
                         }
 
-                        ret QualifiedValue(LLVMBuildBitCast(compiler->builder, value_ref, target.Value(), ""), target);
+                        return QualifiedValue(LLVMBuildBitCast(compiler->builder, value_ref, target.Value(), ""), target);
                     }
                 }
             }
-        } ret this;
+        } return this;
     }
 
-    pub func ToString(&this) -> String {
+    pub fn ToString(&this) -> String {
         if this.value != null {
             let mut result: String;
             let string = LLVMPrintValueToString(this.value);
             result += string;
             LLVMDisposeMessage(string);
-            ret result;
+            return result;
         } else {
             Logger::Log("QualifiedValue", "Null value!", LogSeverity::Fatal);
-            ret String("");
+            return String("");
         }
     }
 }

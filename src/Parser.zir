@@ -1151,6 +1151,8 @@ class Parser {
             return this.ParseFunction(attributes, false);
         } else if token._type == TokenType::CLASS {
             return this.ParseClass(attributes);
+        } else if token._type == TokenType::STRUCT {
+            return this.ParseStruct(attributes);
         } else if token._type == TokenType::ENUM {
             return this.ParseEnum(attributes);
         } else if token._type == TokenType::EXTERN {
@@ -1479,6 +1481,85 @@ class Parser {
         this.types = types;
         if !this.ExpectSuccess(TokenType::RBRACE) { return null; }
         return class_node;
+    }
+
+    fn ParseStruct(&mut this, attributes: &Vector<Pair<String, Vector<*Node>>>) -> *Node {
+        let token = this.Expect(TokenType::STRUCT);
+        if token._type == TokenType::UNKNOWN { return null; }
+
+        for attribute in attributes {
+            Logger::Log("Invalid attribute '" + attribute.left + "'.", token, LogSeverity::Error);
+            return null;
+        }
+
+        let identifier = this.Expect(TokenType::IDENTIFIER);
+        if identifier._type == TokenType::UNKNOWN { return null; }
+        let struct_node = this.arena.New<StructNode>(identifier.value, token);
+        let types = this.types;
+
+        if this.Match(TokenType::LESS) {
+            struct_node->generic = true;
+
+            while this.Current()._type != TokenType::GREATER {
+                let type_name = this.Expect(TokenType::IDENTIFIER);
+
+                if type_name._type == TokenType::UNKNOWN {
+                    this.types = types;
+                    return null;
+                }
+
+                struct_node->types.PushBack(type_name.value);
+                this.types.PushBack(type_name.value);
+                if !this.Match(TokenType::COMMA) { break; }
+            }
+
+            if !this.ExpectSuccess(TokenType::GREATER) {
+                this.types = types;
+                return null;
+            }
+        }
+
+        if !this.ExpectSuccess(TokenType::LBRACE) {
+            this.types = types;
+            return null;
+        }
+
+        let mut state = false;
+
+        if this.Current()._type == TokenType::PUBLIC && this.Peek(1)._type == TokenType::IDENTIFIER && (this.Peek(2)._type == TokenType::COLON || this.Peek(2)._type == TokenType::LBRACKET) {
+            state = true;
+        }
+
+        if this.Current()._type == TokenType::IDENTIFIER && (this.Peek(1)._type == TokenType::COLON || this.Peek(1)._type == TokenType::LBRACKET) {
+            state = true;
+        }
+
+        if state {
+            while this.Current()._type != TokenType::SEMICOLON && this.Current()._type != TokenType::RBRACE && this.Current()._type != TokenType::EOF {
+                let public = this.Match(TokenType::PUBLIC);
+                let field = this.ParseField();
+                if field == null { this.types = types; return null; }
+                struct_node->fields.PushBack(Pair<bool, *FieldNode>(public, field));
+
+                if !this.Match(TokenType::COMMA) {
+                    break;
+                }
+            }
+        }
+
+        if !state || this.Match(TokenType::SEMICOLON) {
+            while this.Current()._type != TokenType::RBRACE && this.Current()._type != TokenType::EOF {
+                let attributes = this.ParseAttributes();
+                let public = this.Match(TokenType::PUBLIC);
+                let function = this.ParseFunction(attributes, false);
+                if function == null { this.types = types; return null; }
+                struct_node->methods.PushBack(Pair<bool, *FunctionNode>(public, function as *FunctionNode));
+            }
+        }
+
+        this.types = types;
+        if !this.ExpectSuccess(TokenType::RBRACE) { return null; }
+        return struct_node;
     }
 
     fn ParseField(&mut this) -> *FieldNode {

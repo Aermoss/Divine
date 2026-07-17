@@ -325,6 +325,10 @@ class Compiler {
             let _class = declaration as *ClassNode;
             let cache = this.CompileClassFirstPass(_class, null);
             if !_class->generic && cache.left != null && cache.right != null { this.pass_cache[declaration] = cache; }
+        } else if declaration->_type == NodeType::STRUCT {
+            let _struct = declaration as *StructNode;
+            let cache = this.CompileStructFirstPass(_struct, null);
+            if !_struct->generic && cache.left != null && cache.right != null { this.pass_cache[declaration] = cache; }
         } else if declaration->_type == NodeType::ENUM {
             let _enum = declaration as *EnumNode;
 
@@ -356,6 +360,13 @@ class Compiler {
                 let cache = this.pass_cache[declaration];
                 this.CompileClassSecondPass(cache.left, _class, cache.right);
             }
+        } else if declaration->_type == NodeType::STRUCT {
+            let _struct = declaration as *StructNode;
+
+            if !_struct->generic && this.pass_cache.Has(declaration) {
+                let cache = this.pass_cache[declaration];
+                this.CompileStructSecondPass(cache.left, _struct, cache.right);
+            }
         } else if declaration->_type == NodeType::ENUM {
             let _enum = declaration as *EnumNode;
 
@@ -385,6 +396,13 @@ class Compiler {
             if !_class->generic && this.pass_cache.Has(declaration) {
                 let cache = this.pass_cache[declaration];
                 this.CompileClassThirdPass(cache.left, _class, cache.right);
+            }
+        } else if declaration->_type == NodeType::STRUCT {
+            let _struct = declaration as *StructNode;
+
+            if !_struct->generic && this.pass_cache.Has(declaration) {
+                let cache = this.pass_cache[declaration];
+                this.CompileStructThirdPass(cache.left, _struct, cache.right);
             }
         } else if declaration->_type == NodeType::ENUM {
             let _enum = declaration as *EnumNode;
@@ -1062,6 +1080,72 @@ class Compiler {
         if cache.left != null {
             this.CompileClassSecondPass(cache.left, _class, cache.right);
             this.CompileClassThirdPass(cache.left, _class, cache.right);
+        } return cache.left;
+    }
+
+    fn CompileStructFirstPass(&mut this, _struct: *StructNode, generic: *mut Generic) -> Pair<*mut QualifiedType, *mut Scope> {
+        if _struct->generic && generic == null {
+            let _generic = new Generic(_struct);
+            this.scope_manager.Set(_struct->name, SymbolKind::Generic, _generic, false, _struct);
+            return Pair<*mut QualifiedType, *mut Scope>(null, null);
+        }
+
+        let struct_name = generic != null ? generic->current.Data() : _struct->name.Data();
+        let _type = this.type_manager.Class(LLVMStructCreateNamed(this.context, struct_name), _struct->name);
+
+        if generic != null {
+            this.scope_manager.PushScope(generic->current, true);
+            generic->Set(QualifiedValue(null, _type));
+        } else {
+            this.scope_manager.Set(_struct->name, SymbolKind::Class, QualifiedValue(null, _type), false, _struct);
+            this.scope_manager.PushScope(_struct->name, true);
+        }
+
+        _type->pack_scope = this.scope_manager.current;
+        this.scope_manager.PopScope();
+        return Pair<*mut QualifiedType, *mut Scope>(_type, _type->pack_scope);
+    }
+
+    fn CompileStructSecondPass(&mut this, _type: *mut QualifiedType, _struct: *StructNode, scope: *mut Scope) {
+        let (prev_class, prev_scope) = (this._class, this.scope_manager.current);
+        (this._class, this.scope_manager.current) = (_type, scope);
+        let mut field_types: Vector<LLVMTypeRef>;
+
+        for field in _struct->fields {
+            let field_type = this.CompileType(field.right->_type);
+            if field_type == null { continue; }
+            _type->fields[field.right->name] = Pair<Field, *QualifiedType>(Field(field.right->initializer, field.left, field_types.Size()), field_type);
+            field_types.PushBack(field_type->Value());
+        }
+
+        if !field_types.Empty() {
+            LLVMStructSetBody(_type->Value(), field_types.Data(), field_types.Size() as u32, 0);
+        }
+
+        (this._class, this.scope_manager.current) = (prev_class, prev_scope);
+    }
+
+    fn CompileStructThirdPass(&mut this, _type: *mut QualifiedType, _struct: *StructNode, scope: *mut Scope) {
+        let (prev_class, prev_scope) = (this._class, this.scope_manager.current);
+        (this._class, this.scope_manager.current) = (_type, scope);
+
+        for method in _struct->methods {
+            let function = this.CompileFunction(method.right, null);
+
+            if !method.right->generic {
+                _type->methods.PushBack(Pair<Method, *QualifiedType>(Method(method.right->name, function.Value(), method.left), function.Type()));
+            }
+        }
+
+        (this._class, this.scope_manager.current) = (prev_class, prev_scope);
+    }
+
+    pub fn CompileStruct(&mut this, _struct: *StructNode, generic: *mut Generic) -> *QualifiedType {
+        let cache = this.CompileStructFirstPass(_struct, generic);
+
+        if cache.left != null {
+            this.CompileStructSecondPass(cache.left, _struct, cache.right);
+            this.CompileStructThirdPass(cache.left, _struct, cache.right);
         } return cache.left;
     }
 

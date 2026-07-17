@@ -1170,7 +1170,7 @@ class Parser {
         }
     }
 
-    priv ParseFunction(&mut this, attributes: &Vector<Pair<String, Vector<*const Node>>>) -> *const Node {
+    func ParseFunction(&mut this, attributes: &Vector<Pair<String, Vector<*Node>>>, _class: bool) -> *Node {
         let token = this.Current();
         let mut no_mangle = false;
 
@@ -1193,27 +1193,36 @@ class Parser {
             }
         }
 
-        let mut name: String;
+        let mut name = String();
 
-        if token._type == TokenType::TILDE || token._type == TokenType::FUNC || token._type == TokenType::PUBLIC || token._type == TokenType::PRIVATE {
-            this.Advance();
-
-            if token._type == TokenType::TILDE {
+        if !_class {
+            if !this.ExpectSuccess(TokenType::FUNC) { ret null; }
+        } else {
+            if this.Match(TokenType::TILDE) {
                 name += token.value;
+                let identifier = this.Expect(TokenType::IDENTIFIER);
+                if identifier._type == TokenType::UNKNOWN { ret null; }
+                name += identifier.value;
+            } else if this.Match(TokenType::IDENTIFIER) {
+                name += token.value;
+            } else if !this.ExpectSuccess(TokenType::FUNC) {
+                ret null;
             }
         }
 
-        if this.Match(TokenType::OPERATOR) {
-            name += "op";
+        if name.Empty() {
+            if this.Match(TokenType::OPERATOR) {
+                name += "op";
 
-            while this.Current()._type != TokenType::LPAREN {
-                name += this.Current().value;
-                this.Advance();
+                while this.Current()._type != TokenType::LPAREN {
+                    name += this.Current().value;
+                    this.Advance();
+                }
+            } else {
+                let identifier = this.Expect(TokenType::IDENTIFIER);
+                if identifier._type == TokenType::UNKNOWN { ret null; }
+                name += identifier.value;
             }
-        } else {
-            let identifier = this.Expect(TokenType::IDENTIFIER);
-            if identifier._type == TokenType::UNKNOWN { ret null; }
-            name += identifier.value;
         }
 
         let function_type = this.arena.New<FunctionTypeNode>(token);
@@ -1422,35 +1431,20 @@ class Parser {
 
         let mut state = false;
 
-        if this.Current()._type == TokenType::PUBLIC || this.Current()._type == TokenType::PRIVATE {
-            if this.Peek(1)._type == TokenType::IDENTIFIER {
-                if this.Peek(2)._type == TokenType::COLON || this.Peek(2)._type == TokenType::LBRACKET {
-                    state = true;
-                }
-            }
+        if this.Current()._type == TokenType::PUBLIC && this.Peek(1)._type == TokenType::IDENTIFIER && (this.Peek(2)._type == TokenType::COLON || this.Peek(2)._type == TokenType::LBRACKET) {
+            state = true;
+        }
+
+        if this.Current()._type == TokenType::IDENTIFIER && (this.Peek(1)._type == TokenType::COLON || this.Peek(1)._type == TokenType::LBRACKET) {
+            state = true;
         }
 
         if state {
             while this.Current()._type != TokenType::SEMICOLON && this.Current()._type != TokenType::RBRACE && this.Current()._type != TokenType::EOF {
-                let visibility = this.Current();
-
-                if visibility._type == TokenType::PUBLIC || visibility._type == TokenType::PRIVATE {
-                    this.Advance();
-                } else {
-                    Logger::Log("Expected visibility modifier.", visibility, LogSeverity::Error);
-                    this.types = types;
-                    ret null;
-                }
-
-                if this.Current()._type == TokenType::IDENTIFIER {
-                    let field = this.ParseField();
-                    if field == null { this.types = types; ret null; }
-                    class_node->fields.PushBack(Pair<TokenType, *const FieldNode>(visibility._type, field));
-                } else {
-                    Logger::Log("Expected field declaration.", this.Current(), LogSeverity::Error);
-                    this.types = types;
-                    ret null;
-                }
+                let public = this.Match(TokenType::PUBLIC);
+                let field = this.ParseField();
+                if field == null { this.types = types; ret null; }
+                class_node->fields.PushBack(Pair<bool, *FieldNode>(public, field));
 
                 if !this.Match(TokenType::COMMA) {
                     break;
@@ -1461,28 +1455,23 @@ class Parser {
         if !state || this.Match(TokenType::SEMICOLON) {
             while this.Current()._type != TokenType::RBRACE && this.Current()._type != TokenType::EOF {
                 let attributes = this.ParseAttributes();
-                let visibility = this.Current();
+                let public = this.Match(TokenType::PUBLIC);
+                let token = this.Current();
+                let function = this.ParseFunction(attributes, true);
+                if function == null { this.types = types; ret null; }
 
-                if visibility._type == TokenType::PUBLIC || visibility._type == TokenType::PRIVATE {
-                    let function = this.ParseFunction(attributes);
-                    if function == null { this.types = types; ret null; }
-                    class_node->methods.PushBack(Pair<TokenType, *const FunctionNode>(visibility._type, function as *const FunctionNode));
+                if token._type == TokenType::FUNC {
+                    class_node->methods.PushBack(Pair<bool, *FunctionNode>(public, function as *FunctionNode));
+                } else if token._type != TokenType::TILDE {
+                    class_node->constructors.PushBack(function as *FunctionNode);
                 } else {
-                    if this.Current()._type == TokenType::TILDE {
-                        if class_node->destructor != null {
-                            Logger::Log("Multiple destructor declarations are not allowed.", visibility, LogSeverity::Error);
-                            this.types = types;
-                            ret null;
-                        }
-
-                        let function = this.ParseFunction(attributes);
-                        if function == null { this.types = types; ret null; }
-                        class_node->destructor = function as *const FunctionNode;
-                    } else {
-                        let function = this.ParseFunction(attributes);
-                        if function == null { this.types = types; ret null; }
-                        class_node->constructors.PushBack(function as *const FunctionNode);
+                    if class_node->destructor != null {
+                        Logger::Log("Multiple destructor declarations are not allowed.", token, LogSeverity::Error);
+                        this.types = types;
+                        ret null;
                     }
+
+                    class_node->destructor = function as *FunctionNode;
                 }
             }
         }
@@ -1643,17 +1632,10 @@ class Parser {
         if this.Match(TokenType::SEMICOLON) {
             while this.Current()._type != TokenType::RBRACE && this.Current()._type != TokenType::EOF {
                 let attributes = this.ParseAttributes();
-                let visibility = this.Current();
-
-                if visibility._type == TokenType::PUBLIC || visibility._type == TokenType::PRIVATE {
-                    let function = this.ParseFunction(attributes);
-                    if function == null { this.types = types; ret null; }
-                    enum_node->methods.PushBack(Pair<TokenType, *const FunctionNode>(visibility._type, function as *const FunctionNode));
-                } else {
-                    Logger::Log("Expected visibility modifier.", visibility, LogSeverity::Error);
-                    this.types = types;
-                    ret null;
-                }
+                let public = this.Match(TokenType::PUBLIC);
+                let function = this.ParseFunction(attributes, false);
+                if function == null { this.types = types; ret null; }
+                enum_node->methods.PushBack(Pair<bool, *FunctionNode>(public, function as *FunctionNode));
             }
         }
 

@@ -1,5 +1,5 @@
-LLVM_PATH = "C:\Program Files\LLVM\lib"
-VCPKG_PATH = "C:\vcpkg\installed\x64-windows\lib"
+LLVM_PATH := "C:\Program Files\LLVM\lib"
+VCPKG_PATH := "C:\vcpkg\installed\x64-windows\lib"
 
 default: build
 

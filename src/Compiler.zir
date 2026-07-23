@@ -974,7 +974,7 @@ class Compiler {
 
         if has_constructor && !is_constructed {
             let method = _class.Get(_class.name, param_types, node);
-            this.CompileResolvedCall(QualifiedValue(method->left.value, method->right, pointer), params, true, node);
+            this.CompileResolvedCall(QualifiedValue(method->function, pointer), params, true, node);
         } else {
             if params.Size() > _class.Fields().Size() {
                 Logger::Log("Too many parameters.", node, LogSeverity::Error);
@@ -988,7 +988,7 @@ class Compiler {
 
         if _class.Has("~" + _class.name, params_types) {
             let method = _class.Get("~" + _class.name, params_types, node);
-            this.CompileResolvedCall(QualifiedValue(method->left.value, method->right, pointer), params, true, node);
+            this.CompileResolvedCall(QualifiedValue(method->function, pointer), params, true, node);
         }
 
         for field in _class.Fields() {
@@ -1029,14 +1029,14 @@ class Compiler {
         for parent in _class->parents {
             let parent_type = this.CompileType(parent);
             if parent_type == null { continue; }
-            _type->fields[parent_type->name] = Field(parent_type, null, false, field_types.Size());
+            _type->fields[parent_type->name] = Field(field_types.Size(), parent_type, null, false);
             field_types.PushBack(parent_type->Value());
         }
 
         for field in _class->fields {
             let field_type = this.CompileType(field.right->_type);
             if field_type == null { continue; }
-            _type->fields[field.right->name] = Field(field_type, field.right->initializer, field.left, field_types.Size());
+            _type->fields[field.right->name] = Field(field_types.Size(), field_type, field.right->initializer, field.left);
             field_types.PushBack(field_type->Value());
         }
 
@@ -1053,19 +1053,19 @@ class Compiler {
 
         for constructor in _class->constructors {
             let function = this.CompileFunction(constructor, null);
-            _type->methods.PushBack(Pair<Method, *QualifiedType>(Method(constructor->name, function.Value(), true), function.Type()));
+            _type->methods.PushBack(Method(constructor->name, function, true));
         }
 
         if _class->destructor != null {
             let function = this.CompileFunction(_class->destructor, null);
-            _type->methods.PushBack(Pair<Method, *QualifiedType>(Method(_class->destructor->name, function.Value(), true), function.Type()));
+            _type->methods.PushBack(Method(_class->destructor->name, function, true));
         }
 
         for method in _class->methods {
             let function = this.CompileFunction(method.right, null);
 
             if !method.right->generic {
-                _type->methods.PushBack(Pair<Method, *QualifiedType>(Method(method.right->name, function.Value(), method.left), function.Type()));
+                _type->methods.PushBack(Method(method.right->name, function, method.left));
             }
         }
 
@@ -1112,7 +1112,7 @@ class Compiler {
         for field in _struct->fields {
             let field_type = this.CompileType(field.right->_type);
             if field_type == null { continue; }
-            _type->fields[field.right->name] = Field(field_type, field.right->initializer, field.left, field_types.Size());
+            _type->fields[field.right->name] = Field(field_types.Size(), field_type, field.right->initializer, field.left);
             field_types.PushBack(field_type->Value());
         }
 
@@ -1131,7 +1131,7 @@ class Compiler {
             let function = this.CompileFunction(method.right, null);
 
             if !method.right->generic {
-                _type->methods.PushBack(Pair<Method, *QualifiedType>(Method(method.right->name, function.Value(), method.left), function.Type()));
+                _type->methods.PushBack(Method(method.right->name, function, method.left));
             }
         }
 
@@ -1261,7 +1261,7 @@ class Compiler {
             let function = this.CompileFunction(method.right, null);
 
             if !method.right->generic {
-                _type->methods.PushBack(Pair<Method, *QualifiedType>(Method(method.right->name, function.Value(), method.left), function.Type()));
+                _type->methods.PushBack(Method(method.right->name, function, method.left));
             }
         }
 
@@ -2102,10 +2102,10 @@ class Compiler {
                         if end_method == null { return; }
 
                         let values = Vector<QualifiedValue>();
-                        start = this.CompileResolvedCall(QualifiedValue(begin_method->left.value, begin_method->right, iterable), values, false, _for).ToRValue();
+                        start = this.CompileResolvedCall(QualifiedValue(begin_method->function, iterable), values, false, _for).ToRValue();
                         if start.Null() { return; }
 
-                        end = this.CompileResolvedCall(QualifiedValue(end_method->left.value, end_method->right, iterable), values, false, _for).ToRValue();
+                        end = this.CompileResolvedCall(QualifiedValue(end_method->function, iterable), values, false, _for).ToRValue();
                         if end.Null() { return; }
                     } 
                 }
@@ -2164,7 +2164,7 @@ class Compiler {
                 values.PushBack(end);
                 let instance = QualifiedValue(pointer, this.type_manager.Pointer(_type, true), true);
                 let method = _type.Get(String("operator!="), _for);
-                condition = this.CompileResolvedCall(QualifiedValue(method->left.value, method->right, instance), values, false, _for).ToRValue().Value();
+                condition = this.CompileResolvedCall(QualifiedValue(method->function, instance), values, false, _for).ToRValue().Value();
             } else {
                 Logger::Log("For loop only supports pointer iterators or classes with '!=' operator.", _for, LogSeverity::Error);
                 return;
@@ -2188,7 +2188,7 @@ class Compiler {
                 let mut values = Vector<QualifiedValue>();
                 let instance = QualifiedValue(pointer, this.type_manager.Pointer(_type, true), true);
                 let method = _type.Get(String("operator*"), _for);
-                let result = this.CompileResolvedCall(QualifiedValue(method->left.value, method->right, instance), values, false, _for).ToRValue();
+                let result = this.CompileResolvedCall(QualifiedValue(method->function, instance), values, false, _for).ToRValue();
                 this.scope_manager.Set(_for->variable, SymbolKind::Variable, result, false, _for);
             } else {
                 Logger::Log("For loop only supports pointer iterators or classes with 'operator*' operator.", _for, LogSeverity::Error);
@@ -2228,7 +2228,7 @@ class Compiler {
                 values.PushBack(QualifiedValue(LLVMConstInt(param_type->Value(), 1, 0), param_type));
                 let instance = QualifiedValue(pointer, this.type_manager.Pointer(_type, true), true);
                 let method = _type.Get(String("operator+="), _for);
-                this.CompileResolvedCall(QualifiedValue(method->left.value, method->right, instance), values, false, _for);
+                this.CompileResolvedCall(QualifiedValue(method->function, instance), values, false, _for);
                 new_value = LLVMBuildLoad2(this.builder, _type.Value(), pointer, "");
             } else {
                 Logger::Log("For loop only supports pointer iterators or classes with '+=' operator.", _for, LogSeverity::Error);
@@ -2518,7 +2518,7 @@ class Compiler {
 
             if _type.Has(method_name, param_types) {
                 let method = _type.Get(method_name, param_types, node);
-                return this.CompileResolvedCall(QualifiedValue(method->left.value, method->right, pointer), params, false, node);
+                return this.CompileResolvedCall(QualifiedValue(method->function, pointer), params, false, node);
             }
 
             if !pointer.Type().IsMutable() && !ignore {
@@ -3221,7 +3221,7 @@ class Compiler {
 
                     if instance.Type().Pointee().Has(method_name, param_types) {
                         let method = instance.Type().Pointee().Get(method_name, param_types, member_access);
-                        instance = this.CompileResolvedCall(QualifiedValue(method->left.value, method->right, instance), values, false, member_access);
+                        instance = this.CompileResolvedCall(QualifiedValue(method->function, instance), values, false, member_access);
                     }
                 } else if instance.IsLValue() || instance.Type().IsReference() {
                     if member_access->arrow {
@@ -3278,7 +3278,7 @@ class Compiler {
                     let method = instance.Type().Pointee().Get(member_access->member, this.ValueToType(values), call);
 
                     if method != null {
-                        return this.CompileResolvedCall(QualifiedValue(method->left.value, method->right, instance), values, false, call);
+                        return this.CompileResolvedCall(QualifiedValue(method->function, instance), values, false, call);
                     } else {
                         return QualifiedValue(null, null);
                     }
@@ -3719,7 +3719,7 @@ class Compiler {
             let method = value.Type().Pointee().Get(String("operator[]"), this.ValueToType(params), index_access);
 
             if method != null {
-                return this.CompileResolvedCall(QualifiedValue(method->left.value, method->right, value), params, false, index_access);
+                return this.CompileResolvedCall(QualifiedValue(method->function, value), params, false, index_access);
             } else {
                 return QualifiedValue(null, null);
             }
@@ -3767,7 +3767,7 @@ class Compiler {
 
                 if instance.Type().Pointee().Has(method_name, param_types) {
                     let method = instance.Type().Pointee().Get(method_name, param_types, member_access);
-                    instance = this.CompileResolvedCall(QualifiedValue(method->left.value, method->right, instance), values, false, member_access);
+                    instance = this.CompileResolvedCall(QualifiedValue(method->function, instance), values, false, member_access);
                 }
             } else if instance.IsLValue() || instance.Type().IsReference() {
                 if member_access->arrow {
@@ -3809,7 +3809,7 @@ class Compiler {
             let method = instance.Type().Pointee().Get(member_access->member, member_access);
 
             if method != null {
-                return QualifiedValue(method->left.value, method->right, instance);
+                return QualifiedValue(method->function, instance);
             } else {
                 return QualifiedValue(null, null);
             }
@@ -4164,7 +4164,7 @@ class Compiler {
 
                 if pointer.Type().Pointee().Has(method_name, param_types) {
                     let method = pointer.Type().Pointee().Get(method_name, param_types, unary);
-                    return this.CompileResolvedCall(QualifiedValue(method->left.value, method->right, pointer), values, false, unary);
+                    return this.CompileResolvedCall(QualifiedValue(method->function, pointer), values, false, unary);
                 }
             }
 
@@ -4222,7 +4222,7 @@ class Compiler {
 
                     if value.Type().Pointee().Has(method_name, param_types) {
                         let method = value.Type().Pointee().Get(method_name, param_types, unary);
-                        return this.CompileResolvedCall(QualifiedValue(method->left.value, method->right, value), values, false, unary);
+                        return this.CompileResolvedCall(QualifiedValue(method->function, value), values, false, unary);
                     }
                 }
             } else if value.Type().IsReference() {
@@ -4412,7 +4412,7 @@ class Compiler {
 
                 if _type.Has(method_name, param_types) {
                     let method = _type.Get(method_name, param_types, node);
-                    return this.CompileResolvedCall(QualifiedValue(method->left.value, method->right, instance), values, false, node);
+                    return this.CompileResolvedCall(QualifiedValue(method->function, instance), values, false, node);
                 }
 
                 if left.Type() == right.Type() {

@@ -18,23 +18,23 @@
     "src/Generic.zir", "src/Scope.zir", "src/Nodes.zir", "src/Logger.zir" : *]
 
 class Field {
+    pub index: usize,
     pub _type: *QualifiedType,
     pub initializer: *Node,
-    pub public: bool,
-    pub index: usize;
+    pub public: bool;
 
-    Field(&mut this, _type: *QualifiedType, initializer: *Node, public: bool, index: usize) {
-        (this._type, this.initializer, this.public, this.index) = (_type, initializer, public, index);
+    Field(&mut this, index: usize, _type: *QualifiedType, initializer: *Node, public: bool) {
+        (this.index, this._type, this.initializer, this.public) = (index, _type, initializer, public);
     }
 }
 
 class Method {
     pub name: String,
-    pub value: LLVMValueRef,
+    pub function: QualifiedValue,
     pub public: bool;
 
-    Method(&mut this, name: &String, value: LLVMValueRef, public: bool) {
-        (this.name, this.value, this.public) = (name, value, public);
+    Method(&mut this, name: &String, function: &QualifiedValue, public: bool) {
+        (this.name, this.function, this.public) = (name, function, public);
     }
 }
 
@@ -84,7 +84,7 @@ class QualifiedType {
 
     pub constructed: Vector<*QualifiedType>,
     pub fields: Map<String, Field>,
-    pub methods: Vector<Pair<Method, *QualifiedType>>,
+    pub methods: Vector<Method>,
 
     pub variants: Vector<Pair<String, Vector<*QualifiedType>>>,
     pub variant_field_names: Vector<Vector<String>>,
@@ -351,7 +351,7 @@ class QualifiedType {
         } return -1;
     }
 
-    pub fn Methods(&this) -> &Vector<Pair<Method, *QualifiedType>> {
+    pub fn Methods(&this) -> &Vector<Method> {
         if !this.HasMethods() {
             Logger::Log("QualifiedType", "Not a class, structure or variant!", LogSeverity::Fatal);
         } return this.methods;
@@ -363,8 +363,8 @@ class QualifiedType {
 
     pub fn Has(&this, name: &String) -> bool {
         for method in this.Methods() {
-            if method.left.name == name {
-                if method.left.public {
+            if method.name == name {
+                if method.public {
                     return true;
                 }
 
@@ -379,16 +379,16 @@ class QualifiedType {
 
     pub fn Has(&this, name: &String, params: &Vector<*QualifiedType>) -> bool {
         for method in this.Methods() {
-            if method.left.name == name {
+            if method.name == name {
                 let mut state = false;
 
                 if compiler->_class != null {
                     state = *compiler->_class == this;
                 }
 
-                if method.left.public || state {
-                    let _params = method.right->Pointee().Parameters();
-                    let has_pack = method.right->Pointee().pack_name != "";
+                if method.public || state {
+                    let _params = method.function.Type().Pointee().Parameters();
+                    let has_pack = method.function.Type().Pointee().pack_name != "";
                     let offset: usize = _params[0].sret != null ? 2 : 1;
                     let mut _match = true;
 
@@ -415,18 +415,18 @@ class QualifiedType {
         } return false;
     }
 
-    pub fn Get(&this, name: &String, node: *Node) -> *Pair<Method, *QualifiedType> {
+    pub fn Get(&this, name: &String, node: *Node) -> *Method {
         let mut state = 0;
 
         for method in this.Methods() {
-            if method.left.name == name {
+            if method.name == name {
                 let mut _state = false;
 
                 if compiler->_class != null {
                     _state = *compiler->_class == this;
                 }
 
-                if !method.left.public && !_state {
+                if !method.public && !_state {
                     if state < 1 { state = 1; }
                 } else {
                     return &method;
@@ -443,26 +443,26 @@ class QualifiedType {
         }
     }
 
-    pub fn Get(&this, name: &String, params: &Vector<*QualifiedType>, node: *Node) -> *Pair<Method, *QualifiedType> {
+    pub fn Get(&this, name: &String, params: &Vector<*QualifiedType>, node: *Node) -> *Method {
         let methods = this.Methods();
         let mut index: usize = 0;
         let mut best: u64 = 0;
         let mut state = 0;
 
         for i in 0..methods.Size() {
-            if methods[i].left.name == name {
+            if methods[i].name == name {
                 let mut _state = false;
 
                 if compiler->_class != null {
                     _state = *compiler->_class == this;
                 }
 
-                if !methods[i].left.public && !_state {
+                if !methods[i].public && !_state {
                     if state < 1 { state = 1; }
                 } else {
                     let (mut _match, mut score: u64) = (true, 1);
-                    let _params = methods[i].right->Pointee().Parameters();
-                    let has_pack = methods[i].right->Pointee().pack_name != "";
+                    let _params = methods[i].function.Type().Pointee().Parameters();
+                    let has_pack = methods[i].function.Type().Pointee().pack_name != "";
                     let offset: usize = _params[0].sret != null ? 2 : 1;
 
                     if (!has_pack && params.Size() != _params.Size() - offset) || (has_pack && params.Size() < _params.Size() - offset) {

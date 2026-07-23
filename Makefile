@@ -6,11 +6,11 @@ default: build
 bin/zirconc2.exe: $(wildcard src/*.zir)
 	bin/zirconc.exe src/Main.zir -o $@ -L$(LLVM_PATH) -lLLVM-C -lDbgHelp -g -v
 
-bin/zircraft.exe: Zircraft.zir
-	bin/zirconc.exe $< -o $@ -Llib -L$(VCPKG_PATH) -lglfw3dll -lstb_image -lucrt -lmsvcrt -lvcruntime -ldwmapi -g -v
+bin/zircraft.exe: bin/zirconc2.exe Zircraft.zir
+	$^ -o $@ -Llib -L$(VCPKG_PATH) -lglfw3dll -lstb_image -lucrt -lmsvcrt -lvcruntime -ldwmapi -g -v
 
-bin/zirgen.exe: Zirgen.zir
-	bin/zirconc.exe $< -o $@ -L$(LLVM_PATH) -llibclang -lDbgHelp -g -v
+bin/zirgen.exe: bin/zirconc2.exe Zirgen.zir
+	$^ -o $@ -L$(LLVM_PATH) -llibclang -lDbgHelp -g -v
 
 build: bin/zirconc2.exe
 build-zircraft: bin/zircraft.exe

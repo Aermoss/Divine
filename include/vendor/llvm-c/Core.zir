@@ -1,8 +1,9 @@
-#[include "vendor/llvm-c/ErrorHandling.zir", "vendor/llvm-c/Visibility.zir", "vendor/llvm-c/Types.zir" : *]
+#[include "vendor/llvm-c/ErrorHandling.zir", "vendor/llvm-c/Types.zir" : *]
 
 enum LLVMOpcode: i32 {
     LLVMRet = 1,
-    LLVMBr = 2,
+    LLVMUncondBr = 70,
+    LLVMCondBr = 71,
     LLVMSwitch = 3,
     LLVMIndirectBr = 4,
     LLVMInvoke = 5,
@@ -92,6 +93,7 @@ enum LLVMTypeKind: i32 {
     LLVMBFloatTypeKind = 18,
     LLVMX86_AMXTypeKind = 19,
     LLVMTargetExtTypeKind = 20,
+    LLVMByteTypeKind = 21,
 }
 
 enum LLVMLinkage: i32 {
@@ -196,15 +198,16 @@ enum LLVMValueKind: i32 {
     LLVMConstantDataArrayValueKind = 16,
     LLVMConstantDataVectorValueKind = 17,
     LLVMConstantIntValueKind = 18,
-    LLVMConstantFPValueKind = 19,
-    LLVMConstantPointerNullValueKind = 20,
-    LLVMConstantTokenNoneValueKind = 21,
-    LLVMMetadataAsValueValueKind = 22,
-    LLVMInlineAsmValueKind = 23,
-    LLVMInstructionValueKind = 24,
-    LLVMPoisonValueValueKind = 25,
-    LLVMConstantTargetNoneValueKind = 26,
-    LLVMConstantPtrAuthValueKind = 27,
+    LLVMConstantByteValueKind = 19,
+    LLVMConstantFPValueKind = 20,
+    LLVMConstantPointerNullValueKind = 21,
+    LLVMConstantTokenNoneValueKind = 22,
+    LLVMMetadataAsValueValueKind = 23,
+    LLVMInlineAsmValueKind = 24,
+    LLVMInstructionValueKind = 25,
+    LLVMPoisonValueValueKind = 26,
+    LLVMConstantTargetNoneValueKind = 27,
+    LLVMConstantPtrAuthValueKind = 28,
 }
 
 enum LLVMIntPredicate: i32 {
@@ -279,6 +282,8 @@ enum LLVMAtomicRMWBinOp: i32 {
     LLVMAtomicRMWBinOpUSubSat = 18,
     LLVMAtomicRMWBinOpFMaximum = 19,
     LLVMAtomicRMWBinOpFMinimum = 20,
+    LLVMAtomicRMWBinOpFMaximumNum = 21,
+    LLVMAtomicRMWBinOpFMinimumNum = 22,
 }
 
 enum LLVMDiagnosticSeverity: i32 {
@@ -342,6 +347,13 @@ enum LLVMDbgRecordKind: i32 {
 type LLVMDiagnosticHandler = fn(LLVMDiagnosticInfoRef, *mut void);
 type LLVMYieldCallback = fn(LLVMContextRef, *mut void);
 
+enum LLVMDenormalModeKind: i32 {
+    LLVMDenormalModeKindIEEE = 0,
+    LLVMDenormalModeKindPreserveSign = 1,
+    LLVMDenormalModeKindPositiveZero = 2,
+    LLVMDenormalModeKindDynamic = 3,
+}
+
 extern "C" {
     fn LLVMShutdown();
     fn LLVMGetVersion(Major: *mut u32, Minor: *mut u32, Patch: *mut u32);
@@ -360,8 +372,8 @@ extern "C" {
     fn LLVMGetDiagInfoSeverity(DI: LLVMDiagnosticInfoRef) -> LLVMDiagnosticSeverity;
     fn LLVMGetMDKindIDInContext(C: LLVMContextRef, Name: *i8, SLen: u32) -> u32;
     fn LLVMGetMDKindID(Name: *i8, SLen: u32) -> u32;
-    fn LLVMGetSyncScopeID(C: LLVMContextRef, Name: *i8, SLen: u64) -> u32;
-    fn LLVMGetEnumAttributeKindForName(Name: *i8, SLen: u64) -> u32;
+    fn LLVMGetSyncScopeID(C: LLVMContextRef, Name: *i8, SLen: usize) -> u32;
+    fn LLVMGetEnumAttributeKindForName(Name: *i8, SLen: usize) -> u32;
     fn LLVMGetLastEnumAttributeKind() -> u32;
     fn LLVMCreateEnumAttribute(C: LLVMContextRef, KindID: u32, Val: u64) -> LLVMAttributeRef;
     fn LLVMGetEnumAttributeKind(A: LLVMAttributeRef) -> u32;
@@ -369,6 +381,7 @@ extern "C" {
     fn LLVMCreateTypeAttribute(C: LLVMContextRef, KindID: u32, type_ref: LLVMTypeRef) -> LLVMAttributeRef;
     fn LLVMGetTypeAttributeValue(A: LLVMAttributeRef) -> LLVMTypeRef;
     fn LLVMCreateConstantRangeAttribute(C: LLVMContextRef, KindID: u32, NumBits: u32, LowerWords: *mut u64, UpperWords: *mut u64) -> LLVMAttributeRef;
+    fn LLVMCreateDenormalFPEnvAttribute(C: LLVMContextRef, DefaultModeOutput: LLVMDenormalModeKind, DefaultModeInput: LLVMDenormalModeKind, FloatModeOutput: LLVMDenormalModeKind, FloatModeInput: LLVMDenormalModeKind) -> LLVMAttributeRef;
     fn LLVMCreateStringAttribute(C: LLVMContextRef, K: *i8, KLength: u32, V: *i8, VLength: u32) -> LLVMAttributeRef;
     fn LLVMGetStringAttributeKind(A: LLVMAttributeRef, Length: *mut u32) -> *i8;
     fn LLVMGetStringAttributeValue(A: LLVMAttributeRef, Length: *mut u32) -> *i8;
@@ -382,31 +395,31 @@ extern "C" {
     fn LLVMDisposeModule(M: LLVMModuleRef);
     fn LLVMIsNewDbgInfoFormat(M: LLVMModuleRef) -> LLVMBool;
     fn LLVMSetIsNewDbgInfoFormat(M: LLVMModuleRef, UseNewFormat: LLVMBool);
-    fn LLVMGetModuleIdentifier(M: LLVMModuleRef, Len: *mut u64) -> *i8;
-    fn LLVMSetModuleIdentifier(M: LLVMModuleRef, Ident: *i8, Len: u64);
-    fn LLVMGetSourceFileName(M: LLVMModuleRef, Len: *mut u64) -> *i8;
-    fn LLVMSetSourceFileName(M: LLVMModuleRef, Name: *i8, Len: u64);
+    fn LLVMGetModuleIdentifier(M: LLVMModuleRef, Len: *mut usize) -> *i8;
+    fn LLVMSetModuleIdentifier(M: LLVMModuleRef, Ident: *i8, Len: usize);
+    fn LLVMGetSourceFileName(M: LLVMModuleRef, Len: *mut usize) -> *i8;
+    fn LLVMSetSourceFileName(M: LLVMModuleRef, Name: *i8, Len: usize);
     fn LLVMGetDataLayoutStr(M: LLVMModuleRef) -> *i8;
     fn LLVMGetDataLayout(M: LLVMModuleRef) -> *i8;
     fn LLVMSetDataLayout(M: LLVMModuleRef, DataLayoutStr: *i8);
     fn LLVMGetTarget(M: LLVMModuleRef) -> *i8;
     fn LLVMSetTarget(M: LLVMModuleRef, Triple: *i8);
-    fn LLVMCopyModuleFlagsMetadata(M: LLVMModuleRef, Len: *mut u64) -> *mut LLVMModuleFlagEntry;
+    fn LLVMCopyModuleFlagsMetadata(M: LLVMModuleRef, Len: *mut usize) -> *mut LLVMModuleFlagEntry;
     fn LLVMDisposeModuleFlagsMetadata(Entries: *mut LLVMModuleFlagEntry);
     fn LLVMModuleFlagEntriesGetFlagBehavior(Entries: *mut LLVMModuleFlagEntry, Index: u32) -> LLVMModuleFlagBehavior;
-    fn LLVMModuleFlagEntriesGetKey(Entries: *mut LLVMModuleFlagEntry, Index: u32, Len: *mut u64) -> *i8;
+    fn LLVMModuleFlagEntriesGetKey(Entries: *mut LLVMModuleFlagEntry, Index: u32, Len: *mut usize) -> *i8;
     fn LLVMModuleFlagEntriesGetMetadata(Entries: *mut LLVMModuleFlagEntry, Index: u32) -> LLVMMetadataRef;
-    fn LLVMGetModuleFlag(M: LLVMModuleRef, Key: *i8, KeyLen: u64) -> LLVMMetadataRef;
-    fn LLVMAddModuleFlag(M: LLVMModuleRef, Behavior: LLVMModuleFlagBehavior, Key: *i8, KeyLen: u64, Val: LLVMMetadataRef);
+    fn LLVMGetModuleFlag(M: LLVMModuleRef, Key: *i8, KeyLen: usize) -> LLVMMetadataRef;
+    fn LLVMAddModuleFlag(M: LLVMModuleRef, Behavior: LLVMModuleFlagBehavior, Key: *i8, KeyLen: usize, Val: LLVMMetadataRef);
     fn LLVMDumpModule(M: LLVMModuleRef);
     fn LLVMPrintModuleToFile(M: LLVMModuleRef, Filename: *i8, ErrorMessage: *mut *mut i8) -> LLVMBool;
     fn LLVMPrintModuleToString(M: LLVMModuleRef) -> *mut i8;
-    fn LLVMGetModuleInlineAsm(M: LLVMModuleRef, Len: *mut u64) -> *i8;
-    fn LLVMSetModuleInlineAsm2(M: LLVMModuleRef, Asm: *i8, Len: u64);
-    fn LLVMAppendModuleInlineAsm(M: LLVMModuleRef, Asm: *i8, Len: u64);
-    fn LLVMGetInlineAsm(Ty: LLVMTypeRef, AsmString: *i8, AsmStringSize: u64, Constraints: *i8, ConstraintsSize: u64, HasSideEffects: LLVMBool, IsAlignStack: LLVMBool, Dialect: LLVMInlineAsmDialect, CanThrow: LLVMBool) -> LLVMValueRef;
-    fn LLVMGetInlineAsmAsmString(InlineAsmVal: LLVMValueRef, Len: *mut u64) -> *i8;
-    fn LLVMGetInlineAsmConstraintString(InlineAsmVal: LLVMValueRef, Len: *mut u64) -> *i8;
+    fn LLVMGetModuleInlineAsm(M: LLVMModuleRef, Len: *mut usize) -> *i8;
+    fn LLVMSetModuleInlineAsm2(M: LLVMModuleRef, Asm: *i8, Len: usize);
+    fn LLVMAppendModuleInlineAsm(M: LLVMModuleRef, Asm: *i8, Len: usize);
+    fn LLVMGetInlineAsm(Ty: LLVMTypeRef, AsmString: *i8, AsmStringSize: usize, Constraints: *i8, ConstraintsSize: usize, HasSideEffects: LLVMBool, IsAlignStack: LLVMBool, Dialect: LLVMInlineAsmDialect, CanThrow: LLVMBool) -> LLVMValueRef;
+    fn LLVMGetInlineAsmAsmString(InlineAsmVal: LLVMValueRef, Len: *mut usize) -> *i8;
+    fn LLVMGetInlineAsmConstraintString(InlineAsmVal: LLVMValueRef, Len: *mut usize) -> *i8;
     fn LLVMGetInlineAsmDialect(InlineAsmVal: LLVMValueRef) -> LLVMInlineAsmDialect;
     fn LLVMGetInlineAsmFunctionType(InlineAsmVal: LLVMValueRef) -> LLVMTypeRef;
     fn LLVMGetInlineAsmHasSideEffects(InlineAsmVal: LLVMValueRef) -> LLVMBool;
@@ -418,9 +431,9 @@ extern "C" {
     fn LLVMGetLastNamedMetadata(M: LLVMModuleRef) -> LLVMNamedMDNodeRef;
     fn LLVMGetNextNamedMetadata(NamedMDNode: LLVMNamedMDNodeRef) -> LLVMNamedMDNodeRef;
     fn LLVMGetPreviousNamedMetadata(NamedMDNode: LLVMNamedMDNodeRef) -> LLVMNamedMDNodeRef;
-    fn LLVMGetNamedMetadata(M: LLVMModuleRef, Name: *i8, NameLen: u64) -> LLVMNamedMDNodeRef;
-    fn LLVMGetOrInsertNamedMetadata(M: LLVMModuleRef, Name: *i8, NameLen: u64) -> LLVMNamedMDNodeRef;
-    fn LLVMGetNamedMetadataName(NamedMD: LLVMNamedMDNodeRef, NameLen: *mut u64) -> *i8;
+    fn LLVMGetNamedMetadata(M: LLVMModuleRef, Name: *i8, NameLen: usize) -> LLVMNamedMDNodeRef;
+    fn LLVMGetOrInsertNamedMetadata(M: LLVMModuleRef, Name: *i8, NameLen: usize) -> LLVMNamedMDNodeRef;
+    fn LLVMGetNamedMetadataName(NamedMD: LLVMNamedMDNodeRef, NameLen: *mut usize) -> *i8;
     fn LLVMGetNamedMetadataNumOperands(M: LLVMModuleRef, Name: *i8) -> u32;
     fn LLVMGetNamedMetadataOperands(M: LLVMModuleRef, Name: *i8, Dest: *mut LLVMValueRef);
     fn LLVMAddNamedMetadataOperand(M: LLVMModuleRef, Name: *i8, Val: LLVMValueRef);
@@ -429,9 +442,9 @@ extern "C" {
     fn LLVMGetDebugLocLine(Val: LLVMValueRef) -> u32;
     fn LLVMGetDebugLocColumn(Val: LLVMValueRef) -> u32;
     fn LLVMAddFunction(M: LLVMModuleRef, Name: *i8, FunctionTy: LLVMTypeRef) -> LLVMValueRef;
-    fn LLVMGetOrInsertFunction(M: LLVMModuleRef, Name: *i8, NameLen: u64, FunctionTy: LLVMTypeRef) -> LLVMValueRef;
+    fn LLVMGetOrInsertFunction(M: LLVMModuleRef, Name: *i8, NameLen: usize, FunctionTy: LLVMTypeRef) -> LLVMValueRef;
     fn LLVMGetNamedFunction(M: LLVMModuleRef, Name: *i8) -> LLVMValueRef;
-    fn LLVMGetNamedFunctionWithLength(M: LLVMModuleRef, Name: *i8, Length: u64) -> LLVMValueRef;
+    fn LLVMGetNamedFunctionWithLength(M: LLVMModuleRef, Name: *i8, Length: usize) -> LLVMValueRef;
     fn LLVMGetFirstFunction(M: LLVMModuleRef) -> LLVMValueRef;
     fn LLVMGetLastFunction(M: LLVMModuleRef) -> LLVMValueRef;
     fn LLVMGetNextFunction(Fn: LLVMValueRef) -> LLVMValueRef;
@@ -442,6 +455,8 @@ extern "C" {
     fn LLVMGetTypeContext(Ty: LLVMTypeRef) -> LLVMContextRef;
     fn LLVMDumpType(Val: LLVMTypeRef);
     fn LLVMPrintTypeToString(Val: LLVMTypeRef) -> *mut i8;
+    fn LLVMByteTypeInContext(C: LLVMContextRef, NumBits: u32) -> LLVMTypeRef;
+    fn LLVMGetByteTypeWidth(ByteTy: LLVMTypeRef) -> u32;
     fn LLVMInt1TypeInContext(C: LLVMContextRef) -> LLVMTypeRef;
     fn LLVMInt8TypeInContext(C: LLVMContextRef) -> LLVMTypeRef;
     fn LLVMInt16TypeInContext(C: LLVMContextRef) -> LLVMTypeRef;
@@ -521,8 +536,8 @@ extern "C" {
     fn LLVMGetTargetExtTypeIntParam(TargetExtTy: LLVMTypeRef, Idx: u32) -> u32;
     fn LLVMTypeOf(Val: LLVMValueRef) -> LLVMTypeRef;
     fn LLVMGetValueKind(Val: LLVMValueRef) -> LLVMValueKind;
-    fn LLVMGetValueName2(Val: LLVMValueRef, Length: *mut u64) -> *i8;
-    fn LLVMSetValueName2(Val: LLVMValueRef, Name: *i8, NameLen: u64);
+    fn LLVMGetValueName2(Val: LLVMValueRef, Length: *mut usize) -> *i8;
+    fn LLVMSetValueName2(Val: LLVMValueRef, Name: *i8, NameLen: usize);
     fn LLVMDumpValue(Val: LLVMValueRef);
     fn LLVMPrintValueToString(Val: LLVMValueRef) -> *mut i8;
     fn LLVMGetValueContext(Val: LLVMValueRef) -> LLVMContextRef;
@@ -545,6 +560,7 @@ extern "C" {
     fn LLVMIsAConstantExpr(Val: LLVMValueRef) -> LLVMValueRef;
     fn LLVMIsAConstantFP(Val: LLVMValueRef) -> LLVMValueRef;
     fn LLVMIsAConstantInt(Val: LLVMValueRef) -> LLVMValueRef;
+    fn LLVMIsAConstantByte(Val: LLVMValueRef) -> LLVMValueRef;
     fn LLVMIsAConstantPointerNull(Val: LLVMValueRef) -> LLVMValueRef;
     fn LLVMIsAConstantStruct(Val: LLVMValueRef) -> LLVMValueRef;
     fn LLVMIsAConstantTokenNone(Val: LLVMValueRef) -> LLVMValueRef;
@@ -583,7 +599,8 @@ extern "C" {
     fn LLVMIsASelectInst(Val: LLVMValueRef) -> LLVMValueRef;
     fn LLVMIsAShuffleVectorInst(Val: LLVMValueRef) -> LLVMValueRef;
     fn LLVMIsAStoreInst(Val: LLVMValueRef) -> LLVMValueRef;
-    fn LLVMIsABranchInst(Val: LLVMValueRef) -> LLVMValueRef;
+    fn LLVMIsAUncondBrInst(Val: LLVMValueRef) -> LLVMValueRef;
+    fn LLVMIsACondBrInst(Val: LLVMValueRef) -> LLVMValueRef;
     fn LLVMIsAIndirectBrInst(Val: LLVMValueRef) -> LLVMValueRef;
     fn LLVMIsAInvokeInst(Val: LLVMValueRef) -> LLVMValueRef;
     fn LLVMIsAReturnInst(Val: LLVMValueRef) -> LLVMValueRef;
@@ -620,6 +637,7 @@ extern "C" {
     fn LLVMIsAAtomicCmpXchgInst(Val: LLVMValueRef) -> LLVMValueRef;
     fn LLVMIsAAtomicRMWInst(Val: LLVMValueRef) -> LLVMValueRef;
     fn LLVMIsAFenceInst(Val: LLVMValueRef) -> LLVMValueRef;
+    fn LLVMIsABranchInst(Val: LLVMValueRef) -> LLVMValueRef;
     fn LLVMIsAMDNode(Val: LLVMValueRef) -> LLVMValueRef;
     fn LLVMIsAValueAsMetadata(Val: LLVMValueRef) -> LLVMValueRef;
     fn LLVMIsAMDString(Val: LLVMValueRef) -> LLVMValueRef;
@@ -643,24 +661,29 @@ extern "C" {
     fn LLVMConstIntOfArbitraryPrecision(IntTy: LLVMTypeRef, NumWords: u32, Words: *mut u64) -> LLVMValueRef;
     fn LLVMConstIntOfString(IntTy: LLVMTypeRef, Text: *i8, Radix: u8) -> LLVMValueRef;
     fn LLVMConstIntOfStringAndSize(IntTy: LLVMTypeRef, Text: *i8, SLen: u32, Radix: u8) -> LLVMValueRef;
+    fn LLVMConstByte(ByteTy: LLVMTypeRef, N: u64) -> LLVMValueRef;
+    fn LLVMConstByteOfArbitraryPrecision(ByteTy: LLVMTypeRef, NumWords: u32, Words: *mut u64) -> LLVMValueRef;
+    fn LLVMConstByteOfStringAndSize(ByteTy: LLVMTypeRef, Text: *i8, SLen: usize, Radix: u8) -> LLVMValueRef;
     fn LLVMConstReal(RealTy: LLVMTypeRef, N: f64) -> LLVMValueRef;
     fn LLVMConstRealOfString(RealTy: LLVMTypeRef, Text: *i8) -> LLVMValueRef;
     fn LLVMConstRealOfStringAndSize(RealTy: LLVMTypeRef, Text: *i8, SLen: u32) -> LLVMValueRef;
     fn LLVMConstFPFromBits(Ty: LLVMTypeRef, N: *mut u64) -> LLVMValueRef;
     fn LLVMConstIntGetZExtValue(ConstantVal: LLVMValueRef) -> u64;
     fn LLVMConstIntGetSExtValue(ConstantVal: LLVMValueRef) -> i64;
+    fn LLVMConstByteGetZExtValue(ConstantVal: LLVMValueRef) -> u64;
+    fn LLVMConstByteGetSExtValue(ConstantVal: LLVMValueRef) -> i64;
     fn LLVMConstRealGetDouble(ConstantVal: LLVMValueRef, losesInfo: *mut LLVMBool) -> f64;
     fn LLVMConstStringInContext(C: LLVMContextRef, Str: *i8, Length: u32, DontNullTerminate: LLVMBool) -> LLVMValueRef;
-    fn LLVMConstStringInContext2(C: LLVMContextRef, Str: *i8, Length: u64, DontNullTerminate: LLVMBool) -> LLVMValueRef;
+    fn LLVMConstStringInContext2(C: LLVMContextRef, Str: *i8, Length: usize, DontNullTerminate: LLVMBool) -> LLVMValueRef;
     fn LLVMConstString(Str: *i8, Length: u32, DontNullTerminate: LLVMBool) -> LLVMValueRef;
     fn LLVMIsConstantString(c: LLVMValueRef) -> LLVMBool;
-    fn LLVMGetAsString(c: LLVMValueRef, Length: *mut u64) -> *i8;
-    fn LLVMGetRawDataValues(c: LLVMValueRef, SizeInBytes: *mut u64) -> *i8;
+    fn LLVMGetAsString(c: LLVMValueRef, Length: *mut usize) -> *i8;
+    fn LLVMGetRawDataValues(c: LLVMValueRef, SizeInBytes: *mut usize) -> *i8;
     fn LLVMConstStructInContext(C: LLVMContextRef, ConstantVals: *mut LLVMValueRef, Count: u32, Packed: LLVMBool) -> LLVMValueRef;
     fn LLVMConstStruct(ConstantVals: *mut LLVMValueRef, Count: u32, Packed: LLVMBool) -> LLVMValueRef;
     fn LLVMConstArray(ElementTy: LLVMTypeRef, ConstantVals: *mut LLVMValueRef, Length: u32) -> LLVMValueRef;
     fn LLVMConstArray2(ElementTy: LLVMTypeRef, ConstantVals: *mut LLVMValueRef, Length: u64) -> LLVMValueRef;
-    fn LLVMConstDataArray(ElementTy: LLVMTypeRef, Data: *i8, SizeInBytes: u64) -> LLVMValueRef;
+    fn LLVMConstDataArray(ElementTy: LLVMTypeRef, Data: *i8, SizeInBytes: usize) -> LLVMValueRef;
     fn LLVMConstNamedStruct(StructTy: LLVMTypeRef, ConstantVals: *mut LLVMValueRef, Count: u32) -> LLVMValueRef;
     fn LLVMGetAggregateElement(C: LLVMValueRef, Idx: u32) -> LLVMValueRef;
     fn LLVMGetElementAsConstant(C: LLVMValueRef, idx: u32) -> LLVMValueRef;
@@ -719,14 +742,14 @@ extern "C" {
     fn LLVMGlobalEraseMetadata(Global: LLVMValueRef, Kind: u32);
     fn LLVMGlobalClearMetadata(Global: LLVMValueRef);
     fn LLVMGlobalAddDebugInfo(Global: LLVMValueRef, GVE: LLVMMetadataRef);
-    fn LLVMGlobalCopyAllMetadata(Value: LLVMValueRef, NumEntries: *mut u64) -> *mut LLVMValueMetadataEntry;
+    fn LLVMGlobalCopyAllMetadata(Value: LLVMValueRef, NumEntries: *mut usize) -> *mut LLVMValueMetadataEntry;
     fn LLVMDisposeValueMetadataEntries(Entries: *mut LLVMValueMetadataEntry);
     fn LLVMValueMetadataEntriesGetKind(Entries: *mut LLVMValueMetadataEntry, Index: u32) -> u32;
     fn LLVMValueMetadataEntriesGetMetadata(Entries: *mut LLVMValueMetadataEntry, Index: u32) -> LLVMMetadataRef;
     fn LLVMAddGlobal(M: LLVMModuleRef, Ty: LLVMTypeRef, Name: *i8) -> LLVMValueRef;
     fn LLVMAddGlobalInAddressSpace(M: LLVMModuleRef, Ty: LLVMTypeRef, Name: *i8, AddressSpace: u32) -> LLVMValueRef;
     fn LLVMGetNamedGlobal(M: LLVMModuleRef, Name: *i8) -> LLVMValueRef;
-    fn LLVMGetNamedGlobalWithLength(M: LLVMModuleRef, Name: *i8, Length: u64) -> LLVMValueRef;
+    fn LLVMGetNamedGlobalWithLength(M: LLVMModuleRef, Name: *i8, Length: usize) -> LLVMValueRef;
     fn LLVMGetFirstGlobal(M: LLVMModuleRef) -> LLVMValueRef;
     fn LLVMGetLastGlobal(M: LLVMModuleRef) -> LLVMValueRef;
     fn LLVMGetNextGlobal(GlobalVar: LLVMValueRef) -> LLVMValueRef;
@@ -743,7 +766,7 @@ extern "C" {
     fn LLVMIsExternallyInitialized(GlobalVar: LLVMValueRef) -> LLVMBool;
     fn LLVMSetExternallyInitialized(GlobalVar: LLVMValueRef, IsExtInit: LLVMBool);
     fn LLVMAddAlias2(M: LLVMModuleRef, ValueTy: LLVMTypeRef, AddrSpace: u32, Aliasee: LLVMValueRef, Name: *i8) -> LLVMValueRef;
-    fn LLVMGetNamedGlobalAlias(M: LLVMModuleRef, Name: *i8, NameLen: u64) -> LLVMValueRef;
+    fn LLVMGetNamedGlobalAlias(M: LLVMModuleRef, Name: *i8, NameLen: usize) -> LLVMValueRef;
     fn LLVMGetFirstGlobalAlias(M: LLVMModuleRef) -> LLVMValueRef;
     fn LLVMGetLastGlobalAlias(M: LLVMModuleRef) -> LLVMValueRef;
     fn LLVMGetNextGlobalAlias(GA: LLVMValueRef) -> LLVMValueRef;
@@ -754,13 +777,13 @@ extern "C" {
     fn LLVMHasPersonalityFn(Fn: LLVMValueRef) -> LLVMBool;
     fn LLVMGetPersonalityFn(Fn: LLVMValueRef) -> LLVMValueRef;
     fn LLVMSetPersonalityFn(Fn: LLVMValueRef, PersonalityFn: LLVMValueRef);
-    fn LLVMLookupIntrinsicID(Name: *i8, NameLen: u64) -> u32;
+    fn LLVMLookupIntrinsicID(Name: *i8, NameLen: usize) -> u32;
     fn LLVMGetIntrinsicID(Fn: LLVMValueRef) -> u32;
-    fn LLVMGetIntrinsicDeclaration(Mod: LLVMModuleRef, ID: u32, ParamTypes: *mut LLVMTypeRef, ParamCount: u64) -> LLVMValueRef;
-    fn LLVMIntrinsicGetType(Ctx: LLVMContextRef, ID: u32, ParamTypes: *mut LLVMTypeRef, ParamCount: u64) -> LLVMTypeRef;
-    fn LLVMIntrinsicGetName(ID: u32, NameLength: *mut u64) -> *i8;
-    fn LLVMIntrinsicCopyOverloadedName(ID: u32, ParamTypes: *mut LLVMTypeRef, ParamCount: u64, NameLength: *mut u64) -> *mut i8;
-    fn LLVMIntrinsicCopyOverloadedName2(Mod: LLVMModuleRef, ID: u32, ParamTypes: *mut LLVMTypeRef, ParamCount: u64, NameLength: *mut u64) -> *mut i8;
+    fn LLVMGetIntrinsicDeclaration(Mod: LLVMModuleRef, ID: u32, OverloadTypes: *mut LLVMTypeRef, OverloadCount: usize) -> LLVMValueRef;
+    fn LLVMIntrinsicGetType(Ctx: LLVMContextRef, ID: u32, OverloadTypes: *mut LLVMTypeRef, OverloadCount: usize) -> LLVMTypeRef;
+    fn LLVMIntrinsicGetName(ID: u32, NameLength: *mut usize) -> *i8;
+    fn LLVMIntrinsicCopyOverloadedName(ID: u32, OverloadTypes: *mut LLVMTypeRef, OverloadCount: usize, NameLength: *mut usize) -> *mut i8;
+    fn LLVMIntrinsicCopyOverloadedName2(Mod: LLVMModuleRef, ID: u32, OverloadTypes: *mut LLVMTypeRef, OverloadCount: usize, NameLength: *mut usize) -> *mut i8;
     fn LLVMIntrinsicIsOverloaded(ID: u32) -> LLVMBool;
     fn LLVMGetFunctionCallConv(Fn: LLVMValueRef) -> u32;
     fn LLVMSetFunctionCallConv(Fn: LLVMValueRef, CC: u32);
@@ -789,8 +812,8 @@ extern "C" {
     fn LLVMGetNextParam(Arg: LLVMValueRef) -> LLVMValueRef;
     fn LLVMGetPreviousParam(Arg: LLVMValueRef) -> LLVMValueRef;
     fn LLVMSetParamAlignment(Arg: LLVMValueRef, Align: u32);
-    fn LLVMAddGlobalIFunc(M: LLVMModuleRef, Name: *i8, NameLen: u64, Ty: LLVMTypeRef, AddrSpace: u32, Resolver: LLVMValueRef) -> LLVMValueRef;
-    fn LLVMGetNamedGlobalIFunc(M: LLVMModuleRef, Name: *i8, NameLen: u64) -> LLVMValueRef;
+    fn LLVMAddGlobalIFunc(M: LLVMModuleRef, Name: *i8, NameLen: usize, Ty: LLVMTypeRef, AddrSpace: u32, Resolver: LLVMValueRef) -> LLVMValueRef;
+    fn LLVMGetNamedGlobalIFunc(M: LLVMModuleRef, Name: *i8, NameLen: usize) -> LLVMValueRef;
     fn LLVMGetFirstGlobalIFunc(M: LLVMModuleRef) -> LLVMValueRef;
     fn LLVMGetLastGlobalIFunc(M: LLVMModuleRef) -> LLVMValueRef;
     fn LLVMGetNextGlobalIFunc(IFunc: LLVMValueRef) -> LLVMValueRef;
@@ -799,8 +822,8 @@ extern "C" {
     fn LLVMSetGlobalIFuncResolver(IFunc: LLVMValueRef, Resolver: LLVMValueRef);
     fn LLVMEraseGlobalIFunc(IFunc: LLVMValueRef);
     fn LLVMRemoveGlobalIFunc(IFunc: LLVMValueRef);
-    fn LLVMMDStringInContext2(C: LLVMContextRef, Str: *i8, SLen: u64) -> LLVMMetadataRef;
-    fn LLVMMDNodeInContext2(C: LLVMContextRef, MDs: *mut LLVMMetadataRef, Count: u64) -> LLVMMetadataRef;
+    fn LLVMMDStringInContext2(C: LLVMContextRef, Str: *i8, SLen: usize) -> LLVMMetadataRef;
+    fn LLVMMDNodeInContext2(C: LLVMContextRef, MDs: *mut LLVMMetadataRef, Count: usize) -> LLVMMetadataRef;
     fn LLVMMetadataAsValue(C: LLVMContextRef, MD: LLVMMetadataRef) -> LLVMValueRef;
     fn LLVMValueAsMetadata(Val: LLVMValueRef) -> LLVMMetadataRef;
     fn LLVMGetMDString(V: LLVMValueRef, Length: *mut u32) -> *i8;
@@ -811,9 +834,9 @@ extern "C" {
     fn LLVMMDString(Str: *i8, SLen: u32) -> LLVMValueRef;
     fn LLVMMDNodeInContext(C: LLVMContextRef, Vals: *mut LLVMValueRef, Count: u32) -> LLVMValueRef;
     fn LLVMMDNode(Vals: *mut LLVMValueRef, Count: u32) -> LLVMValueRef;
-    fn LLVMCreateOperandBundle(Tag: *i8, TagLen: u64, Args: *mut LLVMValueRef, NumArgs: u32) -> LLVMOperandBundleRef;
+    fn LLVMCreateOperandBundle(Tag: *i8, TagLen: usize, Args: *mut LLVMValueRef, NumArgs: u32) -> LLVMOperandBundleRef;
     fn LLVMDisposeOperandBundle(Bundle: LLVMOperandBundleRef);
-    fn LLVMGetOperandBundleTag(Bundle: LLVMOperandBundleRef, Len: *mut u64) -> *i8;
+    fn LLVMGetOperandBundleTag(Bundle: LLVMOperandBundleRef, Len: *mut usize) -> *i8;
     fn LLVMGetNumOperandBundleArgs(Bundle: LLVMOperandBundleRef) -> u32;
     fn LLVMGetOperandBundleArgAtIndex(Bundle: LLVMOperandBundleRef, Index: u32) -> LLVMValueRef;
     fn LLVMBasicBlockAsValue(BB: LLVMBasicBlockRef) -> LLVMValueRef;
@@ -845,7 +868,7 @@ extern "C" {
     fn LLVMHasMetadata(Val: LLVMValueRef) -> i32;
     fn LLVMGetMetadata(Val: LLVMValueRef, KindID: u32) -> LLVMValueRef;
     fn LLVMSetMetadata(Val: LLVMValueRef, KindID: u32, Node: LLVMValueRef);
-    fn LLVMInstructionGetAllMetadataOtherThanDebugLoc(Instr: LLVMValueRef, NumEntries: *mut u64) -> *mut LLVMValueMetadataEntry;
+    fn LLVMInstructionGetAllMetadataOtherThanDebugLoc(Instr: LLVMValueRef, NumEntries: *mut usize) -> *mut LLVMValueMetadataEntry;
     fn LLVMGetInstructionParent(Inst: LLVMValueRef) -> LLVMBasicBlockRef;
     fn LLVMGetNextInstruction(Inst: LLVMValueRef) -> LLVMValueRef;
     fn LLVMGetPreviousInstruction(Inst: LLVMValueRef) -> LLVMValueRef;
@@ -1077,8 +1100,8 @@ extern "C" {
     fn LLVMBuildPtrDiff2(_p0: LLVMBuilderRef, ElemTy: LLVMTypeRef, LHS: LLVMValueRef, RHS: LLVMValueRef, Name: *i8) -> LLVMValueRef;
     fn LLVMBuildFence(B: LLVMBuilderRef, ordering: LLVMAtomicOrdering, singleThread: LLVMBool, Name: *i8) -> LLVMValueRef;
     fn LLVMBuildFenceSyncScope(B: LLVMBuilderRef, ordering: LLVMAtomicOrdering, SSID: u32, Name: *i8) -> LLVMValueRef;
-    fn LLVMBuildAtomicRMW(B: LLVMBuilderRef, _op: LLVMAtomicRMWBinOp, PTR: LLVMValueRef, Val: LLVMValueRef, ordering: LLVMAtomicOrdering, singleThread: LLVMBool) -> LLVMValueRef;
-    fn LLVMBuildAtomicRMWSyncScope(B: LLVMBuilderRef, _op: LLVMAtomicRMWBinOp, PTR: LLVMValueRef, Val: LLVMValueRef, ordering: LLVMAtomicOrdering, SSID: u32) -> LLVMValueRef;
+    fn LLVMBuildAtomicRMW(B: LLVMBuilderRef, op: LLVMAtomicRMWBinOp, PTR: LLVMValueRef, Val: LLVMValueRef, ordering: LLVMAtomicOrdering, singleThread: LLVMBool) -> LLVMValueRef;
+    fn LLVMBuildAtomicRMWSyncScope(B: LLVMBuilderRef, op: LLVMAtomicRMWBinOp, PTR: LLVMValueRef, Val: LLVMValueRef, ordering: LLVMAtomicOrdering, SSID: u32) -> LLVMValueRef;
     fn LLVMBuildAtomicCmpXchg(B: LLVMBuilderRef, Ptr: LLVMValueRef, Cmp: LLVMValueRef, New: LLVMValueRef, SuccessOrdering: LLVMAtomicOrdering, FailureOrdering: LLVMAtomicOrdering, SingleThread: LLVMBool) -> LLVMValueRef;
     fn LLVMBuildAtomicCmpXchgSyncScope(B: LLVMBuilderRef, Ptr: LLVMValueRef, Cmp: LLVMValueRef, New: LLVMValueRef, SuccessOrdering: LLVMAtomicOrdering, FailureOrdering: LLVMAtomicOrdering, SSID: u32) -> LLVMValueRef;
     fn LLVMGetNumMaskElements(ShuffleVectorInst: LLVMValueRef) -> u32;
@@ -1097,10 +1120,10 @@ extern "C" {
     fn LLVMDisposeModuleProvider(M: LLVMModuleProviderRef);
     fn LLVMCreateMemoryBufferWithContentsOfFile(Path: *i8, OutMemBuf: *mut LLVMMemoryBufferRef, OutMessage: *mut *mut i8) -> LLVMBool;
     fn LLVMCreateMemoryBufferWithSTDIN(OutMemBuf: *mut LLVMMemoryBufferRef, OutMessage: *mut *mut i8) -> LLVMBool;
-    fn LLVMCreateMemoryBufferWithMemoryRange(InputData: *i8, InputDataLength: u64, BufferName: *i8, RequiresNullTerminator: LLVMBool) -> LLVMMemoryBufferRef;
-    fn LLVMCreateMemoryBufferWithMemoryRangeCopy(InputData: *i8, InputDataLength: u64, BufferName: *i8) -> LLVMMemoryBufferRef;
+    fn LLVMCreateMemoryBufferWithMemoryRange(InputData: *i8, InputDataLength: usize, BufferName: *i8, RequiresNullTerminator: LLVMBool) -> LLVMMemoryBufferRef;
+    fn LLVMCreateMemoryBufferWithMemoryRangeCopy(InputData: *i8, InputDataLength: usize, BufferName: *i8) -> LLVMMemoryBufferRef;
     fn LLVMGetBufferStart(MemBuf: LLVMMemoryBufferRef) -> *i8;
-    fn LLVMGetBufferSize(MemBuf: LLVMMemoryBufferRef) -> u64;
+    fn LLVMGetBufferSize(MemBuf: LLVMMemoryBufferRef) -> usize;
     fn LLVMDisposeMemoryBuffer(MemBuf: LLVMMemoryBufferRef);
     fn LLVMCreatePassManager() -> LLVMPassManagerRef;
     fn LLVMCreateFunctionPassManagerForModule(M: LLVMModuleRef) -> LLVMPassManagerRef;

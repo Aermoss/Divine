@@ -433,7 +433,7 @@ class Compiler {
 
                 for field in _type->Fields() {
                     if index < initializer_list->expressions.Size() {
-                        let value = this.CompileExpression(initializer_list->expressions[index]).MaterializeWithFallback(field.right.right).ToRValue();
+                        let value = this.CompileExpression(initializer_list->expressions[index]).MaterializeWithFallback(field.right._type).ToRValue();
 
                         if !value.Null() {
                             values.PushBack(value.Value());
@@ -442,8 +442,8 @@ class Compiler {
                             break;
                         }
                     } else {
-                        if field.right.left.initializer != null {
-                            let value = this.CompileExpression(field.right.left.initializer).MaterializeWithFallback(field.right.right).ToRValue();
+                        if field.right.initializer != null {
+                            let value = this.CompileExpression(field.right.initializer).MaterializeWithFallback(field.right._type).ToRValue();
 
                             if !value.Null() {
                                 values.PushBack(value.Value());
@@ -546,7 +546,7 @@ class Compiler {
 
                     for field in _type->Fields() {
                         if index < initializer_list->expressions.Size() {
-                            let value = this.CompileExpression(initializer_list->expressions[index]).MaterializeWithFallback(field.right.right).ToRValue();
+                            let value = this.CompileExpression(initializer_list->expressions[index]).MaterializeWithFallback(field.right._type).ToRValue();
 
                             if !value.Null() {
                                 values.PushBack(value.Value());
@@ -555,8 +555,8 @@ class Compiler {
                                 break;
                             }
                         } else {
-                            if field.right.left.initializer != null {
-                                let value = this.CompileExpression(field.right.left.initializer).MaterializeWithFallback(field.right.right).ToRValue();
+                            if field.right.initializer != null {
+                                let value = this.CompileExpression(field.right.initializer).MaterializeWithFallback(field.right._type).ToRValue();
 
                                 if !value.Null() {
                                     values.PushBack(value.Value());
@@ -943,32 +943,32 @@ class Compiler {
             if !(has_constructor && !is_constructed) && j < params.Size() {
                 value = params[j];
             } else {
-                if field.right.left.initializer != null {
-                    if field.right.left.initializer->_type != NodeType::INITIALIZER_LIST {
-                        value = this.CompileExpression(field.right.left.initializer);
+                if field.right.initializer != null {
+                    if field.right.initializer->_type != NodeType::INITIALIZER_LIST {
+                        value = this.CompileExpression(field.right.initializer);
                         if value.Null() { return; }
                     }
                 }
             }
 
             if need_copy && !(has_constructor && !is_constructed) {
-                value = QualifiedValue(LLVMBuildStructGEP2(this.builder, params[0].Type().Pointee().Value(), params[0].Value(), _class.Index(field.left) as u32, ""), this.type_manager.Pointer(field.right.right, true), true);
+                value = QualifiedValue(LLVMBuildStructGEP2(this.builder, params[0].Type().Pointee().Value(), params[0].Value(), _class.Index(field.left) as u32, ""), this.type_manager.Pointer(field.right._type, true), true);
             }
 
-            if field.right.right->HasFields() {
+            if field.right._type->HasFields() {
                 let mut _params = Vector<QualifiedValue>();
                 if !value.Null() { _params.PushBack(value); }
-                this.CompileConstructor(field.right.right, QualifiedValue(LLVMBuildStructGEP2(this.builder, pointer.Type().Pointee().Value(), pointer.Value(), _class.Index(field.left) as u32, ""), this.type_manager.Pointer(field.right.right, true), true), _params, node);
+                this.CompileConstructor(field.right._type, QualifiedValue(LLVMBuildStructGEP2(this.builder, pointer.Type().Pointee().Value(), pointer.Value(), _class.Index(field.left) as u32, ""), this.type_manager.Pointer(field.right._type, true), true), _params, node);
             } else if !value.Null() {
                 if value.Type().IsPointer() {
                     let pointee = value.Type().Pointee();
 
-                    if pointee == field.right.right {
+                    if pointee == *field.right._type {
                         value = QualifiedValue(LLVMBuildLoad2(this.builder, pointee.Value(), value.Value(), ""), pointee);
                     }
                 }
 
-                this.CompileResolvedAssignment(value, QualifiedValue(LLVMBuildStructGEP2(this.builder, pointer.Type().Pointee().Value(), pointer.Value(), _class.Index(field.left) as u32, ""), this.type_manager.Pointer(field.right.right, true), true), TokenType::ASSIGN, true, node);
+                this.CompileResolvedAssignment(value, QualifiedValue(LLVMBuildStructGEP2(this.builder, pointer.Type().Pointee().Value(), pointer.Value(), _class.Index(field.left) as u32, ""), this.type_manager.Pointer(field.right._type, true), true), TokenType::ASSIGN, true, node);
             } j += 1;
         }
 
@@ -992,8 +992,8 @@ class Compiler {
         }
 
         for field in _class.Fields() {
-            if field.right.right->HasFields() {
-                this.CompileDestructor(field.right.right, QualifiedValue(LLVMBuildStructGEP2(this.builder, pointer.Type().Pointee().Value(), pointer.Value(), _class.Index(field.left) as u32, ""), this.type_manager.Pointer(field.right.right, true)), node);
+            if field.right._type->HasFields() {
+                this.CompileDestructor(field.right._type, QualifiedValue(LLVMBuildStructGEP2(this.builder, pointer.Type().Pointee().Value(), pointer.Value(), _class.Index(field.left) as u32, ""), this.type_manager.Pointer(field.right._type, true)), node);
             }
         }
     }
@@ -1029,14 +1029,14 @@ class Compiler {
         for parent in _class->parents {
             let parent_type = this.CompileType(parent);
             if parent_type == null { continue; }
-            _type->fields[parent_type->name] = Pair<Field, *QualifiedType>(Field(null, false, field_types.Size()), parent_type);
+            _type->fields[parent_type->name] = Field(parent_type, null, false, field_types.Size());
             field_types.PushBack(parent_type->Value());
         }
 
         for field in _class->fields {
             let field_type = this.CompileType(field.right->_type);
             if field_type == null { continue; }
-            _type->fields[field.right->name] = Pair<Field, *QualifiedType>(Field(field.right->initializer, field.left, field_types.Size()), field_type);
+            _type->fields[field.right->name] = Field(field_type, field.right->initializer, field.left, field_types.Size());
             field_types.PushBack(field_type->Value());
         }
 
@@ -1112,7 +1112,7 @@ class Compiler {
         for field in _struct->fields {
             let field_type = this.CompileType(field.right->_type);
             if field_type == null { continue; }
-            _type->fields[field.right->name] = Pair<Field, *QualifiedType>(Field(field.right->initializer, field.left, field_types.Size()), field_type);
+            _type->fields[field.right->name] = Field(field_type, field.right->initializer, field.left, field_types.Size());
             field_types.PushBack(field_type->Value());
         }
 
@@ -2539,7 +2539,7 @@ class Compiler {
                 }
 
                 for field in _type.Fields() {
-                    let mut field_type = field.right.right;
+                    let mut field_type = field.right._type;
 
                     if field_type->IsPointer() {
                         field_type = this.type_manager.Copy(field_type, true);
@@ -3267,13 +3267,13 @@ class Compiler {
                 if index != -1 {
                     let field = instance.Type().Pointee().Fields()[member_access->member];
 
-                    if !field.left.public && _state {
+                    if !field.public && _state {
                         Logger::Log("Field '" + member_access->member + "' is private.", call, LogSeverity::Error);
                         return QualifiedValue(null, null);
                     }
 
                     let field_pointer = LLVMBuildStructGEP2(this.builder, instance.Type().Pointee().Value(), instance.Value(), index as u32, "");
-                    return this.CompileResolvedCall(QualifiedValue(LLVMBuildLoad2(this.builder, field.right->Value(), field_pointer, ""), field.right), values, false, call);
+                    return this.CompileResolvedCall(QualifiedValue(LLVMBuildLoad2(this.builder, field._type->Value(), field_pointer, ""), field._type), values, false, call);
                 } else {
                     let method = instance.Type().Pointee().Get(member_access->member, this.ValueToType(values), call);
 
@@ -3798,13 +3798,13 @@ class Compiler {
         if index != -1 {
             let field = instance.Type().Pointee().Fields()[member_access->member];
 
-            if !field.left.public && state {
+            if !field.public && state {
                 Logger::Log("Field '" + member_access->member + "' is private.", member_access, LogSeverity::Error);
                 return QualifiedValue(null, null);
             }
 
             let field_pointer = LLVMBuildStructGEP2(this.builder, instance.Type().Pointee().Value(), instance.Value(), index as u32, "");
-            return QualifiedValue(field_pointer, this.type_manager.Pointer(field.right, instance.Type().IsMutable()), true);
+            return QualifiedValue(field_pointer, this.type_manager.Pointer(field._type, instance.Type().IsMutable()), true);
         } else {
             let method = instance.Type().Pointee().Get(member_access->member, member_access);
 
@@ -4424,8 +4424,8 @@ class Compiler {
                     let mut result: LLVMValueRef = null;
 
                     for field in _type.Fields() {
-                        let _left = QualifiedValue(LLVMBuildStructGEP2(this.builder, left.Type().Pointee().Value(), left.Value(), _type.Index(field.left) as u32, ""), this.type_manager.Pointer(field.right.right, left.Type().IsMutable()), true);
-                        let _right = QualifiedValue(LLVMBuildStructGEP2(this.builder, right.Type().Pointee().Value(), right.Value(), _type.Index(field.left) as u32, ""), this.type_manager.Pointer(field.right.right, right.Type().IsMutable()), true);
+                        let _left = QualifiedValue(LLVMBuildStructGEP2(this.builder, left.Type().Pointee().Value(), left.Value(), _type.Index(field.left) as u32, ""), this.type_manager.Pointer(field.right._type, left.Type().IsMutable()), true);
+                        let _right = QualifiedValue(LLVMBuildStructGEP2(this.builder, right.Type().Pointee().Value(), right.Value(), _type.Index(field.left) as u32, ""), this.type_manager.Pointer(field.right._type, right.Type().IsMutable()), true);
                         let _result = this.CompileResolvedBinary(_left, _right, _operator, node).ToRValue().Value();
 
                         if result != null {

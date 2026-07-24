@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#[include "std/io", "std/str", "std/vec", "std/map", "std/pair", "vendor/llvm",
+#[include "std/io", "std/str", "std/vec", "std/map", "std/pair", "vendor/llvm-c/Core.zir", "vendor/llvm-c/Analysis.zir",
     "src/Logger.zir", "src/Context.zir", "src/Target.zir", "src/Mangler.zir", "src/Generic.zir", "src/TypeManager.zir", "src/Types.zir",
         "src/ScopeManager.zir", "src/Scope.zir", "src/Symbol.zir", "src/Value.zir", "src/Tokens.zir", "src/Nodes.zir" : *]
 
@@ -154,9 +154,9 @@ class Compiler {
         this.forwards.Clear();
 
         if !Logger::HasError() {
-            let message: *i8 = null;
+            let mut message: *mut i8 = null;
 
-            if LLVMVerifyModule(this.module, LLVMVerifierFailureAction::LLVMReturnStatusAction, &message) != 0 {
+            if LLVMVerifyModule(this.module, LLVMVerifierFailureAction::LLVMReturnStatusAction, &mut message) != 0 {
                 let final_message = message != null ? message : "Unknown reason.";
                 Logger::Log(file_name, "Module verification failed: " + final_message.ToString(), LogSeverity::Error);
             }
@@ -1239,7 +1239,7 @@ class Compiler {
 
         let tag_type = LLVMInt32TypeInContext(this.context);
         let data_type = LLVMArrayType(LLVMInt8TypeInContext(this.context), max_size as u32);
-        let elements[]: LLVMTypeRef = { tag_type, data_type };
+        let mut elements[]: LLVMTypeRef = { tag_type, data_type };
         LLVMStructSetBody(_type->Value(), elements, 2, 0);
 
         for variant in _enum->variants {
@@ -2216,7 +2216,7 @@ class Compiler {
             }
         } else {
             if _type.IsPointer() {
-                let indices[]: LLVMValueRef = { LLVMConstInt(LLVMIntPtrTypeInContext(this.context, this.target->layout), 1, 0) };
+                let mut indices[]: LLVMValueRef = { LLVMConstInt(LLVMIntPtrTypeInContext(this.context, this.target->layout), 1, 0) };
                 new_value = LLVMBuildGEP2(this.builder, _type.Pointee().Value(), current_value, indices, 1, "");
             } else if _type.HasMethods() && _type.Has(String("operator+=")) {
                 let mut values = Vector<QualifiedValue>();
@@ -2416,7 +2416,7 @@ class Compiler {
                                 break;
                             }
 
-                            let indices[]: LLVMValueRef = { LLVMConstInt(LLVMIntPtrTypeInContext(this.context, this.target->layout), index, 0) };
+                            let mut indices[]: LLVMValueRef = { LLVMConstInt(LLVMIntPtrTypeInContext(this.context, this.target->layout), index, 0) };
                             LLVMBuildStore(this.builder, value.Value(), LLVMBuildGEP2(this.builder, _type->Element().Value(), pointer.Value(), indices, 1, ""));
                             let increment: u64 = 1;
                             index += increment;
@@ -2680,10 +2680,10 @@ class Compiler {
                     }
 
                     if _operator == TokenType::PLUS_ASSIGN {
-                        let indices[]: LLVMValueRef = { value.Value() };
+                        let mut indices[]: LLVMValueRef = { value.Value() };
                         value = QualifiedValue(LLVMBuildGEP2(this.builder, current.Type().Pointee().Value(), current.Value(), indices, 1, ""), current.Type());
                     } else if _operator == TokenType::MINUS_ASSIGN {
-                        let indices[]: LLVMValueRef = { LLVMBuildNeg(this.builder, value.Value(), "") };
+                        let mut indices[]: LLVMValueRef = { LLVMBuildNeg(this.builder, value.Value(), "") };
                         value = QualifiedValue(LLVMBuildGEP2(this.builder, current.Type().Pointee().Value(), current.Value(), indices, 1, ""), current.Type());
                     } else {
                         Logger::Log("Invalid pointer assignment operation '" + _operator.ToString() + "' for type '" + current.Type().ToString() + "'.", node, LogSeverity::Error);
@@ -3784,7 +3784,7 @@ class Compiler {
             return QualifiedValue(null, null);
         }
 
-        let indices[]: LLVMValueRef = { index.Value() };
+        let mut indices[]: LLVMValueRef = { index.Value() };
         let target_pointer = LLVMBuildGEP2(this.builder, value.Type().Pointee().Value(), value.Value(), indices, 1, "");
         return QualifiedValue(target_pointer, this.type_manager.Reference(value.Type().Pointee(), value.Type().IsMutable()));
     }
@@ -3880,7 +3880,7 @@ class Compiler {
             pointer = LLVMBuildArrayMalloc(this.builder, LLVMInt8TypeInContext(this.context), _size, "");
             LLVMBuildStore(this.builder, size.Value(), LLVMBuildBitCast(this.builder, pointer, LLVMPointerType(size_type, 0), ""));
 
-            let indices[]: LLVMValueRef = { LLVMConstInt(size_type, 8, 0) };
+            let mut indices[]: LLVMValueRef = { LLVMConstInt(size_type, 8, 0) };
             pointer = LLVMBuildGEP2(this.builder, LLVMInt8TypeInContext(this.context), pointer, indices, 1, "");
             pointer = LLVMBuildBitCast(this.builder, pointer, LLVMPointerType(_type->Value(), 0), "");
 
@@ -3899,7 +3899,7 @@ class Compiler {
                 LLVMBuildCondBr(this.builder, LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntULT, index, size.Value(), ""), loop_block, end_block);
 
                 let params = Vector<QualifiedValue>();
-                let indices[]: LLVMValueRef = { index };
+                let mut indices[]: LLVMValueRef = { index };
                 LLVMPositionBuilderAtStart(this.builder, loop_block);
                 this.CompileConstructor(_type, QualifiedValue(LLVMBuildGEP2(this.builder, _type->Value(), pointer, indices, 1, ""), this.type_manager.Pointer(_type, true)), params, _new);
                 LLVMBuildStore(this.builder, LLVMBuildAdd(this.builder, index, LLVMConstInt(size_type, 1, 0), ""), value);
@@ -3970,7 +3970,7 @@ class Compiler {
 
         if _delete->array {
             let size_type = LLVMIntPtrTypeInContext(this.context, this.target->layout);
-            let indices[]: LLVMValueRef = { LLVMConstInt(size_type, -8 as u64, 0) };
+            let mut indices[]: LLVMValueRef = { LLVMConstInt(size_type, -8 as u64, 0) };
             _pointer = LLVMBuildGEP2(this.builder, LLVMInt8TypeInContext(this.context), _pointer, indices, 1, "");
 
             if pointer.Type().Pointee().HasFields() {
@@ -3989,7 +3989,7 @@ class Compiler {
                 let index = LLVMBuildLoad2(this.builder, size_type, value, "");
                 LLVMBuildCondBr(this.builder, LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntULT, index, count, ""), loop_block, end_block);
 
-                let indices[]: LLVMValueRef = { index };
+                let mut indices[]: LLVMValueRef = { index };
                 LLVMPositionBuilderAtStart(this.builder, loop_block);
                 this.CompileDestructor(pointer.Type().Pointee(), QualifiedValue(LLVMBuildGEP2(this.builder, pointer.Type().Pointee().Value(), pointer.Value(), indices, 1, ""), pointer.Type()), _delete);
                 LLVMBuildStore(this.builder, LLVMBuildAdd(this.builder, index, LLVMConstInt(size_type, 1, 0), ""), value);
@@ -4370,8 +4370,8 @@ class Compiler {
 
             LLVMPositionBuilderAtEnd(this.builder, merge_block);
             let phi = LLVMBuildPhi(this.builder, left.Type().Value(), "");
-            let incoming_values[]: LLVMValueRef = { left.Value(), right.Value() };
-            let incoming_blocks[]: LLVMBasicBlockRef = { left_block, right_block };
+            let mut incoming_values[]: LLVMValueRef = { left.Value(), right.Value() };
+            let mut incoming_blocks[]: LLVMBasicBlockRef = { left_block, right_block };
             LLVMAddIncoming(phi, incoming_values, incoming_blocks, 2);
             return QualifiedValue(phi, left.Type());
         }
@@ -4678,7 +4678,7 @@ class Compiler {
             }
 
             if _operator == TokenType::PLUS {
-                let indices[]: LLVMValueRef = { index.Value() };
+                let mut indices[]: LLVMValueRef = { index.Value() };
                 return QualifiedValue(LLVMBuildGEP2(this.builder, pointer.Type().Pointee().Value(), pointer.Value(), indices, 1, ""), pointer.Type());
             } else if _operator == TokenType::MINUS {
                 if left.Type().IsInteger() {
@@ -4686,7 +4686,7 @@ class Compiler {
                     return QualifiedValue(null, null);
                 }
 
-                let indices[]: LLVMValueRef = { LLVMBuildNeg(this.builder, index.Value(), "") };
+                let mut indices[]: LLVMValueRef = { LLVMBuildNeg(this.builder, index.Value(), "") };
                 return QualifiedValue(LLVMBuildGEP2(this.builder, pointer.Type().Pointee().Value(), pointer.Value(), indices, 1, ""), pointer.Type());
             } else {
                 Logger::Log("Invalid pointer binary operation '" + _operator.ToString() + "' for type '" + left.Type().ToString() + "'.", node, LogSeverity::Error);
@@ -4793,8 +4793,8 @@ class Compiler {
 
         LLVMPositionBuilderAtEnd(this.builder, merge_block);
         let phi = LLVMBuildPhi(this.builder, then_value.Type().Value(), "");
-        let incoming_blocks[]: LLVMBasicBlockRef = { then_block, else_block };
-        let incoming_values[]: LLVMValueRef = { then_value.Value(), else_value.Value() };
+        let mut incoming_blocks[]: LLVMBasicBlockRef = { then_block, else_block };
+        let mut incoming_values[]: LLVMValueRef = { then_value.Value(), else_value.Value() };
         LLVMAddIncoming(phi, incoming_values, incoming_blocks, 2);
         return QualifiedValue(phi, then_value.Type(), then_value.IsLValue());
     }

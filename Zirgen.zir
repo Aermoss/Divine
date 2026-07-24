@@ -427,7 +427,7 @@ extern "C" {
                 clang_disposeString(spelling);
 
                 if !file_state->includes.Has(path) {
-                    file_state->includes[path] = "vendor/" + SplitPath(SplitPath(path).left).right + '/' + SplitExtension(SplitPath(path).right).left + ".zir";
+                    file_state->includes[path] = "vendor/" + SplitPath(state->output_directory).right + '/' + GetRelativeVendorPath(path) + ".zir";
                 }
             }
         } else if cursor.kind == CXCursorKind::CXCursor_EnumDecl {
@@ -454,6 +454,11 @@ extern "C" {
             let spelling = clang_getCursorSpelling(cursor);
             let name = clang_getCString(spelling).ToString();
             clang_disposeString(spelling);
+
+            if name == "ssize_t" || name == "size_t" || name == "ptrdiff_t" || name == "intptr_t" || name == "uintptr_t" || name == "int8_t" || name == "uint8_t" || name == "int16_t" || name == "uint16_t" || name == "int32_t" || name == "uint32_t" || name == "int64_t" || name == "uint64_t" {
+                FlushAnonymousEnum(state, file_state);
+                return CXChildVisitResult::CXChildVisit_Continue;
+            }
 
             let transpile_state = state->transpile_states.Get(name, TranspileState::None);
 
@@ -563,7 +568,7 @@ fn Main(args: &mut Vector<String>) -> i32 {
     let executable = SplitPath(args[0]).right;
 
     if args.Size() < 2 {
-        WriteLine("Usage: " + executable + " <header.h> [-o output_directory] [-I include_directory]");
+        WriteLine("Usage: " + executable + " <header.h> [-o output_directory] [-I include_directory] [-ignore file_name]");
         return 1;
     }
 
@@ -573,10 +578,13 @@ fn Main(args: &mut Vector<String>) -> i32 {
 
     let input = args[1];
     let mut output_directory = String();
+    let mut ignored_files = Vector<String>();
     let mut i: usize = 2;
 
     while i < args.Size() {
-        if args[i] == "-o" {
+        let arg = args[i];
+
+        if arg == "-o" {
             i += 1;
 
             if i < args.Size() {
@@ -585,8 +593,17 @@ fn Main(args: &mut Vector<String>) -> i32 {
                 WriteLine(executable + ": \x1b[31mError:\x1b[0m Missing argument to '-o'.");
                 return 1;
             }
+        } else if arg == "-ignore" {
+            i += 1;
+
+            if i < args.Size() {
+                ignored_files.PushBack(args[i]);
+            } else {
+                WriteLine(executable + ": \x1b[31mError:\x1b[0m Missing argument to '-ignore'.");
+                return 1;
+            }
         } else {
-            clang_args.PushBack(args[i].Data());
+            clang_args.PushBack(arg.Data());
         } i += 1;
     }
 
@@ -619,34 +636,17 @@ fn Main(args: &mut Vector<String>) -> i32 {
     clang_visitChildren(root, VisitTopLevel, &mut state as CXClientData);
     FlushAnonymousEnum(&mut state, null);
 
-    let mut will_write = Map<String, bool>();
     let files = state.files.Values();
+    let mut valid_files = Vector<String>();
 
     for file_state in files {
-        will_write[file_state->path] = !file_state->declarations.Empty() || !file_state->extern_functions.Empty();
-    }
-
-    let mut changed = true;
-
-    while changed {
-        changed = false;
-
-        for file_state in files {
-            if will_write[file_state->path] {
-                continue;
-            }
-
-            for include_path in file_state->includes.Keys() {
-                if will_write[include_path] {
-                    (will_write[file_state->path], changed) = (true, true);
-                    break;
-                }
-            }
+        if !ignored_files.Contains(file_state->name) && !file_state->declarations.Empty() || !file_state->extern_functions.Empty() {
+            valid_files.PushBack(file_state->path);
         }
     }
 
     for file_state in files {
-        if !will_write[file_state->path] {
+        if !valid_files.Contains(file_state->path) {
             continue;
         }
 
@@ -654,7 +654,7 @@ fn Main(args: &mut Vector<String>) -> i32 {
         let mut first_include = true;
 
         for include_path in file_state->includes.Keys() {
-            if will_write[include_path] {
+            if valid_files.Contains(include_path) {
                 if first_include {
                     content += "#[include ";
                     first_include = false;

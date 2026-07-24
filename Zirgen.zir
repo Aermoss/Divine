@@ -24,6 +24,7 @@ class FileState {
     pub path: String,
     pub name: String,
     pub relative_path: String,
+    pub macros: String,
     pub declarations: String,
     pub extern_functions: String,
     pub includes: Map<String, String>,
@@ -179,10 +180,7 @@ fn TypeToString(_type: CXType) -> String {
     } else if _type.kind == CXTypeKind::CXType_IncompleteArray {
         return "*mut " + TypeToString(clang_getArrayElementType(_type));
     } else {
-        let spelling = clang_getTypeSpelling(_type);
-        let string = clang_getCString(spelling).ToString();
-        clang_disposeString(spelling);
-        return "/* " + string + " */";
+        return String();
     }
 }
 
@@ -423,7 +421,7 @@ fn TranslateMacro(state: *mut GlobalState, file_state: *mut FileState, cursor: C
     let _type = InferMacroType(value);
     if _type.Empty() { return; }
 
-    file_state->declarations += "const " + name + ": " + _type + " = " + StripCSuffix(value, _type) + ";\n";
+    file_state->macros += "const " + name + ": " + _type + " = " + StripCSuffix(value, _type) + ";\n";
 }
 
 extern "C" {
@@ -913,13 +911,13 @@ fn Main(args: &mut Vector<String>) -> i32 {
         }
 
         let mut content = String();
-        let mut first_include = true;
+        let mut has_include = false;
 
         for include_path in file_state->includes.Keys() {
             if valid_files.Contains(include_path) {
-                if first_include {
+                if !has_include {
                     content += "#[include ";
-                    first_include = false;
+                    has_include = true;
                 } else {
                     content += ", ";
                 }
@@ -928,7 +926,17 @@ fn Main(args: &mut Vector<String>) -> i32 {
             }
         }
 
-        if !first_include { content += " : *]\n\n"; }
+        if has_include {
+            content += " : *]\n\n";
+        }
+
+        content += file_state->macros;
+        let length = content.Length();
+
+        if length >= 2 && content[length - 1] == '\n' && content[length - 2] != '\n' {
+            content += "\n";
+        }
+
         content += file_state->declarations;
 
         if !file_state->extern_functions.Empty() {

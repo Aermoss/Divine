@@ -54,7 +54,7 @@ fn GetFileState(state: *mut GlobalState, cursor: CXCursor) -> *mut FileState {
     if file == null { return null; }
 
     let spelling = clang_getFileName(file);
-    let path = String(clang_getCString(spelling));
+    let path = clang_getCString(spelling).ToString();
     clang_disposeString(spelling);
 
     if state->files.Has(path) { return state->files[path]; }
@@ -114,7 +114,7 @@ fn TypeToString(_type: CXType) -> String {
         return String(clang_isConstQualifiedType(pointee) != 0 ? "*" : "*mut ") + TypeToString(pointee);
     } else if _type.kind == CXTypeKind::CXType_Record || _type.kind == CXTypeKind::CXType_Enum || _type.kind == CXTypeKind::CXType_Typedef {
         let spelling = clang_getTypeSpelling(_type);
-        let mut string = String(clang_getCString(spelling));
+        let mut string = clang_getCString(spelling).ToString();
         clang_disposeString(spelling);
 
         if string.StartsWith("struct ") {
@@ -141,7 +141,7 @@ fn TypeToString(_type: CXType) -> String {
         return "*mut " + TypeToString(clang_getArrayElementType(_type));
     } else {
         let spelling = clang_getTypeSpelling(_type);
-        let string = String(clang_getCString(spelling));
+        let string = clang_getCString(spelling).ToString();
         clang_disposeString(spelling);
         return "/* " + string + " */";
     }
@@ -187,7 +187,7 @@ extern "C" {
 
         let file_state = client_data as *mut FileState;
         let spelling = clang_getCursorSpelling(cursor);
-        let mut name = String(clang_getCString(spelling));
+        let mut name = clang_getCString(spelling).ToString();
         clang_disposeString(spelling);
 
         if name.Empty() {
@@ -232,12 +232,12 @@ fn EmitEnum(state: *mut GlobalState, file_state: *mut FileState, cursor: CXCurso
     clang_visitChildren(cursor, VisitEnumChild, &mut visitor_data as CXClientData);
 
     if file_state->declarations.Length() == length_header {
-        file_state->declarations = String(file_state->declarations, 0, length_before) + "enum " + name + ": " + type_name + " {}\n\n";
+        file_state->declarations = file_state->declarations.SubString(0, length_before) + "enum " + name + ": " + type_name + " {}\n\n";
     } else {
         let length = file_state->declarations.Length();
 
         if length >= 2 && file_state->declarations[length - 1] == '\n' && file_state->declarations[length - 2] == ',' {
-            file_state->declarations = String(file_state->declarations, 0, length - 2) + "\n";
+            file_state->declarations = file_state->declarations.SubString(0, length - 2) + "\n";
         }
 
         file_state->declarations += "}\n\n";
@@ -259,8 +259,14 @@ fn EmitStruct(state: *mut GlobalState, file_state: *mut FileState, cursor: CXCur
     clang_visitChildren(cursor, VisitStructChild, file_state as CXClientData);
 
     if file_state->declarations.Length() == length_header {
-        file_state->declarations = String(file_state->declarations, 0, length_before) + "class " + name + " {}\n\n";
+        file_state->declarations = file_state->declarations.SubString(0, length_before) + "class " + name + " {}\n\n";
     } else {
+        let length = file_state->declarations.Length();
+
+        if length >= 2 && file_state->declarations[length - 1] == '\n' && file_state->declarations[length - 2] == ',' {
+            file_state->declarations = file_state->declarations.SubString(0, length - 2) + "\n";
+        }
+
         file_state->declarations += "}\n\n";
     }
 }
@@ -298,7 +304,7 @@ fn StripCSuffix(value: &String, _type: &String) -> String {
     if _type == "f32" {
         if length > 0 {
             if value[length - 1] == 'f' || value[length - 1] == 'F' {
-                return String(value, 0, length - 1);
+                return value.SubString(0, length - 1);
             }
         } return value;
     }
@@ -317,7 +323,7 @@ fn StripCSuffix(value: &String, _type: &String) -> String {
         }
     }
 
-    return String(value, 0, end);
+    return value.SubString(0, end);
 }
 
 fn TranslateMacro(state: *mut GlobalState, file_state: *mut FileState, cursor: CXCursor) {
@@ -386,7 +392,7 @@ fn FlushAnonymousEnum(state: *mut GlobalState, file_state: *mut FileState) {
                 clang_disposeString(type_spelling);
             } else {
                 let spelling = clang_getCursorSpelling(state->last_anonymous_enum);
-                name = String(clang_getCString(spelling));
+                name = clang_getCString(spelling).ToString();
                 clang_disposeString(spelling);
             }
 
@@ -446,7 +452,7 @@ extern "C" {
             }
         } else if cursor.kind == CXCursorKind::CXCursor_TypedefDecl {
             let spelling = clang_getCursorSpelling(cursor);
-            let name = String(clang_getCString(spelling));
+            let name = clang_getCString(spelling).ToString();
             clang_disposeString(spelling);
 
             let transpile_state = state->transpile_states.Get(name, TranspileState::None);
@@ -502,7 +508,7 @@ extern "C" {
         } else if cursor.kind == CXCursorKind::CXCursor_FunctionDecl {
             FlushAnonymousEnum(state, file_state);
             let spelling = clang_getCursorSpelling(cursor);
-            let name = String(clang_getCString(spelling));
+            let name = clang_getCString(spelling).ToString();
             clang_disposeString(spelling);
 
             let transpile_state = state->transpile_states.Get(name, TranspileState::None);

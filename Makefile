@@ -25,6 +25,10 @@ transpile-llvm: bin/zirgen.exe
 	$< "$(LLVM_SOURCE_PATH)\llvm\include\llvm-c\Core.h" -I"$(LLVM_SOURCE_PATH)\llvm\include" -I"$(LLVM_SOURCE_PATH)\build\include"
 
 transpile-clang: bin/zirgen.exe
+	$< "$(LLVM_SOURCE_PATH)\clang\include\clang-c\Rewrite.h" -I"$(LLVM_SOURCE_PATH)\clang\include"
+	$< "$(LLVM_SOURCE_PATH)\clang\include\clang-c\Documentation.h" -I"$(LLVM_SOURCE_PATH)\clang\include"
+	$< "$(LLVM_SOURCE_PATH)\clang\include\clang-c\FatalErrorHandler.h" -I"$(LLVM_SOURCE_PATH)\clang\include"
+	$< "$(LLVM_SOURCE_PATH)\clang\include\clang-c\CXCompilationDatabase.h" -I"$(LLVM_SOURCE_PATH)\clang\include"
 	$< "$(LLVM_SOURCE_PATH)\clang\include\clang-c\Index.h" -I"$(LLVM_SOURCE_PATH)\clang\include"
 
 bootstrap: bin/zirconc2.exe

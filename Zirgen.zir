@@ -371,6 +371,24 @@ fn StripCSuffix(value: &String, _type: &String) -> String {
     return value.SubString(0, end);
 }
 
+fn StripCSuffix(value: &String, float: bool) -> String {
+    let mut end = value.Length();
+
+    while end > 0 {
+        let character: i8 = value[end - 1];
+
+        if float && (character == 'f' || character == 'F') {
+            end -= 1;
+        } else if character == 'u' || character == 'U' || character == 'l' || character == 'L' {
+            end -= 1;
+        } else {
+            break;
+        }
+    }
+
+    return value.SubString(0, end);
+}
+
 fn TranslateMacro(state: *mut GlobalState, file_state: *mut FileState, cursor: CXCursor) {
     if clang_Cursor_isMacroFunctionLike(cursor) != 0 { return; }
     if clang_Cursor_isMacroBuiltin(cursor) != 0 { return; }
@@ -461,17 +479,20 @@ fn TranslateExpression(cursor: CXCursor) -> String {
             if !first { result += ", "; } else { first = false; }
             result += TranslateExpression(clang_Cursor_getArgument(cursor, i as u32));
         } return result + ')';
-    } else if kind == CXCursorKind::CXCursor_IntegerLiteral {
-        let spelling = clang_getCursorSpelling(cursor);
-        let mut value = clang_getCString(spelling).ToString();
-        clang_disposeString(spelling);
+    } else if kind == CXCursorKind::CXCursor_IntegerLiteral || kind == CXCursorKind::CXCursor_FloatingLiteral {
+        let extent = clang_getCursorExtent(cursor);
+        let translation_unit = clang_Cursor_getTranslationUnit(cursor);
+        let (mut tokens: *mut CXToken, mut num_tokens: u32) = (null, 0);
+        clang_tokenize(translation_unit, extent, &mut tokens, &mut num_tokens);
+        let mut value = String();
 
-        if value.Empty() {
-            let evaluation = clang_Cursor_Evaluate(cursor);
-            value = String::FromInteger(clang_EvalResult_getAsInt(evaluation) as i64);
-            clang_EvalResult_dispose(evaluation);
+        if tokens != null && num_tokens > 0 {
+            let token_spelling = clang_getTokenSpelling(translation_unit, tokens[0]);
+            value = StripCSuffix(clang_getCString(token_spelling).ToString(), kind == CXCursorKind::CXCursor_FloatingLiteral);
+            clang_disposeString(token_spelling);
+            clang_disposeTokens(translation_unit, tokens, num_tokens);
         } return value;
-    } else if kind == CXCursorKind::CXCursor_FloatingLiteral || kind == CXCursorKind::CXCursor_StringLiteral || kind == CXCursorKind::CXCursor_DeclRefExpr {
+    } else if kind == CXCursorKind::CXCursor_StringLiteral || kind == CXCursorKind::CXCursor_DeclRefExpr {
         let spelling = clang_getCursorSpelling(cursor);
         let value = clang_getCString(spelling).ToString();
         clang_disposeString(spelling);

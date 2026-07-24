@@ -316,20 +316,26 @@ class Compiler {
         if declaration->_type == NodeType::CLASS {
             let _class = declaration as *ClassNode;
             let cache = this.CompileClassFirstPass(_class, null);
-            if !_class->generic && cache.left != null && cache.right != null { this.pass_cache[declaration] = cache; }
+
+            if !_class->generic && cache.left != null && cache.right != null {
+                this.pass_cache[declaration] = cache;
+            }
         } else if declaration->_type == NodeType::STRUCTURE {
             let _struct = declaration as *StructureNode;
             let cache = this.CompileStructureFirstPass(_struct, null);
-            if !_struct->generic && cache.left != null && cache.right != null { this.pass_cache[declaration] = cache; }
+
+            if !_struct->generic && cache.left != null && cache.right != null {
+                this.pass_cache[declaration] = cache;
+            }
         } else if declaration->_type == NodeType::ENUMERATION {
             let _enum = declaration as *EnumNode;
 
             if _enum->variant {
                 let cache = this.CompileVariantFirstPass(_enum, null);
-                if !_enum->generic && cache.left != null && cache.right != null { this.pass_cache[declaration] = cache; }
-            } else {
-                let cache = this.CompileEnumerationFirstPass(_enum);
-                if cache != null { this.enum_pass_cache[declaration] = cache; }
+
+                if !_enum->generic && cache.left != null && cache.right != null {
+                    this.pass_cache[declaration] = cache;
+                }
             }
         } else {
             return false;
@@ -362,9 +368,7 @@ class Compiler {
                     this.CompileVariantSecondPass(cache.left, _enum, cache.right);
                 }
             } else {
-                if this.enum_pass_cache.Has(declaration) {
-                    this.CompileEnumerationSecondPass(_enum, this.enum_pass_cache[declaration]);
-                }
+                this.CompileEnumeration(_enum);
             }
         } else if declaration->_type == NodeType::TYPE_DEFINITION {
             this.CompileTypeDefinition(declaration as *TypeDefinitionNode);
@@ -1147,27 +1151,19 @@ class Compiler {
         } return cache.left;
     }
 
-    fn CompileEnumerationFirstPass(&mut this, _enum: *EnumNode) -> *QualifiedType {
+    fn CompileEnumeration(&mut this, _enum: *EnumNode) {
         let underlying_type = this.CompileType(_enum->underlying_type);
-
-        if underlying_type == null {
-            return null;
-        }
+        if underlying_type == null { return; }
 
         if !underlying_type->IsInteger() {
             Logger::Log("Expected an integer type.", _enum, LogSeverity::Error);
-            return null;
+            return;
         }
 
         let _type = this.type_manager.Enumeration(underlying_type, _enum->name);
         this.scope_manager.Set(_enum->name, SymbolKind::Type, QualifiedValue(null, _type), false, _enum);
-        return _type;
-    }
-
-    fn CompileEnumerationSecondPass(&mut this, _enum: *EnumNode, _type: *QualifiedType) {
-        this.scope_manager.PushScope(_enum->name, true);
         let mut value = LLVMConstInt(_type->Value(), 0, _type->IsSigned() ? 1 : 0);
-        let underlying_type = _type->UnderlyingType();
+        this.scope_manager.PushScope(_enum->name, true);
         let mut has_error = false;
 
         for variant in _enum->variants {
@@ -1175,10 +1171,10 @@ class Compiler {
                 let _value = this.CompileExpression(variant->value).MaterializeWithFallback(underlying_type).ToRValue();
 
                 if !_value.Null() {
-                    if _value.Type() == *_type || _value.Type() == underlying_type {
+                    if _value.Type() == *_type || _value.Type() == *underlying_type {
                         value = _value.Value();
                     } else {
-                        Logger::Log("Incompatible enum value types. ('" + _value.Type().ToString() + "' != '" + underlying_type.ToString() + "').", _enum, LogSeverity::Error);
+                        Logger::Log("Incompatible enum value types. ('" + _value.Type().ToString() + "' != '" + underlying_type->ToString() + "').", _enum, LogSeverity::Error);
                         has_error = true;
                     }
                 } else {
@@ -2539,20 +2535,65 @@ class Compiler {
                 }
 
                 for field in _type.Fields() {
-                    let mut field_type = field.right._type;
-
-                    if field_type->IsPointer() {
-                        field_type = this.type_manager.Copy(field_type, true);
-                    }
-
-                    let _value = QualifiedValue(LLVMBuildStructGEP2(this.builder, value.Type().Pointee().Value(), value.Value(), _type.Index(field.left) as u32, ""), this.type_manager.Pointer(field_type, true), true);
-                    let _pointer = QualifiedValue(LLVMBuildStructGEP2(this.builder, pointer.Type().Pointee().Value(), pointer.Value(), _type.Index(field.left) as u32, ""), this.type_manager.Pointer(field_type, true), true);
-                    this.CompileResolvedAssignment(_value, _pointer, _operator, ignore, node);
+                    let field_type = this.type_manager.Pointer(field.right._type, true);
+                    let source_field = QualifiedValue(LLVMBuildStructGEP2(this.builder, value.Type().Pointee().Value(), value.Value(), _type.Index(field.left) as u32, ""), field_type, true);
+                    let destination_field = QualifiedValue(LLVMBuildStructGEP2(this.builder, pointer.Type().Pointee().Value(), pointer.Value(), _type.Index(field.left) as u32, ""), field_type, true);
+                    this.CompileResolvedAssignment(source_field, destination_field, _operator, ignore, node);
                 }
             } else {
                 Logger::Log("Incompatible class assignment types. ('" + _type.ToString() + "' != '" + value.Type().Pointee().ToString() + "').", node, LogSeverity::Error);
                 return QualifiedValue(null, null);
             }
+        } else if pointer.Type().Pointee().IsArray() {
+            if _operator != TokenType::ASSIGN {
+                Logger::Log("Invalid array assignment operation '" + _operator.ToString() + "'.", node, LogSeverity::Error);
+                return QualifiedValue(null, null);
+            }
+
+            let array_type = pointer.Type().Pointee();
+            let mut value_type: *QualifiedType = value.Type();
+
+            if value_type->IsPointer() {
+                value_type = value_type->Pointee();
+            }
+
+            if !array_type.IsCompatible(value_type) {
+                Logger::Log("Incompatible array assignment types. ('" + array_type.ToString() + "' != '" + value_type->ToString() + "').", node, LogSeverity::Error);
+                return QualifiedValue(null, null);
+            }
+
+            if !array_type.Element().IsCompatible(value_type->Element()) {
+                Logger::Log("Incompatible element assignment types. ('" + array_type.Element().ToString() + "' != '" + value_type->Element().ToString() + "').", node, LogSeverity::Error);
+                return QualifiedValue(null, null);
+            }
+
+            let mut source_pointer = value.Value();
+
+            if value.IsRValue() {
+                let current = LLVMGetInsertBlock(this.builder);
+                LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
+                source_pointer = LLVMBuildAlloca(this.builder, array_type.Value(), "");
+                LLVMPositionBuilderAtEnd(this.builder, current);
+                LLVMBuildStore(this.builder, value.Value(), source_pointer);
+            }
+
+            if !array_type.Element().HasMethods() {
+                let align = LLVMABIAlignmentOfType(this.target->layout, array_type.Value());
+                let size = LLVMConstInt(LLVMIntPtrTypeInContext(this.context, this.target->layout), LLVMABISizeOfType(this.target->layout, array_type.Value()), 0);
+                LLVMBuildMemCpy(this.builder, pointer.Value(), align, source_pointer, align, size);
+                return pointer;
+            }
+
+            let element_type = this.type_manager.Pointer(array_type.Element(), true);
+
+            for i in 0..array_type.Length() {
+                let mut indices = Vector<LLVMValueRef>();
+                indices.PushBack(LLVMConstInt(LLVMIntPtrTypeInContext(this.context, this.target->layout), 0, 0));
+                indices.PushBack(LLVMConstInt(LLVMIntPtrTypeInContext(this.context, this.target->layout), i as u64, 0));
+                let source_element = QualifiedValue(LLVMBuildGEP2(this.builder, array_type.Value(), source_pointer, indices.Data(), 2, ""), element_type, true);
+                let destination_element = QualifiedValue(LLVMBuildGEP2(this.builder, array_type.Value(), pointer.Value(), indices.Data(), 2, ""), element_type, true);
+                this.CompileResolvedAssignment(source_element, destination_element, _operator, ignore, node);
+            } return pointer;
         } else {
             value = value.Materialize(pointer.Type().Pointee()).ToRValue();
 
@@ -4173,7 +4214,7 @@ class Compiler {
                 return QualifiedValue(null, null);
             }
 
-            return QualifiedValue(pointer.Value(), this.type_manager.Copy(pointer.Type(), unary->mutable));
+            return QualifiedValue(pointer.Value(), this.type_manager.Pointer(pointer.Type().Pointee(), unary->mutable));
         } else {
             let mut operand_target: *QualifiedType = null;
 

@@ -19,8 +19,13 @@ build-zirgen: bin/zirgen.exe
 run-zircraft: bin/zircraft.exe
 	$<
 
-run-zirgen: bin/zirgen.exe
-	$<
+LLVM_SOURCE_PATH := C:\Users\rencb\Documents\GitHub\llvm-project
+
+transpile-llvm: bin/zirgen.exe
+	$< "$(LLVM_SOURCE_PATH)\llvm\include\llvm-c\Core.h" -I"$(LLVM_SOURCE_PATH)\llvm\include" -I"$(LLVM_SOURCE_PATH)\build\include"
+
+transpile-clang: bin/zirgen.exe
+	$< "$(LLVM_SOURCE_PATH)\clang\include\clang-c\Index.h" -I"$(LLVM_SOURCE_PATH)\clang\include"
 
 bootstrap: bin/zirconc2.exe
 	copy /Y bin\zirconc2.exe bin\zirconc.exe

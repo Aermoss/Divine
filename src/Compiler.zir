@@ -261,6 +261,16 @@ class Compiler {
 
             for constructor in forward.declaration->constructors {
                 let _class = this.CompileType(constructor->expression);
+
+                if _class == null {
+                    continue;
+                }
+
+                if !_class->IsClass() {
+                    Logger::Log("Constructor type must be a class.", constructor, LogSeverity::Error);
+                    continue;
+                }
+
                 let mut values = Vector<QualifiedValue>();
 
                 for argument in constructor->arguments {
@@ -850,23 +860,6 @@ class Compiler {
             return value;
         }
 
-        for constructor in function->constructors {
-            unsafe {
-                let _class = this.CompileType(constructor->expression) as *mut QualifiedType;
-            }
-
-            if _class == null {
-                return value;
-            }
-
-            if !_class->IsClass() {
-                Logger::Log("Constructor type must be a class.", function, LogSeverity::Error);
-                return value;
-            }
-
-            _class->constructed.PushBack(this._class);
-        }
-
         if function->body != null && (function->_type->pack_name == "" || this.pack_specializing) {
             if this.generic != null {
                 this.forwards.PushBack(Forward(function, _type, value_ref, this._class, this.generic->types, this.generic));
@@ -928,35 +921,15 @@ class Compiler {
 
         let param_types = this.ValueToType(params);
         let has_constructor = _class.Has(_class.name, param_types);
-        let mut is_constructed = false;
-
-        if this._class != null {
-            for constructed in _class.constructed {
-                if *this._class == constructed {
-                    is_constructed = true;
-                    break;
-                }
-            }
-        }
-
-        let mut j: usize = 0;
 
         for field in _class.Fields() {
             let mut value: QualifiedValue;
 
-            if !(has_constructor && !is_constructed) && j < params.Size() {
-                value = params[j];
-            } else {
-                if field.right.initializer != null {
-                    if field.right.initializer->_type != NodeType::INITIALIZER_LIST {
-                        value = this.CompileExpression(field.right.initializer);
-                        if value.Null() { return; }
-                    }
-                }
-            }
-
-            if need_copy && !(has_constructor && !is_constructed) {
+            if need_copy && !has_constructor {
                 value = QualifiedValue(LLVMBuildStructGEP2(this.builder, params[0].Type().Pointee().Value(), params[0].Value(), _class.Index(field.left) as u32, ""), this.type_manager.Pointer(field.right._type, true), true);
+            } else if field.right.initializer != null {
+                value = this.CompileExpression(field.right.initializer);
+                if value.Null() { return; }
             }
 
             if field.right._type->HasFields() {
@@ -973,16 +946,14 @@ class Compiler {
                 }
 
                 this.CompileResolvedAssignment(value, QualifiedValue(LLVMBuildStructGEP2(this.builder, pointer.Type().Pointee().Value(), pointer.Value(), _class.Index(field.left) as u32, ""), this.type_manager.Pointer(field.right._type, true), true), TokenType::ASSIGN, true, node);
-            } j += 1;
+            }
         }
 
-        if has_constructor && !is_constructed {
+        if has_constructor {
             let method = _class.Get(_class.name, param_types, node);
             this.CompileResolvedCall(QualifiedValue(method->function, pointer), params, true, node);
-        } else {
-            if params.Size() > _class.Fields().Size() {
-                Logger::Log("Too many parameters.", node, LogSeverity::Error);
-            }
+        } else if !need_copy && !params.Empty() {
+            Logger::Log("No constructor found for class '" + _class.name + "' with the given parameters.", node, LogSeverity::Error);
         }
     }
 
@@ -1057,19 +1028,20 @@ class Compiler {
 
         for constructor in _class->constructors {
             let function = this.CompileFunction(constructor, null);
-            _type->methods.PushBack(Method(constructor->name, function, true));
+            _type->methods.PushBack(Method(constructor->name, function, false, true));
         }
 
         if _class->destructor != null {
             let function = this.CompileFunction(_class->destructor, null);
-            _type->methods.PushBack(Method(_class->destructor->name, function, true));
+            _type->methods.PushBack(Method(_class->destructor->name, function, false, true));
         }
 
         for method in _class->methods {
             let function = this.CompileFunction(method.right, null);
+            let _static = method.right->_type->instance_kind == InstanceKind::None;
 
             if !method.right->generic {
-                _type->methods.PushBack(Method(method.right->name, function, method.left));
+                _type->methods.PushBack(Method(method.right->name, function, _static, method.left));
             }
         }
 
@@ -1133,9 +1105,10 @@ class Compiler {
 
         for method in _struct->methods {
             let function = this.CompileFunction(method.right, null);
+            let _static = method.right->_type->instance_kind == InstanceKind::None;
 
             if !method.right->generic {
-                _type->methods.PushBack(Method(method.right->name, function, method.left));
+                _type->methods.PushBack(Method(method.right->name, function, _static, method.left));
             }
         }
 
@@ -1255,9 +1228,10 @@ class Compiler {
 
         for method in _enum->methods {
             let function = this.CompileFunction(method.right, null);
+            let _static = method.right->_type->instance_kind == InstanceKind::None;
 
             if !method.right->generic {
-                _type->methods.PushBack(Method(method.right->name, function, method.left));
+                _type->methods.PushBack(Method(method.right->name, function, _static, method.left));
             }
         }
 

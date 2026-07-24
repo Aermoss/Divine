@@ -22,14 +22,10 @@ run-zircraft: bin/zircraft.exe
 LLVM_SOURCE_PATH := C:\Users\rencb\Documents\GitHub\llvm-project
 
 transpile-llvm: bin/zirgen.exe
-	$< "$(LLVM_SOURCE_PATH)\llvm\include\llvm-c\Core.h" -I"$(LLVM_SOURCE_PATH)\llvm\include" -I"$(LLVM_SOURCE_PATH)\build\include" -ignore llvm-config
+	$< "$(LLVM_SOURCE_PATH)\llvm\include\llvm-c" -I"$(LLVM_SOURCE_PATH)\llvm\include" -I"$(LLVM_SOURCE_PATH)\build\include" -ignore llvm-config
 
 transpile-clang: bin/zirgen.exe
-	$< "$(LLVM_SOURCE_PATH)\clang\include\clang-c\Rewrite.h" -I"$(LLVM_SOURCE_PATH)\clang\include"
-	$< "$(LLVM_SOURCE_PATH)\clang\include\clang-c\Documentation.h" -I"$(LLVM_SOURCE_PATH)\clang\include"
-	$< "$(LLVM_SOURCE_PATH)\clang\include\clang-c\FatalErrorHandler.h" -I"$(LLVM_SOURCE_PATH)\clang\include"
-	$< "$(LLVM_SOURCE_PATH)\clang\include\clang-c\CXCompilationDatabase.h" -I"$(LLVM_SOURCE_PATH)\clang\include"
-	$< "$(LLVM_SOURCE_PATH)\clang\include\clang-c\Index.h" -I"$(LLVM_SOURCE_PATH)\clang\include"
+	$< "$(LLVM_SOURCE_PATH)\clang\include\clang-c" -I"$(LLVM_SOURCE_PATH)\clang\include"
 
 bootstrap: bin/zirconc2.exe
 	copy /Y bin\zirconc2.exe bin\zirconc.exe

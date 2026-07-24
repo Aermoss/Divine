@@ -23,6 +23,7 @@ enum TranspileState: i32 {
 class FileState {
     pub path: String,
     pub name: String,
+    pub relative_path: String,
     pub declarations: String,
     pub extern_functions: String,
     pub includes: Map<String, String>,
@@ -32,8 +33,10 @@ class FileState {
 class GlobalState {
     pub files: Map<String, *mut FileState>,
     pub transpile_states: Map<String, TranspileState>,
+    pub included_from: Map<String, *mut FileState>,
     pub translation_unit: CXTranslationUnit = null,
     pub output_directory: String,
+    pub root_directory: String,
     pub last_anonymous_enum: CXCursor
 }
 
@@ -45,6 +48,35 @@ fn EnsureBlankLine(file_state: *mut FileState) {
     }
 }
 
+fn NormalizePath(path: &String) -> String {
+    let mut result = String(path);
+
+    for i in 0..result.Length() {
+        if result[i] == '\\' {
+            result[i] = '/';
+        }
+    } return result;
+}
+
+fn GetRelativePath(path: &String, root_directory: &String) -> String {
+    let normalized = NormalizePath(path);
+    let root = NormalizePath(root_directory);
+
+    if !root.Empty() && normalized.StartsWith(root) {
+        let mut start = root.Length();
+
+        while start < normalized.Length() && (normalized[start] == '/' || normalized[start] == '\\') {
+            start += 1;
+        }
+
+        if start < normalized.Length() {
+            return SplitExtension(normalized.SubString(start, normalized.Length() - start)).left;
+        }
+    }
+
+    return SplitExtension(SplitPath(normalized).right).left;
+}
+
 fn GetFileState(state: *mut GlobalState, cursor: CXCursor) -> *mut FileState {
     let location = clang_getCursorLocation(cursor);
     if clang_Location_isInSystemHeader(location) != 0 { return null; }
@@ -54,12 +86,19 @@ fn GetFileState(state: *mut GlobalState, cursor: CXCursor) -> *mut FileState {
     if file == null { return null; }
 
     let spelling = clang_getFileName(file);
-    let path = clang_getCString(spelling).ToString();
+    let path = NormalizePath(clang_getCString(spelling).ToString());
     clang_disposeString(spelling);
 
+    if state->included_from.Has(path) {
+        return state->included_from[path];
+    }
+
+    let extension = SplitExtension(SplitPath(path).right).right;
+    if extension == ".def" || extension == ".inc" { return null; }
     if state->files.Has(path) { return state->files[path]; }
     let mut file_state = new FileState();
     file_state->name = SplitExtension(SplitPath(path).right).left;
+    file_state->relative_path = GetRelativePath(path, state->root_directory);
     (file_state->path, state->files[path]) = (path, file_state);
     return file_state;
 }
@@ -423,11 +462,17 @@ extern "C" {
 
             if file != null {
                 let spelling = clang_getFileName(file);
-                let path = clang_getCString(spelling).ToString();
+                let path = NormalizePath(clang_getCString(spelling).ToString());
                 clang_disposeString(spelling);
 
-                if !file_state->includes.Has(path) {
-                    file_state->includes[path] = "vendor/" + SplitPath(state->output_directory).right + '/' + GetRelativeVendorPath(path) + ".zir";
+                let extension = SplitExtension(SplitPath(path).right).right;
+
+                if extension == ".def" || extension == ".inc" {
+                    if !state->included_from.Has(path) {
+                        state->included_from[path] = file_state;
+                    }
+                } else if !file_state->includes.Has(path) {
+                    file_state->includes[path] = "vendor/" + SplitPath(state->output_directory).right + '/' + GetRelativePath(path, state->root_directory) + ".zir";
                 }
             }
         } else if cursor.kind == CXCursorKind::CXCursor_EnumDecl {
@@ -564,11 +609,43 @@ extern "C" {
     }
 }
 
+fn IsDirectory(path: &String) -> bool {
+    let attributes = GetFileAttributesA(path.Data());
+    if attributes == INVALID_FILE_ATTRIBUTES { return false; }
+    return (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+}
+
+fn CollectHeaders(directory: &String, headers: &mut Vector<String>) {
+    let mut find_data: WIN32_FIND_DATAA;
+    let handle = FindFirstFileA((directory + "\\*").Data(), &mut find_data);
+    if handle == INVALID_HANDLE_VALUE { return; }
+
+    loop {
+        let name = String(find_data->cFileName);
+
+        if name != "." && name != ".." {
+            let path = directory + "\\" + name;
+
+            if (find_data->dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 {
+                CollectHeaders(path, headers);
+            } else if name.Length() >= 2 && SplitExtension(name).right == ".h" {
+                headers.PushBack(path);
+            }
+        }
+
+        if FindNextFileA(handle, &mut find_data) == 0 {
+            break;
+        }
+    }
+
+    FindClose(handle);
+}
+
 fn Main(args: &mut Vector<String>) -> i32 {
     let executable = SplitPath(args[0]).right;
 
     if args.Size() < 2 {
-        WriteLine("Usage: " + executable + " <header.h> [-o output_directory] [-I include_directory] [-ignore file_name]");
+        WriteLine("Usage: " + executable + " <header.h | input_directory> [-o output_directory] [-I include_directory] [-ignore file_name]");
         return 1;
     }
 
@@ -607,8 +684,37 @@ fn Main(args: &mut Vector<String>) -> i32 {
         } i += 1;
     }
 
+    let mut input_files = Vector<String>();
+
+    if IsDirectory(input) {
+        CollectHeaders(input, &mut input_files);
+    } else {
+        input_files.PushBack(input);
+    }
+
+    if input_files.Empty() {
+        WriteLine(executable + ": \x1b[31mError:\x1b[0m No header files found in '" + input + "'.");
+        return 1;
+    }
+
+    let mut root_directory = String();
+
+    if IsDirectory(input) {
+        root_directory = input;
+    } else {
+        root_directory = SplitPath(input).left;
+    }
+
     if output_directory.Empty() {
-        output_directory = JoinPath("include".ToString(), JoinPath("vendor".ToString(), SplitPath(SplitPath(input).left).right));
+        let mut name = String();
+
+        if IsDirectory(input) {
+            name = SplitPath(input).right;
+        } else {
+            name = SplitPath(SplitPath(input).left).right;
+        }
+
+        output_directory = JoinPath("include".ToString(), JoinPath("vendor".ToString(), name));
     }
 
     EnsureDirectory(output_directory);
@@ -619,21 +725,22 @@ fn Main(args: &mut Vector<String>) -> i32 {
         return 1;
     }
 
-    let translation_unit = clang_parseTranslationUnit(index, input.Data(), clang_args.Data(), clang_args.Size() as i32, null, 0, (CXTranslationUnit_Flags::CXTranslationUnit_DetailedPreprocessingRecord | CXTranslationUnit_Flags::CXTranslationUnit_SkipFunctionBodies) as u32);
-
-    if translation_unit == null {
-        WriteLine(executable + ": \x1b[31mError:\x1b[0m Failed to parse '" + input + "'.");
-        clang_disposeIndex(index);
-        return 1;
-    }
-
     let mut state: GlobalState;
-    state.translation_unit = translation_unit;
     state.output_directory = output_directory;
+    state.root_directory = root_directory;
     state.last_anonymous_enum = clang_getNullCursor();
 
-    let root = clang_getTranslationUnitCursor(translation_unit);
-    clang_visitChildren(root, VisitTopLevel, &mut state as CXClientData);
+    for header_file in input_files {
+        let translation_unit = clang_parseTranslationUnit(index, header_file.Data(), clang_args.Data(), clang_args.Size() as i32, null, 0, (CXTranslationUnit_Flags::CXTranslationUnit_DetailedPreprocessingRecord | CXTranslationUnit_Flags::CXTranslationUnit_SkipFunctionBodies) as u32);
+
+        if translation_unit != null {
+            state.translation_unit = translation_unit;
+            let root = clang_getTranslationUnitCursor(translation_unit);
+            clang_visitChildren(root, VisitTopLevel, &mut state as CXClientData);
+            clang_disposeTranslationUnit(translation_unit);
+        }
+    }
+
     FlushAnonymousEnum(&mut state, null);
 
     let files = state.files.Values();
@@ -687,14 +794,14 @@ fn Main(args: &mut Vector<String>) -> i32 {
             end -= 1;
         }
 
-        let output_path = JoinPath(output_directory, file_state->name + ".zir");
+        let output_path = JoinPath(output_directory, file_state->relative_path + ".zir");
+        EnsureDirectory(SplitPath(output_path).left);
 
         if _WriteFile(output_path, content.SubString(0, end)) {
             WriteLine(executable + ": \x1b[32mInfo:\x1b[0m Generated '" + output_path + "'.");
         }
     }
 
-    clang_disposeTranslationUnit(translation_unit);
     clang_disposeIndex(index);
     return 0;
 }

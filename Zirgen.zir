@@ -188,8 +188,7 @@ fn TypeToString(_type: CXType) -> String {
 
 class EnumVisitorData {
     pub file_state: *mut FileState,
-    pub type_name: String,
-    pub current_expected_value: i64 = 0;
+    pub type_name: String;
 
     EnumVisitorData(&mut this, file_state: *mut FileState, type_name: &String) {
         (this.file_state, this.type_name) = (file_state, type_name);
@@ -209,20 +208,20 @@ extern "C" {
         let name = clang_getCString(spelling).ToString();
         clang_disposeString(spelling);
 
-        let value = clang_getEnumConstantDeclValue(cursor);
+        let mut expression = String();
+        clang_visitChildren(cursor, VisitChildExpression, &mut expression as CXClientData);
 
-        if value == visitor_data->current_expected_value {
-            file_state->declarations += "    " + name;
-        } else {
-            file_state->declarations += "    " + name + " = " + String::FromInteger(value);
+        if !expression.Empty() {
+            file_state->declarations += "    " + name + " = " + expression;
 
-            if type_name.StartsWith('u') && value < 0 {
+            if type_name.StartsWith('u') && expression.StartsWith('-') {
                 file_state->declarations += " as " + type_name;
             }
+        } else {
+            file_state->declarations += "    " + name;
         }
 
         file_state->declarations += ",\n";
-        visitor_data->current_expected_value = value + 1;
         return CXChildVisitResult::CXChildVisit_Continue;
     }
 
@@ -492,7 +491,7 @@ fn TranslateExpression(cursor: CXCursor) -> String {
 
         let mut operands = Vector<String>();
         clang_visitChildren(cursor, VisitChildExpressions, &mut operands as CXClientData);
-        return operands[0] + " " + _operator + " " + operands[1];
+        return operands[0] + ' ' + _operator + ' ' + operands[1];
     } else if kind == CXCursorKind::CXCursor_ParenExpr {
         let mut expression = String();
         clang_visitChildren(cursor, VisitChildExpression, &mut expression as CXClientData);

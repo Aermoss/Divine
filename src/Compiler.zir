@@ -3416,13 +3416,6 @@ class Compiler {
                         return QualifiedValue(null, null);
                     }
 
-                    for i in 0..values.Size() {
-                        if !variant_types[i]->IsCompatible(values[i].ToRValueType()) {
-                            Logger::Log("Incompatible argument types for variant '" + symbol->name + "'. ('" + variant_types[i]->ToString() + "' != '" + values[i].ToRValueType().ToString() + "').", call, LogSeverity::Error);
-                            return QualifiedValue(null, null);
-                        }
-                    }
-
                     let current = LLVMGetInsertBlock(this.builder);
                     LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
                     let pointer = LLVMBuildAlloca(this.builder, enum_type->Value(), "");
@@ -3436,8 +3429,15 @@ class Compiler {
                     payload_pointer = LLVMBuildBitCast(this.builder, payload_pointer, LLVMPointerType(payload_type, 0), "");
 
                     for i in 0..values.Size() {
+                        let value = values[i].MaterializeWithFallback(variant_types[i]).ToRValue();
+
+                        if !variant_types[i]->IsCompatible(value.Type()) {
+                            Logger::Log("Incompatible argument types for variant '" + symbol->name + "'. ('" + variant_types[i]->ToString() + "' != '" + value.Type().ToString() + "').", call, LogSeverity::Error);
+                            return QualifiedValue(null, null);
+                        }
+
                         let element_pointer = LLVMBuildStructGEP2(this.builder, payload_type, payload_pointer, i as u32, "");
-                        LLVMBuildStore(this.builder, values[i].ToRValue().Value(), element_pointer);
+                        LLVMBuildStore(this.builder, value.Value(), element_pointer);
                     }
 
                     return QualifiedValue(pointer, this.type_manager.Pointer(enum_type, true), true, true);

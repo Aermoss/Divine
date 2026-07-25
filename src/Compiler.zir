@@ -2900,54 +2900,86 @@ class Compiler {
             return QualifiedValue(null, null);
         }
 
-        let enum_type = symbol->value.Type();
-        let variant_index = LLVMConstIntGetZExtValue(symbol->value.Value());
-        let variant_types = enum_type->variants[variant_index as usize].right;
+        let _type = symbol->value.Type();
 
-        if node->field_names.Size() != variant_types.Size() {
-            Logger::Log("Variant '" + symbol->name + "' argument count mismatch.", node, LogSeverity::Error);
+        if _type->IsVariant() {
+            let variant_index = LLVMConstIntGetZExtValue(symbol->value.Value());
+            let variant_types = _type->variants[variant_index as usize].right;
+
+            if node->field_names.Size() != variant_types.Size() {
+                Logger::Log("Variant '" + symbol->name + "' argument count mismatch.", node, LogSeverity::Error);
+                return QualifiedValue(null, null);
+            }
+
+            let current = LLVMGetInsertBlock(this.builder);
+            LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
+            let pointer = LLVMBuildAlloca(this.builder, _type->Value(), "");
+            LLVMPositionBuilderAtEnd(this.builder, current);
+
+            let tag_pointer = LLVMBuildStructGEP2(this.builder, _type->Value(), pointer, 0, "");
+            LLVMBuildStore(this.builder, LLVMConstInt(LLVMInt32TypeInContext(this.context), variant_index, 0), tag_pointer);
+
+            let payload_type = this.CreateVariantPayloadType(variant_types);
+            let mut payload_pointer = LLVMBuildStructGEP2(this.builder, _type->Value(), pointer, 1, "");
+            payload_pointer = LLVMBuildBitCast(this.builder, payload_pointer, LLVMPointerType(payload_type, 0), "");
+
+            for i in 0..node->field_names.Size() {
+                let field_name = node->field_names[i];
+                let field_index = this.VariantFieldIndex(_type, variant_index as usize, field_name);
+
+                if field_index == -1 {
+                    Logger::Log("Unknown field '" + field_name + "' for variant '" + symbol->name + "'.", node, LogSeverity::Error);
+                    return QualifiedValue(null, null);
+                }
+
+                let value = this.CompileExpression(node->field_values[i]).MaterializeWithFallback(variant_types[field_index as usize]).ToRValue();
+
+                if value.Null() {
+                    return QualifiedValue(null, null);
+                }
+
+                let element_pointer = LLVMBuildStructGEP2(this.builder, payload_type, payload_pointer, field_index as u32, "");
+                LLVMBuildStore(this.builder, value.Value(), element_pointer);
+            }
+
+            return QualifiedValue(pointer, this.type_manager.Pointer(_type, true), true, true);
+        } else if _type->IsStructure() {
+            let fields = _type->Fields();
+
+            if node->field_names.Size() != fields.Size() {
+                Logger::Log("Structure '" + symbol->name + "' argument count mismatch.", node, LogSeverity::Error);
+                return QualifiedValue(null, null);
+            }
+
+            let current = LLVMGetInsertBlock(this.builder);
+            LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
+            let pointer = LLVMBuildAlloca(this.builder, _type->Value(), "");
+            LLVMPositionBuilderAtEnd(this.builder, current);
+
+            for i in 0..node->field_names.Size() {
+                let field_name = node->field_names[i];
+                let field_index = fields.Index(field_name);
+
+                if field_index == -1 {
+                    Logger::Log("Unknown field '" + field_name + "' for structure '" + symbol->name + "'.", node, LogSeverity::Error);
+                    return QualifiedValue(null, null);
+                }
+
+                let value = this.CompileExpression(node->field_values[i]).MaterializeWithFallback(fields[field_index as usize].right._type).ToRValue();
+
+                if value.Null() {
+                    return QualifiedValue(null, null);
+                }
+
+                let element_pointer = LLVMBuildStructGEP2(this.builder, _type->Value(), pointer, field_index as u32, "");
+                LLVMBuildStore(this.builder, value.Value(), element_pointer);
+            }
+
+            return QualifiedValue(pointer, this.type_manager.Pointer(_type, true), true, true);
+        } else {
+            Logger::Log("Type '" + _type->ToString() + "' is not a structure or variant.", node, LogSeverity::Error);
             return QualifiedValue(null, null);
         }
-
-        let mut ordered_args = Vector<QualifiedValue>();
-        ordered_args.Resize(variant_types.Size());
-
-        for i in 0..node->field_names.Size() {
-            let field_name = node->field_names[i];
-            let field_index = this.VariantFieldIndex(enum_type, variant_index as usize, field_name);
-
-            if field_index == -1 {
-                Logger::Log("Unknown field '" + field_name + "' for variant '" + symbol->name + "'.", node, LogSeverity::Error);
-                return QualifiedValue(null, null);
-            }
-
-            let value = this.CompileExpression(node->field_values[i]).MaterializeWithFallback(variant_types[field_index as usize]).ToRValue();
-
-            if value.Null() {
-                return QualifiedValue(null, null);
-            }
-
-            ordered_args[field_index as usize] = value;
-        }
-
-        let current = LLVMGetInsertBlock(this.builder);
-        LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
-        let pointer = LLVMBuildAlloca(this.builder, enum_type->Value(), "");
-        LLVMPositionBuilderAtEnd(this.builder, current);
-
-        let tag_pointer = LLVMBuildStructGEP2(this.builder, enum_type->Value(), pointer, 0, "");
-        LLVMBuildStore(this.builder, LLVMConstInt(LLVMInt32TypeInContext(this.context), variant_index, 0), tag_pointer);
-
-        let payload_type = this.CreateVariantPayloadType(variant_types);
-        let mut payload_pointer = LLVMBuildStructGEP2(this.builder, enum_type->Value(), pointer, 1, "");
-        payload_pointer = LLVMBuildBitCast(this.builder, payload_pointer, LLVMPointerType(payload_type, 0), "");
-
-        for i in 0..ordered_args.Size() {
-            let element_pointer = LLVMBuildStructGEP2(this.builder, payload_type, payload_pointer, i as u32, "");
-            LLVMBuildStore(this.builder, ordered_args[i].Value(), element_pointer);
-        }
-
-        return QualifiedValue(pointer, this.type_manager.Pointer(enum_type, true), true, true);
     }
 
     fn CompileLiteral(&mut this, literal: *LiteralNode) -> QualifiedValue {

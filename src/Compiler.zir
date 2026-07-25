@@ -2056,7 +2056,7 @@ class Compiler {
 
             if iterable.Type().IsPointer() {
                 if iterable.Type().Pointee().IsReference() {
-                    iterable = QualifiedValue(LLVMBuildLoad2(this.builder, iterable.Type().Pointee().Value(), iterable.Value(), ""), iterable.Type().Pointee(), false, iterable.IsLValue());
+                    iterable = QualifiedValue(LLVMBuildLoad2(this.builder, iterable.Type().Pointee().Value(), iterable.Value(), ""), iterable.Type().Pointee(), iterable.IsLValue());
                 }
             }
 
@@ -2273,55 +2273,46 @@ class Compiler {
             if _type == null { return; }
 
             if _type->HasFields() {
-                let (mut has_error, mut skip) = (true, false);
                 let mut params = Vector<QualifiedValue>();
+                let current = LLVMGetInsertBlock(this.builder);
+                LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
+                let instance = QualifiedValue(LLVMBuildAlloca(this.builder, _type->Value(), ""), this.type_manager.Pointer(_type, variable->mutable), true);
+                LLVMPositionBuilderAtEnd(this.builder, current);
+                this.scope_manager.RegisterInstance(instance);
+                let mut constructed = false;
 
                 if variable->initializer != null {
-                    let mut value = this.CompileExpression(variable->initializer).MaterializeWithFallback(_type);
+                    let mut value = this.CompileExpression(variable->initializer, instance).MaterializeWithFallback(_type);
 
-                    if !value.Null() {
-                        let mut value_type: *QualifiedType = value.ToRValueType();
-                        let same = _type->IsSame(value_type);
+                    if value != instance {
+                        if !value.Null() {
+                            let mut value_type: *QualifiedType = value.ToRValueType();
+                            let same = _type->IsSame(value_type);
 
-                        if value_type->IsReference() {
-                            value_type = value_type->Pointee();
-                        }
+                            if value_type->IsReference() {
+                                value_type = value_type->Pointee();
+                            }
 
-                        if *_type == value_type {
-                            has_error = false;
-
-                            if !value._return {
+                            if *_type == value_type {
                                 params.PushBack(value);
+
+                                if same && !this.LiteralNeedsExplicitType(variable->initializer, _type) {
+                                    Logger::Log("Unnecessary type annotation, type can be inferred from initializer.", variable, LogSeverity::Warning);
+                                }
                             } else {
-                                this.scope_manager.Set(variable->name, SymbolKind::Variable, value, false, variable);
-                                skip = true;
+                                Logger::Log("Incompatible variable initialization types. ('" + _type->ToString() + "' != '" + value_type->ToString() + "').", variable, LogSeverity::Error);
                             }
-
-                            if same && !this.LiteralNeedsExplicitType(variable->initializer, _type) {
-                                Logger::Log("Unnecessary type annotation, type can be inferred from initializer.", variable, LogSeverity::Warning);
-                            }
-                        } else {
-                            Logger::Log("Incompatible variable initialization types. ('" + _type->ToString() + "' != '" + value_type->ToString() + "').", variable, LogSeverity::Error);
                         }
+                    } else {
+                        constructed = true;
                     }
-                } else {
-                    has_error = false;
                 }
 
-                if !skip {
-                    let mut instance = QualifiedValue(null, null);
-
-                    if !has_error {
-                        let current = LLVMGetInsertBlock(this.builder);
-                        LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
-                        instance = QualifiedValue(LLVMBuildAlloca(this.builder, _type->Value(), ""), this.type_manager.Pointer(_type, variable->mutable), true);
-                        LLVMPositionBuilderAtEnd(this.builder, current);
-                        this.CompileConstructor(_type, instance, params, variable);
-                        this.scope_manager.RegisterInstance(instance);
-                    }
-
-                    this.scope_manager.Set(variable->name, SymbolKind::Variable, instance, false, variable);
+                if !constructed {
+                    this.CompileConstructor(_type, instance, params, variable);
                 }
+
+                this.scope_manager.Set(variable->name, SymbolKind::Variable, instance, false, variable);
             } else {
                 if variable->initializer != null {
                     if variable->initializer->_type == NodeType::INITIALIZER_LIST {
@@ -2412,7 +2403,7 @@ class Compiler {
             if !value.Null() {
                 let _type = value.ToRValueType();
 
-                if !value._return {
+                if !value.temporary {
                     let current = LLVMGetInsertBlock(this.builder);
                     LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
                     pointer = QualifiedValue(LLVMBuildAlloca(this.builder, _type.Value(), ""), this.type_manager.Pointer(_type, variable->mutable), true);
@@ -2762,10 +2753,18 @@ class Compiler {
     }
 
     fn CompileExpression(&mut this, expression: *Node) -> QualifiedValue {
-        return this.CompileExpression(expression, null, false);
+        return this.CompileExpression(expression, QualifiedValue(null, null), null, false);
     }
 
     pub fn CompileExpression(&mut this, expression: *Node, target: *QualifiedType, deferred: bool) -> QualifiedValue {
+        return this.CompileExpression(expression, QualifiedValue(null, null), target, deferred);
+    }
+
+    fn CompileExpression(&mut this, expression: *Node, destination: &QualifiedValue) -> QualifiedValue {
+        return this.CompileExpression(expression, destination, null, false);
+    }
+
+    fn CompileExpression(&mut this, expression: *Node, destination: &QualifiedValue, target: *QualifiedType, deferred: bool) -> QualifiedValue {
         if !deferred && (expression->_type == NodeType::UNARY || expression->_type == NodeType::BINARY || expression->_type == NodeType::TERNARY) {
             let deferred_type = this.IsDeferrableExpression(expression);
 
@@ -2777,7 +2776,7 @@ class Compiler {
         if expression->_type == NodeType::LITERAL {
             return this.CompileLiteral(expression as *LiteralNode);
         } else if expression->_type == NodeType::CALL {
-            return this.CompileCall(expression as *CallNode);
+            return this.CompileCall(expression as *CallNode, destination);
         } else if expression->_type == NodeType::IDENTIFIER || expression->_type == NodeType::SCOPE_RESOLUTION {
             let symbol = this.scope_manager.Resolve(expression, false);
 
@@ -2827,7 +2826,7 @@ class Compiler {
         } else if expression->_type == NodeType::TERNARY {
             return this.CompileTernary(expression as *TernaryNode, target);
         } else if expression->_type == NodeType::STRUCTURE_INITIALIZER {
-            return this.CompileStructureInitializer(expression as *StructureInitializerNode);
+            return this.CompileStructureInitializer(expression as *StructureInitializerNode, destination);
         } else if expression->_type == NodeType::TYPE_APPLICATION {
             return this.CompileTypeApplication(expression as *TypeApplicationNode);
         } else {
@@ -2893,7 +2892,7 @@ class Compiler {
         }
     }
 
-    fn CompileStructureInitializer(&mut this, node: *StructureInitializerNode) -> QualifiedValue {
+    fn CompileStructureInitializer(&mut this, node: *StructureInitializerNode, mut destination: QualifiedValue) -> QualifiedValue {
         let symbol = this.scope_manager.Resolve(node->expression, false);
 
         if symbol == null {
@@ -2901,6 +2900,13 @@ class Compiler {
         }
 
         let _type = symbol->value.Type();
+
+        if destination.Null() {
+            let current = LLVMGetInsertBlock(this.builder);
+            LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
+            destination = QualifiedValue(LLVMBuildAlloca(this.builder, _type->Value(), ""), this.type_manager.Pointer(_type, true), true, true);
+            LLVMPositionBuilderAtEnd(this.builder, current);
+        }
 
         if _type->IsVariant() {
             let variant_index = LLVMConstIntGetZExtValue(symbol->value.Value());
@@ -2911,16 +2917,11 @@ class Compiler {
                 return QualifiedValue(null, null);
             }
 
-            let current = LLVMGetInsertBlock(this.builder);
-            LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
-            let pointer = LLVMBuildAlloca(this.builder, _type->Value(), "");
-            LLVMPositionBuilderAtEnd(this.builder, current);
-
-            let tag_pointer = LLVMBuildStructGEP2(this.builder, _type->Value(), pointer, 0, "");
+            let tag_pointer = LLVMBuildStructGEP2(this.builder, _type->Value(), destination.Value(), 0, "");
             LLVMBuildStore(this.builder, LLVMConstInt(LLVMInt32TypeInContext(this.context), variant_index, 0), tag_pointer);
 
             let payload_type = this.CreateVariantPayloadType(variant_types);
-            let mut payload_pointer = LLVMBuildStructGEP2(this.builder, _type->Value(), pointer, 1, "");
+            let mut payload_pointer = LLVMBuildStructGEP2(this.builder, _type->Value(), destination.Value(), 1, "");
             payload_pointer = LLVMBuildBitCast(this.builder, payload_pointer, LLVMPointerType(payload_type, 0), "");
 
             for i in 0..node->field_names.Size() {
@@ -2942,7 +2943,7 @@ class Compiler {
                 LLVMBuildStore(this.builder, value.Value(), element_pointer);
             }
 
-            return QualifiedValue(pointer, this.type_manager.Pointer(_type, true), true, true);
+            return QualifiedValue(destination.Value(), this.type_manager.Pointer(_type, true), true, true);
         } else if _type->IsStructure() {
             let fields = _type->Fields();
 
@@ -2950,11 +2951,6 @@ class Compiler {
                 Logger::Log("Structure '" + symbol->name + "' argument count mismatch.", node, LogSeverity::Error);
                 return QualifiedValue(null, null);
             }
-
-            let current = LLVMGetInsertBlock(this.builder);
-            LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
-            let pointer = LLVMBuildAlloca(this.builder, _type->Value(), "");
-            LLVMPositionBuilderAtEnd(this.builder, current);
 
             for i in 0..node->field_names.Size() {
                 let field_name = node->field_names[i];
@@ -2971,15 +2967,12 @@ class Compiler {
                     return QualifiedValue(null, null);
                 }
 
-                let element_pointer = LLVMBuildStructGEP2(this.builder, _type->Value(), pointer, field_index as u32, "");
+                let element_pointer = LLVMBuildStructGEP2(this.builder, _type->Value(), destination.Value(), field_index as u32, "");
                 LLVMBuildStore(this.builder, value.Value(), element_pointer);
             }
-
-            return QualifiedValue(pointer, this.type_manager.Pointer(_type, true), true, true);
         } else {
             Logger::Log("Type '" + _type->ToString() + "' is not a structure or variant.", node, LogSeverity::Error);
-            return QualifiedValue(null, null);
-        }
+        } return destination;
     }
 
     fn CompileLiteral(&mut this, literal: *LiteralNode) -> QualifiedValue {
@@ -3082,7 +3075,7 @@ class Compiler {
         }
     }
 
-    fn CompileCall(&mut this, call: *CallNode) -> QualifiedValue {
+    fn CompileCall(&mut this, call: *CallNode, mut destination: QualifiedValue) -> QualifiedValue {
         if call->expression->_type == NodeType::IDENTIFIER {
             let identifier = call->expression as *IdentifierNode;
 
@@ -3239,17 +3232,15 @@ class Compiler {
 
                     if instance.Type().Pointee().Has(method_name, param_types) {
                         let method = instance.Type().Pointee().Get(method_name, param_types, member_access);
-                        instance = this.CompileResolvedCall(QualifiedValue(method->function, instance), values, false, member_access);
+                        instance = this.CompileResolvedCall(QualifiedValue(method->function, instance), values, destination, false, member_access);
                     }
                 } else if instance.IsLValue() || instance.Type().IsReference() {
                     if member_access->arrow {
                         instance = QualifiedValue(LLVMBuildLoad2(this.builder, instance.Type().Pointee().Value(), instance.Value(), ""), instance.Type().Pointee(), false, instance.IsLValue());
                     }
-                } else {
-                    if !member_access->arrow && !instance._return && instance.Type().IsPointer() && (instance.Type().Pointee().HasFields() || instance.Type().Pointee().HasMethods()) {
-                        Logger::Log("Expected an arrow operator.", call, LogSeverity::Error);
-                        return QualifiedValue(null, null);
-                    }
+                } else if !member_access->arrow && !instance.temporary && instance.Type().IsPointer() && (instance.Type().Pointee().HasFields() || instance.Type().Pointee().HasMethods()) {
+                    Logger::Log("Expected an arrow operator.", call, LogSeverity::Error);
+                    return QualifiedValue(null, null);
                 }
 
                 if !instance.Type().IsPointer() {
@@ -3273,7 +3264,7 @@ class Compiler {
                 let symbol = this.scope_manager.Resolve(member_access->member, this.ValueToType(values), call, false);
 
                 if symbol != null {
-                    return this.CompileResolvedCall(symbol->value, values, false, call);
+                    return this.CompileResolvedCall(symbol->value, values, destination, false, call);
                 } else {
                     return QualifiedValue(null, null);
                 }
@@ -3291,12 +3282,12 @@ class Compiler {
                     }
 
                     let field_pointer = LLVMBuildStructGEP2(this.builder, instance.Type().Pointee().Value(), instance.Value(), index as u32, "");
-                    return this.CompileResolvedCall(QualifiedValue(LLVMBuildLoad2(this.builder, field._type->Value(), field_pointer, ""), field._type), values, false, call);
+                    return this.CompileResolvedCall(QualifiedValue(LLVMBuildLoad2(this.builder, field._type->Value(), field_pointer, ""), field._type), values, destination, false, call);
                 } else {
                     let method = instance.Type().Pointee().Get(member_access->member, this.ValueToType(values), call);
 
                     if method != null {
-                        return this.CompileResolvedCall(QualifiedValue(method->function, instance), values, false, call);
+                        return this.CompileResolvedCall(QualifiedValue(method->function, instance), values, destination, false, call);
                     } else {
                         return QualifiedValue(null, null);
                     }
@@ -3318,7 +3309,7 @@ class Compiler {
                         let generic = this.scope_manager.Get(primitive_type->name, SymbolKind::Generic)->pointer as *mut Generic;
 
                         if generic->node->_type == NodeType::FUNCTION {
-                            return this.CompileResolvedCall(generic->Get(types).left, values, false, call);
+                            return this.CompileResolvedCall(generic->Get(types).left, values, destination, false, call);
                         }
                     } else {
                         if this.scope_manager.Has(primitive_type->name) {
@@ -3351,7 +3342,7 @@ class Compiler {
                         if symbol != null {
                             let mut method = (symbol->pointer as *mut Generic)->Get(types).left;
                             (method.instance, method.instance_type) = (instance.Value(), instance.Type());
-                            return this.CompileResolvedCall(method, values, false, call);
+                            return this.CompileResolvedCall(method, values, destination, false, call);
                         } else {
                             return QualifiedValue(null, null);
                         }
@@ -3364,7 +3355,7 @@ class Compiler {
                         let symbol = scope->Get(resolution->identifier->name, SymbolKind::Generic);
 
                         if symbol != null {
-                            return this.CompileResolvedCall((symbol->pointer as *mut Generic)->Get(types).left, values, false, call);
+                            return this.CompileResolvedCall((symbol->pointer as *mut Generic)->Get(types).left, values, destination, false, call);
                         } else {
                             return QualifiedValue(null, null);
                         }
@@ -3375,14 +3366,21 @@ class Compiler {
             }
 
             let _class = this.CompileType(call->expression);
-            if _class == null { return QualifiedValue(null, null); }
-            let current = LLVMGetInsertBlock(this.builder);
-            LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
-            let instance = QualifiedValue(LLVMBuildAlloca(this.builder, _class->Value(), ""), this.type_manager.Pointer(_class, true), true, true);
-            LLVMPositionBuilderAtEnd(this.builder, current);
-            this.CompileConstructor(_class, instance, values, call);
-            this.scope_manager.RegisterInstance(instance);
-            return instance;
+
+            if _class == null {
+                return QualifiedValue(null, null);
+            }
+
+            if destination.Null() {
+                let current = LLVMGetInsertBlock(this.builder);
+                LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
+                destination = QualifiedValue(LLVMBuildAlloca(this.builder, _class->Value(), ""), this.type_manager.Pointer(_class, true), true, true);
+                LLVMPositionBuilderAtEnd(this.builder, current);
+                this.scope_manager.RegisterInstance(destination);
+            }
+
+            this.CompileConstructor(_class, destination, values, call);
+            return destination;
         } else {
             let mut symbol: *Symbol = null;
             let mut state = false;
@@ -3411,6 +3409,14 @@ class Compiler {
             if !state {
                 if symbol != null {
                     let enum_type = symbol->value.Type();
+
+                    if destination.Null() {
+                        let current = LLVMGetInsertBlock(this.builder);
+                        LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
+                        destination = QualifiedValue(LLVMBuildAlloca(this.builder, enum_type->Value(), ""), this.type_manager.Pointer(enum_type, true), true, true);
+                        LLVMPositionBuilderAtEnd(this.builder, current);
+                    }
+
                     let variant_index = LLVMConstIntGetZExtValue(symbol->value.Value());
                     let variant_types = enum_type->variants[variant_index as usize].right;
 
@@ -3419,16 +3425,11 @@ class Compiler {
                         return QualifiedValue(null, null);
                     }
 
-                    let current = LLVMGetInsertBlock(this.builder);
-                    LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
-                    let pointer = LLVMBuildAlloca(this.builder, enum_type->Value(), "");
-                    LLVMPositionBuilderAtEnd(this.builder, current);
-
-                    let tag_pointer = LLVMBuildStructGEP2(this.builder, enum_type->Value(), pointer, 0, "");
+                    let tag_pointer = LLVMBuildStructGEP2(this.builder, enum_type->Value(), destination.Value(), 0, "");
                     LLVMBuildStore(this.builder, LLVMConstInt(LLVMInt32TypeInContext(this.context), variant_index, 0), tag_pointer);
 
                     let payload_type = this.CreateVariantPayloadType(variant_types);
-                    let mut payload_pointer = LLVMBuildStructGEP2(this.builder, enum_type->Value(), pointer, 1, "");
+                    let mut payload_pointer = LLVMBuildStructGEP2(this.builder, enum_type->Value(), destination.Value(), 1, "");
                     payload_pointer = LLVMBuildBitCast(this.builder, payload_pointer, LLVMPointerType(payload_type, 0), "");
 
                     for i in 0..values.Size() {
@@ -3441,14 +3442,12 @@ class Compiler {
 
                         let element_pointer = LLVMBuildStructGEP2(this.builder, payload_type, payload_pointer, i as u32, "");
                         LLVMBuildStore(this.builder, value.Value(), element_pointer);
-                    }
-
-                    return QualifiedValue(pointer, this.type_manager.Pointer(enum_type, true), true, true);
+                    } return destination;
                 } else {
                     symbol = this.scope_manager.Resolve(call->expression, this.ValueToType(values), false);
 
                     if symbol != null {
-                        return this.CompileResolvedCall(symbol->value, values, false, call);
+                        return this.CompileResolvedCall(symbol->value, values, destination, false, call);
                     } else {
                         return QualifiedValue(null, null);
                     }
@@ -3457,7 +3456,7 @@ class Compiler {
                 let value = this.CompileExpression(call->expression).ToRValue();
 
                 if !value.Null() {
-                    return this.CompileResolvedCall(value, values, false, call);
+                    return this.CompileResolvedCall(value, values, destination, false, call);
                 } else {
                     return QualifiedValue(null, null);
                 }
@@ -3539,6 +3538,10 @@ class Compiler {
     }
 
     fn CompileResolvedCall(&mut this, mut _func: QualifiedValue, values: &Vector<QualifiedValue>, ignore: bool, node: *Node) -> QualifiedValue {
+        return this.CompileResolvedCall(_func, values, QualifiedValue(null, null), ignore, node);
+    }
+
+    fn CompileResolvedCall(&mut this, mut _func: QualifiedValue, values: &Vector<QualifiedValue>, mut destination: QualifiedValue, ignore: bool, node: *Node) -> QualifiedValue {
         if _func.Type().Pointee().IsPointer() {
             if _func.Type().Pointee().Pointee().IsFunction() {
                 _func = QualifiedValue(LLVMBuildLoad2(this.builder, _func.Type().Pointee().Value(), _func.Value(), ""), _func.Type().Pointee());
@@ -3551,22 +3554,19 @@ class Compiler {
         }
 
         let mut args = Vector<LLVMValueRef>();
-        let ret_type = _func.Type().Pointee().Return();
         let params = _func.Type().Pointee().Parameters();
-        let mut _return: QualifiedValue;
+        let ret_type = _func.Type().Pointee().Return();
 
-        if !params.Empty() {
-            if params[0].sret != null {
-                let current = LLVMGetInsertBlock(this.builder);
-                LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
-                let _pointer = LLVMBuildAlloca(this.builder, params[0].sret->Value(), "");
-                _return = QualifiedValue(_pointer, this.type_manager.Pointer(params[0].sret, true), true, true);
-                LLVMPositionBuilderAtEnd(this.builder, current);
-                args.PushBack(_return.Value());
+        if !params.Empty() && params[0].sret != null && destination.Null() {
+            let current = LLVMGetInsertBlock(this.builder);
+            LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
+            let _pointer = LLVMBuildAlloca(this.builder, params[0].sret->Value(), "");
+            destination = QualifiedValue(_pointer, this.type_manager.Pointer(params[0].sret, true), true, true);
+            LLVMPositionBuilderAtEnd(this.builder, current);
+            args.PushBack(destination.Value());
 
-                if params[0].sret->HasFields() {
-                    this.scope_manager.RegisterInstance(_return);
-                }
+            if params[0].sret->HasFields() {
+                this.scope_manager.RegisterInstance(destination);
             }
         }
 
@@ -3592,7 +3592,7 @@ class Compiler {
             }
 
             if index < params.Size() {
-                let param: &ParameterType = params[index];
+                let param = params[index];
 
                 if param.byval != null {
                     value = value.Materialize(param.byval);
@@ -3610,7 +3610,7 @@ class Compiler {
 
                     let mut source = value;
 
-                    if !value._return {
+                    if !value.temporary {
                         value = value.ToRValue();
                         let source_current = LLVMGetInsertBlock(this.builder);
                         LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(source_current)));
@@ -3684,22 +3684,25 @@ class Compiler {
         LLVMSetInstructionCallConv(value, LLVMGetFunctionCallConv(_func.Value()));
 
         if ret_type.sret != null {
-            let current = LLVMGetInsertBlock(this.builder);
-            LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
-            let _pointer = LLVMBuildAlloca(this.builder, ret_type.sret->Value(), "");
-            _return = QualifiedValue(_pointer, this.type_manager.Pointer(ret_type.sret, true), true, true);
-            LLVMPositionBuilderAtEnd(this.builder, current);
-            LLVMBuildStore(this.builder, value, LLVMBuildBitCast(this.builder, _pointer, LLVMPointerType(ret_type._type->Value(), 0), ""));
+            if destination.Null() {
+                let current = LLVMGetInsertBlock(this.builder);
+                LLVMPositionBuilderAtStart(this.builder, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current)));
+                let _pointer = LLVMBuildAlloca(this.builder, ret_type.sret->Value(), "");
+                destination = QualifiedValue(_pointer, this.type_manager.Pointer(ret_type.sret, true), true, true);
+                LLVMPositionBuilderAtEnd(this.builder, current);
 
-            if ret_type.sret->HasFields() {
-                this.scope_manager.RegisterInstance(_return);
+                if ret_type.sret->HasFields() {
+                    this.scope_manager.RegisterInstance(destination);
+                }
             }
+
+            LLVMBuildStore(this.builder, value, LLVMBuildBitCast(this.builder, destination.Value(), LLVMPointerType(ret_type._type->Value(), 0), ""));
         }
 
-        if _return.Null() {
+        if destination.Null() {
             return QualifiedValue(value, ret_type._type);
         } else {
-            return _return;
+            return destination;
         }
     }
 
@@ -3791,11 +3794,9 @@ class Compiler {
                 if member_access->arrow {
                     instance = QualifiedValue(LLVMBuildLoad2(this.builder, instance.Type().Pointee().Value(), instance.Value(), ""), instance.Type().Pointee(), false, instance.IsLValue());
                 }
-            } else {
-                if !member_access->arrow && !instance._return {
-                    Logger::Log("Expected an arrow operator.", member_access, LogSeverity::Error);
-                    return QualifiedValue(null, null);
-                }
+            } else if !member_access->arrow && !instance.temporary {
+                Logger::Log("Expected an arrow operator.", member_access, LogSeverity::Error);
+                return QualifiedValue(null, null);
             }
         }
 

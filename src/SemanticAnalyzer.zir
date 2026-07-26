@@ -183,24 +183,59 @@ class SemanticAnalyzer {
         }
     }
 
-    fn AnalyzeFunction(&mut this, function: *FunctionNode) -> *SemanticType {
-        if function->body != null {
-            for statement in function->body->statements {
-                this.AnalyzeStatement(statement);
-            }
-        }
-
+    fn AnalyzeFunction(&mut this, function: *FunctionNode) -> SemanticValue {
         let return_type = this.ResolveType(function->_type->return_type);
-        if return_type == null { return null; }
+        if return_type == null { return SemanticValue(null); }
         let mut param_types = Vector<*SemanticType>();
+        let mut instance_type: *SemanticType = null;
+
+        if function->_type->instance_kind != InstanceKind::None {
+            if this.current_class == null {
+                Logger::Log("Instance parameters are only allowed in class, structure, and variant methods.", function, LogSeverity::Error);
+                return SemanticValue(null);
+            }
+
+            if function->_type->instance_kind == InstanceKind::ConstRef {
+                instance_type = this.type_manager.Reference(this.current_class, false);
+            } else if function->_type->instance_kind == InstanceKind::MutRef {
+                instance_type = this.type_manager.Reference(this.current_class, true);
+            } else {
+                instance_type = this.current_class;
+            }
+
+            param_types.PushBack(instance_type);
+        }
 
         for parameter in function->_type->parameters {
             let param_type = this.ResolveType(parameter->_type);
-            if param_type == null { return null; }
+            if param_type == null { return SemanticValue(null); }
             param_types.PushBack(param_type);
         }
 
-        return this.type_manager.Pointer(this.type_manager.Function(param_types, return_type), false);
+        let value = SemanticValue(this.type_manager.Function(param_types, return_type));
+        this.scope_manager.Set(function->name, SemanticSymbolKind::Function, value, this.mangling && !function->no_mangle, function);
+
+        if function->body != null {
+            this.scope_manager.PushScope(function->name, false);
+            let offset: usize = function->_type->instance_kind != InstanceKind::None ? 1 : 0;
+
+            for i in 0..param_types.Size() {
+                let param_value = SemanticValue(param_types[i], ValueCategory::Place);
+
+                if offset > i {
+                    this.scope_manager.Set("this".ToString(), SemanticSymbolKind::Parameter, param_value, false, function);
+                } else {
+                    let parameter: *ParameterNode = function->_type->parameters[i - offset];
+                    this.scope_manager.Set(parameter->name, SemanticSymbolKind::Parameter, param_value, false, parameter);
+                }
+            }
+
+            for statement in function->body->statements {
+                this.AnalyzeStatement(statement);
+            }
+
+            this.scope_manager.PopScope();
+        } return value;
     }
 
     fn AnalyzeClassFirstPass(&mut this, _class: *ClassNode) -> Pair<*mut SemanticType, *mut SemanticScope> {
@@ -238,20 +273,27 @@ class SemanticAnalyzer {
 
         for constructor in _class->constructors {
             let function = this.AnalyzeFunction(constructor);
-            _type->methods.PushBack(SemanticMethod(constructor->name, function, false, true));
+
+            if !function.Null() {
+                _type->methods.PushBack(SemanticMethod(constructor->name, function.Type(), false, true));
+            }
         }
 
         if _class->destructor != null {
             let function = this.AnalyzeFunction(_class->destructor);
-            _type->methods.PushBack(SemanticMethod(_class->destructor->name, function, false, true));
+
+            if !function.Null() {
+                _type->methods.PushBack(SemanticMethod(_class->destructor->name, function.Type(), false, true));
+            }
         }
 
         for method in _class->methods {
             let function = this.AnalyzeFunction(method.right);
             let _static = method.right->_type->instance_kind == InstanceKind::None;
+            if function.Null() { continue; }
 
             if !method.right->generic {
-                _type->methods.PushBack(SemanticMethod(method.right->name, function, _static, method.left));
+                _type->methods.PushBack(SemanticMethod(method.right->name, function.Type(), _static, method.left));
             }
         }
 
@@ -288,9 +330,10 @@ class SemanticAnalyzer {
         for method in structure->methods {
             let function = this.AnalyzeFunction(method.right);
             let _static = method.right->_type->instance_kind == InstanceKind::None;
+            if function.Null() { continue; }
 
             if !method.right->generic {
-                _type->methods.PushBack(SemanticMethod(method.right->name, function, _static, method.left));
+                _type->methods.PushBack(SemanticMethod(method.right->name, function.Type(), _static, method.left));
             }
         }
 
@@ -355,9 +398,10 @@ class SemanticAnalyzer {
         for method in enumeration->methods {
             let function = this.AnalyzeFunction(method.right);
             let _static = method.right->_type->instance_kind == InstanceKind::None;
+            if function.Null() { continue; }
 
             if !method.right->generic {
-                _type->methods.PushBack(SemanticMethod(method.right->name, function, _static, method.left));
+                _type->methods.PushBack(SemanticMethod(method.right->name, function.Type(), _static, method.left));
             }
         }
 
@@ -569,7 +613,7 @@ class SemanticAnalyzer {
             }
 
             if symbol->kind == SemanticSymbolKind::Variant {
-                return SemanticValue(symbol->value.Type(), true);
+                return SemanticValue(symbol->value.Type(), ValueCategory::Place);
             } else {
                 return symbol->value;
             }
@@ -686,7 +730,7 @@ class SemanticAnalyzer {
         }
 
         if _new->size != null {
-            let size = this.AnalyzeExpression(_new->size).MaterializeWithFallback(this.type_manager.IntegerPointer(false)).ToRValue();
+            let size = this.AnalyzeExpression(_new->size).MaterializeWithFallback(this.type_manager.IntegerPointer(false));
 
             if size.Null() {
                 return SemanticValue(null);
@@ -702,7 +746,7 @@ class SemanticAnalyzer {
     }
 
     fn AnalyzeDelete(&mut this, _delete: *DeleteNode) -> SemanticValue {
-        let mut pointer = this.AnalyzeExpression(_delete->expression).ToRValue();
+        let mut pointer = this.AnalyzeExpression(_delete->expression);
 
         if pointer.Null() {
             return SemanticValue(null);

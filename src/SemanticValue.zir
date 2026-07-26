@@ -16,25 +16,25 @@
 
 #[include "std/str", "src/SemanticTypes.zir" : *]
 
+enum ValueCategory: u8 {
+    Place, Value
+}
+
 class SemanticValue {
     _type: *SemanticType = null,
-    pub instance_type: *SemanticType = null,
-    lvalue: bool = false;
+    category: ValueCategory = ValueCategory::Value,
+    mutable: bool = false;
 
     SemanticValue(&mut this, _type: *SemanticType) {
         this._type = _type;
     }
 
-    SemanticValue(&mut this, _type: *SemanticType, instance: &SemanticValue) {
-        (this._type, this.instance_type) = (_type, instance._type);
+    SemanticValue(&mut this, _type: *SemanticType, category: ValueCategory, mutable: bool) {
+        (this._type, this.category, this.mutable) = (_type, category, mutable);
     }
 
-    SemanticValue(&mut this, value: &SemanticValue, instance: &SemanticValue) {
-        (this._type, this.instance_type) = (value._type, instance._type);
-    }
-
-    SemanticValue(&mut this, _type: *SemanticType, lvalue: bool) {
-        (this._type, this.lvalue) = (_type, lvalue);
+    SemanticValue(&mut this, _type: *SemanticType, category: ValueCategory) {
+        (this._type, this.category) = (_type, category);
     }
 
     pub fn Null(&this) -> bool {
@@ -42,10 +42,13 @@ class SemanticValue {
     }
 
     pub fn Type(&this) -> &SemanticType {
-        if this._type == null {
+        if this.Null() {
             Logger::Log("SemanticValue", "Null type!", LogSeverity::Fatal);
         } return this._type;
     }
+
+    pub fn IsPlace(&this) -> bool { return this.category == ValueCategory::Place; }
+    pub fn IsValue(&this) -> bool { return this.category == ValueCategory::Value; }
 
     pub fn Materialize(&this, target: &SemanticType) -> SemanticValue {
         if this.Null() {
@@ -58,13 +61,9 @@ class SemanticValue {
             }
         }
 
-        if this.Type().IsInteger() && this.Type().IsLiteral() && target.IsInteger() {
+        if this.Type().IsLiteral() && this.Type() == target {
             return SemanticValue(target);
-        } else if this.Type().IsFloat() && this.Type().IsLiteral() && target.IsFloat() {
-            return SemanticValue(target);
-        } else {
-            return this;
-        }
+        } return this;
     }
 
     pub fn MaterializeWithFallback(&this, target: &SemanticType) -> SemanticValue {
@@ -73,65 +72,18 @@ class SemanticValue {
 
         if value.Type().IsLiteral() {
             return value.Materialize();
-        } else {
-            return value;
-        }
+        } return value;
     }
 
     pub fn Materialize(&this) -> SemanticValue {
-        if this.Null() {
-            return this;
-        } else if this.Type().IsInteger() && this.Type().IsLiteral() {
-            return SemanticValue(analyzer->type_manager.Integer(32, true));
-        } else if this.Type().IsFloat() && this.Type().IsLiteral() {
-            return SemanticValue(analyzer->type_manager.Float(64));
-        } else {
-            return this;
-        }
-    }
-
-    pub fn Load(&this, args...) -> SemanticValue {
-        return SemanticValue(this.Type().Pointee(), args...);
-    }
-
-    pub fn IsLValue(&this) -> bool { return this.lvalue; }
-    pub fn IsRValue(&this) -> bool { return !this.lvalue; }
-
-    pub fn ToRValue(&this) -> SemanticValue {
-        if this.IsLValue() {
-            if this.Type().Pointee().IsArray() {
-                return SemanticValue(analyzer->type_manager.Pointer(this.Type().Pointee().Element(), this.Type().IsMutable()));
-            } else {
-                return this.Load();
-            }
+        if !this.Null() && this.Type().IsLiteral() {
+            return SemanticValue(this.Type().IsInteger() ? analyzer->type_manager.Integer(32, true) : analyzer->type_manager.Float(64));
         } return this;
     }
 
-    pub fn ToRValueType(&this) -> &SemanticType {
-        if this.IsLValue() {
-            if this.Type().Pointee().IsArray() {
-                return analyzer->type_manager.Pointer(this.Type().Pointee().Element(), this.Type().IsMutable());
-            } else {
-                return this.Type().Pointee();
-            }
-        } return this.Type();
-    }
-
-    pub fn MakeLValue(&this) -> SemanticValue {
-        return SemanticValue(this._type, true);
-    }
-
-    pub fn MakeCompatible(&this, target: &SemanticType) -> SemanticValue {
-        if target.IsPointer() && this.Type().IsPointer() {
-            if target.Pointee().IsClass() && this.Type().Pointee().IsClass() {
-                let fields = this.Type().Pointee().Fields();
-
-                for i in 0..fields.Size() {
-                    if fields[i].left == target.Pointee().name {
-                        return SemanticValue(target);
-                    }
-                }
-            }
+    pub fn Dereference(&this) -> SemanticValue {
+        if !this.Null() && this.Type().IsReference() {
+            return SemanticValue(this.Type().Pointee());
         } return this;
     }
 }

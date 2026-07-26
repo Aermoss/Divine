@@ -188,14 +188,14 @@ class SemanticAnalyzer {
 
     fn AnalyzeFunction(&mut this, function: *FunctionNode) -> SemanticValue {
         let return_type = this.ResolveType(function->_type->return_type);
-        if return_type == null { return SemanticValue(null); }
+        if return_type == null { return SemanticValue(); }
         let mut param_types = Vector<*SemanticType>();
         let mut instance_type: *SemanticType = null;
 
         if function->_type->instance_kind != InstanceKind::None {
             if this.current_class == null {
                 Logger::Log("Instance parameters are only allowed in class, structure, and variant methods.", function, LogSeverity::Error);
-                return SemanticValue(null);
+                return SemanticValue();
             }
 
             if function->_type->instance_kind == InstanceKind::ConstRef {
@@ -211,7 +211,7 @@ class SemanticAnalyzer {
 
         for parameter in function->_type->parameters {
             let param_type = this.ResolveType(parameter->_type);
-            if param_type == null { return SemanticValue(null); }
+            if param_type == null { return SemanticValue(); }
             param_types.PushBack(param_type);
         }
 
@@ -565,38 +565,23 @@ class SemanticAnalyzer {
     }
 
     fn AnalyzeVariable(&mut this, variable: *VariableNode) {
+        let mut value = SemanticValue();
+
         if variable->_type != null {
-            let mut _type = this.ResolveType(variable->_type);
-            if _type == null { return; }
+            let _type = this.ResolveType(variable->_type);
 
-            if _type->HasFields() {
-                let value = SemanticValue(_type, ValueCategory::Place, variable->mutable);
-                this.scope_manager.Set(variable->name, SemanticSymbolKind::Variable, value, false, variable);
-            } else {
-                if variable->initializer != null {
-                    if variable->initializer->_type == NodeType::INITIALIZER_LIST {
-                        let initializer_list = variable->initializer as *InitializerListNode;
-
-                        if variable->_type->_type == NodeType::ARRAY_TYPE {
-                            let array = variable->_type as *ArrayTypeNode;
-
-                            if array->size == null && !initializer_list->expressions.Empty() {
-                                _type = this.type_manager.Array(_type->Pointee(), initializer_list->expressions.Size(), _type->IsMutable());
-                            }
-                        }
-                    }
-                }
-
-                let value = SemanticValue(_type, ValueCategory::Place, variable->mutable);
-                this.scope_manager.Set(variable->name, SemanticSymbolKind::Variable, value, false, variable);
+            if _type != null {
+                value = SemanticValue(_type, ValueCategory::Place, variable->mutable);
             }
+        } else if variable->initializer != null {
+            value = this.AnalyzeExpression(variable->initializer).Materialize()
+                .WithCategoryAndMutability(ValueCategory::Place, variable->mutable);
         } else {
-            if variable->initializer != null {
-                let value = this.AnalyzeExpression(variable->initializer).Materialize().WithMutability(variable->mutable);
-                this.scope_manager.Set(variable->name, SemanticSymbolKind::Variable, value, false, variable);
-            } else {
-                Logger::Log("Type annotation required for variable '" + variable->name + "' without initializer.", variable, LogSeverity::Error);
-            }
+            Logger::Log("Type annotation required for variable '" + variable->name + "' without initializer.", variable, LogSeverity::Error);
+        }
+
+        if !value.Null() {
+            this.scope_manager.Set(variable->name, SemanticSymbolKind::Variable, value, false, variable);
         }
 
         if variable->next != null {
@@ -632,11 +617,11 @@ class SemanticAnalyzer {
             let symbol = this.scope_manager.Resolve(expression, false);
 
             if symbol == null {
-                return SemanticValue(null);
+                return SemanticValue();
             }
 
             if symbol->value.Null() {
-                return SemanticValue(null);
+                return SemanticValue();
             }
 
             if symbol->kind == SemanticSymbolKind::Variant {
@@ -666,7 +651,7 @@ class SemanticAnalyzer {
             this.AnalyzeTypeApplication(expression as *TypeApplicationNode);
         } else {
             Logger::Log("Unknown expression '" + expression->_type.ToString() + "'.", expression, LogSeverity::Error);
-        } return SemanticValue(null);
+        } return SemanticValue();
     }
 
     fn AnalyzeLiteral(&mut this, literal: *LiteralNode) -> SemanticValue {
@@ -694,7 +679,7 @@ class SemanticAnalyzer {
                         return result.Materialize(this.type_manager.Integer(width, signed));
                     } else {
                         Logger::Log("Invalid integer suffix '" + (signed ? 'u' : 'i').ToString() + suffix +  "'.", literal, LogSeverity::Error);
-                        return SemanticValue(null);
+                        return SemanticValue();
                     }
                 }
             } else {
@@ -717,7 +702,7 @@ class SemanticAnalyzer {
                     return result.Materialize(this.type_manager.Float(width));
                 } else {
                     Logger::Log("Invalid float suffix 'f" + suffix +  "'.", literal, LogSeverity::Error);
-                    return SemanticValue(null);
+                    return SemanticValue();
                 }
             } else {
                 return result;
@@ -731,13 +716,13 @@ class SemanticAnalyzer {
                 return SemanticValue(this.type_manager.Integer(8, true));
             } else {
                 Logger::Log("Invalid character literal '" + literal->value + "'.", literal, LogSeverity::Error);
-                return SemanticValue(null);
+                return SemanticValue();
             }
         } else if literal->_type == TokenType::NULL {
             return SemanticValue(this.type_manager.NullPointer());
         } else {
             Logger::Log("Unknown literal type '" + literal->_type.ToString() + "'.", literal, LogSeverity::Error);
-            return SemanticValue(null);
+            return SemanticValue();
         }
     }
 
@@ -753,19 +738,19 @@ class SemanticAnalyzer {
         let _type = this.ResolveType(_new->_type);
 
         if _type == null {
-            return SemanticValue(null);
+            return SemanticValue();
         }
 
         if _new->size != null {
             let size = this.AnalyzeExpression(_new->size).MaterializeWithFallback(this.type_manager.IntegerPointer(false));
 
             if size.Null() {
-                return SemanticValue(null);
+                return SemanticValue();
             }
 
             if !size.Type().IsIntegerPointer() || size.Type().IsSigned() {
                 Logger::Log("Array size must be of type 'usize'.", _new, LogSeverity::Error);
-                return SemanticValue(null);
+                return SemanticValue();
             }
         }
 
@@ -776,12 +761,12 @@ class SemanticAnalyzer {
         let mut pointer = this.AnalyzeExpression(_delete->expression);
 
         if pointer.Null() {
-            return SemanticValue(null);
+            return SemanticValue();
         }
 
         if !pointer.Type().IsPointer() {
             Logger::Log("Delete value must be a pointer.", _delete, LogSeverity::Error);
-        } return SemanticValue(null);
+        } return SemanticValue();
     }
 
     fn AnalyzeCast(&mut this, _cast: *CastNode) {

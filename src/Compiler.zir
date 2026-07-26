@@ -331,19 +331,19 @@ class Compiler {
                 this.pass_cache[declaration] = cache;
             }
         } else if declaration->_type == NodeType::STRUCTURE {
-            let _struct = declaration as *StructureNode;
-            let cache = this.CompileStructureFirstPass(_struct, null);
+            let structure = declaration as *StructureNode;
+            let cache = this.CompileStructureFirstPass(structure, null);
 
-            if !_struct->generic && cache.left != null && cache.right != null {
+            if !structure->generic && cache.left != null && cache.right != null {
                 this.pass_cache[declaration] = cache;
             }
         } else if declaration->_type == NodeType::ENUMERATION {
-            let _enum = declaration as *EnumNode;
+            let enumeration = declaration as *EnumerationNode;
 
-            if _enum->variant {
-                let cache = this.CompileVariantFirstPass(_enum, null);
+            if enumeration->variant {
+                let cache = this.CompileVariantFirstPass(enumeration, null);
 
-                if !_enum->generic && cache.left != null && cache.right != null {
+                if !enumeration->generic && cache.left != null && cache.right != null {
                     this.pass_cache[declaration] = cache;
                 }
             }
@@ -363,22 +363,22 @@ class Compiler {
                 this.CompileClassSecondPass(cache.left, _class, cache.right);
             }
         } else if declaration->_type == NodeType::STRUCTURE {
-            let _struct = declaration as *StructureNode;
+            let structure = declaration as *StructureNode;
 
-            if !_struct->generic && this.pass_cache.Has(declaration) {
+            if !structure->generic && this.pass_cache.Has(declaration) {
                 let cache = this.pass_cache[declaration];
-                this.CompileStructureSecondPass(cache.left, _struct, cache.right);
+                this.CompileStructureSecondPass(cache.left, structure, cache.right);
             }
         } else if declaration->_type == NodeType::ENUMERATION {
-            let _enum = declaration as *EnumNode;
+            let enumeration = declaration as *EnumerationNode;
 
-            if _enum->variant {
-                if !_enum->generic && this.pass_cache.Has(declaration) {
+            if enumeration->variant {
+                if !enumeration->generic && this.pass_cache.Has(declaration) {
                     let cache = this.pass_cache[declaration];
-                    this.CompileVariantSecondPass(cache.left, _enum, cache.right);
+                    this.CompileVariantSecondPass(cache.left, enumeration, cache.right);
                 }
             } else {
-                this.CompileEnumeration(_enum);
+                this.CompileEnumeration(enumeration);
             }
         } else if declaration->_type == NodeType::TYPE_DEFINITION {
             this.CompileTypeDefinition(declaration as *TypeDefinitionNode);
@@ -404,18 +404,18 @@ class Compiler {
                 this.CompileClassThirdPass(cache.left, _class, cache.right);
             }
         } else if declaration->_type == NodeType::STRUCTURE {
-            let _struct = declaration as *StructureNode;
+            let structure = declaration as *StructureNode;
 
-            if !_struct->generic && this.pass_cache.Has(declaration) {
+            if !structure->generic && this.pass_cache.Has(declaration) {
                 let cache = this.pass_cache[declaration];
-                this.CompileStructureThirdPass(cache.left, _struct, cache.right);
+                this.CompileStructureThirdPass(cache.left, structure, cache.right);
             }
         } else if declaration->_type == NodeType::ENUMERATION {
-            let _enum = declaration as *EnumNode;
+            let enumeration = declaration as *EnumerationNode;
 
-            if _enum->variant && !_enum->generic && this.pass_cache.Has(declaration) {
+            if enumeration->variant && !enumeration->generic && this.pass_cache.Has(declaration) {
                 let cache = this.pass_cache[declaration];
-                this.CompileVariantThirdPass(cache.left, _enum, cache.right);
+                this.CompileVariantThirdPass(cache.left, enumeration, cache.right);
             }
         } else if declaration->_type == NodeType::EXTERN {
             this.CompileExtern(declaration as *ExternNode);
@@ -1057,22 +1057,22 @@ class Compiler {
         } return cache.left;
     }
 
-    fn CompileStructureFirstPass(&mut this, _struct: *StructureNode, generic: *mut Generic) -> Pair<*mut QualifiedType, *mut Scope> {
-        if _struct->generic && generic == null {
-            let _generic = new Generic(_struct);
-            this.scope_manager.Set(_struct->name, SymbolKind::Generic, _generic, false, _struct);
+    fn CompileStructureFirstPass(&mut this, structure: *StructureNode, generic: *mut Generic) -> Pair<*mut QualifiedType, *mut Scope> {
+        if structure->generic && generic == null {
+            let _generic = new Generic(structure);
+            this.scope_manager.Set(structure->name, SymbolKind::Generic, _generic, false, structure);
             return Pair<*mut QualifiedType, *mut Scope>(null, null);
         }
 
-        let struct_name = generic != null ? generic->current.Data() : _struct->name.Data();
-        let _type = this.type_manager.Structure(LLVMStructCreateNamed(this.context, struct_name), _struct->name);
+        let struct_name = generic != null ? generic->current.Data() : structure->name.Data();
+        let _type = this.type_manager.Structure(LLVMStructCreateNamed(this.context, struct_name), structure->name);
 
         if generic != null {
             this.scope_manager.PushScope(generic->current, true);
             generic->Set(QualifiedValue(null, _type));
         } else {
-            this.scope_manager.Set(_struct->name, SymbolKind::Class, QualifiedValue(null, _type), false, _struct);
-            this.scope_manager.PushScope(_struct->name, true);
+            this.scope_manager.Set(structure->name, SymbolKind::Class, QualifiedValue(null, _type), false, structure);
+            this.scope_manager.PushScope(structure->name, true);
         }
 
         _type->pack_scope = this.scope_manager.current;
@@ -1080,12 +1080,12 @@ class Compiler {
         return Pair<*mut QualifiedType, *mut Scope>(_type, _type->pack_scope);
     }
 
-    fn CompileStructureSecondPass(&mut this, _type: *mut QualifiedType, _struct: *StructureNode, scope: *mut Scope) {
+    fn CompileStructureSecondPass(&mut this, _type: *mut QualifiedType, structure: *StructureNode, scope: *mut Scope) {
         let (prev_class, prev_scope) = (this._class, this.scope_manager.current);
         (this._class, this.scope_manager.current) = (_type, scope);
         let mut field_types = Vector<LLVMTypeRef>();
 
-        for field in _struct->fields {
+        for field in structure->fields {
             let field_type = this.CompileType(field.right->_type);
             if field_type == null { continue; }
             _type->fields[field.right->name] = Field(field_types.Size(), field_type, field.right->initializer, field.left);
@@ -1099,11 +1099,11 @@ class Compiler {
         (this._class, this.scope_manager.current) = (prev_class, prev_scope);
     }
 
-    fn CompileStructureThirdPass(&mut this, _type: *mut QualifiedType, _struct: *StructureNode, scope: *mut Scope) {
+    fn CompileStructureThirdPass(&mut this, _type: *mut QualifiedType, structure: *StructureNode, scope: *mut Scope) {
         let (prev_class, prev_scope) = (this._class, this.scope_manager.current);
         (this._class, this.scope_manager.current) = (_type, scope);
 
-        for method in _struct->methods {
+        for method in structure->methods {
             let function = this.CompileFunction(method.right, null);
             let _static = method.right->_type->instance_kind == InstanceKind::None;
 
@@ -1115,31 +1115,31 @@ class Compiler {
         (this._class, this.scope_manager.current) = (prev_class, prev_scope);
     }
 
-    pub fn CompileStructure(&mut this, _struct: *StructureNode, generic: *mut Generic) -> *QualifiedType {
-        let cache = this.CompileStructureFirstPass(_struct, generic);
+    pub fn CompileStructure(&mut this, structure: *StructureNode, generic: *mut Generic) -> *QualifiedType {
+        let cache = this.CompileStructureFirstPass(structure, generic);
 
         if cache.left != null {
-            this.CompileStructureSecondPass(cache.left, _struct, cache.right);
-            this.CompileStructureThirdPass(cache.left, _struct, cache.right);
+            this.CompileStructureSecondPass(cache.left, structure, cache.right);
+            this.CompileStructureThirdPass(cache.left, structure, cache.right);
         } return cache.left;
     }
 
-    fn CompileEnumeration(&mut this, _enum: *EnumNode) {
-        let underlying_type = this.CompileType(_enum->underlying_type);
+    fn CompileEnumeration(&mut this, enumeration: *EnumerationNode) {
+        let underlying_type = this.CompileType(enumeration->underlying_type);
         if underlying_type == null { return; }
 
         if !underlying_type->IsInteger() {
-            Logger::Log("Expected an integer type.", _enum, LogSeverity::Error);
+            Logger::Log("Expected an integer type.", enumeration, LogSeverity::Error);
             return;
         }
 
-        let _type = this.type_manager.Enumeration(underlying_type, _enum->name);
-        this.scope_manager.Set(_enum->name, SymbolKind::Type, QualifiedValue(null, _type), false, _enum);
+        let _type = this.type_manager.Enumeration(underlying_type, enumeration->name);
+        this.scope_manager.Set(enumeration->name, SymbolKind::Type, QualifiedValue(null, _type), false, enumeration);
         let mut value = LLVMConstInt(_type->Value(), 0, _type->IsSigned() ? 1 : 0);
-        this.scope_manager.PushScope(_enum->name, true);
+        this.scope_manager.PushScope(enumeration->name, true);
         let mut has_error = false;
 
-        for variant in _enum->variants {
+        for variant in enumeration->variants {
             if variant->value != null {
                 let _value = this.CompileExpression(variant->value).MaterializeWithFallback(underlying_type).ToRValue();
 
@@ -1147,7 +1147,7 @@ class Compiler {
                     if _value.Type() == *_type || _value.Type() == *underlying_type {
                         value = _value.Value();
                     } else {
-                        Logger::Log("Incompatible enum value types. ('" + _value.Type().ToString() + "' != '" + underlying_type->ToString() + "').", _enum, LogSeverity::Error);
+                        Logger::Log("Incompatible enum value types. ('" + _value.Type().ToString() + "' != '" + underlying_type->ToString() + "').", enumeration, LogSeverity::Error);
                         has_error = true;
                     }
                 } else {
@@ -1156,32 +1156,32 @@ class Compiler {
             }
 
             if !has_error {
-                this.scope_manager.Set(variant->name, SymbolKind::Constant, QualifiedValue(value, _type), false, _enum);
+                this.scope_manager.Set(variant->name, SymbolKind::Constant, QualifiedValue(value, _type), false, enumeration);
                 value = LLVMConstAdd(value, LLVMConstInt(_type->Value(), 1, _type->IsSigned() ? 1 : 0));
             } else {
-                this.scope_manager.Set(variant->name, SymbolKind::Constant, QualifiedValue(null, null), false, _enum);
+                this.scope_manager.Set(variant->name, SymbolKind::Constant, QualifiedValue(null, null), false, enumeration);
             }
         }
 
         this.scope_manager.PopScope();
     }
 
-    fn CompileVariantFirstPass(&mut this, _enum: *EnumNode, generic: *mut Generic) -> Pair<*mut QualifiedType, *mut Scope> {
-        if _enum->generic && generic == null {
-            let _generic = new Generic(_enum);
-            this.scope_manager.Set(_enum->name, SymbolKind::Generic, _generic, false, _enum);
+    fn CompileVariantFirstPass(&mut this, enumeration: *EnumerationNode, generic: *mut Generic) -> Pair<*mut QualifiedType, *mut Scope> {
+        if enumeration->generic && generic == null {
+            let _generic = new Generic(enumeration);
+            this.scope_manager.Set(enumeration->name, SymbolKind::Generic, _generic, false, enumeration);
             return Pair<*mut QualifiedType, *mut Scope>(null, null);
         }
 
-        let struct_name = generic != null ? generic->current.Data() : _enum->name.Data();
-        let _type = this.type_manager.Variant(LLVMStructCreateNamed(this.context, struct_name), _enum->name);
+        let struct_name = generic != null ? generic->current.Data() : enumeration->name.Data();
+        let _type = this.type_manager.Variant(LLVMStructCreateNamed(this.context, struct_name), enumeration->name);
 
         if generic != null {
             this.scope_manager.PushScope(generic->current, true);
             generic->Set(QualifiedValue(null, _type));
         } else {
-            this.scope_manager.Set(_enum->name, SymbolKind::Class, QualifiedValue(null, _type), false, _enum);
-            this.scope_manager.PushScope(_enum->name, true);
+            this.scope_manager.Set(enumeration->name, SymbolKind::Class, QualifiedValue(null, _type), false, enumeration);
+            this.scope_manager.PushScope(enumeration->name, true);
         }
 
         _type->pack_scope = this.scope_manager.current;
@@ -1189,12 +1189,12 @@ class Compiler {
         return Pair<*mut QualifiedType, *mut Scope>(_type, _type->pack_scope);
     }
 
-    fn CompileVariantSecondPass(&mut this, _type: *mut QualifiedType, _enum: *EnumNode, scope: *mut Scope) {
+    fn CompileVariantSecondPass(&mut this, _type: *mut QualifiedType, enumeration: *EnumerationNode, scope: *mut Scope) {
         let (prev_class, prev_scope) = (this._class, this.scope_manager.current);
         (this._class, this.scope_manager.current) = (_type, scope);
         let mut max_size: u64 = 0;
 
-        for variant in _enum->variants {
+        for variant in enumeration->variants {
             let mut types = Vector<*QualifiedType>();
 
             for _type in variant->types {
@@ -1215,18 +1215,18 @@ class Compiler {
         let mut elements[]: LLVMTypeRef = { tag_type, data_type };
         LLVMStructSetBody(_type->Value(), elements, 2, 0);
 
-        for variant in _enum->variants {
+        for variant in enumeration->variants {
             _type->variant_field_names.PushBack(variant->field_names);
         }
 
         (this._class, this.scope_manager.current) = (prev_class, prev_scope);
     }
 
-    fn CompileVariantThirdPass(&mut this, _type: *mut QualifiedType, _enum: *EnumNode, scope: *mut Scope) {
+    fn CompileVariantThirdPass(&mut this, _type: *mut QualifiedType, enumeration: *EnumerationNode, scope: *mut Scope) {
         let (prev_class, prev_scope) = (this._class, this.scope_manager.current);
         (this._class, this.scope_manager.current) = (_type, scope);
 
-        for method in _enum->methods {
+        for method in enumeration->methods {
             let function = this.CompileFunction(method.right, null);
             let _static = method.right->_type->instance_kind == InstanceKind::None;
 
@@ -1238,12 +1238,12 @@ class Compiler {
         (this._class, this.scope_manager.current) = (prev_class, prev_scope);
     }
 
-    pub fn CompileVariant(&mut this, _enum: *EnumNode, generic: *mut Generic) -> *QualifiedType {
-        let cache = this.CompileVariantFirstPass(_enum, generic);
+    pub fn CompileVariant(&mut this, enumeration: *EnumerationNode, generic: *mut Generic) -> *QualifiedType {
+        let cache = this.CompileVariantFirstPass(enumeration, generic);
 
         if cache.left != null {
-            this.CompileVariantSecondPass(cache.left, _enum, cache.right);
-            this.CompileVariantThirdPass(cache.left, _enum, cache.right);
+            this.CompileVariantSecondPass(cache.left, enumeration, cache.right);
+            this.CompileVariantThirdPass(cache.left, enumeration, cache.right);
         } return cache.left;
     }
 

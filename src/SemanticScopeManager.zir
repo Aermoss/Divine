@@ -1,0 +1,375 @@
+/*
+ * Copyright 2025-2026 Yusuf Rençber
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#[include "std/str", "std/vec", "src/SemanticScope.zir", "src/SemanticSymbol.zir", "src/SemanticTypes.zir", "src/Nodes.zir" : *]
+
+class SemanticScopeManager {
+    pub scopes: Vector<*SemanticScope>,
+    pub current: *mut SemanticScope = null;
+
+    SemanticScopeManager(&mut this) {
+        this.PushScope(String("global"), true);
+    }
+
+    ~SemanticScopeManager(&mut this) {
+        this.PopScope();
+    }
+
+    pub fn PushScope(&mut this, name: &String, global: bool) {
+        let scope = new SemanticScope(this.current, name, global);
+
+        if global {
+            this.scopes.PushBack(scope);
+        }
+
+        if this.current != null {
+            this.current->children.PushBack(scope);
+        } this.current = scope;
+    }
+
+    pub fn PopScope(&mut this) {
+        if this.current == null {
+            Logger::Log("SemanticScopeManager", "No scope to pop!", LogSeverity::Fatal);
+        }
+
+        let temp = this.current;
+        this.current = this.current->parent;
+
+        if this.current == null {
+            for scope in this.scopes {
+                delete scope;
+            }
+        } else if !temp->global {
+            this.current->children.Remove(temp);
+            delete temp;
+        }
+    }
+
+    pub fn Has(&this, name: &String) -> bool {
+        let mut scope = this.current;
+
+        while scope != null {
+            if scope->Has(name) {
+                return true;
+            } else {
+                scope = scope->parent;
+            }
+        } return false;
+    }
+
+    pub fn Has(&this, name: &String, kind: SemanticSymbolKind) -> bool {
+        let mut scope = this.current;
+
+        while scope != null {
+            if scope->Has(name, kind) {
+                return true;
+            } else {
+                scope = scope->parent;
+            }
+        } return false;
+    }
+
+    pub fn Set(&mut this, name: &String, kind: SemanticSymbolKind, _type: *SemanticType, overload: bool, node: *Node) -> *SemanticSymbol {
+        return this.current->Set(name, kind, _type, overload, node);
+    }
+
+    pub fn Set(&mut this, name: &String, kind: SemanticSymbolKind, pointer: *void, overload: bool, node: *Node) -> *SemanticSymbol {
+        return this.current->Set(name, kind, pointer, overload, node);
+    }
+
+    pub fn Get(&this, name: &String) -> *SemanticSymbol {
+        let mut scope = this.current;
+
+        while scope != null {
+            if scope->Has(name) {
+                return scope->Get(name);
+            } else {
+                scope = scope->parent;
+            }
+        } return null;
+    }
+
+    pub fn Get(&this, name: &String, kind: SemanticSymbolKind) -> *SemanticSymbol {
+        let mut scope = this.current;
+
+        while scope != null {
+            if scope->Has(name, kind) {
+                return scope->Get(name, kind);
+            } else {
+                scope = scope->parent;
+            }
+        } return null;
+    }
+
+    pub fn GetAll(&this, name: &String) -> Vector<*SemanticSymbol> {
+        let mut result = Vector<*SemanticSymbol>();
+        let mut scope = this.current;
+
+        while scope != null {
+            if scope->Has(name) {
+                result += scope->GetAll(name);
+            } scope = scope->parent;
+        } return result;
+    }
+
+    pub fn GetAll(&this, name: &String, kind: SemanticSymbolKind) -> Vector<*SemanticSymbol> {
+        let mut result = Vector<*SemanticSymbol>();
+        let mut scope = this.current;
+
+        while scope != null {
+            if scope->Has(name, kind) {
+                result += scope->GetAll(name, kind);
+            } scope = scope->parent;
+        } return result;
+    }
+
+    pub fn Namespaces(&this) -> Vector<String> {
+        let mut result = Vector<String>();
+        let mut scope = this.current;
+
+        while scope->parent != null {
+            if scope->global {
+                result.PushBack(scope->name);
+            } scope = scope->parent;
+        } return result.Reverse();
+    }
+
+    pub fn ResolveChild(&this, scope: *SemanticScope, identifier: *IdentifierNode, test: bool) -> *SemanticScope {
+        for child in scope->children {
+            if child->name == identifier->name {
+                return child;
+            }
+        }
+
+        if !test {
+            Logger::Log("SemanticScope '" + identifier->name + "' not found.", identifier, LogSeverity::Error);
+        } return null;
+    }
+
+    pub fn ResolveChild(&this, scope: *SemanticScope, primitive_type: *PrimitiveTypeNode, test: bool) -> *SemanticScope {
+        for child in scope->children {
+            if child->name == primitive_type->name {
+                return child;
+            }
+        }
+
+        if !test {
+            Logger::Log("SemanticScope '" + primitive_type->name + "' not found.", primitive_type, LogSeverity::Error);
+        } return null;
+    }
+
+    pub fn ResolveScopeHalf(&this, resolution: *ScopeResolutionNode, test: bool) -> *SemanticScope {
+        let mut scope: *SemanticScope = this.current;
+
+        while !scope->global {
+            scope = scope->parent;
+        }
+
+        if resolution->scope != null {
+            if resolution->scope->_type == NodeType::SCOPE_RESOLUTION {
+                scope = this.ResolveScopeFull(resolution->scope as *ScopeResolutionNode, test);
+            } else if resolution->scope->_type == NodeType::IDENTIFIER {
+                scope = this.ResolveChild(scope, resolution->scope as *IdentifierNode, test);
+            } else if resolution->scope->_type == NodeType::PRIMITIVE_TYPE {
+                scope = this.ResolveChild(scope, resolution->scope as *PrimitiveTypeNode, test);
+            } else if resolution->scope->_type == NodeType::TYPE_APPLICATION {
+                let type_application = resolution->scope as *TypeApplicationNode;
+                let mut types = Vector<*SemanticType>();
+
+                for _type in type_application->types {
+                    types.PushBack(analyzer->ResolveType(_type));
+                }
+
+                if type_application->expression->_type == NodeType::PRIMITIVE_TYPE {
+                    let primitive_type = type_application->expression as *PrimitiveTypeNode;
+                    let symbol = this.Resolve(primitive_type->name, primitive_type, test);
+
+                    if symbol != null && symbol->kind == SemanticSymbolKind::Generic {
+                        return null;
+                    } else {
+                        if !test {
+                            if symbol != null {
+                                Logger::Log("Type '" + primitive_type->name + "' is not generic.", primitive_type, LogSeverity::Error);
+                            } else {
+                                Logger::Log("Type '" + primitive_type->name + "' not found.", primitive_type, LogSeverity::Error);
+                            }
+                        } return null;
+                    }
+                } else {
+                    if !test {
+                        Logger::Log("Unknown resolution '" + resolution->scope->_type.ToString() + "'.", resolution->scope, LogSeverity::Error);
+                    } return null;
+                }
+            } else {
+                if !test {
+                    Logger::Log("Unknown resolution '" + resolution->scope->_type.ToString() + "'.", resolution->scope, LogSeverity::Error);
+                } return null;
+            }
+        } else {
+            while scope->parent != null {
+                scope = scope->parent;
+            }
+        } return scope;
+    }
+
+    pub fn ResolveScopeFull(&this, resolution: *ScopeResolutionNode, test: bool) -> *SemanticScope {
+        return this.ResolveChild(this.ResolveScopeHalf(resolution, test), resolution->identifier, test);
+    }
+
+    pub fn Resolve(&this, resolution: *ScopeResolutionNode, test: bool) -> *SemanticSymbol {
+        let scope = this.ResolveScopeHalf(resolution, test);
+
+        if scope == null {
+            return null;
+        }
+
+        if scope->Has(resolution->identifier->name) {
+            return scope->Get(resolution->identifier->name);
+        } else {
+            if !test {
+                Logger::Log("Symbol '" + resolution->identifier->name + "' not found.", resolution, LogSeverity::Error);
+            } return null;
+        }
+    }
+
+    pub fn Resolve(&this, identifier: *IdentifierNode, test: bool) -> *SemanticSymbol {
+        if this.Has(identifier->name) {
+            return this.Get(identifier->name);
+        } else {
+            if !test {
+                Logger::Log("Symbol '" + identifier->name + "' not found.", identifier, LogSeverity::Error);
+            } return null;
+        }
+    }
+
+    pub fn Resolve(&this, primitive_type: *PrimitiveTypeNode, test: bool) -> *SemanticSymbol {
+        if this.Has(primitive_type->name) {
+            return this.Get(primitive_type->name);
+        } else {
+            if !test {
+                Logger::Log("Symbol '" + primitive_type->name + "' not found.", primitive_type, LogSeverity::Error);
+            } return null;
+        }
+    }
+
+    pub fn Resolve(&this, node: *Node, test: bool) -> *SemanticSymbol {
+        if node->_type == NodeType::SCOPE_RESOLUTION {
+            return this.Resolve(node as *ScopeResolutionNode, test);
+        } else if node->_type == NodeType::IDENTIFIER {
+            return this.Resolve(node as *IdentifierNode, test);
+        } else if node->_type == NodeType::PRIMITIVE_TYPE {
+            return this.Resolve(node as *PrimitiveTypeNode, test);
+        } else {
+            if !test {
+                Logger::Log("Unknown resolution '" + node->_type.ToString() + "'.", node, LogSeverity::Error);
+            } return null;
+        }
+    }
+
+    pub fn Resolve(&this, name: &String, node: *Node, test: bool) -> *SemanticSymbol {
+        if this.Has(name) {
+            return this.Get(name);
+        } else {
+            if !test {
+                Logger::Log("Symbol '" + name + "' not found.", node, LogSeverity::Error);
+            } return null;
+        }
+    }
+
+    pub fn Resolve(&this, symbols: &Vector<*SemanticSymbol>, params: &Vector<*SemanticType>, node: *Node, test: bool) -> *SemanticSymbol {
+        let mut index: usize = 0;
+        let mut best: u64 = 0;
+
+        for i in 0..symbols.Size() {
+            let (mut _match, mut score: u64) = (true, 1);
+            let has_pack = symbols[i]->_type->Pointee().pack_name != "";
+            let _params = symbols[i]->_type->Pointee().Parameters();
+
+            if (!has_pack && params.Size() != _params.Size()) || (has_pack && params.Size() < _params.Size()) {
+                continue;
+            }
+
+            for j in 0.._params.Size() {
+                let param_score = _params[j]->ScoreParameter(*params[j]);
+
+                if param_score != 0 {
+                    score += param_score;
+                } else {
+                    _match = false;
+                    break;
+                }
+            }
+
+            if _match && score > best {
+                (index, best) = (i, score);
+            }
+        }
+
+        if best != 0 {
+            return symbols[index];
+        } else {
+            if !test {
+                Logger::Log("Invalid arguments for: '" + symbols[0]->name + "'.", node, LogSeverity::Error);
+            } return null;
+        }
+    }
+
+    pub fn Resolve(&this, resolution: *ScopeResolutionNode, params: &Vector<*SemanticType>, test: bool) -> *SemanticSymbol {
+        let scope = this.ResolveScopeHalf(resolution, test);
+
+        if scope->Has(resolution->identifier->name, SemanticSymbolKind::Function) {
+            return this.Resolve(scope->GetAll(resolution->identifier->name, SemanticSymbolKind::Function), params, resolution, test);
+        } else {
+            if !test {
+                Logger::Log("Symbol '" + resolution->identifier->name + "' not found.", resolution, LogSeverity::Error);
+            } return null;
+        }
+    }
+
+    pub fn Resolve(&this, identifier: *IdentifierNode, params: &Vector<*SemanticType>, test: bool) -> *SemanticSymbol {
+        if this.Has(identifier->name, SemanticSymbolKind::Function) {
+            return this.Resolve(this.GetAll(identifier->name, SemanticSymbolKind::Function), params, identifier, test);
+        } else {
+            if !test {
+                Logger::Log("Symbol '" + identifier->name + "' not found.", identifier, LogSeverity::Error);
+            } return null;
+        }
+    }
+
+    pub fn Resolve(&this, node: *Node, params: &Vector<*SemanticType>, test: bool) -> *SemanticSymbol {
+        if node->_type == NodeType::SCOPE_RESOLUTION {
+            return this.Resolve(node as *ScopeResolutionNode, params, test);
+        } else if node->_type == NodeType::IDENTIFIER {
+            return this.Resolve(node as *IdentifierNode, params, test);
+        } else {
+            if !test {
+                Logger::Log("Unknown resolution '" + node->_type.ToString() + "'.", node, LogSeverity::Error);
+            } return null;
+        }
+    }
+
+    pub fn Resolve(&this, name: &String, params: &Vector<*SemanticType>, node: *Node, test: bool) -> *SemanticSymbol {
+        if this.Has(name, SemanticSymbolKind::Function) {
+            return this.Resolve(this.GetAll(name, SemanticSymbolKind::Function), params, node, test);
+        } else {
+            if !test {
+                Logger::Log("Symbol '" + name + "' not found.", node, LogSeverity::Error);
+            } return null;
+        }
+    }
+}
+
+#[include "src/SemanticAnalyzer.zir" : *]

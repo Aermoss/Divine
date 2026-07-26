@@ -14,11 +14,12 @@
  * limitations under the License.
  */
 
-#[include "std/str", "std/vec", "std/map", "std/pair", "src/SemanticTypeManager.zir", "src/SemanticTypes.zir",
-    "src/Logger.zir", "src/Tokens.zir", "src/Nodes.zir" : *]
+#[include "std/str", "std/vec", "std/map", "std/pair", "src/Logger.zir", "src/Tokens.zir", "src/Nodes.zir",
+    "src/SemanticTypeManager.zir", "src/SemanticTypes.zir", "src/SemanticScopeManager.zir", "src/SemanticScope.zir", "src/SemanticSymbol.zir" : *]
 
 class SemanticAnalyzer {
     type_manager: SemanticTypeManager,
+    scope_manager: SemanticScopeManager,
     pub current_class: *SemanticType = null;
 
     SemanticAnalyzer(&mut this) {
@@ -47,7 +48,7 @@ class SemanticAnalyzer {
         } else if declaration->_type == NodeType::STRUCTURE {
             this.AnalyzeStructure(declaration as *StructureNode);
         } else if declaration->_type == NodeType::ENUMERATION {
-            this.AnalyzeEnumeration(declaration as *EnumNode);
+            this.AnalyzeEnumeration(declaration as *EnumerationNode);
         }
     }
 
@@ -61,6 +62,7 @@ class SemanticAnalyzer {
 
     fn AnalyzeClass(&mut this, _class: *ClassNode) {
         let _type = this.type_manager.Class(_class->name);
+        this.scope_manager.Set(_class->name, SemanticSymbolKind::Class, _type, false, _class);
         this.current_class = _type;
 
         for constructor in _class->constructors {
@@ -78,14 +80,17 @@ class SemanticAnalyzer {
         this.current_class = null;
     }
 
-    fn AnalyzeStructure(&mut this, _struct: *StructureNode) {
-        for method in _struct->methods {
+    fn AnalyzeStructure(&mut this, structure: *StructureNode) {
+        let _type = this.type_manager.Class(structure->name);
+        this.scope_manager.Set(structure->name, SemanticSymbolKind::Class, _type, false, structure);
+
+        for method in structure->methods {
             this.AnalyzeFunction(method.right);
         }
     }
 
-    fn AnalyzeEnumeration(&mut this, _enum: *EnumNode) {
-        for method in _enum->methods {
+    fn AnalyzeEnumeration(&mut this, enumeration: *EnumerationNode) {
+        for method in enumeration->methods {
             this.AnalyzeFunction(method.right);
         }
     }
@@ -206,7 +211,7 @@ class SemanticAnalyzer {
         }
 
         if variable->_type != null {
-            this.AnalyzeType(variable->_type);
+            this.ResolveType(variable->_type);
         }
 
         if variable->next != null {
@@ -274,7 +279,7 @@ class SemanticAnalyzer {
     }
 
     fn AnalyzeNew(&mut this, _new: *NewNode) {
-        this.AnalyzeType(_new->_type);
+        this.ResolveType(_new->_type);
 
         if _new->size != null {
             this.AnalyzeExpression(_new->size);
@@ -291,7 +296,7 @@ class SemanticAnalyzer {
 
     fn AnalyzeCast(&mut this, _cast: *CastNode) {
         this.AnalyzeExpression(_cast->expression);
-        this.AnalyzeType(_cast->target_type);
+        this.ResolveType(_cast->target_type);
     }
 
     fn AnalyzeIndexAccess(&mut this, index_access: *IndexAccessNode) {
@@ -330,12 +335,114 @@ class SemanticAnalyzer {
         this.AnalyzeExpression(type_application->expression);
 
         for _type in type_application->types {
-            this.AnalyzeType(_type);
+            this.ResolveType(_type);
         }
     }
 
-    fn AnalyzeType(&mut this, _type: *Node) {
+    pub fn ResolveType(&mut this, _type: *Node) -> *SemanticType {
+        if _type->_type == NodeType::PRIMITIVE_TYPE {
+            let primitive_type = _type as *PrimitiveTypeNode;
 
+            if primitive_type->name == "void" {
+                return this.type_manager.Void();
+            } else if primitive_type->name == "bool" {
+                return this.type_manager.Boolean();
+            } else if primitive_type->name == "char" {
+                return this.type_manager.Character();
+            } else if primitive_type->name.StartsWith('i') || primitive_type->name.StartsWith('u') {
+                let specifier = primitive_type->name.SubString(1);
+                let signed = primitive_type->name[0] != 'u';
+
+                if specifier == "size" {
+                    return this.type_manager.IntegerPointer(signed);
+                } else {
+                    let width = specifier.ToUnsignedInteger() as u32;
+
+                    if width != 8 && width != 16 && width != 32 && width != 64 && width != 128 {
+                        Logger::Log("Invalid integer type '" + primitive_type->name + "'.", _type, LogSeverity::Error);
+                        return null;
+                    }
+
+                    return this.type_manager.Integer(width, signed);
+                }
+            } else if primitive_type->name.StartsWith('f') {
+                let width = primitive_type->name.SubString(1).ToUnsignedInteger() as u32;
+
+                if width != 32 && width != 64 {
+                    Logger::Log("Invalid float type '" + primitive_type->name + "'.", _type, LogSeverity::Error);
+                    return null;
+                }
+
+                return this.type_manager.Float(width);
+            } else {
+                if this.scope_manager.Has(primitive_type->name, SemanticSymbolKind::Type) {
+                    return this.scope_manager.Get(primitive_type->name, SemanticSymbolKind::Type)->_type;
+                } else if this.scope_manager.Has(primitive_type->name, SemanticSymbolKind::Class) {
+                    return this.scope_manager.Get(primitive_type->name, SemanticSymbolKind::Class)->_type;
+                } else if this.scope_manager.Has(primitive_type->name, SemanticSymbolKind::Generic) {
+                    Logger::Log("Generic type '" + primitive_type->name + "' requires parameters.", _type, LogSeverity::Error);
+                } else {
+                    Logger::Log("Type '" + primitive_type->name + "' not found.", _type, LogSeverity::Error);
+                } return null;
+            }
+        } else if _type->_type == NodeType::TYPE_APPLICATION {
+            let type_application = _type as *TypeApplicationNode;
+            let mut types = Vector<*SemanticType>();
+
+            for type_ in type_application->types {
+                let __type = this.ResolveType(type_);
+                if __type == null { return null; }
+                types.PushBack(__type);
+            }
+
+            if type_application->expression->_type == NodeType::PRIMITIVE_TYPE {
+                let primitive_type = type_application->expression as *PrimitiveTypeNode;
+
+                if this.scope_manager.Has(primitive_type->name, SemanticSymbolKind::Generic) {
+                    return null;
+                } else {
+                    if this.scope_manager.Has(primitive_type->name) {
+                        Logger::Log("Type '" + primitive_type->name + "' is not generic.", _type, LogSeverity::Error);
+                    } else {
+                        Logger::Log("Type '" + primitive_type->name + "' not found.", _type, LogSeverity::Error);
+                    } return null;
+                }
+            } else {
+                Logger::Log("Invalid type application.", _type, LogSeverity::Error);
+                return null;
+            }
+        } else if _type->_type == NodeType::POINTER_TYPE {
+            let pointer_type = _type as *PointerTypeNode;
+            let base_type = this.ResolveType(pointer_type->base_type);
+            if base_type == null { return null; }
+            return this.type_manager.Pointer(base_type, pointer_type->mutable);
+        } else if _type->_type == NodeType::REFERENCE_TYPE {
+            let reference_type = _type as *ReferenceTypeNode;
+            let base_type = this.ResolveType(reference_type->base_type);
+            if base_type == null { return null; }
+            return this.type_manager.Reference(base_type, reference_type->mutable);
+        } else if _type->_type == NodeType::ARRAY_TYPE {
+            let array_type = _type as *ArrayTypeNode;
+            let element_type = this.ResolveType(array_type->element_type);
+            if element_type == null { return null; }
+            return this.type_manager.Pointer(element_type, true);
+        } else if _type->_type == NodeType::FUNCTION_TYPE {
+            let function_type = _type as *FunctionTypeNode;
+            let return_type = this.ResolveType(function_type->return_type);
+            if return_type == null { return null; }
+            let mut param_types = Vector<*SemanticType>();
+
+            for parameter in function_type->parameters {
+                let param_type = this.ResolveType(parameter->_type);
+                if param_type == null { return null; }
+                param_types.PushBack(param_type);
+            }
+
+            return this.type_manager.Pointer(this.type_manager.Function(param_types, return_type), false);
+        } else {
+            Logger::Log("Unknown type '" + _type->_type.ToString() + "'.", _type, LogSeverity::Error);
+            return null;
+        }
     }
 }
 

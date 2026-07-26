@@ -565,12 +565,38 @@ class SemanticAnalyzer {
     }
 
     fn AnalyzeVariable(&mut this, variable: *VariableNode) {
-        if variable->initializer != null {
-            this.AnalyzeExpression(variable->initializer);
-        }
-
         if variable->_type != null {
-            this.ResolveType(variable->_type);
+            let mut _type = this.ResolveType(variable->_type);
+            if _type == null { return; }
+
+            if _type->HasFields() {
+                let value = SemanticValue(_type, ValueCategory::Place, variable->mutable);
+                this.scope_manager.Set(variable->name, SemanticSymbolKind::Variable, value, false, variable);
+            } else {
+                if variable->initializer != null {
+                    if variable->initializer->_type == NodeType::INITIALIZER_LIST {
+                        let initializer_list = variable->initializer as *InitializerListNode;
+
+                        if variable->_type->_type == NodeType::ARRAY_TYPE {
+                            let array = variable->_type as *ArrayTypeNode;
+
+                            if array->size == null && !initializer_list->expressions.Empty() {
+                                _type = this.type_manager.Array(_type->Pointee(), initializer_list->expressions.Size(), _type->IsMutable());
+                            }
+                        }
+                    }
+                }
+
+                let value = SemanticValue(_type, ValueCategory::Place, variable->mutable);
+                this.scope_manager.Set(variable->name, SemanticSymbolKind::Variable, value, false, variable);
+            }
+        } else {
+            if variable->initializer != null {
+                let value = this.AnalyzeExpression(variable->initializer).Materialize().WithMutability(variable->mutable);
+                this.scope_manager.Set(variable->name, SemanticSymbolKind::Variable, value, false, variable);
+            } else {
+                Logger::Log("Type annotation required for variable '" + variable->name + "' without initializer.", variable, LogSeverity::Error);
+            }
         }
 
         if variable->next != null {

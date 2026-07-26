@@ -20,6 +20,8 @@
 class SemanticAnalyzer {
     type_manager: SemanticTypeManager,
     scope_manager: SemanticScopeManager,
+    pass_cache: Map<*Node, Pair<*mut SemanticType, *mut SemanticScope>>,
+    mangling: bool = true, _unsafe: bool = false,
     pub current_class: *SemanticType = null;
 
     SemanticAnalyzer(&mut this) {
@@ -35,63 +37,366 @@ class SemanticAnalyzer {
     }
 
     pub fn Analyze(&mut this, root: *RootNode) {
+        let mut declared = Map<*Node, bool>();
+
         for declaration in root->declarations {
-            this.AnalyzeDeclaration(declaration);
+            declared[declaration] = false;
+            declared[declaration] |= this.AnalyzeDeclarationFirstPass(declaration);
+        }
+
+        for declaration in root->declarations {
+            declared[declaration] |= this.AnalyzeDeclarationSecondPass(declaration);
+        }
+
+        for declaration in root->declarations {
+            declared[declaration] |= this.AnalyzeDeclarationThirdPass(declaration);
+
+            if !declared[declaration] {
+                Logger::Log("Unknown declaration '" + declaration->_type.ToString() + "'.", declaration, LogSeverity::Error);
+            }
         }
     }
 
-    fn AnalyzeDeclaration(&mut this, declaration: *Node) {
-        if declaration->_type == NodeType::FUNCTION {
+    fn AnalyzeDeclarationFirstPass(&mut this, declaration: *Node) -> bool {
+        if declaration->_type == NodeType::CLASS {
+            let _class = declaration as *ClassNode;
+            let cache = this.AnalyzeClassFirstPass(_class);
+
+            if !_class->generic && cache.left != null && cache.right != null {
+                this.pass_cache[declaration] = cache;
+            }
+        } else if declaration->_type == NodeType::STRUCTURE {
+            let structure = declaration as *StructureNode;
+            let cache = this.AnalyzeStructureFirstPass(structure);
+
+            if !structure->generic && cache.left != null && cache.right != null {
+                this.pass_cache[declaration] = cache;
+            }
+        } else if declaration->_type == NodeType::ENUMERATION {
+            let enumeration = declaration as *EnumerationNode;
+
+            if enumeration->variant {
+                let cache = this.AnalyzeVariantFirstPass(enumeration);
+
+                if !enumeration->generic && cache.left != null && cache.right != null {
+                    this.pass_cache[declaration] = cache;
+                }
+            }
+        } else {
+            return false;
+        } return true;
+    }
+
+    fn AnalyzeDeclarationSecondPass(&mut this, declaration: *Node) -> bool {
+        if declaration->_type == NodeType::CONSTANT {
+            this.AnalyzeConstant(declaration as *ConstantNode);
+        } else if declaration->_type == NodeType::CLASS {
+            let _class = declaration as *ClassNode;
+
+            if !_class->generic && this.pass_cache.Has(declaration) {
+                let cache = this.pass_cache[declaration];
+                this.AnalyzeClassSecondPass(cache.left, _class, cache.right);
+            }
+        } else if declaration->_type == NodeType::STRUCTURE {
+            let structure = declaration as *StructureNode;
+
+            if !structure->generic && this.pass_cache.Has(declaration) {
+                let cache = this.pass_cache[declaration];
+                this.AnalyzeStructureSecondPass(cache.left, structure, cache.right);
+            }
+        } else if declaration->_type == NodeType::ENUMERATION {
+            let enumeration = declaration as *EnumerationNode;
+
+            if enumeration->variant {
+                if !enumeration->generic && this.pass_cache.Has(declaration) {
+                    let cache = this.pass_cache[declaration];
+                    this.AnalyzeVariantSecondPass(cache.left, enumeration, cache.right);
+                }
+            } else {
+                this.AnalyzeEnumeration(enumeration);
+            }
+        } else if declaration->_type == NodeType::TYPE_DEFINITION {
+            this.AnalyzeTypeDefinition(declaration as *TypeDefinitionNode);
+        } else {
+            return false;
+        } return true;
+    }
+
+    fn AnalyzeTypeDefinition(&mut this, type_definition: *TypeDefinitionNode) {
+        this.scope_manager.Set(type_definition->name, SemanticSymbolKind::Type, this.ResolveType(type_definition->_type), false, type_definition);
+    }
+
+    fn AnalyzeDeclarationThirdPass(&mut this, declaration: *Node) -> bool {
+        if declaration->_type == NodeType::STATIC {
+            this.AnalyzeStatic(declaration as *StaticNode);
+        } else if declaration->_type == NodeType::FUNCTION {
             this.AnalyzeFunction(declaration as *FunctionNode);
         } else if declaration->_type == NodeType::CLASS {
-            this.AnalyzeClass(declaration as *ClassNode);
+            let _class = declaration as *ClassNode;
+
+            if !_class->generic && this.pass_cache.Has(declaration) {
+                let cache = this.pass_cache[declaration];
+                this.AnalyzeClassThirdPass(cache.left, _class, cache.right);
+            }
         } else if declaration->_type == NodeType::STRUCTURE {
-            this.AnalyzeStructure(declaration as *StructureNode);
+            let structure = declaration as *StructureNode;
+
+            if !structure->generic && this.pass_cache.Has(declaration) {
+                let cache = this.pass_cache[declaration];
+                this.AnalyzeStructureThirdPass(cache.left, structure, cache.right);
+            }
         } else if declaration->_type == NodeType::ENUMERATION {
-            this.AnalyzeEnumeration(declaration as *EnumerationNode);
+            let enumeration = declaration as *EnumerationNode;
+
+            if enumeration->variant && !enumeration->generic && this.pass_cache.Has(declaration) {
+                let cache = this.pass_cache[declaration];
+                this.AnalyzeVariantThirdPass(cache.left, enumeration, cache.right);
+            }
+        } else if declaration->_type == NodeType::EXTERN {
+            this.AnalyzeExtern(declaration as *ExternNode);
+        } else if declaration->_type == NodeType::ASSEMBLY {
+            this.AnalyzeAssembly(declaration as *AssemblyNode);
+        } else {
+            return false;
+        } return true;
+    }
+
+    fn AnalyzeConstant(&mut this, constant: *ConstantNode) {
+        if constant->_type != null {
+            this.ResolveType(constant->_type);
+        }
+
+        if constant->initializer != null {
+            this.AnalyzeExpression(constant->initializer);
         }
     }
 
-    fn AnalyzeFunction(&mut this, function: *FunctionNode) {
-        if function->body == null { return; }
+    fn AnalyzeStatic(&mut this, _static: *StaticNode) {
+        if _static->_type != null {
+            this.ResolveType(_static->_type);
+        }
 
-        for statement in function->body->statements {
-            this.AnalyzeStatement(statement);
+        if _static->initializer != null {
+            this.AnalyzeExpression(_static->initializer);
         }
     }
 
-    fn AnalyzeClass(&mut this, _class: *ClassNode) {
+    fn AnalyzeFunction(&mut this, function: *FunctionNode) -> *SemanticType {
+        if function->body != null {
+            for statement in function->body->statements {
+                this.AnalyzeStatement(statement);
+            }
+        }
+
+        let return_type = this.ResolveType(function->_type->return_type);
+        if return_type == null { return null; }
+        let mut param_types = Vector<*SemanticType>();
+
+        for parameter in function->_type->parameters {
+            let param_type = this.ResolveType(parameter->_type);
+            if param_type == null { return null; }
+            param_types.PushBack(param_type);
+        }
+
+        return this.type_manager.Pointer(this.type_manager.Function(param_types, return_type), false);
+    }
+
+    fn AnalyzeClassFirstPass(&mut this, _class: *ClassNode) -> Pair<*mut SemanticType, *mut SemanticScope> {
         let _type = this.type_manager.Class(_class->name);
         this.scope_manager.Set(_class->name, SemanticSymbolKind::Class, _type, false, _class);
-        this.current_class = _type;
+        this.scope_manager.PushScope(_class->name, true);
+        let scope = this.scope_manager.current;
+        this.scope_manager.PopScope();
+        return Pair<*mut SemanticType, *mut SemanticScope>(_type, scope);
+    }
+
+    fn AnalyzeClassSecondPass(&mut this, _type: *mut SemanticType, _class: *ClassNode, scope: *mut SemanticScope) {
+        let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
+        (this.current_class, this.scope_manager.current) = (_type, scope);
+
+        for i in 0.._class->parents.Size() {
+            let parent_type = this.ResolveType(_class->parents[i]);
+            if parent_type == null { continue; }
+            _type->fields[parent_type->name] = SemanticField(i, parent_type, null, false);
+        }
+
+        for i in 0.._class->fields.Size() {
+            let field = _class->fields[i];
+            let field_type = this.ResolveType(field.right->_type);
+            if field_type == null { continue; }
+            _type->fields[field.right->name] = SemanticField(i, field_type, field.right->initializer, field.left);
+        }
+
+        (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
+    }
+
+    fn AnalyzeClassThirdPass(&mut this, _type: *mut SemanticType, _class: *ClassNode, scope: *mut SemanticScope) {
+        let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
+        (this.current_class, this.scope_manager.current) = (_type, scope);
 
         for constructor in _class->constructors {
-            this.AnalyzeFunction(constructor);
+            let function = this.AnalyzeFunction(constructor);
+            _type->methods.PushBack(SemanticMethod(constructor->name, function, false, true));
         }
 
         if _class->destructor != null {
-            this.AnalyzeFunction(_class->destructor);
+            let function = this.AnalyzeFunction(_class->destructor);
+            _type->methods.PushBack(SemanticMethod(_class->destructor->name, function, false, true));
         }
 
         for method in _class->methods {
-            this.AnalyzeFunction(method.right);
+            let function = this.AnalyzeFunction(method.right);
+            let _static = method.right->_type->instance_kind == InstanceKind::None;
+
+            if !method.right->generic {
+                _type->methods.PushBack(SemanticMethod(method.right->name, function, _static, method.left));
+            }
         }
 
-        this.current_class = null;
+        (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
     }
 
-    fn AnalyzeStructure(&mut this, structure: *StructureNode) {
+    fn AnalyzeStructureFirstPass(&mut this, structure: *StructureNode) -> Pair<*mut SemanticType, *mut SemanticScope> {
         let _type = this.type_manager.Class(structure->name);
         this.scope_manager.Set(structure->name, SemanticSymbolKind::Class, _type, false, structure);
+        this.scope_manager.PushScope(structure->name, true);
+        let scope = this.scope_manager.current;
+        this.scope_manager.PopScope();
+        return Pair<*mut SemanticType, *mut SemanticScope>(_type, scope);
+    }
+
+    fn AnalyzeStructureSecondPass(&mut this, _type: *mut SemanticType, structure: *StructureNode, scope: *mut SemanticScope) {
+        let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
+        (this.current_class, this.scope_manager.current) = (_type, scope);
+
+        for i in 0..structure->fields.Size() {
+            let field = structure->fields[i];
+            let field_type = this.ResolveType(field.right->_type);
+            if field_type == null { continue; }
+            _type->fields[field.right->name] = SemanticField(i, field_type, field.right->initializer, field.left);
+        }
+
+        (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
+    }
+
+    fn AnalyzeStructureThirdPass(&mut this, _type: *mut SemanticType, structure: *StructureNode, scope: *mut SemanticScope) {
+        let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
+        (this.current_class, this.scope_manager.current) = (_type, scope);
 
         for method in structure->methods {
-            this.AnalyzeFunction(method.right);
+            let function = this.AnalyzeFunction(method.right);
+            let _static = method.right->_type->instance_kind == InstanceKind::None;
+
+            if !method.right->generic {
+                _type->methods.PushBack(SemanticMethod(method.right->name, function, _static, method.left));
+            }
         }
+
+        (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
     }
 
     fn AnalyzeEnumeration(&mut this, enumeration: *EnumerationNode) {
+        let underlying_type = this.ResolveType(enumeration->underlying_type);
+        if underlying_type == null { return; }
+
+        if !underlying_type->IsInteger() {
+            Logger::Log("Expected an integer type.", enumeration, LogSeverity::Error);
+            return;
+        }
+
+        let _type = this.type_manager.Enumeration(enumeration->name, underlying_type);
+        this.scope_manager.Set(enumeration->name, SemanticSymbolKind::Type, _type, false, enumeration);
+        this.scope_manager.PushScope(enumeration->name, true);
+
+        for variant in enumeration->variants {
+            this.scope_manager.Set(variant->name, SemanticSymbolKind::Constant, _type, false, enumeration);
+        }
+
+        this.scope_manager.PopScope();
+    }
+
+    fn AnalyzeVariantFirstPass(&mut this, enumeration: *EnumerationNode) -> Pair<*mut SemanticType, *mut SemanticScope> {
+        let _type = this.type_manager.Variant(enumeration->name);
+        this.scope_manager.Set(enumeration->name, SemanticSymbolKind::Class, _type, false, enumeration);
+        this.scope_manager.PushScope(enumeration->name, true);
+        let scope = this.scope_manager.current;
+        this.scope_manager.PopScope();
+        return Pair<*mut SemanticType, *mut SemanticScope>(_type, scope);
+    }
+
+    fn AnalyzeVariantSecondPass(&mut this, _type: *mut SemanticType, enumeration: *EnumerationNode, scope: *mut SemanticScope) {
+        let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
+        (this.current_class, this.scope_manager.current) = (_type, scope);
+
+        for variant in enumeration->variants {
+            let mut types = Vector<*SemanticType>();
+
+            for _type in variant->types {
+                types.PushBack(this.ResolveType(_type));
+            }
+
+            _type->variants.PushBack(Pair<String, Vector<*SemanticType>>(variant->name, types));
+            this.scope_manager.Set(variant->name, SemanticSymbolKind::Variant, _type, false, variant);
+        }
+
+        for variant in enumeration->variants {
+            _type->variant_field_names.PushBack(variant->field_names);
+        }
+
+        (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
+    }
+
+    fn AnalyzeVariantThirdPass(&mut this, _type: *mut SemanticType, enumeration: *EnumerationNode, scope: *mut SemanticScope) {
+        let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
+        (this.current_class, this.scope_manager.current) = (_type, scope);
+
         for method in enumeration->methods {
-            this.AnalyzeFunction(method.right);
+            let function = this.AnalyzeFunction(method.right);
+            let _static = method.right->_type->instance_kind == InstanceKind::None;
+
+            if !method.right->generic {
+                _type->methods.PushBack(SemanticMethod(method.right->name, function, _static, method.left));
+            }
+        }
+
+        (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
+    }
+
+    fn AnalyzeExtern(&mut this, _extern: *ExternNode) {
+        if !this.mangling {
+            Logger::Log("Already in an extern block.", _extern, LogSeverity::Error);
+            return;
+        }
+
+        if _extern->linkage != "C" {
+            Logger::Log("Unknown linkage '" + _extern->linkage + "'.", _extern, LogSeverity::Error);
+            return;
+        }
+
+        this.mangling = false;
+
+        for declaration in _extern->declarations {
+            this.AnalyzeDeclarationThirdPass(declaration);
+        }
+
+        this.mangling = true;
+    }
+
+    fn AnalyzeAssembly(&mut this, assembly: *AssemblyNode) {
+        if this.scope_manager.current->global {
+            if !assembly->inputs.Empty() {
+                Logger::Log("Cannot set inputs on module inline assembly.", assembly, LogSeverity::Error);
+            }
+
+            if !assembly->outputs.Empty() {
+                Logger::Log("Cannot set outputs on module inline assembly.", assembly, LogSeverity::Error);
+            }
+
+            if !assembly->clobbers.Empty() {
+                Logger::Log("Cannot set clobbers on module inline assembly.", assembly, LogSeverity::Error);
+            }
+        } else if assembly->outputs.Size() > 1 {
+            Logger::Log("Multiple outputs are not supported.", assembly, LogSeverity::Error);
         }
     }
 
@@ -196,7 +501,14 @@ class SemanticAnalyzer {
     }
 
     fn AnalyzeUnsafe(&mut this, _unsafe: *UnsafeNode) {
+        if this._unsafe {
+            Logger::Log("Already in an unsafe statement.", _unsafe, LogSeverity::Error);
+            return;
+        }
+
+        this._unsafe = true;
         this.AnalyzeBlock(_unsafe->body);
+        this._unsafe = false;
     }
 
     fn AnalyzeBlock(&mut this, block: *BlockNode) {

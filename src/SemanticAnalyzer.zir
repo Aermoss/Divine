@@ -164,22 +164,25 @@ class SemanticAnalyzer {
     }
 
     fn AnalyzeConstant(&mut this, constant: *ConstantNode) {
-        if constant->_type != null {
-            this.ResolveType(constant->_type);
-        }
-
-        if constant->initializer != null {
-            this.AnalyzeExpression(constant->initializer);
-        }
+        let _type = this.ResolveType(constant->_type);
+        this.scope_manager.Set(constant->name, SemanticSymbolKind::GlobalVariable, SemanticValue(_type, ValueCategory::Place), false, constant);
     }
 
     fn AnalyzeStatic(&mut this, _static: *StaticNode) {
-        if _static->_type != null {
-            this.ResolveType(_static->_type);
-        }
+        let _type = this.ResolveType(_static->_type);
+        this.scope_manager.Set(_static->name, SemanticSymbolKind::Variable, SemanticValue(_type, ValueCategory::Place, _static->mutable), false, _static);
 
-        if _static->initializer != null {
-            this.AnalyzeExpression(_static->initializer);
+        if _static->alignment != null {
+            let alignment = this.AnalyzeExpression(_static->alignment).MaterializeWithFallback(this.type_manager.IntegerPointer(false));
+
+            if alignment.Null() {
+                return;
+            }
+
+            if !alignment.Type().IsIntegerPointer() || alignment.Type().IsSigned() {
+                Logger::Log("Static alignment must be of type 'usize'.", _static, LogSeverity::Error);
+                return;
+            }
         }
     }
 
@@ -220,13 +223,11 @@ class SemanticAnalyzer {
             let offset: usize = function->_type->instance_kind != InstanceKind::None ? 1 : 0;
 
             for i in 0..param_types.Size() {
-                let param_value = SemanticValue(param_types[i], ValueCategory::Place);
-
                 if offset > i {
-                    this.scope_manager.Set("this".ToString(), SemanticSymbolKind::Parameter, param_value, false, function);
+                    this.scope_manager.Set("this".ToString(), SemanticSymbolKind::Parameter, SemanticValue(param_types[i], ValueCategory::Place), false, function);
                 } else {
                     let parameter: *ParameterNode = function->_type->parameters[i - offset];
-                    this.scope_manager.Set(parameter->name, SemanticSymbolKind::Parameter, param_value, false, parameter);
+                    this.scope_manager.Set(parameter->name, SemanticSymbolKind::Parameter, SemanticValue(param_types[i], ValueCategory::Place, parameter->mutable), false, parameter);
                 }
             }
 

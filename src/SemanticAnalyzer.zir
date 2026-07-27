@@ -636,9 +636,9 @@ class SemanticAnalyzer {
         } else if expression->_type == NodeType::CAST {
             this.AnalyzeCast(expression as *CastNode);
         } else if expression->_type == NodeType::INDEX_ACCESS {
-            this.AnalyzeIndexAccess(expression as *IndexAccessNode);
+            return this.AnalyzeIndexAccess(expression as *IndexAccessNode);
         } else if expression->_type == NodeType::MEMBER_ACCESS {
-            this.AnalyzeMemberAccess(expression as *MemberAccessNode);
+            return this.AnalyzeMemberAccess(expression as *MemberAccessNode);
         } else if expression->_type == NodeType::UNARY {
             this.AnalyzeUnary(expression as *UnaryNode);
         } else if expression->_type == NodeType::BINARY {
@@ -805,13 +805,100 @@ class SemanticAnalyzer {
         this.ResolveType(_cast->target_type);
     }
 
-    fn AnalyzeIndexAccess(&mut this, index_access: *IndexAccessNode) {
-        this.AnalyzeExpression(index_access->expression);
-        this.AnalyzeExpression(index_access->index);
+    fn AnalyzeIndexAccess(&mut this, index_access: *IndexAccessNode) -> SemanticValue {
+        let raw = this.AnalyzeExpression(index_access->expression);
+        let mut value = raw.ImplicitDereference();
+
+        if value.Null() {
+            return SemanticValue();
+        }
+
+        let mut index = this.AnalyzeExpression(index_access->index).ImplicitDereference().Materialize(this.type_manager.IntegerPointer(false));
+
+        if index.Null() {
+            return SemanticValue();
+        }
+
+        if value.Type().HasMethods() {
+            let mut values = Vector<SemanticValue>();
+            values.PushBack(raw);
+            values.PushBack(index);
+
+            let method = value.Type().Get("operator[]".ToString(), values, index_access);
+
+            if method != null {
+                return this.AnalyzeResolvedCall(SemanticValue(method->_type), values, index_access);
+            } else {
+                return SemanticValue();
+            }
+        }
+
+        if !value.Type().IsPointer() {
+            Logger::Log("Indexed value must be a pointer.", index_access, LogSeverity::Error);
+            return SemanticValue();
+        }
+
+        if !index.Type().IsIntegerPointer() || index.Type().IsSigned() {
+            Logger::Log("Index must be of type 'usize'.", index_access, LogSeverity::Error);
+            return SemanticValue();
+        }
+
+        return SemanticValue(value.Type().AsReference());
     }
 
-    fn AnalyzeMemberAccess(&mut this, member_access: *MemberAccessNode) {
-        this.AnalyzeExpression(member_access->expression);
+    fn AnalyzeMemberAccess(&mut this, member_access: *MemberAccessNode) -> SemanticValue {
+        let raw = this.AnalyzeExpression(member_access->expression);
+        let mut instance = raw.ImplicitDereference();
+
+        if instance.Null() {
+            return SemanticValue();
+        }
+
+        if member_access->arrow {
+            if instance.Type().HasMethods() {
+                let values = Vector<SemanticValue>();
+                values.PushBack(raw);
+
+                let method = instance.Type().Get("operator->".ToString(), values, member_access);
+
+                if method != null {
+                    instance = this.AnalyzeResolvedCall(SemanticValue(method->_type), values, member_access).ImplicitDereference();
+                } else {
+                    return SemanticValue();
+                }
+            } else if instance.Type().IsPointer() {
+                instance = instance.ExplicitDereference();
+            } else {
+                Logger::Log("Expected a pointer type for arrow operator.", member_access, LogSeverity::Error);
+                return SemanticValue();
+            }
+        }
+
+        if !instance.Type().HasFields() && !instance.Type().HasMethods() {
+            Logger::Log("Cannot access member '" + member_access->member + "' of non-class type.", member_access, LogSeverity::Error);
+            return SemanticValue();
+        }
+
+        let index = instance.Type().HasFields() ? instance.Type().Index(member_access->member) : -1;
+
+        if index != -1 {
+            let field = instance.Type().Fields()[member_access->member];
+
+            if !field.public && (this.current_class != null && *this.current_class != instance.Type()) {
+                Logger::Log("Field '" + member_access->member + "' is private.", member_access, LogSeverity::Error);
+                return SemanticValue();
+            }
+
+            return instance.WithType(field._type);
+        } else {
+            let method = instance.Type().Get(member_access->member, member_access);
+
+            if method != null {
+                return SemanticValue(method->_type);
+            } else {
+                return SemanticValue();
+            }
+        }
     }
 
     fn AnalyzeUnary(&mut this, unary: *UnaryNode) {

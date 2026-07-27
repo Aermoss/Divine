@@ -19,9 +19,20 @@
         "src/SemanticScopeManager.zir", "src/SemanticScope.zir", "src/SemanticSymbol.zir",
             "src/Tokens.zir", "src/Nodes.zir", "src/Logger.zir" : *]
 
+class SemanticForward {
+    pub _type: *SemanticType,
+    pub _class: *SemanticType,
+    pub node: *FunctionNode;
+
+    SemanticForward(&mut this, _type: *SemanticType, _class: *SemanticType, node: *FunctionNode) {
+        (this._type, this._class, this.node) = (_type, _class, node);
+    }
+}
+
 class SemanticAnalyzer {
     pub type_manager: SemanticTypeManager,
     scope_manager: SemanticScopeManager,
+    forwards: Vector<SemanticForward>,
     pass_cache: Map<*Node, Pair<*mut SemanticType, *mut SemanticScope>>,
     mangling: bool = true, _unsafe: bool = false,
     pub current_class: *SemanticType = null;
@@ -56,6 +67,56 @@ class SemanticAnalyzer {
             if !declared[declaration] {
                 Logger::Log("Unknown declaration '" + declaration->_type.ToString() + "'.", declaration, LogSeverity::Error);
             }
+        }
+
+        this.pass_cache.Clear();
+        this.AnalyzeForwardDeclarations();
+        this.forwards.Clear();
+    }
+
+    fn AnalyzeForwardDeclarations(&mut this) {
+        let mut i: usize = 0;
+
+        while i < this.forwards.Size() {
+            let forward: SemanticForward = this.forwards[i];
+            let offset: usize = forward.node->_type->instance_kind != InstanceKind::None ? 1 : 0;
+            let params = forward._type->Parameters();
+            this.scope_manager.PushScope(forward.node->name, false);
+            this.current_class = forward._class;
+
+            for j in 0..params.Size() {
+                if offset > j {
+                    this.scope_manager.Set("this".ToString(), SemanticSymbolKind::Parameter, SemanticValue(params[j], ValueCategory::Place), false, forward.node);
+                } else {
+                    let parameter: *ParameterNode = forward.node->_type->parameters[j - offset];
+                    this.scope_manager.Set(parameter->name, SemanticSymbolKind::Parameter, SemanticValue(params[j], ValueCategory::Place, parameter->mutable), false, parameter);
+                }
+            }
+
+            for constructor in forward.node->constructors {
+                let _class = this.ResolveType(constructor->expression);
+
+                if _class == null {
+                    continue;
+                }
+
+                if !_class->IsClass() {
+                    Logger::Log("Constructor type must be a class.", constructor, LogSeverity::Error);
+                    continue;
+                }
+
+                let mut values = Vector<SemanticValue>();
+
+                for argument in constructor->arguments {
+                    let value = this.AnalyzeExpression(argument);
+                    if value.Null() { continue; }
+                    values.PushBack(value);
+                }
+            }
+
+            this.AnalyzeBlock(forward.node->body);
+            this.scope_manager.PopScope();
+            i += 1;
         }
     }
 
@@ -218,24 +279,13 @@ class SemanticAnalyzer {
         let value = SemanticValue(this.type_manager.Function(param_types, return_type));
         this.scope_manager.Set(function->name, SemanticSymbolKind::Function, value, this.mangling && !function->no_mangle, function);
 
+        if this.current_class == null && !function->constructors.Empty() {
+            Logger::Log("Constructors can only be declared inside classes.", function, LogSeverity::Error);
+            return value;
+        }
+
         if function->body != null {
-            this.scope_manager.PushScope(function->name, false);
-            let offset: usize = function->_type->instance_kind != InstanceKind::None ? 1 : 0;
-
-            for i in 0..param_types.Size() {
-                if offset > i {
-                    this.scope_manager.Set("this".ToString(), SemanticSymbolKind::Parameter, SemanticValue(param_types[i], ValueCategory::Place), false, function);
-                } else {
-                    let parameter: *ParameterNode = function->_type->parameters[i - offset];
-                    this.scope_manager.Set(parameter->name, SemanticSymbolKind::Parameter, SemanticValue(param_types[i], ValueCategory::Place, parameter->mutable), false, parameter);
-                }
-            }
-
-            for statement in function->body->statements {
-                this.AnalyzeStatement(statement);
-            }
-
-            this.scope_manager.PopScope();
+            this.forwards.PushBack(SemanticForward(value.Type(), this.current_class, function));
         } return value;
     }
 
@@ -735,12 +785,125 @@ class SemanticAnalyzer {
             values.PushBack(value);
         }
 
-        let value = this.AnalyzeExpression(call->expression);
+        if call->expression->_type == NodeType::MEMBER_ACCESS {
+            let member_access = call->expression as *MemberAccessNode;
+            let raw = this.AnalyzeExpression(member_access->expression);
+            let mut instance = raw.ImplicitDereference();
 
-        if !value.Null() {
-            return this.AnalyzeResolvedCall(value, values, call);
+            if instance.Null() {
+                return SemanticValue();
+            }
+
+            if member_access->arrow {
+                if instance.Type().HasMethods() {
+                    let values = Vector<SemanticValue>();
+                    values.PushBack(raw);
+
+                    let method = instance.Type().Get("operator->".ToString(), values, member_access);
+
+                    if method != null {
+                        instance = this.AnalyzeResolvedCall(SemanticValue(method->_type), values, member_access).ImplicitDereference();
+                    } else {
+                        return SemanticValue();
+                    }
+                } else if instance.Type().IsPointer() {
+                    instance = instance.ExplicitDereference();
+                } else {
+                    Logger::Log("Expected a pointer type for arrow operator.", member_access, LogSeverity::Error);
+                    return SemanticValue();
+                }
+            }
+
+            values.Insert(0, raw);
+
+            if !instance.Type().HasFields() && !instance.Type().HasMethods() {
+                if member_access->arrow {
+                    Logger::Log("Expected a dot operator.", call, LogSeverity::Error);
+                    return SemanticValue();
+                }
+
+                let symbol = this.scope_manager.Resolve(member_access->member, values, call, false);
+
+                if symbol != null {
+                    return this.AnalyzeResolvedCall(symbol->value, values, call);
+                } else {
+                    return SemanticValue();
+                }
+            } else {
+                let index = instance.Type().HasFields() ? instance.Type().Index(member_access->member) : -1;
+
+                if index != -1 {
+                    let field = instance.Type().Fields()[member_access->member];
+
+                    if !field.public && (this.current_class != null && *this.current_class != instance.Type()) {
+                        Logger::Log("Field '" + member_access->member + "' is private.", call, LogSeverity::Error);
+                        return SemanticValue();
+                    }
+
+                    return this.AnalyzeResolvedCall(instance.WithType(field._type), values, call);
+                } else {
+                    let method = instance.Type().Get(member_access->member, values, call);
+
+                    if method != null {
+                        return this.AnalyzeResolvedCall(SemanticValue(method->_type), values, call);
+                    } else {
+                        WriteLine("Method '" + member_access->member + "' not found in type '" + instance.Type().name + "'.");
+                        return SemanticValue();
+                    }
+                }
+            }
+        } else if call->expression->_type == NodeType::PRIMITIVE_TYPE {
+            let _class = this.ResolveType(call->expression);
+
+            if _class != null {
+                return SemanticValue(_class);
+            } return SemanticValue();
         } else {
-            return SemanticValue();
+            let mut state = false;
+            let mut symbol: *SemanticSymbol = null;
+
+            if call->expression->_type == NodeType::IDENTIFIER {
+                let identifier = call->expression as *IdentifierNode;
+
+                if this.scope_manager.Has(identifier->name, SemanticSymbolKind::Variant) {
+                    symbol = this.scope_manager.Get(identifier->name, SemanticSymbolKind::Variant);
+                } else {
+                    state = this.scope_manager.Has(identifier->name, SemanticSymbolKind::Variable)
+                        || this.scope_manager.Has(identifier->name, SemanticSymbolKind::Parameter);
+                }
+            } else if call->expression->_type == NodeType::SCOPE_RESOLUTION {
+                let resolution = call->expression as *ScopeResolutionNode;
+                let scope = this.scope_manager.ResolveScopeHalf(resolution, false);
+                if scope == null { return SemanticValue(); }
+
+                if scope->Has(resolution->identifier->name, SemanticSymbolKind::Variant) {
+                    symbol = scope->Get(resolution->identifier->name, SemanticSymbolKind::Variant);
+                } else {
+                    state = scope->Has(resolution->identifier->name, SemanticSymbolKind::Variable);
+                }
+            }
+
+            if !state {
+                if symbol != null {
+                    return SemanticValue(symbol->value.Type());
+                } else {
+                    symbol = this.scope_manager.Resolve(call->expression, values, false);
+
+                    if symbol != null {
+                        return this.AnalyzeResolvedCall(symbol->value, values, call);
+                    } else {
+                        return SemanticValue();
+                    }
+                }
+            } else {
+                let value = this.AnalyzeExpression(call->expression);
+
+                if !value.Null() {
+                    return this.AnalyzeResolvedCall(value, values, call);
+                } else {
+                    return SemanticValue();
+                }
+            }
         }
     }
 
@@ -807,13 +970,13 @@ class SemanticAnalyzer {
 
     fn AnalyzeIndexAccess(&mut this, index_access: *IndexAccessNode) -> SemanticValue {
         let raw = this.AnalyzeExpression(index_access->expression);
-        let mut value = raw.ImplicitDereference();
+        let value = raw.ImplicitDereference();
 
         if value.Null() {
             return SemanticValue();
         }
 
-        let mut index = this.AnalyzeExpression(index_access->index).ImplicitDereference().Materialize(this.type_manager.IntegerPointer(false));
+        let index = this.AnalyzeExpression(index_access->index).ImplicitDereference().Materialize(this.type_manager.IntegerPointer(false));
 
         if index.Null() {
             return SemanticValue();

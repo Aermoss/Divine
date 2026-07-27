@@ -34,7 +34,9 @@ class SemanticAnalyzer {
     scope_manager: SemanticScopeManager,
     forwards: Vector<SemanticForward>,
     pass_cache: Map<*Node, Pair<*mut SemanticType, *mut SemanticScope>>,
+    loop_scopes: Vector<*mut SemanticScope>,
     mangling: bool = true, _unsafe: bool = false,
+    pub current_function: *SemanticType = null,
     pub current_class: *SemanticType = null;
 
     SemanticAnalyzer(&mut this) {
@@ -82,6 +84,7 @@ class SemanticAnalyzer {
             let offset: usize = forward.node->_type->instance_kind != InstanceKind::None ? 1 : 0;
             let params = forward._type->Parameters();
             this.scope_manager.PushScope(forward.node->name, false);
+            this.current_function = forward._type;
             this.current_class = forward._class;
 
             for j in 0..params.Size() {
@@ -518,9 +521,9 @@ class SemanticAnalyzer {
         } else if statement->_type == NodeType::BLOCK {
             this.AnalyzeBlock(statement as *BlockNode);
         } else if statement->_type == NodeType::CONTINUE {
-            return;
+            this.AnalyzeContinue(statement as *ContinueNode);
         } else if statement->_type == NodeType::BREAK {
-            return;
+            this.AnalyzeBreak(statement as *BreakNode);
         } else if statement->_type == NodeType::VARIABLE {
             this.AnalyzeVariable(statement as *VariableNode);
         } else if statement->_type == NodeType::ASSIGNMENT {
@@ -533,16 +536,26 @@ class SemanticAnalyzer {
     }
 
     fn AnalyzeReturn(&mut this, _return: *ReturnNode) {
-        if _return->expression != null {
-            this.AnalyzeExpression(_return->expression);
-        }
+        if _return->expression == null { return; }
+        let return_type = this.current_function->Return();
+        let value = this.AnalyzeExpression(_return->expression).Materialize(return_type);
+        if value.Null() { return; }
     }
 
     fn AnalyzeIf(&mut this, _if: *IfNode) {
-        this.AnalyzeExpression(_if->condition);
+        let condition = this.AnalyzeExpression(_if->condition).ImplicitDereference();
+
+        if !condition.Null() && !condition.Type().IsBoolean() {
+            Logger::Log("Invalid condition type '" + condition.Type().ToString() + "'.", _if->condition, LogSeverity::Error);
+        }
+
+        this.scope_manager.PushScope(String("then"), false);
         this.AnalyzeBlock(_if->body as *BlockNode);
+        this.scope_manager.PopScope();
 
         if _if->_else != null {
+            this.scope_manager.PushScope(String("else"), false);
+
             if _if->_else->_type == NodeType::IF_LET {
                 this.AnalyzeIfLet(_if->_else as *IfLetNode);
             } else if _if->_else->_type == NodeType::IF {
@@ -550,44 +563,204 @@ class SemanticAnalyzer {
             } else {
                 this.AnalyzeBlock(_if->_else as *BlockNode);
             }
+
+            this.scope_manager.PopScope();
         }
     }
 
-    fn AnalyzeIfLet(&mut this, _if_let: *IfLetNode) {
-        this.AnalyzeExpression(_if_let->expression);
-        this.AnalyzeBlock(_if_let->body as *BlockNode);
+    fn AnalyzeIfLet(&mut this, if_let: *IfLetNode) {
+        let expression = this.AnalyzeExpression(if_let->expression).ImplicitDereference();
+        if expression.Null() { return; }
 
-        if _if_let->_else != null {
-            if _if_let->_else->_type == NodeType::IF_LET {
-                this.AnalyzeIfLet(_if_let->_else as *IfLetNode);
-            } else if _if_let->_else->_type == NodeType::IF {
-                this.AnalyzeIf(_if_let->_else as *IfNode);
+        this.scope_manager.PushScope(String("then"), false);
+        this.AnalyzeStatement(if_let->body);
+        this.scope_manager.PopScope();
+
+        if if_let->_else != null {
+            this.scope_manager.PushScope(String("else"), false);
+
+            if if_let->_else->_type == NodeType::IF_LET {
+                this.AnalyzeIfLet(if_let->_else as *IfLetNode);
+            } else if if_let->_else->_type == NodeType::IF {
+                this.AnalyzeIf(if_let->_else as *IfNode);
             } else {
-                this.AnalyzeBlock(_if_let->_else as *BlockNode);
+                this.AnalyzeBlock(if_let->_else as *BlockNode);
             }
+
+            this.scope_manager.PopScope();
         }
     }
 
     fn AnalyzeWhile(&mut this, _while: *WhileNode) {
-        this.AnalyzeExpression(_while->condition);
+        let condition = this.AnalyzeExpression(_while->condition).ImplicitDereference();
+
+        if !condition.Null() && !condition.Type().IsBoolean() {
+            Logger::Log("Invalid condition type '" + condition.Type().ToString() + "'.", _while->condition, LogSeverity::Error);
+        }
+
+        this.scope_manager.PushScope(String("while"), false);
+        this.loop_scopes.PushBack(this.scope_manager.current);
         this.AnalyzeBlock(_while->body as *BlockNode);
+        this.loop_scopes.PopBack();
+        this.scope_manager.PopScope();
 
         if _while->_else != null {
+            this.scope_manager.PushScope(String("else"), false);
             this.AnalyzeBlock(_while->_else as *BlockNode);
+            this.scope_manager.PopScope();
         }
     }
 
-    fn AnalyzeWhileLet(&mut this, _while_let: *WhileLetNode) {
-        this.AnalyzeExpression(_while_let->expression);
-        this.AnalyzeBlock(_while_let->body as *BlockNode);
+    fn AnalyzeWhileLet(&mut this, while_let: *WhileLetNode) {
+        let expression = this.AnalyzeExpression(while_let->expression).Materialize();
+        if expression.Null() { return; }
+
+        this.scope_manager.PushScope(String("while"), false);
+        this.loop_scopes.PushBack(this.scope_manager.current);
+        this.AnalyzeStatement(while_let->body);
+        this.loop_scopes.PopBack();
+        this.scope_manager.PopScope();
     }
 
     fn AnalyzeFor(&mut this, _for: *ForNode) {
+        let (mut start: SemanticValue, mut end: SemanticValue);
+        let (mut is_range, mut is_inclusive) = (false, false);
+
+        if _for->iterable->_type == NodeType::RANGE {
+            let range = _for->iterable as *RangeNode;
+            (is_range, is_inclusive) = (true, range->inclusive);
+
+            start = this.AnalyzeExpression(range->start);
+            if start.Null() { return; }
+
+            end = this.AnalyzeExpression(range->end);
+            if end.Null() { return; }
+
+            start = start.Materialize(end.Type());
+            end = end.Materialize(start.Type());
+        } else {
+            let raw = this.AnalyzeExpression(_for->iterable);
+            let mut iterable = raw.ImplicitDereference();
+            if iterable.Null() { return; }
+
+            if iterable.Type().HasMethods() {
+                if iterable.Type().Has("Begin".ToString()) && iterable.Type().Has("End".ToString()) {
+                    let begin_method = iterable.Type().Get("Begin".ToString(), _for);
+                    if begin_method == null { return; }
+
+                    let end_method = iterable.Type().Get("End".ToString(), _for);
+                    if end_method == null { return; }
+
+                    let mut values = Vector<SemanticValue>();
+                    values.PushBack(raw);
+
+                    start = this.AnalyzeResolvedCall(SemanticValue(begin_method->_type), values, _for);
+                    if start.Null() { return; }
+
+                    end = this.AnalyzeResolvedCall(SemanticValue(end_method->_type), values, _for);
+                    if end.Null() { return; }
+                } 
+            }
+
+            if start.Null() || end.Null() {
+                Logger::Log("For loop only supports range expressions or classes with '.Begin()' and '.End()' methods.", _for, LogSeverity::Error);
+                return;
+            }
+        }
+
+        if start.Type() != end.Type() {
+            Logger::Log("Start and end expressions of a for loop must have the same type.", _for, LogSeverity::Error);
+            return;
+        }
+
+        let _type = start.Type();
+
+        if is_range {
+            if !_type.IsInteger() && !_type.IsFloat() {
+                Logger::Log("For loop only supports range expressions of integer or floating point types.", _for, LogSeverity::Error);
+                return;
+            }
+        } else {
+            if _type.HasMethods() && _type.Has(String("operator!=")) {
+                let mut values = Vector<SemanticValue>();
+                values.PushBack(SemanticValue(_type, ValueCategory::Place, true));
+                values.PushBack(end);
+
+                let method = _type.Get(String("operator!="), _for);
+                this.AnalyzeResolvedCall(SemanticValue(method->_type), values, _for);
+            } else if !_type.IsPointer() {
+                Logger::Log("For loop only supports pointer iterators or classes with '!=' operator.", _for, LogSeverity::Error);
+                return;
+            }
+        }
+
+        this.scope_manager.PushScope(String("for"), false);
+        this.loop_scopes.PushBack(this.scope_manager.current);
+
+        if is_range {
+            let result = SemanticValue(_type, ValueCategory::Place, true);
+            this.scope_manager.Set(_for->variable, SemanticSymbolKind::Variable, result, false, _for);
+        } else {
+            if _type.IsPointer() {
+                let result = SemanticValue(_type.Pointee(), ValueCategory::Place, true);
+                this.scope_manager.Set(_for->variable, SemanticSymbolKind::Variable, result, false, _for);
+            } else if _type.HasMethods() && _type.Has(String("operator*")) {
+                let mut values = Vector<SemanticValue>();
+                values.PushBack(SemanticValue(_type, ValueCategory::Place, true));
+
+                let method = _type.Get(String("operator*"), _for);
+                let result = this.AnalyzeResolvedCall(SemanticValue(method->_type), values, _for);
+                this.scope_manager.Set(_for->variable, SemanticSymbolKind::Variable, result, false, _for);
+            } else {
+                Logger::Log("For loop only supports pointer iterators or classes with 'operator*' operator.", _for, LogSeverity::Error);
+                return;
+            }
+        }
+
         this.AnalyzeBlock(_for->body as *BlockNode);
+        this.loop_scopes.PopBack();
+        this.scope_manager.PopScope();
+
+        if is_range {
+            if !_type.IsInteger() && !_type.IsFloat() {
+                Logger::Log("For loop only supports range expressions of integer or floating point types.", _for, LogSeverity::Error);
+                return;
+            }
+        } else {
+            if _type.HasMethods() && _type.Has(String("operator+=")) {
+                let mut values = Vector<SemanticValue>();
+                values.PushBack(SemanticValue(_type, ValueCategory::Place, true));
+                values.PushBack(SemanticValue(this.type_manager.IntegerPointer(false)));
+
+                let method = _type.Get(String("operator+="), _for);
+                this.AnalyzeResolvedCall(SemanticValue(method->_type), values, _for);
+            } else if !_type.IsPointer() {
+                Logger::Log("For loop only supports pointer iterators or classes with '+=' operator.", _for, LogSeverity::Error);
+                return;
+            }
+        }
     }
 
     fn AnalyzeLoop(&mut this, _loop: *LoopNode) {
+        this.scope_manager.PushScope(String("loop"), false);
+        this.loop_scopes.PushBack(this.scope_manager.current);
         this.AnalyzeBlock(_loop->body as *BlockNode);
+        this.loop_scopes.PopBack();
+        this.scope_manager.PopScope();
+    }
+
+    fn AnalyzeContinue(&this, _continue: *ContinueNode) {
+        if this.loop_scopes.Empty() {
+            Logger::Log("Continue statement outside of loop.", _continue, LogSeverity::Error);
+            return;
+        }
+    }
+
+    fn AnalyzeBreak(&this, _break: *BreakNode) {
+        if this.loop_scopes.Empty() {
+            Logger::Log("Break statement outside of loop.", _break, LogSeverity::Error);
+            return;
+        }
     }
 
     fn AnalyzeMatch(&mut this, _match: *MatchNode) {
@@ -642,16 +815,6 @@ class SemanticAnalyzer {
 
         if assignment->next != null {
             this.AnalyzeAssignment(assignment->next);
-        }
-    }
-
-    fn AnalyzeAssembly(&mut this, assembly: *AssemblyNode) {
-        for input in assembly->inputs {
-            this.AnalyzeExpression(input.right);
-        }
-
-        for output in assembly->outputs {
-            this.AnalyzeExpression(output.right);
         }
     }
 
@@ -774,6 +937,34 @@ class SemanticAnalyzer {
     }
 
     fn AnalyzeCall(&mut this, call: *CallNode) -> SemanticValue {
+        if call->expression->_type == NodeType::IDENTIFIER {
+            let identifier = call->expression as *IdentifierNode;
+
+            if identifier->name == "sizeof" || identifier->name == "alignof" {
+                if call->arguments.Size() != 1 {
+                    Logger::Log("Invalid number of arguments for '" + identifier->name + "'.", call, LogSeverity::Error);
+                    return SemanticValue();
+                }
+
+                let mut _type: *SemanticType;
+                let argument = call->arguments[0];
+
+                if argument->_type == NodeType::IDENTIFIER || argument->_type == NodeType::SCOPE_RESOLUTION {
+                    let symbol = this.scope_manager.Resolve(argument, false);
+
+                    if symbol != null {
+                        _type = symbol->value.Type();
+                    } else {
+                        return SemanticValue();
+                    }
+                } else {
+                    _type = this.ResolveType(argument);
+                }
+
+                return SemanticValue(this.type_manager.IntegerPointer(false));
+            }
+        }
+
         let mut values = Vector<SemanticValue>();
 
         for argument in call->arguments {
@@ -905,24 +1096,15 @@ class SemanticAnalyzer {
     }
 
     fn AnalyzeResolvedCall(&mut this, function: &SemanticValue, values: &Vector<SemanticValue>, node: *Node) -> SemanticValue {
-        let params = function.Type().Parameters();
-        let _return = function.Type().Return();
+        let param_types = function.Type().Parameters();
+        let return_type = function.Type().Return();
 
-        for i in 0..values.Size() {
-            let mut value = values[i];
-
-            if i < params.Size() {
-                let param: *SemanticType = params[i];
-                value = value.Materialize(param);
-
-                if !param->IsCompatible(value.Type()) {
-                    Logger::Log("Incompatible argument types for function '" + function.Type().name + "'. ('" + param->ToString() + "' != '" + value.Type().ToString() + "').", node, LogSeverity::Error);
-                    return SemanticValue();
-                }
-            }
+        for i in 0..param_types.Size() {
+            let param_type: *SemanticType = param_types[i];
+            let value = values[i].Materialize(param_type);
         }
 
-        return SemanticValue(_return);
+        return SemanticValue(return_type);
     }
 
     fn AnalyzeNew(&mut this, _new: *NewNode) -> SemanticValue {

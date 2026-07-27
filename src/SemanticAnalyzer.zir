@@ -173,7 +173,7 @@ class SemanticAnalyzer {
         this.scope_manager.Set(_static->name, SemanticSymbolKind::Variable, SemanticValue(_type, ValueCategory::Place, _static->mutable), false, _static);
 
         if _static->alignment != null {
-            let alignment = this.AnalyzeExpression(_static->alignment).MaterializeWithFallback(this.type_manager.IntegerPointer(false));
+            let alignment = this.AnalyzeExpression(_static->alignment).Materialize(this.type_manager.IntegerPointer(false));
 
             if alignment.Null() {
                 return;
@@ -612,7 +612,7 @@ class SemanticAnalyzer {
         if expression->_type == NodeType::LITERAL {
             return this.AnalyzeLiteral(expression as *LiteralNode);
         } else if expression->_type == NodeType::CALL {
-            this.AnalyzeCall(expression as *CallNode);
+            return this.AnalyzeCall(expression as *CallNode);
         } else if expression->_type == NodeType::IDENTIFIER || expression->_type == NodeType::SCOPE_RESOLUTION {
             let symbol = this.scope_manager.Resolve(expression, false);
 
@@ -726,12 +726,43 @@ class SemanticAnalyzer {
         }
     }
 
-    fn AnalyzeCall(&mut this, call: *CallNode) {
-        this.AnalyzeExpression(call->expression);
+    fn AnalyzeCall(&mut this, call: *CallNode) -> SemanticValue {
+        let mut values = Vector<SemanticValue>();
 
         for argument in call->arguments {
-            this.AnalyzeExpression(argument);
+            let value = this.AnalyzeExpression(argument);
+            if value.Null() { return SemanticValue(); }
+            values.PushBack(value);
         }
+
+        let value = this.AnalyzeExpression(call->expression);
+
+        if !value.Null() {
+            return this.AnalyzeResolvedCall(value, values, call);
+        } else {
+            return SemanticValue();
+        }
+    }
+
+    fn AnalyzeResolvedCall(&mut this, function: &SemanticValue, values: &Vector<SemanticValue>, node: *Node) -> SemanticValue {
+        let params = function.Type().Parameters();
+        let _return = function.Type().Return();
+
+        for i in 0..values.Size() {
+            let mut value = values[i];
+
+            if i < params.Size() {
+                let param: *SemanticType = params[i];
+                value = value.Materialize(param);
+
+                if !param->IsCompatible(value.Type()) {
+                    Logger::Log("Incompatible argument types for function '" + function.Type().name + "'. ('" + param->ToString() + "' != '" + value.Type().ToString() + "').", node, LogSeverity::Error);
+                    return SemanticValue();
+                }
+            }
+        }
+
+        return SemanticValue(_return);
     }
 
     fn AnalyzeNew(&mut this, _new: *NewNode) -> SemanticValue {
@@ -742,7 +773,7 @@ class SemanticAnalyzer {
         }
 
         if _new->size != null {
-            let size = this.AnalyzeExpression(_new->size).MaterializeWithFallback(this.type_manager.IntegerPointer(false));
+            let size = this.AnalyzeExpression(_new->size).Materialize(this.type_manager.IntegerPointer(false));
 
             if size.Null() {
                 return SemanticValue();

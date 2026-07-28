@@ -763,26 +763,24 @@ class SemanticAnalyzer {
             end = end.Materialize(start.Type());
         } else {
             let raw = this.AnalyzeExpression(_for->iterable);
-            let mut iterable = raw.ImplicitDereference();
+            let iterable = raw.ImplicitDereference();
             if iterable.Null() { return; }
 
-            if iterable.Type().HasMethods() {
-                if iterable.Type().Has("Begin".ToString()) && iterable.Type().Has("End".ToString()) {
-                    let begin_method = iterable.Type().Get("Begin".ToString(), _for);
-                    if begin_method == null { return; }
+            if iterable.Type().HasMethods() && iterable.Type().Has("Begin".ToString()) && iterable.Type().Has("End".ToString()) {
+                let begin_method = iterable.Type().Get("Begin".ToString(), _for);
+                if begin_method == null { return; }
 
-                    let end_method = iterable.Type().Get("End".ToString(), _for);
-                    if end_method == null { return; }
+                let end_method = iterable.Type().Get("End".ToString(), _for);
+                if end_method == null { return; }
 
-                    let mut values = Vector<SemanticValue>();
-                    values.PushBack(raw);
+                let mut values = Vector<SemanticValue>();
+                values.PushBack(raw);
 
-                    start = this.AnalyzeResolvedCall(SemanticValue(begin_method->_type), values, _for);
-                    if start.Null() { return; }
+                start = this.AnalyzeResolvedCall(SemanticValue(begin_method->_type), values, _for);
+                if start.Null() { return; }
 
-                    end = this.AnalyzeResolvedCall(SemanticValue(end_method->_type), values, _for);
-                    if end.Null() { return; }
-                } 
+                end = this.AnalyzeResolvedCall(SemanticValue(end_method->_type), values, _for);
+                if end.Null() { return; }
             }
 
             if start.Null() || end.Null() {
@@ -941,7 +939,72 @@ class SemanticAnalyzer {
         }
     }
 
+    fn IsDeferrableExpression(&mut this, node: *Node) -> *SemanticType {
+        if node->_type == NodeType::LITERAL {
+            let literal = node as *LiteralNode;
+
+            if literal->_type == TokenType::INTEGER && !literal->value.Contains('u') && !literal->value.Contains('i') {
+                return this.type_manager.IntegerLiteral();
+            } else if literal->_type == TokenType::FLOAT && !literal->value.Contains('f') {
+                return this.type_manager.FloatLiteral();
+            } else {
+                return null;
+            }
+        } else if node->_type == NodeType::TERNARY {
+            let ternary = node as *TernaryNode;
+            let then_type = this.IsDeferrableExpression(ternary->then);
+            if then_type == null { return null; }
+            let else_type = this.IsDeferrableExpression(ternary->_else);
+            if else_type == null { return null; }
+
+            if *then_type == *else_type {
+                return then_type;
+            } else {
+                return null;
+            }
+        } else if node->_type == NodeType::BINARY {
+            let binary = node as *BinaryNode;
+
+            if binary->_operator == TokenType::EQUAL || binary->_operator == TokenType::NOT_EQUAL || binary->_operator == TokenType::GREATER || binary->_operator == TokenType::LESS || binary->_operator == TokenType::GREATER_EQUAL || binary->_operator == TokenType::LESS_EQUAL || binary->_operator == TokenType::AND || binary->_operator == TokenType::OR {
+                return null;
+            }
+
+            let left_type = this.IsDeferrableExpression(binary->left);
+            if left_type == null { return null; }
+            let right_type = this.IsDeferrableExpression(binary->right);
+            if right_type == null { return null; }
+
+            if *left_type == *right_type {
+                return left_type;
+            } else {
+                return null;
+            }
+        } else if node->_type == NodeType::UNARY {
+            let unary = node as *UnaryNode;
+
+            if unary->_operator == TokenType::MINUS || unary->_operator == TokenType::NOT {
+                return this.IsDeferrableExpression(unary->operand);
+            } else {
+                return null;
+            }
+        } else {
+            return null;
+        }
+    }
+
     fn AnalyzeExpression(&mut this, expression: *Node) -> SemanticValue {
+        if expression->_type == NodeType::UNARY || expression->_type == NodeType::BINARY || expression->_type == NodeType::TERNARY {
+            let _type = this.IsDeferrableExpression(expression);
+
+            if _type != null {
+                return SemanticValue(_type, expression);
+            }
+        }
+
+        return this.AnalyzeExpression(expression, null);
+    }
+
+    pub fn AnalyzeExpression(&mut this, expression: *Node, target: *SemanticType) -> SemanticValue {
         if expression->_type == NodeType::LITERAL {
             return this.AnalyzeLiteral(expression as *LiteralNode);
         } else if expression->_type == NodeType::CALL {
@@ -967,24 +1030,25 @@ class SemanticAnalyzer {
         } else if expression->_type == NodeType::DELETE {
             return this.AnalyzeDelete(expression as *DeleteNode);
         } else if expression->_type == NodeType::CAST {
-            this.AnalyzeCast(expression as *CastNode);
+            return this.AnalyzeCast(expression as *CastNode);
         } else if expression->_type == NodeType::INDEX_ACCESS {
             return this.AnalyzeIndexAccess(expression as *IndexAccessNode);
         } else if expression->_type == NodeType::MEMBER_ACCESS {
             return this.AnalyzeMemberAccess(expression as *MemberAccessNode);
         } else if expression->_type == NodeType::UNARY {
-            this.AnalyzeUnary(expression as *UnaryNode);
+            return this.AnalyzeUnary(expression as *UnaryNode, target);
         } else if expression->_type == NodeType::BINARY {
-            this.AnalyzeBinary(expression as *BinaryNode);
+            return this.AnalyzeBinary(expression as *BinaryNode, target);
         } else if expression->_type == NodeType::TERNARY {
-            this.AnalyzeTernary(expression as *TernaryNode);
+            return this.AnalyzeTernary(expression as *TernaryNode, target);
         } else if expression->_type == NodeType::STRUCTURE_INITIALIZER {
-            this.AnalyzeStructureInitializer(expression as *StructureInitializerNode);
+            return this.AnalyzeStructureInitializer(expression as *StructureInitializerNode);
         } else if expression->_type == NodeType::TYPE_APPLICATION {
-            this.AnalyzeTypeApplication(expression as *TypeApplicationNode);
+            return this.AnalyzeTypeApplication(expression as *TypeApplicationNode);
         } else {
             Logger::Log("Unknown expression '" + expression->_type.ToString() + "'.", expression, LogSeverity::Error);
-        } return SemanticValue();
+            return SemanticValue();
+        }
     }
 
     fn AnalyzeLiteral(&mut this, literal: *LiteralNode) -> SemanticValue {
@@ -1306,9 +1370,127 @@ class SemanticAnalyzer {
         } return SemanticValue();
     }
 
-    fn AnalyzeCast(&mut this, _cast: *CastNode) {
-        this.AnalyzeExpression(_cast->expression);
-        this.ResolveType(_cast->target_type);
+    fn LiteralNeedsExplicitType(&mut this, expression: *Node, target: *SemanticType) -> bool {
+        let _type = this.IsDeferrableExpression(expression);
+
+        if _type == null {
+            return false;
+        } else if _type->IsInteger() {
+            return target->IsInteger() && !target->IsSame(this.type_manager.Integer(32, true));
+        } else if _type->IsFloat() {
+            return target->IsFloat() && !target->IsSame(this.type_manager.Float(64));
+        } else {
+            return false;
+        }
+    }
+
+    fn AnalyzeCast(&mut this, cast: *CastNode) -> SemanticValue {
+        let mut target = this.ResolveType(cast->target_type);
+        if target == null { return SemanticValue(); }
+
+        let value = this.AnalyzeExpression(cast->expression).Materialize(target);
+        if value.Null() { return SemanticValue(); }
+
+        if value.Type() == *target && this.LiteralNeedsExplicitType(cast->expression, target) {
+            return value;
+        }
+
+        return this.AnalyzeResolvedCast(value, target, cast);
+    }
+
+    fn AnalyzeResolvedCast(&mut this, mut value: SemanticValue, target: &SemanticType, node: *Node) -> SemanticValue {
+        if !target.IsPointer() {
+            value = value.ImplicitDereference();
+        }
+
+        let mut left: *SemanticType = target;
+        let mut right: *SemanticType = value.Type();
+        let (mut state, mut failed) = (false, false);
+
+        while left->IsPointer() && right->IsPointer() {
+            if left->IsMutable() != right->IsMutable() {
+                if left->IsMutable() && !right->IsNullPointer() {
+                    failed = true;
+                } state = true;
+            }
+
+            (left, right) = (left->Pointee(), right->Pointee());
+        }
+
+        if value.Type() == target {
+            if !state {
+                Logger::Log("Redundant cast. ('" + value.Type().ToString() + "' to '" + target.ToString() + "')", node, LogSeverity::Warning);
+            } else {
+                if !failed || this._unsafe {
+                    return SemanticValue(target);
+                } else {
+                    Logger::Log("Cannot cast immutable pointer to mutable pointer.", node, LogSeverity::Error);
+                    return SemanticValue();
+                }
+            }
+        }
+
+        if value.Type().IsBoolean() {
+            if target.IsInteger() {
+                return SemanticValue(target);
+            }
+        } else if value.Type().IsCharacter() {
+            if target.IsInteger() {
+                return SemanticValue(target);
+            }
+        } else if value.Type().IsInteger() {
+            if target.IsPointer() || target.IsInteger() || target.IsFloat() || target.IsEnumeration() {
+                return SemanticValue(target);
+            } else if target.IsCharacter() {
+                if value.Type().Width() == 8 && !value.Type().IsSigned() {
+                    return SemanticValue(target);
+                }
+            }
+        } else if value.Type().IsFloat() {
+            if target.IsInteger() || target.IsFloat() {
+                return SemanticValue(target);
+            }
+        } else if value.Type().IsPointer() {
+            if target.IsInteger() {
+                return SemanticValue(target);
+            }
+        } else if value.Type().IsEnumeration() {
+            if target.IsInteger() {
+                return SemanticValue(target);
+            }
+        }
+
+        if value.Type().IsPointer() && target.IsPointer() {
+            if value.Type().Pointee().IsClass() && target.Pointee().IsClass() {
+                let mut related = false;
+
+                for field in value.Type().Pointee().Fields() {
+                    if field.left == target.Pointee().name {
+                        related = true;
+                        break;
+                    }
+                }
+
+                if !related {
+                    for field in target.Pointee().Fields() {
+                        if field.left == value.Type().Pointee().name {
+                            related = true;
+                            break;
+                        }
+                    }
+                }
+
+                if !related {
+                    Logger::Log("Cannot cast class '" + value.Type().Pointee().name + "' to unrelated class '" + target.Pointee().name + "'.", node, LogSeverity::Error);
+                    return SemanticValue();
+                }
+            }
+
+            return SemanticValue(target);
+        } else {
+            Logger::Log("Cannot cast '" + value.Type().ToString() + "' to '" + target.ToString() + "'.", node, LogSeverity::Error);
+            return SemanticValue();
+        }
     }
 
     fn AnalyzeIndexAccess(&mut this, index_access: *IndexAccessNode) -> SemanticValue {
@@ -1407,35 +1589,362 @@ class SemanticAnalyzer {
         }
     }
 
-    fn AnalyzeUnary(&mut this, unary: *UnaryNode) {
-        this.AnalyzeExpression(unary->operand);
-    }
+    fn AnalyzeUnary(&mut this, unary: *UnaryNode, target: *SemanticType) -> SemanticValue {
+        let raw = this.AnalyzeExpression(unary->operand);
+        let mut value = raw.ImplicitDereference();
 
-    fn AnalyzeBinary(&mut this, binary: *BinaryNode) {
-        this.AnalyzeExpression(binary->left);
-        this.AnalyzeExpression(binary->right);
-    }
+        if value.Null() {
+            return SemanticValue();
+        }
 
-    fn AnalyzeTernary(&mut this, ternary: *TernaryNode) {
-        this.AnalyzeExpression(ternary->condition);
-        this.AnalyzeExpression(ternary->then);
-        this.AnalyzeExpression(ternary->_else);
-    }
+        let mut method_name = "operator".ToString();
+        method_name += unary->_operator.ToUnaryOperatorString();
 
-    fn AnalyzeStructureInitializer(&mut this, struct_init: *StructureInitializerNode) {
-        this.AnalyzeExpression(struct_init->expression);
+        let mut values = Vector<SemanticValue>();
+        values.PushBack(raw);
 
-        for value in struct_init->field_values {
-            this.AnalyzeExpression(value);
+        let symbol = this.scope_manager.Resolve(method_name, values, unary, true);
+
+        if symbol != null {
+            return this.AnalyzeResolvedCall(symbol->value, values, unary);
+        }
+
+        if value.Type().HasMethods() && value.Type().Has(method_name, values) {
+            let method = value.Type().Get(method_name, values, unary);
+            return this.AnalyzeResolvedCall(SemanticValue(method->_type), values, unary);
+        }
+
+        if unary->_operator == TokenType::BITWISE_AND {
+            if !raw.IsPlace() {
+                Logger::Log("Cannot take reference to non-place value.", unary, LogSeverity::Error);
+                return SemanticValue();
+            }
+
+            if unary->mutable && !raw.IsMutable() {
+                Logger::Log("Cannot take mutable reference to immutable value.", unary, LogSeverity::Error);
+                return SemanticValue();
+            }
+
+            return SemanticValue(this.type_manager.Reference(raw.Type(), unary->mutable));
+        } else if unary->_operator == TokenType::MUL {
+            if !raw.Type().IsPointer() {
+                Logger::Log("Cannot dereference non-pointer type '" + raw.Type().ToString() + "'.", unary, LogSeverity::Error);
+                return SemanticValue();
+            }
+
+            return raw.ExplicitDereference();
+        } else {
+            let mut operand_target: *SemanticType = null;
+
+            if target != null {
+                if unary->_operator == TokenType::MINUS {
+                    if target->IsFloat() || (target->IsInteger() && target->IsSigned()) {
+                        operand_target = target;
+                    }
+                } else if unary->_operator == TokenType::TILDE || unary->_operator == TokenType::NOT {
+                    operand_target = target;
+                }
+            }
+
+            if operand_target != null {
+                value = value.Materialize(operand_target);
+            } else {
+                value = value.Materialize();
+            }
+
+            if unary->_operator == TokenType::MINUS {
+                if value.Type().IsInteger() || value.Type().IsFloat() {
+                    if value.Type().IsInteger() && !value.Type().IsSigned() {
+                        Logger::Log("Cannot negate unsigned type '" + value.Type().ToString() + "'.", unary, LogSeverity::Error);
+                        return SemanticValue();
+                    }
+
+                    return SemanticValue(value.Type());
+                } else {
+                    Logger::Log("Cannot negate type '" + value.Type().ToString() + "'.", unary, LogSeverity::Error);
+                    return SemanticValue();
+                }
+            } else if unary->_operator == TokenType::NOT {
+                if value.Type().IsInteger() || value.Type().IsBoolean() {
+                    return SemanticValue(value.Type());
+                } else {
+                    Logger::Log("Cannot invert type '" + value.Type().ToString() + "'.", unary, LogSeverity::Error);
+                    return SemanticValue();
+                }
+            } else {
+                Logger::Log("Invalid unary operation '" + unary->_operator.ToString() + "'.", unary, LogSeverity::Error);
+                return SemanticValue();
+            }
         }
     }
 
-    fn AnalyzeTypeApplication(&mut this, type_application: *TypeApplicationNode) {
-        this.AnalyzeExpression(type_application->expression);
+    fn AnalyzeBinary(&mut this, binary: *BinaryNode, target: *SemanticType) -> SemanticValue {
+        let mut operand_target: *SemanticType = null;
 
-        for _type in type_application->types {
-            this.ResolveType(_type);
+        if target != null && binary->_operator != TokenType::EQUAL && binary->_operator != TokenType::NOT_EQUAL && binary->_operator != TokenType::GREATER && binary->_operator != TokenType::LESS && binary->_operator != TokenType::GREATER_EQUAL && binary->_operator != TokenType::LESS_EQUAL && binary->_operator != TokenType::AND && binary->_operator != TokenType::OR {
+            if target->IsInteger() || target->IsFloat() || target->IsBoolean() {
+                operand_target = target;
+            }
         }
+
+        let mut left = this.AnalyzeExpression(binary->left);
+        if left.Null() { return SemanticValue(); }
+
+        if operand_target != null {
+            left = left.Materialize(operand_target);
+        }
+
+        if binary->_operator == TokenType::AND || binary->_operator == TokenType::OR {
+            if !left.Type().IsBoolean() {
+                Logger::Log("Invalid type '" + left.Type().ToString() + "' for binary operation '" + binary->_operator.ToString() + "'.", binary, LogSeverity::Error);
+                return SemanticValue();
+            }
+
+            this.scope_manager.PushScope(String("short circuit"), false);
+            let right = this.AnalyzeExpression(binary->right);
+            this.scope_manager.PopScope();
+
+            if right.Null() {
+                return SemanticValue();
+            }
+
+            if !right.Type().IsBoolean() {
+                Logger::Log("Invalid type '" + right.Type().ToString() + "' for binary operation '" + binary->_operator.ToString() + "'.", binary, LogSeverity::Error);
+                return SemanticValue();
+            }
+
+            return SemanticValue(left.Type());
+        }
+
+        let mut right = this.AnalyzeExpression(binary->right);
+        if right.Null() { return SemanticValue(); }
+
+        if operand_target != null {
+            right = right.Materialize(operand_target);
+        }
+
+        return this.AnalyzeResolvedBinary(left, right, binary->_operator, binary);
+    }
+
+    fn AnalyzeResolvedBinary(&mut this, mut left: SemanticValue, mut right: SemanticValue, _operator: TokenType, node: *Node) -> SemanticValue {
+        let (left_raw, right_raw) = (left, right);
+        (left, right) = (left.ImplicitDereference(), right.ImplicitDereference());
+
+        let mut method_name = "operator".ToString();
+        method_name += _operator.ToBinaryOperatorString();
+
+        let mut values = Vector<SemanticValue>();
+        values.PushBack(left);
+        values.PushBack(right);
+
+        let symbol = this.scope_manager.Resolve(method_name, values, node, true);
+
+        if symbol != null {
+            return this.AnalyzeResolvedCall(symbol->value, values, node);
+        } else if left.Type().HasFields() || right.Type().HasFields() {
+            let instance_raw = left.Type().HasFields() ? left_raw : right_raw;
+            let instance = instance_raw.ImplicitDereference();
+
+            let value_raw = left.Type().HasFields() ? right_raw : left_raw;
+            let value = value_raw.ImplicitDereference();
+
+            let mut values = Vector<SemanticValue>();
+            values.PushBack(instance_raw);
+            values.PushBack(value_raw);
+
+            if instance.Type().HasMethods() && instance.Type().Has(method_name, values) {
+                let method = instance.Type().Get(method_name, values, node);
+                return this.AnalyzeResolvedCall(SemanticValue(method->_type), values, node);
+            }
+
+            if left.Type() == right.Type() {
+                if _operator != TokenType::EQUAL && _operator != TokenType::NOT_EQUAL {
+                    Logger::Log("Invalid binary operation '" + _operator.ToString() + "' for type '" + instance.Type().ToString() + "'.", node, LogSeverity::Error);
+                    return SemanticValue();
+                }
+
+                return SemanticValue(this.type_manager.Boolean());
+            } else {
+                Logger::Log("Incompatible binary operation types. ('" + instance.Type().ToString() + "' != '" + value.Type().ToString() + "').", node, LogSeverity::Error);
+                return SemanticValue();
+            }
+        }
+
+        if left.Type().IsPointer() && right.Type().IsInteger() && right.Type().IsLiteral() {
+            right = right.Materialize(this.type_manager.IntegerPointer(false));
+        } else if right.Type().IsPointer() && left.Type().IsInteger() && left.Type().IsLiteral() {
+            left = left.Materialize(this.type_manager.IntegerPointer(false));
+        } else {
+            (left, right) = (left.Materialize(right.Type()), right.Materialize(left.Type()));
+        }
+
+        if left.Type().IsBoolean() && right.Type().IsBoolean() {
+            if _operator == TokenType::EQUAL || _operator == TokenType::NOT_EQUAL {
+                return SemanticValue(this.type_manager.Boolean());
+            } else if _operator == TokenType::AND || _operator == TokenType::BITWISE_AND || _operator == TokenType::OR || _operator == TokenType::BITWISE_OR || _operator == TokenType::BITWISE_XOR {
+                return SemanticValue(left.Type());
+            } else {
+                Logger::Log("Invalid binary operation '" + _operator.ToString() + "' for type '" + left.Type().ToString() + "'.", node, LogSeverity::Error);
+                return SemanticValue();
+            }
+        } else if left.Type().IsCharacter() && right.Type().IsCharacter() {
+            if _operator == TokenType::EQUAL || _operator == TokenType::NOT_EQUAL || _operator == TokenType::GREATER || _operator == TokenType::GREATER_EQUAL || _operator == TokenType::LESS || _operator == TokenType::LESS_EQUAL {
+                return SemanticValue(this.type_manager.Boolean());
+            } else {
+                Logger::Log("Invalid binary operation '" + _operator.ToString() + "' for type '" + left.Type().ToString() + "'.", node, LogSeverity::Error);
+                return SemanticValue();
+            }
+        } else if left.Type().IsInteger() && right.Type().IsInteger() {
+            if left.Type() != right.Type() {
+                Logger::Log("Incompatible binary operation types. ('" + left.Type().ToString() + "' != '" + right.Type().ToString() + "').", node, LogSeverity::Error);
+                return SemanticValue();
+            }
+
+            if _operator == TokenType::PLUS || _operator == TokenType::MINUS || _operator == TokenType::MUL || _operator == TokenType::DIV || _operator == TokenType::MOD {
+                return SemanticValue(left.Type());
+            } else if _operator == TokenType::EQUAL || _operator == TokenType::NOT_EQUAL || _operator == TokenType::GREATER || _operator == TokenType::GREATER_EQUAL || _operator == TokenType::LESS || _operator == TokenType::LESS_EQUAL {
+                return SemanticValue(this.type_manager.Boolean());
+            } else if _operator == TokenType::BITWISE_AND || _operator == TokenType::BITWISE_OR || _operator == TokenType::BITWISE_XOR || _operator == TokenType::LSHIFT || _operator == TokenType::RSHIFT {
+                return SemanticValue(left.Type());
+            } else {
+                Logger::Log("Invalid binary operation '" + _operator.ToString() + "' for type '" + left.Type().ToString() + "'.", node, LogSeverity::Error);
+                return SemanticValue();
+            }
+        } else if left.Type().IsFloat() && right.Type().IsFloat() {
+            if left.Type() != right.Type() {
+                Logger::Log("Incompatible binary operation types. ('" + left.Type().ToString() + "' != '" + right.Type().ToString() + "').", node, LogSeverity::Error);
+                return SemanticValue();
+            }
+
+            if _operator == TokenType::PLUS || _operator == TokenType::MINUS || _operator == TokenType::MUL || _operator == TokenType::DIV || _operator == TokenType::MOD {
+                return SemanticValue(left.Type());
+            } else if _operator == TokenType::EQUAL || _operator == TokenType::NOT_EQUAL || _operator == TokenType::GREATER || _operator == TokenType::GREATER_EQUAL || _operator == TokenType::LESS || _operator == TokenType::LESS_EQUAL {
+                return SemanticValue(this.type_manager.Boolean());
+            } else {
+                Logger::Log("Invalid binary operation '" + _operator.ToString() + "' for type '" + left.Type().ToString() + "'.", node, LogSeverity::Error);
+                return SemanticValue();
+            }
+        } else if left.Type().IsPointer() && right.Type().IsPointer() {
+            if left.Type() != right.Type() && !(left.Type().IsNullPointer() || right.Type().IsNullPointer()) {
+                Logger::Log("Incompatible binary operation types. ('" + left.Type().ToString() + "' != '" + right.Type().ToString() + "').", node, LogSeverity::Error);
+                return SemanticValue();
+            }
+
+            if _operator == TokenType::MINUS {
+                return SemanticValue(this.type_manager.IntegerPointer(false));
+            } else if _operator == TokenType::EQUAL || _operator == TokenType::NOT_EQUAL || _operator == TokenType::GREATER || _operator == TokenType::GREATER_EQUAL || _operator == TokenType::LESS || _operator == TokenType::LESS_EQUAL {
+                return SemanticValue(this.type_manager.Boolean());
+            } else {
+                Logger::Log("Invalid pointer binary operation '" + _operator.ToString() + "' for type '" + left.Type().ToString() + "'.", node, LogSeverity::Error);
+                return SemanticValue();
+            }
+        } else if (left.Type().IsPointer() && right.Type().IsInteger()) || (left.Type().IsInteger() && right.Type().IsPointer()) {
+            let pointer = left.Type().IsPointer() ? left : right;
+            let index = left.Type().IsPointer() ? right : left;
+
+            if !index.Type().IsIntegerPointer() {
+                Logger::Log("Pointer arithmetic requires an operand of pointer-sized type.", node, LogSeverity::Error);
+                return SemanticValue();
+            }
+
+            if _operator == TokenType::PLUS {
+                return SemanticValue(pointer.Type());
+            } else if _operator == TokenType::MINUS {
+                if left.Type().IsInteger() {
+                    Logger::Log("Cannot subtract a pointer from an integer.", node, LogSeverity::Error);
+                    return SemanticValue();
+                }
+
+                return SemanticValue(pointer.Type());
+            } else {
+                Logger::Log("Invalid pointer binary operation '" + _operator.ToString() + "' for type '" + left.Type().ToString() + "'.", node, LogSeverity::Error);
+                return SemanticValue();
+            }
+        } else if left.Type().IsEnumeration() && right.Type().IsEnumeration() {
+            if left.Type() != right.Type() {
+                Logger::Log("Incompatible binary operation types. ('" + left.Type().ToString() + "' != '" + right.Type().ToString() + "').", node, LogSeverity::Error);
+                return SemanticValue();
+            }
+
+            if _operator == TokenType::BITWISE_AND || _operator == TokenType::BITWISE_OR || _operator == TokenType::BITWISE_XOR {
+                return SemanticValue(left.Type());
+            } else if _operator == TokenType::EQUAL || _operator == TokenType::NOT_EQUAL || _operator == TokenType::GREATER || _operator == TokenType::GREATER_EQUAL || _operator == TokenType::LESS || _operator == TokenType::LESS_EQUAL {
+                return SemanticValue(this.type_manager.Boolean());
+            } else {
+                Logger::Log("Invalid binary operation '" + _operator.ToString() + "' for type '" + left.Type().ToString() + "'.", node, LogSeverity::Error);
+                return SemanticValue();
+            }
+        } else {
+            Logger::Log("Invalid type '" + left.Type().ToString() + "' for binary operation '" + _operator.ToString() + "'.", node, LogSeverity::Error);
+            return SemanticValue();
+        }
+    }
+
+    fn AnalyzeTernary(&mut this, ternary: *TernaryNode, target: *SemanticType) -> SemanticValue {
+        let condition = this.AnalyzeExpression(ternary->condition).ImplicitDereference();
+
+        if !condition.Null() && !condition.Type().IsBoolean() {
+            Logger::Log("Invalid condition type '" + condition.Type().ToString() + "'.", ternary->condition, LogSeverity::Error);
+        }
+
+        let mut then_value = this.AnalyzeExpression(ternary->then);
+        if then_value.Null() { return SemanticValue(); }
+
+        let mut else_value = this.AnalyzeExpression(ternary->_else);
+        if else_value.Null() { return SemanticValue(); }
+
+        then_value.Materialize(target != null ? target : else_value.Type());
+        else_value.Materialize(target != null ? target : then_value.Type());
+
+        let mutable = then_value.IsMutable() && else_value.IsMutable() ? true : false;
+        let category = then_value.IsPlace() && else_value.IsPlace() ? ValueCategory::Place : ValueCategory::Value;
+        return SemanticValue(then_value.Type(), category, mutable);
+    }
+
+    fn AnalyzeTypeApplication(&mut this, node: *TypeApplicationNode) -> SemanticValue {
+        let mut types = Vector<*SemanticType>();
+
+        for _type in node->types {
+            types.PushBack(this.ResolveType(_type));
+        }
+
+        if node->expression->_type == NodeType::IDENTIFIER || node->expression->_type == NodeType::PRIMITIVE_TYPE {
+            let mut name = node->expression->_type == NodeType::IDENTIFIER ?
+                (node->expression as *IdentifierNode)->name : (node->expression as *PrimitiveTypeNode)->name;
+
+            if this.scope_manager.Has(name, SemanticSymbolKind::Generic) {
+                let generic = this.scope_manager.Get(name, SemanticSymbolKind::Generic)->generic;
+
+                if generic->node->_type == NodeType::FUNCTION {
+                    return generic->Get(types).left;
+                } else {
+                    Logger::Log("Generic '" + name + "' is not a function.", node, LogSeverity::Error);
+                    return SemanticValue();
+                }
+            } else if this.scope_manager.Has(name) {
+                Logger::Log("Symbol '" + name + "' is not generic.", node, LogSeverity::Error);
+                return SemanticValue();
+            } else {
+                Logger::Log("Symbol '" + name + "' not found.", node, LogSeverity::Error);
+                return SemanticValue();
+            }
+        } else if node->expression->_type == NodeType::SCOPE_RESOLUTION {
+            let resolution = node->expression as *ScopeResolutionNode;
+            let scope = this.scope_manager.ResolveScopeHalf(resolution, true);
+            if scope == null { return SemanticValue(); }
+            let symbol = scope->Get(resolution->identifier->name, SemanticSymbolKind::Generic);
+            if symbol == null { return SemanticValue(); }
+            return symbol->generic->Get(types).left;
+        } else {
+            Logger::Log("Invalid type application.", node, LogSeverity::Error);
+            return SemanticValue();
+        }
+    }
+
+    fn AnalyzeStructureInitializer(&mut this, node: *StructureInitializerNode) -> SemanticValue {
+        let symbol = this.scope_manager.Resolve(node->expression, false);
+        if symbol == null { return SemanticValue(); }
+        return SemanticValue(symbol->value.Type());
     }
 
     pub fn ResolveType(&mut this, _type: *Node) -> *SemanticType {

@@ -762,8 +762,7 @@ class SemanticAnalyzer {
             start = start.Materialize(end.Type());
             end = end.Materialize(start.Type());
         } else {
-            let raw = this.AnalyzeExpression(_for->iterable);
-            let iterable = raw.ImplicitDereference();
+            let iterable = this.AnalyzeExpression(_for->iterable).ImplicitDereference();
             if iterable.Null() { return; }
 
             if iterable.Type().HasMethods() && iterable.Type().Has("Begin".ToString()) && iterable.Type().Has("End".ToString()) {
@@ -774,7 +773,7 @@ class SemanticAnalyzer {
                 if end_method == null { return; }
 
                 let mut values = Vector<SemanticValue>();
-                values.PushBack(raw);
+                values.PushBack(iterable.ImplicitAddressOf());
 
                 start = this.AnalyzeResolvedCall(SemanticValue(begin_method->_type), values, _for);
                 if start.Null() { return; }
@@ -930,12 +929,82 @@ class SemanticAnalyzer {
         }
     }
 
-    fn AnalyzeAssignment(&mut this, assignment: *AssignmentNode) {
-        this.AnalyzeExpression(assignment->left);
-        this.AnalyzeExpression(assignment->right);
+    fn AnalyzeAssignment(&mut this, assignment: *AssignmentNode) -> SemanticValue {
+        let _operator = assignment->_operator;
+        let left_raw = this.AnalyzeExpression(assignment->left);
+        let mut left = left_raw.ImplicitDereference();
+        if left.Null() { return SemanticValue(); }
+
+        let right_raw = this.AnalyzeExpression(assignment->right);
+        let mut right = right_raw.ImplicitDereference();
+        if right.Null() { return SemanticValue(); }
+
+        if left.Type().IsPointer() && (_operator == TokenType::PLUS_ASSIGN || _operator == TokenType::MINUS_ASSIGN) {
+            right = right.Materialize(this.type_manager.IntegerPointer(false));
+        } else {
+            right = right.Materialize(left.Type());
+        }
+
+        if left.Type().HasMethods() {
+            let mut values = Vector<SemanticValue>();
+            values.PushBack(left.ImplicitAddressOf());
+            values.PushBack(right_raw);
+
+            let mut method_name = "operator".ToString();
+            method_name += _operator.ToAssignmentOperatorString();
+
+            if left.Type().Has(method_name, values) {
+                let method = left.Type().Get(method_name, values, assignment);
+                this.AnalyzeResolvedCall(SemanticValue(method->_type), values, assignment);
+            } else if left.Type() == right.Type() {
+                if _operator != TokenType::ASSIGN {
+                    Logger::Log("Invalid class assignment operation '" + _operator.ToString() + "' for type '" + left.Type().ToString() + "'.", assignment, LogSeverity::Error);
+                }
+            } else {
+                Logger::Log("Incompatible class assignment types. ('" + left.Type().ToString() + "' != '" + right.Type().ToString() + "').", assignment, LogSeverity::Error);
+            }
+        } else if !left.IsPlace() {
+            Logger::Log("Cannot assign to non-place value.", assignment, LogSeverity::Error);
+        } else if !left.IsMutable() {
+            Logger::Log("Cannot assign to immutable value.", assignment, LogSeverity::Error);
+        } else {
+            if _operator != TokenType::ASSIGN {
+                if (left.Type().IsBoolean() || left.Type().IsEnumeration() || left.Type().IsInteger() || left.Type().IsFloat()) && left.Type() != right.Type() {
+                    Logger::Log("Incompatible assignment operation types. ('" + left.Type().ToString() + "' != '" + right.Type().ToString() + "').", assignment, LogSeverity::Error);
+                }
+
+                if left.Type().IsBoolean() || left.Type().IsEnumeration() {
+                    if _operator != TokenType::AND_ASSIGN && _operator != TokenType::OR_ASSIGN && _operator != TokenType::XOR_ASSIGN {
+                        Logger::Log("Invalid assignment operation '" + _operator.ToString() + "' for type '" + left.Type().ToString() + "'.", assignment, LogSeverity::Error);
+                    }
+                } else if left.Type().IsInteger() {
+                    if _operator != TokenType::PLUS_ASSIGN && _operator != TokenType::MINUS_ASSIGN && _operator != TokenType::MUL_ASSIGN && _operator != TokenType::DIV_ASSIGN && _operator != TokenType::MOD_ASSIGN &&
+                        _operator != TokenType::AND_ASSIGN && _operator != TokenType::OR_ASSIGN && _operator != TokenType::XOR_ASSIGN && _operator != TokenType::LSHIFT_ASSIGN && _operator != TokenType::RSHIFT_ASSIGN {
+                        Logger::Log("Invalid assignment operation '" + _operator.ToString() + "' for type '" + left.Type().ToString() + "'.", assignment, LogSeverity::Error);
+                    }
+                } else if left.Type().IsFloat() {
+                    if _operator != TokenType::PLUS_ASSIGN && _operator != TokenType::MINUS_ASSIGN && _operator != TokenType::MUL_ASSIGN && _operator != TokenType::DIV_ASSIGN && _operator != TokenType::MOD_ASSIGN {
+                        Logger::Log("Invalid assignment operation '" + _operator.ToString() + "' for type '" + left.Type().ToString() + "'.", assignment, LogSeverity::Error);
+                    }
+                } else if left.Type().IsPointer() {
+                    if !right.Type().IsIntegerPointer() {
+                        Logger::Log("Pointer arithmetic requires an operand of pointer-sized type.", assignment, LogSeverity::Error);
+                    }
+
+                    if _operator != TokenType::PLUS_ASSIGN && _operator != TokenType::MINUS_ASSIGN {
+                        Logger::Log("Invalid pointer assignment operation '" + _operator.ToString() + "' for type '" + left.Type().ToString() + "'.", assignment, LogSeverity::Error);
+                    }
+                } else {
+                    Logger::Log("Invalid type '" + left.Type().ToString() + "' for assignment operation '" + _operator.ToString() + "'.", assignment, LogSeverity::Error);
+                }
+            }
+        }
 
         if assignment->next != null {
             this.AnalyzeAssignment(assignment->next);
+            return SemanticValue();
+        } else {
+            return left_raw;
         }
     }
 
@@ -1162,18 +1231,13 @@ class SemanticAnalyzer {
 
         if call->expression->_type == NodeType::MEMBER_ACCESS {
             let member_access = call->expression as *MemberAccessNode;
-            let raw = this.AnalyzeExpression(member_access->expression);
-            let mut instance = raw.ImplicitDereference();
-
-            if instance.Null() {
-                return SemanticValue();
-            }
+            let mut instance = this.AnalyzeExpression(member_access->expression).ImplicitDereference();
+            if instance.Null() { return SemanticValue(); }
 
             if member_access->arrow {
                 if instance.Type().HasMethods() {
                     let values = Vector<SemanticValue>();
-                    values.PushBack(raw);
-
+                    values.PushBack(instance.ImplicitAddressOf());
                     let method = instance.Type().Get("operator->".ToString(), values, member_access);
 
                     if method != null {
@@ -1195,7 +1259,7 @@ class SemanticAnalyzer {
                     return SemanticValue();
                 }
 
-                values.Insert(0, raw);
+                values.Insert(0, instance.ImplicitAddressOf());
                 let symbol = this.scope_manager.Resolve(member_access->member, values, call, false);
 
                 if symbol != null {
@@ -1216,7 +1280,7 @@ class SemanticAnalyzer {
 
                     return this.AnalyzeResolvedCall(instance.WithType(field._type), values, call);
                 } else {
-                    values.Insert(0, raw);
+                    values.Insert(0, instance.ImplicitAddressOf());
                     let method = instance.Type().Get(member_access->member, values, call);
 
                     if method != null {
@@ -1494,8 +1558,7 @@ class SemanticAnalyzer {
     }
 
     fn AnalyzeIndexAccess(&mut this, index_access: *IndexAccessNode) -> SemanticValue {
-        let raw = this.AnalyzeExpression(index_access->expression);
-        let value = raw.ImplicitDereference();
+        let value = this.AnalyzeExpression(index_access->expression).ImplicitDereference();
 
         if value.Null() {
             return SemanticValue();
@@ -1509,7 +1572,7 @@ class SemanticAnalyzer {
 
         if value.Type().HasMethods() {
             let mut values = Vector<SemanticValue>();
-            values.PushBack(raw);
+            values.PushBack(value.ImplicitAddressOf());
             values.PushBack(index);
 
             let method = value.Type().Get("operator[]".ToString(), values, index_access);
@@ -1535,8 +1598,7 @@ class SemanticAnalyzer {
     }
 
     fn AnalyzeMemberAccess(&mut this, member_access: *MemberAccessNode) -> SemanticValue {
-        let raw = this.AnalyzeExpression(member_access->expression);
-        let mut instance = raw.ImplicitDereference();
+        let mut instance = this.AnalyzeExpression(member_access->expression).ImplicitDereference();
 
         if instance.Null() {
             return SemanticValue();
@@ -1545,8 +1607,7 @@ class SemanticAnalyzer {
         if member_access->arrow {
             if instance.Type().HasMethods() {
                 let values = Vector<SemanticValue>();
-                values.PushBack(raw);
-
+                values.PushBack(instance.ImplicitAddressOf());
                 let method = instance.Type().Get("operator->".ToString(), values, member_access);
 
                 if method != null {
@@ -1601,8 +1662,7 @@ class SemanticAnalyzer {
         method_name += unary->_operator.ToUnaryOperatorString();
 
         let mut values = Vector<SemanticValue>();
-        values.PushBack(raw);
-
+        values.PushBack(value.ImplicitAddressOf());
         let symbol = this.scope_manager.Resolve(method_name, values, unary, true);
 
         if symbol != null {
@@ -1742,15 +1802,12 @@ class SemanticAnalyzer {
         if symbol != null {
             return this.AnalyzeResolvedCall(symbol->value, values, node);
         } else if left.Type().HasFields() || right.Type().HasFields() {
-            let instance_raw = left.Type().HasFields() ? left_raw : right_raw;
-            let instance = instance_raw.ImplicitDereference();
-
-            let value_raw = left.Type().HasFields() ? right_raw : left_raw;
-            let value = value_raw.ImplicitDereference();
+            let instance = left.Type().HasFields() ? left : right;
+            let value = left.Type().HasFields() ? right_raw : left_raw;
 
             let mut values = Vector<SemanticValue>();
-            values.PushBack(instance_raw);
-            values.PushBack(value_raw);
+            values.PushBack(instance.ImplicitAddressOf());
+            values.PushBack(value);
 
             if instance.Type().HasMethods() && instance.Type().Has(method_name, values) {
                 let method = instance.Type().Get(method_name, values, node);
@@ -1759,13 +1816,13 @@ class SemanticAnalyzer {
 
             if left.Type() == right.Type() {
                 if _operator != TokenType::EQUAL && _operator != TokenType::NOT_EQUAL {
-                    Logger::Log("Invalid binary operation '" + _operator.ToString() + "' for type '" + instance.Type().ToString() + "'.", node, LogSeverity::Error);
+                    Logger::Log("Invalid binary operation '" + _operator.ToString() + "' for type '" + left.Type().ToString() + "'.", node, LogSeverity::Error);
                     return SemanticValue();
                 }
 
                 return SemanticValue(this.type_manager.Boolean());
             } else {
-                Logger::Log("Incompatible binary operation types. ('" + instance.Type().ToString() + "' != '" + value.Type().ToString() + "').", node, LogSeverity::Error);
+                Logger::Log("Incompatible binary operation types. ('" + left.Type().ToString() + "' != '" + right.Type().ToString() + "').", node, LogSeverity::Error);
                 return SemanticValue();
             }
         }

@@ -15,7 +15,7 @@
  */
 
 #[include "std/io", "std/file", "std/std", "vendor/llvm-c/Core.zir", "vendor/llvm-c/IRReader.zir", "vendor/llvm-c/BitReader.zir", "vendor/llvm-c/BitWriter.zir", "vendor/llvm-c/Transforms/PassBuilder.zir",
-    "src/Context.zir", "src/Target.zir", "src/Lexer.zir", "src/Preprocessor.zir", "src/Parser.zir", "src/SemanticAnalyzer.zir", "src/Compiler.zir", "src/Assembler.zir", "src/Logger.zir" : *]
+    "src/Target.zir", "src/Lexer.zir", "src/Preprocessor.zir", "src/Parser.zir", "src/SemanticAnalyzer.zir", "src/CodeGenerator.zir", "src/Assembler.zir", "src/Logger.zir" : *]
 
 #[if WINDOWS]
 const INFINITE: u32 = 0xFFFFFFFF;
@@ -620,19 +620,16 @@ fn Main(args: &mut Vector<String>) -> i32 {
     let mut temp_files = Vector<String>();
     let temp_path = GetTemporaryPath();
     if temp_path.Empty() { return 1; }
-    let mut failed = false;
-
-    let mut context = Context();
-    let target = Target(triple, arch, code_model, features, opt_level);
     let mut entry_included = false;
+    let mut failed = false;
 
     for input_file in input_files {
         let parts = SplitExtension(input_file);
         let (name, extension) = (parts.left, parts.right);
 
         let mut module: LLVMModuleRef = null;
-        let mut compiler = Compiler(context, target, freestanding, no_red_zone);
-        let mut assembler = Assembler(context, target);
+        let target = Target(triple, arch, code_model, features, opt_level);
+        let mut assembler = Assembler(target);
 
         if extension == ".zir" {
             if verbose {
@@ -659,7 +656,8 @@ fn Main(args: &mut Vector<String>) -> i32 {
             let semantic_analyzer = SemanticAnalyzer();
             semantic_analyzer.Analyze(root);
 
-            module = compiler.Compile(root, input_file);
+            let code_generator = CodeGenerator(target, freestanding, no_red_zone);
+            module = code_generator.Generate(root, input_file);
         } else if extension == ".ll" || extension == ".bc" {
             if verbose {
                 Logger::Log("Compiling: '" + input_file + "'.", LogSeverity::Info);

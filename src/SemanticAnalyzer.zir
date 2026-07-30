@@ -103,20 +103,20 @@ class SemanticAnalyzer {
 
         while i < this.forwards.Size() {
             let forward: SemanticForward = this.forwards[i];
+            let mut symbols = Map<String, *SemanticSymbol>();
             let prev_scope = this.scope_manager.current;
             this.current_function = (forward.hir as *HIRDeclaration)->_type;
             this.current_class = forward._class;
 
             if forward.generic != null {
                 this.scope_manager.current = forward.generic->scope;
-            }
+                let mut index: usize = 0;
 
-            let mut index: usize = 0;
-            let mut symbols = Vector<*SemanticSymbol>();
-
-            for _type in forward.types {
-                symbols.PushBack(forward.generic->scope->Set(forward.generic->type_names[index], SemanticSymbolKind::Type, _type, forward.node));
-                index += 1;
+                for _type in forward.types {
+                    let name = forward.generic->type_names[index];
+                    symbols[name] = this.scope_manager.current->Set(name, SemanticSymbolKind::Type, _type, forward.node);
+                    index += 1;
+                }
             }
 
             let params = this.current_function->Parameters();
@@ -156,16 +156,15 @@ class SemanticAnalyzer {
             forward.hir->body = this.AnalyzeBlock(forward.node->body);
             this.scope_manager.PopScope();
 
-            for symbol in symbols {
-                let index = forward.generic->scope->symbols.Index(symbol);
-
-                if index != -1 {
-                    forward.generic->scope->symbols.RemoveAt(index as usize);
-                    delete symbol;
-                }
-            }
-
             if forward.generic != null {
+                for pair in symbols {
+                    this.scope_manager.current->symbols[pair.left].Remove(pair.right);
+
+                    if this.scope_manager.current->symbols[pair.left].Empty() {
+                        this.scope_manager.current->symbols.Remove(pair.left);
+                    } delete pair.right;
+                }
+
                 this.scope_manager.current = prev_scope;
             } i += 1;
         }

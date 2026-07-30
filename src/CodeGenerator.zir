@@ -88,6 +88,19 @@ class CodeGenerator {
     }
 
     fn GenerateFunction(&mut this, function: *HIRFunction) {
+        let return_type = this.GenerateType(function->_type->Return());
+        if return_type == null { return; }
+        let param_types = Vector<LLVMTypeRef>();
+
+        for param in function->_type->Parameters() {
+            let _type = this.GenerateType(param);
+            if _type == null { return; }
+            param_types.PushBack(_type);
+        }
+
+        let _type = LLVMFunctionType(return_type, param_types.Data(), param_types.Size() as u32, 0);
+        let value = LLVMAddFunction(this.module, function->name.Data(), _type);
+
         if function->body != null {
             this.GenerateBlock(function->body);
         }
@@ -102,6 +115,42 @@ class CodeGenerator {
     fn GenerateBlock(&mut this, block: *HIRBlock) {
         for statement in block->statements {
             this.GenerateStatement(statement);
+        }
+    }
+
+    fn GenerateType(&mut this, _type: *SemanticType) -> LLVMTypeRef {
+        if _type->IsVoid() {
+            return LLVMVoidTypeInContext(this.context);
+        } else if _type->IsBoolean() {
+            return LLVMInt1TypeInContext(this.context);
+        } else if _type->IsCharacter() {
+            return LLVMInt32TypeInContext(this.context);
+        } else if _type->IsInteger() {
+            return LLVMIntTypeInContext(this.context, _type->Width());
+        } else if _type->IsFloat() {
+            if _type->Width() == 64 {
+                return LLVMDoubleTypeInContext(this.context);
+            } else {
+                return LLVMFloatTypeInContext(this.context);
+            }
+        } else if _type->IsPointer() {
+            let pointee_type = this.GenerateType(_type->pointee);
+            if pointee_type == null { return null; }
+            return LLVMPointerType(pointee_type, 0);
+        } else if _type->IsFunction() {
+            let return_type = this.GenerateType(_type->Return());
+            if return_type == null { return null; }
+            let param_types = Vector<LLVMTypeRef>();
+
+            for param in _type->Parameters() {
+                let param_type = this.GenerateType(param);
+                if param_type == null { return null; }
+                param_types.PushBack(param_type);
+            }
+
+            return LLVMFunctionType(return_type, param_types.Data(), param_types.Size() as u32, 0);
+        } else {
+            return null;
         }
     }
 }

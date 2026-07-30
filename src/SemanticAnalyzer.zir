@@ -14,28 +14,32 @@
  * limitations under the License.
  */
 
-#[include "std/str", "std/vec", "std/map", "std/pair", "src/SemanticGeneric.zir",
-    "src/SemanticTypeManager.zir", "src/SemanticTypes.zir", "src/SemanticValue.zir",
+#[include "std/str", "std/vec", "std/map", "std/pair", "std/arena",
+    "src/SemanticGeneric.zir", "src/SemanticTypeManager.zir", "src/SemanticTypes.zir", "src/SemanticValue.zir",
         "src/SemanticScopeManager.zir", "src/SemanticScope.zir", "src/SemanticSymbol.zir",
-            "src/Tokens.zir", "src/Nodes.zir", "src/Logger.zir" : *]
+            "src/Tokens.zir", "src/Nodes.zir", "src/HIR.zir", "src/Logger.zir" : *]
 
 class SemanticForward {
     pub _type: *SemanticType,
     pub _class: *SemanticType,
     pub generic: *SemanticGeneric = null,
     pub types: Vector<*SemanticType>,
-    pub node: *FunctionNode;
+    pub node: *FunctionNode,
+    pub hir: *mut HIRFunction;
 
-    SemanticForward(&mut this, _type: *SemanticType, _class: *SemanticType, node: *FunctionNode) {
-        (this._type, this._class, this.node) = (_type, _class, node);
+    SemanticForward(&mut this, _type: *SemanticType, _class: *SemanticType, node: *FunctionNode, hir: *mut HIRFunction) {
+        (this._type, this._class, this.node, this.hir) = (_type, _class, node, hir);
     }
 
-    SemanticForward(&mut this, _type: *SemanticType, _class: *SemanticType, generic: *SemanticGeneric, types: &Vector<*SemanticType>, node: *FunctionNode) {
-        (this._type, this._class, this.generic, this.types, this.node) = (_type, _class, generic, types, node);
+    SemanticForward(&mut this, _type: *SemanticType, _class: *SemanticType, generic: *SemanticGeneric, types: &Vector<*SemanticType>, node: *FunctionNode, hir: *mut HIRFunction) {
+        (this._type, this._class, this.generic, this.types, this.node, this.hir) = (_type, _class, generic, types, node, hir);
     }
 }
 
 class SemanticAnalyzer {
+    arena: Arena,
+    module: *mut HIRModule = null,
+
     pub type_manager: SemanticTypeManager,
     pub scope_manager: SemanticScopeManager,
 
@@ -62,6 +66,8 @@ class SemanticAnalyzer {
     }
 
     pub fn Analyze(&mut this, root: *RootNode) -> *HIRModule {
+        this.arena.Clear();
+        this.module = this.arena.New<HIRModule>();
         let mut declared = Map<*Node, bool>();
 
         for declaration in root->declarations {
@@ -90,7 +96,7 @@ class SemanticAnalyzer {
         }
 
         this.generics.Clear();
-        return null;
+        return this.module;
     }
 
     fn AnalyzeForwardDeclarations(&mut this) {
@@ -148,7 +154,7 @@ class SemanticAnalyzer {
                 }
             }
 
-            this.AnalyzeBlock(forward.node->body);
+            forward.hir->body = this.AnalyzeBlock(forward.node->body);
             this.scope_manager.PopScope();
 
             for symbol in symbols {
@@ -338,11 +344,14 @@ class SemanticAnalyzer {
             return value;
         }
 
+        let hir = this.arena.New<HIRFunction>(function->name, value.Type());
+        this.module->functions.PushBack(hir);
+
         if function->body != null {
             if this.current_generic != null {
-                this.forwards.PushBack(SemanticForward(value.Type(), this.current_class, this.current_generic, this.current_generic->types, function));
+                this.forwards.PushBack(SemanticForward(value.Type(), this.current_class, this.current_generic, this.current_generic->types, function, hir));
             } else {
-                this.forwards.PushBack(SemanticForward(value.Type(), this.current_class, function));
+                this.forwards.PushBack(SemanticForward(value.Type(), this.current_class, function, hir));
             }
         } return value;
     }
@@ -621,7 +630,7 @@ class SemanticAnalyzer {
         }
     }
 
-    fn AnalyzeStatement(&mut this, statement: *Node) {
+    fn AnalyzeStatement(&mut this, statement: *Node) -> *HIRStatement {
         if statement->_type == NodeType::RETURN {
             this.AnalyzeReturn(statement as *ReturnNode);
         } else if statement->_type == NodeType::EXPRESSION {
@@ -656,7 +665,7 @@ class SemanticAnalyzer {
             this.AnalyzeAssembly(statement as *AssemblyNode);
         } else {
             Logger::Log("Unknown statement '" + statement->_type.ToString() + "'.", statement, LogSeverity::Error);
-        }
+        } return null;
     }
 
     fn AnalyzeReturn(&mut this, _return: *ReturnNode) {
@@ -899,10 +908,16 @@ class SemanticAnalyzer {
         this._unsafe = false;
     }
 
-    fn AnalyzeBlock(&mut this, block: *BlockNode) {
+    fn AnalyzeBlock(&mut this, block: *BlockNode) -> *HIRBlock {
+        let hir = this.arena.New<HIRBlock>();
+
         for statement in block->statements {
-            this.AnalyzeStatement(statement);
-        }
+            let hir_statement = this.AnalyzeStatement(statement);
+
+            if hir_statement != null {
+                hir->statements.PushBack(hir_statement);
+            }
+        } return hir;
     }
 
     fn AnalyzeVariable(&mut this, variable: *VariableNode) {

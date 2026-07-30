@@ -1091,7 +1091,7 @@ class SemanticAnalyzer {
 
     pub fn AnalyzeExpression(&mut this, expression: *Node, target: *SemanticType) -> SemanticValue {
         if expression->_type == NodeType::LITERAL {
-            return this.AnalyzeLiteral(expression as *LiteralNode);
+            return SemanticValue(this.AnalyzeLiteral(expression as *LiteralNode)->_type);
         } else if expression->_type == NodeType::CALL {
             return this.AnalyzeCall(expression as *CallNode);
         } else if expression->_type == NodeType::IDENTIFIER || expression->_type == NodeType::SCOPE_RESOLUTION {
@@ -1136,75 +1136,90 @@ class SemanticAnalyzer {
         }
     }
 
-    fn AnalyzeLiteral(&mut this, literal: *LiteralNode) -> SemanticValue {
+    fn AnalyzeLiteral(&mut this, literal: *LiteralNode) -> *HIRExpression {
         if literal->_type == TokenType::INTEGER {
-            let (mut suffix, mut signed) = (String(), true);
-            let mut index = literal->value.Find('i');
+            let (mut value, mut suffix, mut base: u64) = (String(), String(), 10);
+            let (mut index, mut signed) = (literal->value.Find('i'), true);
 
             if index == -1 {
                 (index, signed) = (literal->value.Find('u'), false);
             }
 
             if index != -1 {
+                value = literal->value.SubString(0, index as usize);
                 suffix = literal->value.SubString(index as usize + 1);
+            } else {
+                value = literal->value;
             }
 
-            let result = SemanticValue(this.type_manager.IntegerLiteral());
+            if value.StartsWith("0x") {
+                (value, base) = (value.SubString(2), 16);
+            } else if value.StartsWith("0o") {
+                (value, base) = (value.SubString(2), 8);
+            } else if value.StartsWith("0b") {
+                (value, base) = (value.SubString(2), 2);
+            }
+
+            let mut _type = this.type_manager.IntegerLiteral();
 
             if !suffix.Empty() {
                 if suffix == "size" {
-                    return result.Materialize(this.type_manager.IntegerPointer(signed));
+                    _type = this.type_manager.IntegerPointer(signed);
                 } else {
                     let width = suffix.ToInteger() as u32;
 
                     if width == 128 || width == 64 || width == 32 || width == 16 || width == 8 {
-                        return result.Materialize(this.type_manager.Integer(width, signed));
+                        _type = this.type_manager.Integer(width, signed);
                     } else {
                         Logger::Log("Invalid integer suffix '" + (signed ? 'u' : 'i').ToString() + suffix +  "'.", literal, LogSeverity::Error);
-                        return SemanticValue();
+                        return null;
                     }
                 }
-            } else {
-                return result;
             }
+
+            return this.arena.New<HIRIntegerLiteral>(value.ToUnsignedInteger(base), _type);
         } else if literal->_type == TokenType::FLOAT {
+            let (mut value, mut suffix) = (String(), String());
             let mut index = literal->value.Find('f');
-            let mut suffix = String();
 
             if index != -1 {
+                value = literal->value.SubString(0, index as usize);
                 suffix = literal->value.SubString(index as usize + 1);
+            } else {
+                value = literal->value;
             }
 
-            let result = SemanticValue(this.type_manager.FloatLiteral());
+            let mut _type = this.type_manager.FloatLiteral();
 
             if !suffix.Empty() {
                 let width = suffix.ToInteger() as u32;
 
                 if width == 64 || width == 32 {
-                    return result.Materialize(this.type_manager.Float(width));
+                    _type = this.type_manager.Float(width);
                 } else {
                     Logger::Log("Invalid float suffix 'f" + suffix +  "'.", literal, LogSeverity::Error);
-                    return SemanticValue();
+                    return null;
                 }
-            } else {
-                return result;
             }
+
+            return this.arena.New<HIRFloatLiteral>(value.ToFloat(), _type);
         } else if literal->_type == TokenType::TRUE || literal->_type == TokenType::FALSE {
-            return SemanticValue(this.type_manager.Boolean());
-        } else if literal->_type == TokenType::STRING {
-            return SemanticValue(this.type_manager.Pointer(this.type_manager.Integer(8, true), false));
+            return this.arena.New<HIRBooleanLiteral>(literal->_type == TokenType::TRUE, this.type_manager.Boolean());
         } else if literal->_type == TokenType::CHAR {
             if (literal->value.Size() == 2 && literal->value[1] == '\0') || (literal->value.Size() == 1 && literal->value[0] == '\0') {
-                return SemanticValue(this.type_manager.Integer(8, true));
+                let character: i8 = literal->value[0];
+                return this.arena.New<HIRCharacterLiteral>(character as u32, this.type_manager.Integer(8, true));
             } else {
                 Logger::Log("Invalid character literal '" + literal->value + "'.", literal, LogSeverity::Error);
-                return SemanticValue();
+                return null;
             }
+        } else if literal->_type == TokenType::STRING {
+            return this.arena.New<HIRStringLiteral>(literal->value, this.type_manager.Pointer(this.type_manager.Integer(8, true), false));
         } else if literal->_type == TokenType::NULL {
-            return SemanticValue(this.type_manager.NullPointer());
+            return this.arena.New<HIRNullLiteral>(this.type_manager.NullPointer());
         } else {
             Logger::Log("Unknown literal type '" + literal->_type.ToString() + "'.", literal, LogSeverity::Error);
-            return SemanticValue();
+            return null;
         }
     }
 

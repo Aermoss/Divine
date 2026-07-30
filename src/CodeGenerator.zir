@@ -15,7 +15,7 @@
  */
 
 #[include "std/str", "std/vec", "std/map", "std/pair", "vendor/llvm-c/Core.zir", "vendor/llvm-c/Analysis.zir",
-    "src/Target.zir", "src/Tokens.zir", "src/Nodes.zir", "src/Logger.zir" : *]
+    "src/Target.zir", "src/Tokens.zir", "src/Nodes.zir", "src/HIR.zir", "src/Logger.zir" : *]
 
 class CodeGenerator {
     module: LLVMModuleRef = null,
@@ -28,7 +28,7 @@ class CodeGenerator {
 
     CodeGenerator(&mut this, target: &Target, freestanding: bool, no_red_zone: bool) {
         (this.freestanding, this.no_red_zone) = (freestanding, no_red_zone);
-        (this.context, this.target) = (LLVMContextCreate(), target);
+        (this.context, this.target) = (LLVMGetGlobalContext(), target);
     }
 
     ~CodeGenerator(&mut this) {
@@ -41,11 +41,9 @@ class CodeGenerator {
             LLVMDisposeModule(this.module);
             this.module = null;
         }
-
-        LLVMContextDispose(this.context);
     }
 
-    pub fn Generate(&mut this) -> LLVMModuleRef {
+    pub fn Generate(&mut this, module: *HIRModule) -> LLVMModuleRef {
         if this.builder != null {
             LLVMDisposeBuilder(this.builder);
             this.builder = null;
@@ -60,6 +58,11 @@ class CodeGenerator {
         this.builder = LLVMCreateBuilderInContext(this.context);
         LLVMSetModuleDataLayout(this.module, this.target->layout);
         LLVMSetTarget(this.module, this.target->triple.Data());
+
+        if module != null {
+            this.GenerateModule(module);
+        }
+
         let mut message: *mut i8 = null;
 
         if LLVMVerifyModule(this.module, LLVMVerifierFailureAction::LLVMReturnStatusAction, &mut message) != 0 {
@@ -74,5 +77,29 @@ class CodeGenerator {
         if message != null {
             LLVMDisposeMessage(message);
         } return this.module;
+    }
+
+    fn GenerateModule(&mut this, module: *HIRModule) {
+        for function in module->functions {
+            this.GenerateFunction(function);
+        }
+    }
+
+    fn GenerateFunction(&mut this, function: *HIRFunction) {
+        if function->body != null {
+            this.GenerateBlock(function->body);
+        }
+    }
+
+    fn GenerateStatement(&mut this, statement: *HIRStatement) {
+        if statement->kind == HIRStatementKind::Block {
+            this.GenerateBlock(statement as *HIRBlock);
+        }
+    }
+
+    fn GenerateBlock(&mut this, block: *HIRBlock) {
+        for statement in block->statements {
+            this.GenerateStatement(statement);
+        }
     }
 }

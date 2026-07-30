@@ -20,19 +20,18 @@
             "src/Tokens.zir", "src/Nodes.zir", "src/HIR.zir", "src/Logger.zir" : *]
 
 class SemanticForward {
-    pub _type: *SemanticType,
     pub _class: *SemanticType,
     pub generic: *SemanticGeneric = null,
     pub types: Vector<*SemanticType>,
     pub node: *FunctionNode,
     pub hir: *mut HIRFunction;
 
-    SemanticForward(&mut this, _type: *SemanticType, _class: *SemanticType, node: *FunctionNode, hir: *mut HIRFunction) {
-        (this._type, this._class, this.node, this.hir) = (_type, _class, node, hir);
+    SemanticForward(&mut this, _class: *SemanticType, node: *FunctionNode, hir: *mut HIRFunction) {
+        (this._class, this.node, this.hir) = (_class, node, hir);
     }
 
-    SemanticForward(&mut this, _type: *SemanticType, _class: *SemanticType, generic: *SemanticGeneric, types: &Vector<*SemanticType>, node: *FunctionNode, hir: *mut HIRFunction) {
-        (this._type, this._class, this.generic, this.types, this.node, this.hir) = (_type, _class, generic, types, node, hir);
+    SemanticForward(&mut this, _class: *SemanticType, generic: *SemanticGeneric, types: &Vector<*SemanticType>, node: *FunctionNode, hir: *mut HIRFunction) {
+        (this._class, this.generic, this.types, this.node, this.hir) = (_class, generic, types, node, hir);
     }
 }
 
@@ -105,7 +104,7 @@ class SemanticAnalyzer {
         while i < this.forwards.Size() {
             let forward: SemanticForward = this.forwards[i];
             let prev_scope = this.scope_manager.current;
-            this.current_function = forward._type;
+            this.current_function = forward.hir->_type;
             this.current_class = forward._class;
 
             if forward.generic != null {
@@ -120,7 +119,7 @@ class SemanticAnalyzer {
                 index += 1;
             }
 
-            let params = forward._type->Parameters();
+            let params = this.current_function->Parameters();
             let offset: usize = forward.node->_type->instance_kind != InstanceKind::None ? 1 : 0;
             this.scope_manager.PushScope(forward.node->name, false);
 
@@ -299,21 +298,21 @@ class SemanticAnalyzer {
         }
     }
 
-    pub fn AnalyzeFunction(&mut this, function: *FunctionNode, generic: *mut SemanticGeneric) -> SemanticValue {
+    pub fn AnalyzeFunction(&mut this, function: *FunctionNode, generic: *mut SemanticGeneric) -> *HIRFunction {
         if function->generic && generic == null {
             let _generic = new SemanticGeneric(function);
             this.scope_manager.Set(function->name, SemanticSymbolKind::Generic, _generic, function);
-            return SemanticValue();
+            return null;
         }
 
         let return_type = this.ResolveType(function->_type->return_type);
-        if return_type == null { return SemanticValue(); }
+        if return_type == null { return null; }
         let mut param_types = Vector<*SemanticType>();
 
         if function->_type->instance_kind != InstanceKind::None {
             if this.current_class == null {
                 Logger::Log("Instance parameters are only allowed in class, structure, and variant methods.", function, LogSeverity::Error);
-                return SemanticValue();
+                return null;
             }
 
             if function->_type->instance_kind == InstanceKind::ConstRef {
@@ -327,33 +326,31 @@ class SemanticAnalyzer {
 
         for parameter in function->_type->parameters {
             let param_type = this.ResolveType(parameter->_type);
-            if param_type == null { return SemanticValue(); }
+            if param_type == null { return null; }
             param_types.PushBack(param_type);
-        }
-
-        let value = SemanticValue(this.type_manager.Function(param_types, return_type));
-
-        if generic != null {
-            generic->Set(value);
-        } else {
-            this.scope_manager.Set(function->name, SemanticSymbolKind::Function, value, this.mangling && !function->no_mangle, function);
         }
 
         if this.current_class == null && !function->constructors.Empty() {
             Logger::Log("Constructors can only be declared inside classes.", function, LogSeverity::Error);
-            return value;
+            return null;
         }
 
-        let hir = this.arena.New<HIRFunction>(function->name, value.Type());
+        let hir = this.arena.New<HIRFunction>(function->name, this.type_manager.Function(param_types, return_type));
         this.module->functions.PushBack(hir);
+
+        if generic != null {
+            generic->Set(SemanticValue(hir->_type));
+        } else {
+            this.scope_manager.Set(function->name, SemanticSymbolKind::Function, hir, this.mangling && !function->no_mangle, function);
+        }
 
         if function->body != null {
             if this.current_generic != null {
-                this.forwards.PushBack(SemanticForward(value.Type(), this.current_class, this.current_generic, this.current_generic->types, function, hir));
+                this.forwards.PushBack(SemanticForward(this.current_class, this.current_generic, this.current_generic->types, function, hir));
             } else {
-                this.forwards.PushBack(SemanticForward(value.Type(), this.current_class, function, hir));
+                this.forwards.PushBack(SemanticForward(this.current_class, function, hir));
             }
-        } return value;
+        } return hir;
     }
 
     fn AnalyzeClassFirstPass(&mut this, _class: *ClassNode, generic: *mut SemanticGeneric) -> Pair<*mut SemanticType, *mut SemanticScope> {
@@ -405,26 +402,26 @@ class SemanticAnalyzer {
         for constructor in _class->constructors {
             let function = this.AnalyzeFunction(constructor, null);
 
-            if !function.Null() {
-                _type->methods.PushBack(SemanticMethod(constructor->name, function.Type(), false, true));
+            if function != null {
+                _type->methods.PushBack(SemanticMethod(constructor->name, function, false, true));
             }
         }
 
         if _class->destructor != null {
             let function = this.AnalyzeFunction(_class->destructor, null);
 
-            if !function.Null() {
-                _type->methods.PushBack(SemanticMethod(_class->destructor->name, function.Type(), false, true));
+            if function != null {
+                _type->methods.PushBack(SemanticMethod(_class->destructor->name, function, false, true));
             }
         }
 
         for method in _class->methods {
             let function = this.AnalyzeFunction(method.right, null);
             let _static = method.right->_type->instance_kind == InstanceKind::None;
-            if function.Null() { continue; }
+            if function == null { continue; }
 
             if !method.right->generic {
-                _type->methods.PushBack(SemanticMethod(method.right->name, function.Type(), _static, method.left));
+                _type->methods.PushBack(SemanticMethod(method.right->name, function, _static, method.left));
             }
         }
 
@@ -483,10 +480,10 @@ class SemanticAnalyzer {
         for method in structure->methods {
             let function = this.AnalyzeFunction(method.right, null);
             let _static = method.right->_type->instance_kind == InstanceKind::None;
-            if function.Null() { continue; }
+            if function == null { continue; }
 
             if !method.right->generic {
-                _type->methods.PushBack(SemanticMethod(method.right->name, function.Type(), _static, method.left));
+                _type->methods.PushBack(SemanticMethod(method.right->name, function, _static, method.left));
             }
         }
 
@@ -573,10 +570,10 @@ class SemanticAnalyzer {
         for method in enumeration->methods {
             let function = this.AnalyzeFunction(method.right, null);
             let _static = method.right->_type->instance_kind == InstanceKind::None;
-            if function.Null() { continue; }
+            if function == null { continue; }
 
             if !method.right->generic {
-                _type->methods.PushBack(SemanticMethod(method.right->name, function.Type(), _static, method.left));
+                _type->methods.PushBack(SemanticMethod(method.right->name, function, _static, method.left));
             }
         }
 
@@ -785,10 +782,10 @@ class SemanticAnalyzer {
                 let mut values = Vector<SemanticValue>();
                 values.PushBack(iterable.ImplicitAddressOf());
 
-                start = this.AnalyzeResolvedCall(SemanticValue(begin_method->_type), values, _for);
+                start = this.AnalyzeResolvedCall(begin_method->function, values, _for);
                 if start.Null() { return; }
 
-                end = this.AnalyzeResolvedCall(SemanticValue(end_method->_type), values, _for);
+                end = this.AnalyzeResolvedCall(end_method->function, values, _for);
                 if end.Null() { return; }
             }
 
@@ -817,7 +814,7 @@ class SemanticAnalyzer {
                 values.PushBack(end);
 
                 let method = _type.Get(String("operator!="), _for);
-                this.AnalyzeResolvedCall(SemanticValue(method->_type), values, _for);
+                this.AnalyzeResolvedCall(method->function, values, _for);
             } else if !_type.IsPointer() {
                 Logger::Log("For loop only supports pointer iterators or classes with '!=' operator.", _for, LogSeverity::Error);
                 return;
@@ -839,7 +836,7 @@ class SemanticAnalyzer {
                 values.PushBack(SemanticValue(_type, ValueCategory::Place, true));
 
                 let method = _type.Get(String("operator*"), _for);
-                let result = this.AnalyzeResolvedCall(SemanticValue(method->_type), values, _for);
+                let result = this.AnalyzeResolvedCall(method->function, values, _for);
                 this.scope_manager.Set(_for->variable, SemanticSymbolKind::Variable, result, false, _for);
             } else {
                 Logger::Log("For loop only supports pointer iterators or classes with 'operator*' operator.", _for, LogSeverity::Error);
@@ -863,7 +860,7 @@ class SemanticAnalyzer {
                 values.PushBack(SemanticValue(this.type_manager.IntegerPointer(false)));
 
                 let method = _type.Get(String("operator+="), _for);
-                this.AnalyzeResolvedCall(SemanticValue(method->_type), values, _for);
+                this.AnalyzeResolvedCall(method->function, values, _for);
             } else if !_type.IsPointer() {
                 Logger::Log("For loop only supports pointer iterators or classes with '+=' operator.", _for, LogSeverity::Error);
                 return;
@@ -971,7 +968,7 @@ class SemanticAnalyzer {
 
             if left.Type().Has(method_name, values) {
                 let method = left.Type().Get(method_name, values, assignment);
-                this.AnalyzeResolvedCall(SemanticValue(method->_type), values, assignment);
+                this.AnalyzeResolvedCall(method->function, values, assignment);
             } else if left.Type() == right.Type() {
                 if _operator != TokenType::ASSIGN {
                     Logger::Log("Invalid class assignment operation '" + _operator.ToString() + "' for type '" + left.Type().ToString() + "'.", assignment, LogSeverity::Error);
@@ -1272,7 +1269,7 @@ class SemanticAnalyzer {
                     let method = instance.Type().Get("operator->".ToString(), values, member_access);
 
                     if method != null {
-                        instance = this.AnalyzeResolvedCall(SemanticValue(method->_type), values, member_access).ImplicitDereference();
+                        instance = this.AnalyzeResolvedCall(method->function, values, member_access).ImplicitDereference();
                     } else {
                         return SemanticValue();
                     }
@@ -1294,7 +1291,7 @@ class SemanticAnalyzer {
                 let symbol = this.scope_manager.Resolve(member_access->member, values, call, false);
 
                 if symbol != null {
-                    return this.AnalyzeResolvedCall(symbol->value, values, call);
+                    return this.AnalyzeResolvedCall(symbol->function, values, call);
                 } else {
                     return SemanticValue();
                 }
@@ -1309,13 +1306,13 @@ class SemanticAnalyzer {
                         return SemanticValue();
                     }
 
-                    return this.AnalyzeResolvedCall(instance.WithType(field._type), values, call);
+                    return this.AnalyzeResolvedCall(instance.WithType(field._type).Type(), values, call);
                 } else {
                     values.Insert(0, instance.ImplicitAddressOf());
                     let method = instance.Type().Get(member_access->member, values, call);
 
                     if method != null {
-                        return this.AnalyzeResolvedCall(SemanticValue(method->_type), values, call);
+                        return this.AnalyzeResolvedCall(method->function, values, call);
                     } else {
                         return SemanticValue();
                     }
@@ -1337,7 +1334,7 @@ class SemanticAnalyzer {
                         let generic = this.scope_manager.Get(primitive_type->name, SemanticSymbolKind::Generic)->generic;
 
                         if generic->node->_type == NodeType::FUNCTION {
-                            return this.AnalyzeResolvedCall(generic->Get(types).left, values, call);
+                            return this.AnalyzeResolvedCall(generic->Get(types).left.Type(), values, call);
                         }
                     } else {
                         if this.scope_manager.Has(primitive_type->name) {
@@ -1354,7 +1351,7 @@ class SemanticAnalyzer {
                         let symbol = scope->Get(resolution->identifier->name, SemanticSymbolKind::Generic);
 
                         if symbol != null {
-                            return this.AnalyzeResolvedCall(symbol->generic->Get(types).left, values, call);
+                            return this.AnalyzeResolvedCall(symbol->generic->Get(types).left.Type(), values, call);
                         } else {
                             return SemanticValue();
                         }
@@ -1401,7 +1398,7 @@ class SemanticAnalyzer {
                     symbol = this.scope_manager.Resolve(call->expression, values, false);
 
                     if symbol != null {
-                        return this.AnalyzeResolvedCall(symbol->value, values, call);
+                        return this.AnalyzeResolvedCall(symbol->function, values, call);
                     } else {
                         return SemanticValue();
                     }
@@ -1410,7 +1407,7 @@ class SemanticAnalyzer {
                 let value = this.AnalyzeExpression(call->expression);
 
                 if !value.Null() {
-                    return this.AnalyzeResolvedCall(value, values, call);
+                    return this.AnalyzeResolvedCall(value.Type(), values, call);
                 } else {
                     return SemanticValue();
                 }
@@ -1418,16 +1415,19 @@ class SemanticAnalyzer {
         }
     }
 
-    fn AnalyzeResolvedCall(&mut this, function: &SemanticValue, values: &Vector<SemanticValue>, node: *Node) -> SemanticValue {
-        let param_types = function.Type().Parameters();
-        let return_type = function.Type().Return();
+    fn AnalyzeResolvedCall(&mut this, function: *HIRFunction, values: &Vector<SemanticValue>, node: *Node) -> SemanticValue {
+        return this.AnalyzeResolvedCall(function->_type, values, node);
+    }
+
+    fn AnalyzeResolvedCall(&mut this, function: &SemanticType, values: &Vector<SemanticValue>, node: *Node) -> SemanticValue {
+        let param_types = function.Parameters();
 
         for i in 0..param_types.Size() {
             let param_type: *SemanticType = param_types[i];
             let value = values[i].Materialize(param_type);
         }
 
-        return SemanticValue(return_type);
+        return SemanticValue(function.Return());
     }
 
     fn AnalyzeNew(&mut this, _new: *NewNode) -> SemanticValue {
@@ -1609,7 +1609,7 @@ class SemanticAnalyzer {
             let method = value.Type().Get("operator[]".ToString(), values, index_access);
 
             if method != null {
-                return this.AnalyzeResolvedCall(SemanticValue(method->_type), values, index_access);
+                return this.AnalyzeResolvedCall(method->function, values, index_access);
             } else {
                 return SemanticValue();
             }
@@ -1642,7 +1642,7 @@ class SemanticAnalyzer {
                 let method = instance.Type().Get("operator->".ToString(), values, member_access);
 
                 if method != null {
-                    instance = this.AnalyzeResolvedCall(SemanticValue(method->_type), values, member_access).ImplicitDereference();
+                    instance = this.AnalyzeResolvedCall(method->function, values, member_access).ImplicitDereference();
                 } else {
                     return SemanticValue();
                 }
@@ -1674,7 +1674,7 @@ class SemanticAnalyzer {
             let method = instance.Type().Get(member_access->member, member_access);
 
             if method != null {
-                return SemanticValue(method->_type);
+                return SemanticValue(method->function->_type);
             } else {
                 return SemanticValue();
             }
@@ -1697,12 +1697,12 @@ class SemanticAnalyzer {
         let symbol = this.scope_manager.Resolve(method_name, values, unary, true);
 
         if symbol != null {
-            return this.AnalyzeResolvedCall(symbol->value, values, unary);
+            return this.AnalyzeResolvedCall(symbol->function, values, unary);
         }
 
         if value.Type().HasMethods() && value.Type().Has(method_name, values) {
             let method = value.Type().Get(method_name, values, unary);
-            return this.AnalyzeResolvedCall(SemanticValue(method->_type), values, unary);
+            return this.AnalyzeResolvedCall(method->function, values, unary);
         }
 
         if unary->_operator == TokenType::BITWISE_AND {
@@ -1831,7 +1831,7 @@ class SemanticAnalyzer {
         let symbol = this.scope_manager.Resolve(method_name, values, node, true);
 
         if symbol != null {
-            return this.AnalyzeResolvedCall(symbol->value, values, node);
+            return this.AnalyzeResolvedCall(symbol->function, values, node);
         } else if left.Type().HasFields() || right.Type().HasFields() {
             let instance = left.Type().HasFields() ? left : right;
             let value = left.Type().HasFields() ? right_raw : left_raw;
@@ -1842,7 +1842,7 @@ class SemanticAnalyzer {
 
             if instance.Type().HasMethods() && instance.Type().Has(method_name, values) {
                 let method = instance.Type().Get(method_name, values, node);
-                return this.AnalyzeResolvedCall(SemanticValue(method->_type), values, node);
+                return this.AnalyzeResolvedCall(method->function, values, node);
             }
 
             if left.Type() == right.Type() {

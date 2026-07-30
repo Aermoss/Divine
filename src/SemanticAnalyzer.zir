@@ -775,17 +775,21 @@ class SemanticAnalyzer {
                 let mut values = Vector<SemanticValue>();
                 values.PushBack(iterable.ImplicitAddressOf());
 
-                let begin_candidates = iterable.Type().GetCandidates("Begin".ToString(), _for);
-                if begin_candidates.Empty() { return; }
+                let begin_candidates = iterable.Type().GetCandidates("Begin".ToString(), _for, true);
+                let begin_function = this.ResolveOverload(begin_candidates, values, _for, true);
+                
+                if begin_function != null {
+                    start = this.AnalyzeResolvedCall(begin_function, values, _for);
+                    if start.Null() { return; }
+                }
 
-                let end_candidates = iterable.Type().GetCandidates("End".ToString(), _for);
-                if end_candidates.Empty() { return; }
+                let end_candidates = iterable.Type().GetCandidates("End".ToString(), _for, true);
+                let end_function = this.ResolveOverload(end_candidates, values, _for, true);
 
-                start = this.AnalyzeResolvedCall(begin_candidates, values, _for);
-                if start.Null() { return; }
-
-                end = this.AnalyzeResolvedCall(end_candidates, values, _for);
-                if end.Null() { return; }
+                if end_function != null {
+                    end = this.AnalyzeResolvedCall(end_function, values, _for);
+                    if end.Null() { return; }
+                }
             }
 
             if start.Null() || end.Null() {
@@ -807,12 +811,14 @@ class SemanticAnalyzer {
                 return;
             }
         } else {
-            if _type.HasMethods() && _type.HasCandidates("operator!=".ToString()) {
+            if _type.HasMethods() {
                 let mut values = Vector<SemanticValue>();
                 values.PushBack(SemanticValue(_type, ValueCategory::Place, true));
                 values.PushBack(end);
 
-                let candidates = _type.GetCandidates("operator!=".ToString(), _for);
+                let candidates = _type.GetCandidates("operator!=".ToString(), _for, false);
+                if candidates.Empty() { return; }
+
                 this.AnalyzeResolvedCall(candidates, values, _for);
             } else if !_type.IsPointer() {
                 Logger::Log("For loop only supports pointer iterators or classes with '!=' operator.", _for, LogSeverity::Error);
@@ -830,12 +836,16 @@ class SemanticAnalyzer {
             if _type.IsPointer() {
                 let result = SemanticValue(_type.Pointee(), ValueCategory::Place, true);
                 this.scope_manager.Set(_for->variable, SemanticSymbolKind::Variable, result, false, _for);
-            } else if _type.HasMethods() && _type.HasCandidates("operator*".ToString()) {
+            } else if _type.HasMethods() {
                 let mut values = Vector<SemanticValue>();
                 values.PushBack(SemanticValue(_type, ValueCategory::Place, true));
 
-                let candidates = _type.GetCandidates("operator*".ToString(), _for);
+                let candidates = _type.GetCandidates("operator*".ToString(), _for, false);
+                if candidates.Empty() { return; }
+
                 let result = this.AnalyzeResolvedCall(candidates, values, _for);
+                if result.Null() { return; }
+
                 this.scope_manager.Set(_for->variable, SemanticSymbolKind::Variable, result, false, _for);
             } else {
                 Logger::Log("For loop only supports pointer iterators or classes with 'operator*' operator.", _for, LogSeverity::Error);
@@ -853,12 +863,14 @@ class SemanticAnalyzer {
                 return;
             }
         } else {
-            if _type.HasMethods() && _type.HasCandidates("operator+=".ToString()) {
+            if _type.HasMethods() {
                 let mut values = Vector<SemanticValue>();
                 values.PushBack(SemanticValue(_type, ValueCategory::Place, true));
                 values.PushBack(SemanticValue(this.type_manager.IntegerPointer(false)));
 
-                let candidates = _type.GetCandidates("operator+=".ToString(), _for);
+                let candidates = _type.GetCandidates("operator+=".ToString(), _for, false);
+                if candidates.Empty() { return; }
+
                 this.AnalyzeResolvedCall(candidates, values, _for);
             } else if !_type.IsPointer() {
                 Logger::Log("For loop only supports pointer iterators or classes with '+=' operator.", _for, LogSeverity::Error);
@@ -962,12 +974,12 @@ class SemanticAnalyzer {
             values.PushBack(left.ImplicitAddressOf());
             values.PushBack(right_raw);
 
-            let mut method_name = "operator".ToString();
-            method_name += _operator.ToAssignmentOperatorString();
+            let name = "operator" + _operator.ToAssignmentOperatorString();
+            let candidates = left.Type().GetCandidates(name, assignment, true);
+            let function = this.ResolveOverload(candidates, values, assignment, true);
 
-            if left.Type().HasCandidates(method_name) {
-                let candidates = left.Type().GetCandidates(method_name, assignment);
-                this.AnalyzeResolvedCall(candidates, values, assignment);
+            if function != null {
+                this.AnalyzeResolvedCall(function, values, assignment);
             } else if left.Type() == right.Type() {
                 if _operator != TokenType::ASSIGN {
                     Logger::Log("Invalid class assignment operation '" + _operator.ToString() + "' for type '" + left.Type().ToString() + "'.", assignment, LogSeverity::Error);
@@ -1266,7 +1278,7 @@ class SemanticAnalyzer {
                     let values = Vector<SemanticValue>();
                     values.PushBack(instance.ImplicitAddressOf());
 
-                    let candidates = instance.Type().GetCandidates("operator->".ToString(), member_access);
+                    let candidates = instance.Type().GetCandidates("operator->".ToString(), member_access, false);
                     if candidates.Empty() { return SemanticValue(); }
 
                     instance = this.AnalyzeResolvedCall(candidates, values, member_access).ImplicitDereference();
@@ -1285,13 +1297,9 @@ class SemanticAnalyzer {
                 }
 
                 values.Insert(0, instance.ImplicitAddressOf());
-                let symbol = this.scope_manager.Resolve(member_access->member, values, call, false);
-
-                if symbol != null {
-                    return this.AnalyzeResolvedCall(symbol->function, values, call);
-                } else {
-                    return SemanticValue();
-                }
+                let candidates = this.scope_manager.ResolveCandidates(member_access->member, call, false);
+                if candidates.Empty() { return SemanticValue(); }
+                return this.AnalyzeResolvedCall(candidates, values, call);
             } else {
                 let index = instance.Type().HasFields() ? instance.Type().Index(member_access->member) : -1;
 
@@ -1306,13 +1314,9 @@ class SemanticAnalyzer {
                     return this.AnalyzeResolvedCall(instance.WithType(field._type).Type(), values, call);
                 } else {
                     values.Insert(0, instance.ImplicitAddressOf());
-                    let candidates = instance.Type().GetCandidates(member_access->member, call);
-
-                    if !candidates.Empty() {
-                        return this.AnalyzeResolvedCall(candidates, values, call);
-                    } else {
-                        return SemanticValue();
-                    }
+                    let candidates = instance.Type().GetCandidates(member_access->member, call, false);
+                    if candidates.Empty() { return SemanticValue(); }
+                    return this.AnalyzeResolvedCall(candidates, values, call);
                 }
             }
         } else if call->expression->_type == NodeType::TYPE_APPLICATION || call->expression->_type == NodeType::PRIMITIVE_TYPE {
@@ -1392,13 +1396,9 @@ class SemanticAnalyzer {
                 if symbol != null {
                     return SemanticValue(symbol->value.Type());
                 } else {
-                    symbol = this.scope_manager.Resolve(call->expression, values, false);
-
-                    if symbol != null {
-                        return this.AnalyzeResolvedCall(symbol->function, values, call);
-                    } else {
-                        return SemanticValue();
-                    }
+                    let candidates = this.scope_manager.ResolveCandidates(call->expression, false);
+                    if candidates.Empty() { return SemanticValue(); }
+                    return this.AnalyzeResolvedCall(candidates, values, call);
                 }
             } else {
                 let value = this.AnalyzeExpression(call->expression);
@@ -1412,7 +1412,7 @@ class SemanticAnalyzer {
         }
     }
 
-    fn ResolveOverload(&mut this, candidates: &Vector<*HIRFunction>, values: &Vector<SemanticValue>, node: *Node) -> *HIRFunction {
+    fn ResolveOverload(&mut this, candidates: &Vector<*HIRFunction>, values: &Vector<SemanticValue>, node: *Node, test: bool) -> *HIRFunction {
         let mut index: usize = 0;
         let mut best: u64 = 0;
 
@@ -1441,8 +1441,10 @@ class SemanticAnalyzer {
         if best != 0 {
             return candidates[index];
         } else {
-            Logger::Log("Invalid arguments for: '" + (candidates[0] as *HIRDeclaration)->name + "'.", node, LogSeverity::Error);
-            return null;
+            if !test {
+                let candidate: *HIRFunction = candidates[0];
+                Logger::Log("Invalid arguments for: '" + (candidate as *HIRDeclaration)->name + "'.", node, LogSeverity::Error);
+            } return null;
         }
     }
 
@@ -1451,13 +1453,9 @@ class SemanticAnalyzer {
     }
 
     fn AnalyzeResolvedCall(&mut this, candidates: &Vector<*HIRFunction>, values: &Vector<SemanticValue>, node: *Node) -> SemanticValue {
-        let function = this.ResolveOverload(candidates, values, node);
-
-        if function != null {
-            return this.AnalyzeResolvedCall(function, values, node);
-        } else {
-            return SemanticValue();
-        }
+        let function = this.ResolveOverload(candidates, values, node, false);
+        if function == null { return SemanticValue(); }
+        return this.AnalyzeResolvedCall(function, values, node);
     }
 
     fn AnalyzeResolvedCall(&mut this, function: &SemanticType, values: &Vector<SemanticValue>, node: *Node) -> SemanticValue {
@@ -1647,7 +1645,7 @@ class SemanticAnalyzer {
             values.PushBack(value.ImplicitAddressOf());
             values.PushBack(index);
 
-            let candidates = value.Type().GetCandidates("operator[]".ToString(), index_access);
+            let candidates = value.Type().GetCandidates("operator[]".ToString(), index_access, false);
             if candidates.Empty() { return SemanticValue(); }
 
             return this.AnalyzeResolvedCall(candidates, values, index_access);
@@ -1678,7 +1676,7 @@ class SemanticAnalyzer {
                 let values = Vector<SemanticValue>();
                 values.PushBack(instance.ImplicitAddressOf());
 
-                let candidates = instance.Type().GetCandidates("operator->".ToString(), member_access);
+                let candidates = instance.Type().GetCandidates("operator->".ToString(), member_access, false);
                 if candidates.Empty() { return SemanticValue(); }
 
                 instance = this.AnalyzeResolvedCall(candidates, values, member_access).ImplicitDereference();
@@ -1715,25 +1713,26 @@ class SemanticAnalyzer {
     fn AnalyzeUnary(&mut this, unary: *UnaryNode, target: *SemanticType) -> SemanticValue {
         let raw = this.AnalyzeExpression(unary->operand);
         let mut value = raw.ImplicitDereference();
-
-        if value.Null() {
-            return SemanticValue();
-        }
-
-        let mut method_name = "operator".ToString();
-        method_name += unary->_operator.ToUnaryOperatorString();
+        if value.Null() { return SemanticValue(); }
 
         let mut values = Vector<SemanticValue>();
         values.PushBack(value.ImplicitAddressOf());
-        let symbol = this.scope_manager.Resolve(method_name, values, unary, true);
 
-        if symbol != null {
-            return this.AnalyzeResolvedCall(symbol->function, values, unary);
+        let name = "operator" + unary->_operator.ToUnaryOperatorString();
+        let candidates = this.scope_manager.ResolveCandidates(name, unary, true);
+        let function = this.ResolveOverload(candidates, values, unary, true);
+
+        if function != null {
+            return this.AnalyzeResolvedCall(function, values, unary);
         }
 
-        if value.Type().HasMethods() && value.Type().HasCandidates(method_name) {
-            let candidates = value.Type().GetCandidates(method_name, unary);
-            return this.AnalyzeResolvedCall(candidates, values, unary);
+        if value.Type().HasMethods() {
+            let candidates = value.Type().GetCandidates(name, unary, true);
+            let function = this.ResolveOverload(candidates, values, unary, true);
+
+            if function != null {
+                return this.AnalyzeResolvedCall(function, values, unary);
+            }
         }
 
         if unary->_operator == TokenType::BITWISE_AND {
@@ -1852,17 +1851,16 @@ class SemanticAnalyzer {
         let (left_raw, right_raw) = (left, right);
         (left, right) = (left.ImplicitDereference(), right.ImplicitDereference());
 
-        let mut method_name = "operator".ToString();
-        method_name += _operator.ToBinaryOperatorString();
-
         let mut values = Vector<SemanticValue>();
         values.PushBack(left);
         values.PushBack(right);
 
-        let symbol = this.scope_manager.Resolve(method_name, values, node, true);
+        let name = "operator" + _operator.ToBinaryOperatorString();
+        let candidates = this.scope_manager.ResolveCandidates(name, node, true);
+        let function = this.ResolveOverload(candidates, values, node, true);
 
-        if symbol != null {
-            return this.AnalyzeResolvedCall(symbol->function, values, node);
+        if function != null {
+            return this.AnalyzeResolvedCall(function, values, node);
         } else if left.Type().HasFields() || right.Type().HasFields() {
             let instance = left.Type().HasFields() ? left : right;
             let value = left.Type().HasFields() ? right_raw : left_raw;
@@ -1871,9 +1869,13 @@ class SemanticAnalyzer {
             values.PushBack(instance.ImplicitAddressOf());
             values.PushBack(value);
 
-            if instance.Type().HasMethods() && instance.Type().HasCandidates(method_name) {
-                let candidates = instance.Type().GetCandidates(method_name, node);
-                return this.AnalyzeResolvedCall(candidates, values, node);
+            if instance.Type().HasMethods() {
+                let candidates = instance.Type().GetCandidates(name, node, true);
+                let function = this.ResolveOverload(candidates, values, node, true);
+
+                if function != null {
+                    return this.AnalyzeResolvedCall(function, values, node);
+                }
             }
 
             if left.Type() == right.Type() {

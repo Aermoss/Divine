@@ -314,139 +314,39 @@ class SemanticType {
         return this.IsClass() || this.IsStructure() || this.IsVariant();
     }
 
-    pub fn Has(&this, name: &String) -> bool {
+    pub fn HasCandidates(&this, name: &String) -> bool {
         for method in this.Methods() {
-            if method.name == name {
-                if method.public {
-                    return true;
-                }
+            if method.name != name {
+                continue;
+            }
 
-                if analyzer->current_class != null {
-                    if *analyzer->current_class == this {
-                        return true;
-                    }
-                }
+            if method.public || (analyzer->current_class != null && *analyzer->current_class == this) {
+                return true;
             }
         } return false;
     }
 
-    pub fn Has(&this, name: &String, values: &Vector<SemanticValue>) -> bool {
-        for method in this.Methods() {
-            if method.name == name {
-                let mut state = false;
-
-                if analyzer->current_class != null {
-                    state = *analyzer->current_class == this;
-                }
-
-                if method.public || state {
-                    let params = (method.function as *HIRDeclaration)->_type->Parameters();
-                    if values.Size() != params.Size() { continue; }
-                    let mut _match = true;
-
-                    for j in 0..params.Size() {
-                        if params[j]->ScoreParameter(values[j].Type()) == 0 {
-                            _match = false;
-                            break;
-                        }
-                    }
-
-                    if _match {
-                        return true;
-                    }
-                }
-            }
-        } return false;
-    }
-
-    pub fn Get(&this, name: &String, node: *Node) -> *SemanticMethod {
-        let mut state = 0;
+    pub fn GetCandidates(&this, name: &String, node: *Node) -> Vector<*HIRFunction> {
+        let mut result = Vector<*HIRFunction>();
+        let mut found = false;
 
         for method in this.Methods() {
-            if method.name == name {
-                let mut _state = false;
-
-                if analyzer->current_class != null {
-                    _state = *analyzer->current_class == this;
-                }
-
-                if !method.public && !_state {
-                    if state < 1 { state = 1; }
-                } else {
-                    return &method;
-                }
+            if method.name != name {
+                continue;
             }
+
+            if method.public || (analyzer->current_class != null && *analyzer->current_class == this) {
+                result.PushBack(method.function);
+            } found = true;
         }
 
-        if state == 0 {
-            Logger::Log("Class '" + this.name + "' doesn't contain any method named '" + name + "'.", node, LogSeverity::Error);
-            return null;
-        } else {
-            Logger::Log("Function '" + name + "' is not accessible.", node, LogSeverity::Error);
-            return null;
-        }
-    }
-
-    pub fn Get(&this, name: &String, values: &Vector<SemanticValue>, node: *Node) -> *SemanticMethod {
-        let methods = this.Methods();
-        let mut index: usize = 0;
-        let mut best: u64 = 0;
-        let mut state = 0;
-
-        for i in 0..methods.Size() {
-            let method = methods[i];
-
-            if method.name == name {
-                let mut _state = false;
-
-                if analyzer->current_class != null {
-                    _state = *analyzer->current_class == this;
-                }
-
-                if !method.public && !_state {
-                    if state < 1 { state = 1; }
-                } else {
-                    let params = (method.function as *HIRDeclaration)->_type->Parameters();
-                    if values.Size() != params.Size() { continue; }
-                    let (mut _match, mut score: u64) = (true, 1);
-
-                    for j in 0..params.Size() {
-                        let param_score = params[j]->ScoreParameter(values[j].Type());
-
-                        if param_score != 0 {
-                            score += param_score;
-                        } else {
-                            _match = false;
-                            break;
-                        }
-                    }
-
-                    if !_match {
-                        state = 2;
-                    } else if score > best {
-                        (index, best) = (i, score);
-                    }
-                }
-            }
-        }
-
-        if best != 0 {
-            return methods[index];
-        } else {
-            if state == 0 {
-                if name == this.name {
-                    Logger::Log("Class '" + this.name + "' does not define a constructor method.", node, LogSeverity::Error);
-                } else {
-                    Logger::Log("Class '" + this.name + "' doesn't contain any method named '" + name + "'.", node, LogSeverity::Error);
-                } return null;
-            } else if state == 1 {
+        if result.Empty() {
+            if found {
                 Logger::Log("Function '" + name + "' is not accessible.", node, LogSeverity::Error);
-                return null;
             } else {
                 Logger::Log("Invalid arguments for: '" + name + "'.", node, LogSeverity::Error);
-                return null;
             }
-        }
+        } return result;
     }
 
     pub fn operator==(&this, other: &SemanticType) -> bool {

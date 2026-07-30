@@ -104,7 +104,7 @@ class SemanticAnalyzer {
         while i < this.forwards.Size() {
             let forward: SemanticForward = this.forwards[i];
             let prev_scope = this.scope_manager.current;
-            this.current_function = forward.hir->_type;
+            this.current_function = (forward.hir as *HIRDeclaration)->_type;
             this.current_class = forward._class;
 
             if forward.generic != null {
@@ -336,10 +336,10 @@ class SemanticAnalyzer {
         }
 
         let hir = this.arena.New<HIRFunction>(function->name, this.type_manager.Function(param_types, return_type));
-        this.module->functions.PushBack(hir);
+        this.module->declarations.PushBack(hir);
 
         if generic != null {
-            generic->Set(SemanticValue(hir->_type));
+            generic->Set(SemanticValue((hir as *HIRDeclaration)->_type));
         } else {
             this.scope_manager.Set(function->name, SemanticSymbolKind::Function, hir, this.mangling && !function->no_mangle, function);
         }
@@ -1416,7 +1416,7 @@ class SemanticAnalyzer {
     }
 
     fn AnalyzeResolvedCall(&mut this, function: *HIRFunction, values: &Vector<SemanticValue>, node: *Node) -> SemanticValue {
-        return this.AnalyzeResolvedCall(function->_type, values, node);
+        return this.AnalyzeResolvedCall((function as *HIRDeclaration)->_type, values, node);
     }
 
     fn AnalyzeResolvedCall(&mut this, function: &SemanticType, values: &Vector<SemanticValue>, node: *Node) -> SemanticValue {
@@ -1654,15 +1654,15 @@ class SemanticAnalyzer {
             }
         }
 
-        if !instance.Type().HasFields() && !instance.Type().HasMethods() {
-            Logger::Log("Cannot access member '" + member_access->member + "' of non-class type.", member_access, LogSeverity::Error);
+        if !instance.Type().HasFields() {
+            Logger::Log("Cannot access field '" + member_access->member + "' of type '" + instance.Type().ToString() + "'.", member_access, LogSeverity::Error);
             return SemanticValue();
         }
 
-        let index = instance.Type().HasFields() ? instance.Type().Index(member_access->member) : -1;
+        let index = instance.Type().Index(member_access->member);
 
         if index != -1 {
-            let field = instance.Type().Fields()[member_access->member];
+            let field = instance.Type().Fields()[index as usize].right;
 
             if !field.public && (this.current_class != null && *this.current_class != instance.Type()) {
                 Logger::Log("Field '" + member_access->member + "' is private.", member_access, LogSeverity::Error);
@@ -1671,13 +1671,8 @@ class SemanticAnalyzer {
 
             return instance.WithType(field._type);
         } else {
-            let method = instance.Type().Get(member_access->member, member_access);
-
-            if method != null {
-                return SemanticValue(method->function->_type);
-            } else {
-                return SemanticValue();
-            }
+            Logger::Log("Field '" + member_access->member + "' not found in type '" + instance.Type().ToString() + "'.", member_access, LogSeverity::Error);
+            return SemanticValue();
         }
     }
 

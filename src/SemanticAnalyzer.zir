@@ -118,7 +118,7 @@ class SemanticAnalyzer {
 
                 for _type in forward.types {
                     let name = forward.generic->type_names[index];
-                    symbols[name] = this.scope_manager.current->Set(name, SymbolKind::Type, _type, forward.node);
+                    symbols[name] = this.scope_manager.current->Set(name, _type, forward.node);
                     index += 1;
                 }
             }
@@ -129,10 +129,14 @@ class SemanticAnalyzer {
 
             for j in 0..params.Size() {
                 if offset > j {
-                    this.scope_manager.Set("this".ToString(), SymbolKind::Parameter, SemanticValue(params[j], ValueCategory::Place), false, forward.node);
+                    let parameter = this.arena.New<HIRParameter>("this".ToString(), params[j], false);
+                    this.scope_manager.Set("this".ToString(), parameter, false, forward.node);
+                    forward.function->parameters.PushBack(parameter);
                 } else {
-                    let parameter: *ParameterNode = forward.node->_type->parameters[j - offset];
-                    this.scope_manager.Set(parameter->name, SymbolKind::Parameter, SemanticValue(params[j], ValueCategory::Place, parameter->mutable), false, parameter);
+                    let node: *ParameterNode = forward.node->_type->parameters[j - offset];
+                    let parameter = this.arena.New<HIRParameter>(node->name, params[j], node->mutable);
+                    this.scope_manager.Set(node->name, parameter, false, node);
+                    forward.function->parameters.PushBack(parameter);
                 }
             }
 
@@ -240,7 +244,7 @@ class SemanticAnalyzer {
     }
 
     fn AnalyzeTypeDefinition(&mut this, type_definition: *TypeDefinitionNode) {
-        this.scope_manager.Set(type_definition->name, SymbolKind::Type, this.ResolveType(type_definition->_type), type_definition);
+        this.scope_manager.Set(type_definition->name, this.ResolveType(type_definition->_type), type_definition);
     }
 
     fn AnalyzeDeclarationThirdPass(&mut this, declaration: *Node) -> bool {
@@ -547,7 +551,7 @@ class SemanticAnalyzer {
         this.scope_manager.PushScope(enumeration->name, true);
 
         for variant in enumeration->variants {
-            this.scope_manager.Set(variant->name, SymbolKind::Constant, _type, enumeration);
+            this.scope_manager.Set(variant->name, _type, enumeration);
         }
 
         this.scope_manager.PopScope();
@@ -593,7 +597,7 @@ class SemanticAnalyzer {
             }
 
             _type->variants.PushBack(Pair<String, Vector<*SemanticType>>(variant->name, types));
-            this.scope_manager.Set(variant->name, SymbolKind::Variant, _type, variant);
+            this.scope_manager.Set(variant->name, _type, variant);
         }
 
         for variant in enumeration->variants {
@@ -875,12 +879,12 @@ class SemanticAnalyzer {
         this.loop_scopes.PushBack(this.scope_manager.current);
 
         if is_range {
-            let result = SemanticValue(_type, ValueCategory::Place, true);
-            this.scope_manager.Set(_for->variable, SymbolKind::Variable, result, false, _for);
+            let variable = this.arena.New<HIRVariable>(_for->variable, _type, null, false);
+            this.scope_manager.Set(_for->variable, variable, _for);
         } else {
             if _type.IsPointer() {
-                let result = SemanticValue(_type.Pointee(), ValueCategory::Place, true);
-                this.scope_manager.Set(_for->variable, SymbolKind::Variable, result, false, _for);
+                let variable = this.arena.New<HIRVariable>(_for->variable, _type.Pointee(), null, false);
+                this.scope_manager.Set(_for->variable, variable, _for);
             } else if _type.HasMethods() {
                 let mut values = Vector<SemanticValue>();
                 values.PushBack(SemanticValue(_type, ValueCategory::Place, true));
@@ -891,7 +895,8 @@ class SemanticAnalyzer {
                 let result = this.AnalyzeResolvedCall(candidates, values, _for);
                 if result.Null() { return; }
 
-                this.scope_manager.Set(_for->variable, SymbolKind::Variable, result, false, _for);
+                let variable = this.arena.New<HIRVariable>(_for->variable, result.Type(), null, false);
+                this.scope_manager.Set(_for->variable, variable, _for);
             } else {
                 Logger::Log("For loop only supports pointer iterators or classes with 'operator*' operator.", _for, LogSeverity::Error);
                 return;
@@ -1152,9 +1157,7 @@ class SemanticAnalyzer {
                 return SemanticValue();
             }
 
-            if symbol->kind == SymbolKind::Variant {
-                return SemanticValue(symbol->value.Type());
-            } else if symbol->kind == SymbolKind::Statement {
+            if symbol->kind == SymbolKind::Statement {
                 let statement = symbol->statement;
 
                 if statement->kind == HIRStatementKind::Variable {
@@ -1171,12 +1174,14 @@ class SemanticAnalyzer {
                     return SemanticValue(declaration->_type, ValueCategory::Place, false);
                 } else if declaration->kind == HIRDeclarationKind::Static {
                     return SemanticValue(declaration->_type, ValueCategory::Place, (declaration as *HIRStatic)->mutable);
+                } else if declaration->kind == HIRDeclarationKind::Parameter {
+                    return SemanticValue(declaration->_type, ValueCategory::Place, (declaration as *HIRParameter)->mutable);
                 } else {
                     Logger::Log("Cannot use declaration '" + declaration->name + "' as an expression.", expression, LogSeverity::Error);
                     return SemanticValue();
                 }
             } else {
-                return symbol->value;
+                return SemanticValue(symbol->_type);
             }
         } else if expression->_type == NodeType::NEW {
             return this.AnalyzeNew(expression as *NewNode);
@@ -1318,7 +1323,7 @@ class SemanticAnalyzer {
                     } else if symbol->kind == SymbolKind::Declaration {
                         _type = symbol->declaration->_type;
                     } else {
-                        _type = symbol->value.Type();
+                        _type = symbol->_type;
                     }
                 } else {
                     _type = this.ResolveType(argument);
@@ -1437,51 +1442,21 @@ class SemanticAnalyzer {
             }
 
             let _class = this.ResolveType(call->expression);
-
-            if _class != null {
-                return SemanticValue(_class);
-            } return SemanticValue();
+            if _class == null { return SemanticValue(); }
+            return SemanticValue(_class);
         } else {
-            let mut state = false;
-            let mut symbol: *Symbol = null;
+            let candidates = this.scope_manager.ResolveCandidates(call->expression, true);
 
-            if call->expression->_type == NodeType::IDENTIFIER {
-                let identifier = call->expression as *IdentifierNode;
-
-                if this.scope_manager.Has(identifier->name, SymbolKind::Variant) {
-                    symbol = this.scope_manager.Get(identifier->name, SymbolKind::Variant);
-                } else {
-                    state = this.scope_manager.Has(identifier->name, SymbolKind::Variable)
-                        || this.scope_manager.Has(identifier->name, SymbolKind::Parameter);
-                }
-            } else if call->expression->_type == NodeType::SCOPE_RESOLUTION {
-                let resolution = call->expression as *ScopeResolutionNode;
-                let scope = this.scope_manager.ResolveScopeHalf(resolution, false);
-                if scope == null { return SemanticValue(); }
-
-                if scope->Has(resolution->identifier->name, SymbolKind::Variant) {
-                    symbol = scope->Get(resolution->identifier->name, SymbolKind::Variant);
-                } else {
-                    state = scope->Has(resolution->identifier->name, SymbolKind::Variable);
-                }
+            if !candidates.Empty() {
+                return this.AnalyzeResolvedCall(candidates, values, call);
             }
 
-            if !state {
-                if symbol != null {
-                    return SemanticValue(symbol->value.Type());
-                } else {
-                    let candidates = this.scope_manager.ResolveCandidates(call->expression, false);
-                    if candidates.Empty() { return SemanticValue(); }
-                    return this.AnalyzeResolvedCall(candidates, values, call);
-                }
-            } else {
-                let value = this.AnalyzeExpression(call->expression);
+            let value = this.AnalyzeExpression(call->expression);
 
-                if !value.Null() {
-                    return this.AnalyzeResolvedCall(value.Type(), values, call);
-                } else {
-                    return SemanticValue();
-                }
+            if !value.Null() {
+                return this.AnalyzeResolvedCall(value.Type(), values, call);
+            } else {
+                return SemanticValue();
             }
         }
     }
@@ -2145,7 +2120,7 @@ class SemanticAnalyzer {
                 return this.type_manager.Float(width);
             } else {
                 if this.scope_manager.Has(primitive_type->name, SymbolKind::Type) {
-                    return this.scope_manager.Get(primitive_type->name, SymbolKind::Type)->value.Type();
+                    return this.scope_manager.Get(primitive_type->name, SymbolKind::Type)->_type;
                 } else if this.scope_manager.Has(primitive_type->name, SymbolKind::Declaration) {
                     for symbol in this.scope_manager.GetAll(primitive_type->name, SymbolKind::Declaration) {
                         let declaration = symbol->declaration;

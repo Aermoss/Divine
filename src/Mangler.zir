@@ -21,7 +21,7 @@ class Mangler {
         return name.StartsWith("$z");
     }
 
-    fn MangleType(_type: *QualifiedType) -> String {
+    fn MangleType(_type: *SemanticType) -> String {
         let mut result = String();
 
         if _type->IsMutable() {
@@ -42,25 +42,13 @@ class Mangler {
             result += (_type->IsReference() ? 'R' : 'P') + Mangler::MangleType(_type->Pointee());
         } else if _type->IsFunction() {
             result += 'F';
-            let _return = _type->Return();
-            result += Mangler::MangleType(_return.sret != null ? _return.sret : _return._type);
+            result += Mangler::MangleType(_type->Return());
 
             for param in _type->Parameters() {
-                result += Mangler::MangleType(param.sret != null ? param.sret : param.byval != null ? param.byval : param._type);
+                result += Mangler::MangleType(param);
             }
         } else if _type->IsClass() || _type->IsStructure() || _type->IsEnumeration() ||  _type->IsVariant() {
-            let mut name = String();
-
-            if !_type->IsEnumeration() {
-                name = LLVMGetStructName(_type->Value());
-            } else {
-                name = _type->name;
-            }
-
-            if !Mangler::IsMangled(name) {
-                name = Mangler::MangleName(name);
-            }
-
+            let mut name = _type->name;
             let (mut start: usize, mut end) = (2, name.Length() - 1);
 
             while name[start] == 'N' && name[end] == 'E' {
@@ -73,7 +61,7 @@ class Mangler {
         } return result;
     }
 
-    fn MangleTypeSubstituted(_type: *QualifiedType, substitution_table: &mut Map<*QualifiedType, String>) -> String {
+    fn MangleTypeSubstituted(_type: *SemanticType, substitution_table: &mut Map<*SemanticType, String>) -> String {
         for i in 0..substitution_table.Size() {
             let pair = substitution_table[i];
 
@@ -100,9 +88,8 @@ class Mangler {
         } return result;
     }
 
-    fn MangleName(name: &String) -> String {
+    fn MangleName(name: &String, mut names: Vector<String>) -> String {
         let mut result = "$z".ToString();
-        let mut names = compiler->scope_manager.Namespaces();
         names.PushBack(name);
 
         let mut has_namespace = false;
@@ -134,9 +121,8 @@ class Mangler {
         } return result;
     }
 
-    pub fn MangleFunction(name: &String, _type: *QualifiedType, types: &Vector<*QualifiedType>) -> String {
+    pub fn MangleFunction(name: &String, _type: *SemanticType, types: &Vector<*SemanticType>, mut names: Vector<String>) -> String {
         let mut result = "$z".ToString();
-        let mut names = compiler->scope_manager.Namespaces();
         names.PushBack(name);
 
         let mut has_namespace = false;
@@ -175,16 +161,15 @@ class Mangler {
             result += "E";
         }
 
-        let mut substitution_table = Map<*QualifiedType, String>();
+        let mut substitution_table = Map<*SemanticType, String>();
 
         for param in _type->Parameters() {
-            result += Mangler::MangleTypeSubstituted(param.sret != null ? param.sret : param.byval != null ? param.byval : param._type, substitution_table);
+            result += Mangler::MangleTypeSubstituted(param, substitution_table);
         } return result;
     }
 
-    pub fn MangleClass(name: &String, types: &Vector<*QualifiedType>) -> String {
+    pub fn MangleClass(name: &String, types: &Vector<*SemanticType>, mut names: Vector<String>) -> String {
         let mut result = "$z".ToString();
-        let mut names = compiler->scope_manager.Namespaces();
         names.PushBack(name);
 
         let mut has_namespace = false;
@@ -224,5 +209,3 @@ class Mangler {
         } return result;
     }
 }
-
-#[include "src/Compiler.zir" : *]

@@ -15,13 +15,16 @@
  */
 
 #[include "std/str", "std/vec", "std/map", "std/pair", "vendor/llvm-c/Core.zir", "vendor/llvm-c/Analysis.zir",
-    "src/Target.zir", "src/Tokens.zir", "src/Nodes.zir", "src/HIR.zir", "src/Logger.zir" : *]
+    "src/Target.zir", "src/Mangler.zir", "src/Tokens.zir", "src/Nodes.zir", "src/HIR.zir", "src/Logger.zir" : *]
 
 class CodeGenerator {
     module: LLVMModuleRef = null,
     builder: LLVMBuilderRef = null,
     context: LLVMContextRef,
     target: *Target,
+
+    namespaces: Vector<String>,
+    structures: Map<*SemanticType, LLVMTypeRef>,
 
     freestanding: bool,
     no_red_zone: bool;
@@ -83,11 +86,35 @@ class CodeGenerator {
 
     fn GenerateModule(&mut this, module: *HIRModule) {
         for declaration in module->declarations {
-            this.GenerateDeclaration(declaration);
+            this.GenerateDeclarationFirstPass(declaration);
+        }
+
+        for declaration in module->declarations {
+            this.GenerateDeclarationSecondPass(declaration);
+        }
+
+        for declaration in module->declarations {
+            this.GenerateDeclarationThirdPass(declaration);
         }
     }
 
-    fn GenerateDeclaration(&mut this, declaration: *HIRDeclaration) {
+    fn GenerateDeclarationFirstPass(&mut this, declaration: *HIRDeclaration) {
+        if declaration->kind == HIRDeclarationKind::Class {
+            this.GenerateClassFirstPass(declaration as *HIRClass);
+        } else if declaration->kind == HIRDeclarationKind::Structure {
+            this.GenerateStructureFirstPass(declaration as *HIRStructure);
+        }
+    }
+
+    fn GenerateDeclarationSecondPass(&mut this, declaration: *HIRDeclaration) {
+        if declaration->kind == HIRDeclarationKind::Class {
+            this.GenerateClassSecondPass(declaration as *HIRClass);
+        } else if declaration->kind == HIRDeclarationKind::Structure {
+            this.GenerateStructureSecondPass(declaration as *HIRStructure);
+        }
+    }
+
+    fn GenerateDeclarationThirdPass(&mut this, declaration: *HIRDeclaration) {
         if declaration->kind == HIRDeclarationKind::Function {
             this.GenerateFunction(declaration as *HIRFunction);
         }
@@ -105,12 +132,53 @@ class CodeGenerator {
         }
 
         let _type = LLVMFunctionType(return_type, param_types.Data(), param_types.Size() as u32, 0);
-        let value = LLVMAddFunction(this.module, (function as *HIRDeclaration)->name.Data(), _type);
+        let name = Mangler::MangleFunction((function as *HIRDeclaration)->name, (function as *HIRDeclaration)->_type, Vector<*SemanticType>(), this.namespaces);
+        let value = LLVMAddFunction(this.module, name.Data(), _type);
 
         if function->body != null {
             /* let entry = LLVMAppendBasicBlockInContext(this.context, value, "");
             LLVMPositionBuilderAtEnd(this.builder, entry); */
             this.GenerateBlock(function->body);
+        }
+    }
+
+    fn GenerateClassFirstPass(&mut this, _class: *HIRClass) {
+        let declaration = _class as *HIRDeclaration;
+        this.structures[declaration->_type] = LLVMStructCreateNamed(this.context, declaration->name.Data());
+    }
+
+    fn GenerateClassSecondPass(&mut this, _class: *HIRClass) {
+        let declaration = _class as *HIRDeclaration;
+        let field_types = Vector<LLVMTypeRef>();
+
+        for field in _class->fields {
+            let field_type = this.GenerateType(field);
+            if field_type == null { continue; }
+            field_types.PushBack(field_type);
+        }
+
+        if !field_types.Empty() {
+            LLVMStructSetBody(this.structures[declaration->_type], field_types.Data(), field_types.Size() as u32, 0);
+        }
+    }
+
+    fn GenerateStructureFirstPass(&mut this, structure: *HIRStructure) {
+        let declaration = structure as *HIRDeclaration;
+        this.structures[declaration->_type] = LLVMStructCreateNamed(this.context, declaration->name.Data());
+    }
+
+    fn GenerateStructureSecondPass(&mut this, structure: *HIRStructure) {
+        let declaration = structure as *HIRDeclaration;
+        let field_types = Vector<LLVMTypeRef>();
+
+        for field in structure->fields {
+            let field_type = this.GenerateType(field);
+            if field_type == null { continue; }
+            field_types.PushBack(field_type);
+        }
+
+        if !field_types.Empty() {
+            LLVMStructSetBody(this.structures[declaration->_type], field_types.Data(), field_types.Size() as u32, 0);
         }
     }
 
@@ -127,7 +195,9 @@ class CodeGenerator {
     }
 
     fn GenerateType(&mut this, _type: *SemanticType) -> LLVMTypeRef {
-        if _type->IsVoid() {
+        if this.structures.Has(_type) {
+            return this.structures[_type];
+        } else if _type->IsVoid() {
             return LLVMVoidTypeInContext(this.context);
         } else if _type->IsBoolean() {
             return LLVMInt1TypeInContext(this.context);

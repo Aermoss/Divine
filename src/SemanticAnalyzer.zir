@@ -52,8 +52,9 @@ class SemanticAnalyzer {
 
     pub generics: Vector<*Generic>,
     pub current_generic: *mut Generic = null,
+    pub current_class: *SemanticType = null,
     pub current_function: *SemanticType = null,
-    pub current_class: *SemanticType = null;
+    pub current_block: *mut HIRBlock = null;
 
     SemanticAnalyzer(&mut this) {
         if analyzer != null {
@@ -279,12 +280,16 @@ class SemanticAnalyzer {
 
     fn AnalyzeConstant(&mut this, constant: *ConstantNode) {
         let _type = this.ResolveType(constant->_type);
-        this.scope_manager.Set(constant->name, SymbolKind::GlobalVariable, SemanticValue(_type, ValueCategory::Place), false, constant);
+        let declaration = this.arena.New<HIRConstant>(constant->name, _type, null);
+        this.scope_manager.Set(constant->name, declaration, false, constant);
+        this.module->declarations.PushBack(declaration);
     }
 
     fn AnalyzeStatic(&mut this, _static: *StaticNode) {
         let _type = this.ResolveType(_static->_type);
-        this.scope_manager.Set(_static->name, SymbolKind::Variable, SemanticValue(_type, ValueCategory::Place, _static->mutable), false, _static);
+        let declaration = this.arena.New<HIRStatic>(_static->name, _type, null, _static->mutable);
+        this.scope_manager.Set(_static->name, declaration, false, _static);
+        this.module->declarations.PushBack(declaration);
 
         if _static->alignment != null {
             let alignment = this.AnalyzeExpression(_static->alignment).Materialize(this.type_manager.IntegerPointer(false));
@@ -666,7 +671,7 @@ class SemanticAnalyzer {
         }
     }
 
-    fn AnalyzeStatement(&mut this, statement: *Node) -> *HIRStatement {
+    fn AnalyzeStatement(&mut this, statement: *Node) {
         if statement->_type == NodeType::RETURN {
             this.AnalyzeReturn(statement as *ReturnNode);
         } else if statement->_type == NodeType::EXPRESSION {
@@ -701,7 +706,7 @@ class SemanticAnalyzer {
             this.AnalyzeAssembly(statement as *AssemblyNode);
         } else {
             Logger::Log("Unknown statement '" + statement->_type.ToString() + "'.", statement, LogSeverity::Error);
-        } return null;
+        }
     }
 
     fn AnalyzeReturn(&mut this, _return: *ReturnNode) {
@@ -957,35 +962,33 @@ class SemanticAnalyzer {
     }
 
     fn AnalyzeBlock(&mut this, block: *BlockNode) -> *HIRBlock {
-        let hir = this.arena.New<HIRBlock>();
+        let prev_block = this.current_block;
+        let statement = this.arena.New<HIRBlock>();
+        this.current_block = statement;
 
         for statement in block->statements {
-            let hir_statement = this.AnalyzeStatement(statement);
+            this.AnalyzeStatement(statement);
+        }
 
-            if hir_statement != null {
-                hir->statements.PushBack(hir_statement);
-            }
-        } return hir;
+        this.current_block = prev_block;
+        return statement;
     }
 
     fn AnalyzeVariable(&mut this, variable: *VariableNode) {
-        let mut value = SemanticValue();
+        let mut _type: *SemanticType = null;
 
         if variable->_type != null {
-            let _type = this.ResolveType(variable->_type);
-
-            if _type != null {
-                value = SemanticValue(_type, ValueCategory::Place, variable->mutable);
-            }
+            _type = this.ResolveType(variable->_type);
         } else if variable->initializer != null {
-            value = this.AnalyzeExpression(variable->initializer).Materialize()
-                .WithCategoryAndMutability(ValueCategory::Place, variable->mutable);
+            _type = this.AnalyzeExpression(variable->initializer).Materialize().Type();
         } else {
             Logger::Log("Type annotation required for variable '" + variable->name + "' without initializer.", variable, LogSeverity::Error);
         }
 
-        if !value.Null() {
-            this.scope_manager.Set(variable->name, SymbolKind::Variable, value, false, variable);
+        if _type != null {
+            let statement = this.arena.New<HIRVariable>(variable->name, _type, null, variable->mutable);
+            this.scope_manager.Set(variable->name, statement, variable);
+            this.current_block->statements.PushBack(statement);
         }
 
         if variable->next != null {
@@ -1149,12 +1152,29 @@ class SemanticAnalyzer {
                 return SemanticValue();
             }
 
-            if symbol->value.Null() {
-                return SemanticValue();
-            }
-
             if symbol->kind == SymbolKind::Variant {
                 return SemanticValue(symbol->value.Type());
+            } else if symbol->kind == SymbolKind::Statement {
+                let statement = symbol->statement;
+
+                if statement->kind == HIRStatementKind::Variable {
+                    let variable = statement as *HIRVariable;
+                    return SemanticValue(variable->_type, ValueCategory::Place, variable->mutable);
+                } else {
+                    Logger::Log("Cannot use statement as an expression.", expression, LogSeverity::Error);
+                    return SemanticValue();
+                }
+            } else if symbol->kind == SymbolKind::Declaration {
+                let declaration = symbol->declaration;
+
+                if declaration->kind == HIRDeclarationKind::Constant {
+                    return SemanticValue(declaration->_type, ValueCategory::Place, false);
+                } else if declaration->kind == HIRDeclarationKind::Static {
+                    return SemanticValue(declaration->_type, ValueCategory::Place, (declaration as *HIRStatic)->mutable);
+                } else {
+                    Logger::Log("Cannot use declaration '" + declaration->name + "' as an expression.", expression, LogSeverity::Error);
+                    return SemanticValue();
+                }
             } else {
                 return symbol->value;
             }
@@ -1284,11 +1304,21 @@ class SemanticAnalyzer {
 
                 if argument->_type == NodeType::IDENTIFIER || argument->_type == NodeType::SCOPE_RESOLUTION {
                     let symbol = this.scope_manager.Resolve(argument, false);
+                    if symbol == null { return SemanticValue(); }
 
-                    if symbol != null {
-                        _type = symbol->value.Type();
+                    if symbol->kind == SymbolKind::Statement {
+                        let statement = symbol->statement;
+
+                        if statement->kind == HIRStatementKind::Variable {
+                            _type = (statement as *HIRVariable)->_type;
+                        } else {
+                            Logger::Log("Cannot use statement as a type.", call, LogSeverity::Error);
+                            return SemanticValue();
+                        }
+                    } else if symbol->kind == SymbolKind::Declaration {
+                        _type = symbol->declaration->_type;
                     } else {
-                        return SemanticValue();
+                        _type = symbol->value.Type();
                     }
                 } else {
                     _type = this.ResolveType(argument);

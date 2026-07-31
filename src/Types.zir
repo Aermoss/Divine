@@ -14,47 +14,28 @@
  * limitations under the License.
  */
 
-#[include "std/str", "std/vec", "std/map", "vendor/llvm-c/Core.zir",
-    "src/Generic.zir", "src/Scope.zir", "src/Nodes.zir", "src/Logger.zir" : *]
+#[include "std/str", "std/vec", "std/map", "src/Nodes.zir", "src/HIR.zir",
+    "src/Generic.zir", "src/Scope.zir", "src/Logger.zir" : *]
 
 class Field {
     pub index: usize,
-    pub _type: *QualifiedType,
+    pub _type: *SemanticType,
     pub initializer: *Node,
     pub public: bool;
 
-    Field(&mut this, index: usize, _type: *QualifiedType, initializer: *Node, public: bool) {
+    Field(&mut this, index: usize, _type: *SemanticType, initializer: *Node, public: bool) {
         (this.index, this._type, this.initializer, this.public) = (index, _type, initializer, public);
     }
 }
 
 class Method {
     pub name: String,
-    pub function: QualifiedValue,
+    pub function: *HIRFunction,
     pub _static: bool,
     pub public: bool;
 
-    Method(&mut this, name: &String, function: &QualifiedValue, _static: bool, public: bool) {
+    Method(&mut this, name: &String, function: *HIRFunction, _static: bool, public: bool) {
         (this.name, this.function, this._static, this.public) = (name, function, _static, public);
-    }
-}
-
-class ParameterType {
-    pub _type: *QualifiedType,
-    pub byval: *QualifiedType = null,
-    pub sret: *QualifiedType = null;
-
-    ParameterType(&mut this, _type: *QualifiedType) {
-        this._type = _type;
-    }
-}
-
-class ReturnType {
-    pub _type: *QualifiedType,
-    pub sret: *QualifiedType = null;
-
-    ReturnType(&mut this, _type: *QualifiedType) {
-        this._type = _type;
     }
 }
 
@@ -62,11 +43,11 @@ enum TypeKind: u8 {
     Void, Boolean, Character,
     Integer, IntegerLiteral, Float, FloatLiteral,
     Pointer, Reference, Array,
-    Function, PackSpecializedFunction,
-    Class, Structure, Enumeration, Variant
+    Function, Class, Structure,
+    Enumeration, Variant
 }
 
-class QualifiedType {
+class SemanticType {
     pub kind: TypeKind,
     pub signed: bool = false,
     pub mutable: bool = false,
@@ -74,26 +55,19 @@ class QualifiedType {
     pub length: usize = 0,
     pub name: String,
 
-    pub value: LLVMTypeRef,
-    pub pointee: *QualifiedType = null,
-
-    pub pack_name: String,
-    pub declaration: *FunctionNode = null,
-    pub pack_generic: *mut Generic = null,
-    pub pack_scope: *mut Scope = null,
-    pub pack_generic_types: Vector<*QualifiedType>,
+    pub pointee: *SemanticType = null,
 
     pub fields: Map<String, Field>,
     pub methods: Vector<Method>,
 
-    pub variants: Vector<Pair<String, Vector<*QualifiedType>>>,
+    pub variants: Vector<Pair<String, Vector<*SemanticType>>>,
     pub variant_field_names: Vector<Vector<String>>,
 
-    pub params: Vector<ParameterType>,
-    pub _return: ReturnType;
+    pub params: Vector<*SemanticType>,
+    pub _return: *SemanticType = null;
 
-    QualifiedType(&mut this, kind: TypeKind, value: LLVMTypeRef) {
-        (this.kind, this.value) = (kind, value);
+    SemanticType(&mut this, kind: TypeKind) {
+        this.kind = kind;
     }
 
     pub fn IsMutable(&this) -> bool { return this.mutable; }
@@ -112,8 +86,7 @@ class QualifiedType {
     pub fn IsNullPointer(&this) -> bool { return this.kind == TypeKind::Pointer && this.pointee->kind == TypeKind::Void; }
     pub fn IsReference(&this) -> bool { return this.kind == TypeKind::Reference; }
     pub fn IsArray(&this) -> bool { return this.kind == TypeKind::Array; }
-    pub fn IsFunction(&this) -> bool { return this.kind == TypeKind::Function || this.kind == TypeKind::PackSpecializedFunction; }
-    pub fn IsPackSpecializedFunction(&this) -> bool { return this.kind == TypeKind::PackSpecializedFunction; }
+    pub fn IsFunction(&this) -> bool { return this.kind == TypeKind::Function; }
     pub fn IsClass(&this) -> bool { return this.kind == TypeKind::Class; }
     pub fn IsStructure(&this) -> bool { return this.kind == TypeKind::Structure; }
     pub fn IsEnumeration(&this) -> bool { return this.kind == TypeKind::Enumeration; }
@@ -161,7 +134,7 @@ class QualifiedType {
         } return false;
     }
 
-    pub fn IsDerivedFrom(&this, other: &QualifiedType) -> bool {
+    pub fn IsDerivedFrom(&this, other: &SemanticType) -> bool {
         for field in other.Fields() {
             if field.left == this.name {
                 return true;
@@ -169,7 +142,7 @@ class QualifiedType {
         } return false;
     }
 
-    pub fn IsCompatible(&this, other: &QualifiedType) -> bool {
+    pub fn IsCompatible(&this, other: &SemanticType) -> bool {
         if this.IsPointer() && other.IsPointer() {
             if this.Pointee().IsVoid() || other.IsNullPointer() {
                 return true;
@@ -181,9 +154,9 @@ class QualifiedType {
         } return this == other;
     }
 
-    pub fn IsMutabilityCompatible(&this, other: &QualifiedType) -> bool {
-        let mut left: *QualifiedType = this;
-        let mut right: *QualifiedType = other;
+    pub fn IsMutabilityCompatible(&this, other: &SemanticType) -> bool {
+        let mut left: *SemanticType = this;
+        let mut right: *SemanticType = other;
 
         while left->IsPointer() && right->IsPointer() {
             if left->IsMutable() && !right->IsMutable() && !right->IsNullPointer() {
@@ -194,9 +167,9 @@ class QualifiedType {
         } return true;
     }
 
-    pub fn IsSame(&this, other: &QualifiedType) -> bool {
-        let mut left: *QualifiedType = this;
-        let mut right: *QualifiedType = other;
+    pub fn IsSame(&this, other: &SemanticType) -> bool {
+        let mut left: *SemanticType = this;
+        let mut right: *SemanticType = other;
 
         while left->IsPointer() && right->IsPointer() {
             if left->IsMutable() != right->IsMutable() || left->IsReference() != right->IsReference() || right->IsNullPointer() {
@@ -207,11 +180,11 @@ class QualifiedType {
         } return this == other;
     }
 
-    pub fn ScorePointer(&this, other: &QualifiedType, base: u64) -> u64 {
+    pub fn ScorePointer(&this, other: &SemanticType, base: u64) -> u64 {
         let mut reference_mismatch = false;
         let mut mutability_mismatch = false;
-        let mut left: *QualifiedType = this;
-        let mut right: *QualifiedType = other;
+        let mut left: *SemanticType = this;
+        let mut right: *SemanticType = other;
         let mut score = base;
 
         while left->IsPointer() && right->IsPointer() {
@@ -229,7 +202,7 @@ class QualifiedType {
         return score;
     }
 
-    pub fn ScoreParameter(&this, other: &QualifiedType) -> u64 {
+    pub fn ScoreParameter(&this, other: &SemanticType) -> u64 {
         if other.IsLiteral() {
             if this.IsInteger() && other.IsInteger() {
                 if this.width == other.width && this.signed == other.signed {
@@ -267,71 +240,55 @@ class QualifiedType {
         } return 0;
     }
 
-    pub fn UnderlyingType(&this) -> &QualifiedType {
-        if !this.IsEnumeration() {
-            Logger::Log("QualifiedType", "Not an enumeration!", LogSeverity::Fatal);
-        }
-
-        if this.width == 0 {
-            return compiler->type_manager.IntegerPointer(this.signed);
-        } else {
-            return compiler->type_manager.Integer(this.width, this.signed);
-        }
-    }
-
-    pub fn Value(&this) -> LLVMTypeRef {
-        if this.value == null {
-            Logger::Log("QualifiedType", "Null type!", LogSeverity::Fatal);
-        } return this.value;
-    }
-
-    pub fn Pointee(&this) -> &QualifiedType {
+    pub fn AsReference(&this) -> &SemanticType {
         if !this.IsPointer() {
-            Logger::Log("QualifiedType", "Not a pointer!", LogSeverity::Fatal);
-        } else if this.pointee == null {
-            Logger::Log("QualifiedType", "Null pointee!", LogSeverity::Fatal);
+            Logger::Log("SemanticType", "Not a pointer!", LogSeverity::Fatal);
+        } return analyzer->type_manager.Reference(this.Pointee(), this.IsMutable());
+    }
+
+    pub fn Pointee(&this) -> &SemanticType {
+        if !this.IsPointer() {
+            Logger::Log("SemanticType", "Not a pointer!", LogSeverity::Fatal);
         } return this.pointee;
     }
 
     pub fn Width(&this) -> u32 {
         if !this.IsBoolean() && !this.IsCharacter() && !this.IsInteger() && !this.IsFloat() && !this.IsEnumeration() {
-            Logger::Log("QualifiedType", "Not a boolean, character, integer, float or enumeration!", LogSeverity::Fatal);
-        } return this.width == 0 ? LLVMPointerSize(compiler->target->layout) * 8 : this.width;
+            Logger::Log("SemanticType", "Not a boolean, character, integer, float or enumeration!", LogSeverity::Fatal);
+        } return this.width;
     }
 
     pub fn Length(&this) -> usize {
         if !this.IsArray() {
-            Logger::Log("QualifiedType", "Not an array!", LogSeverity::Fatal);
+            Logger::Log("SemanticType", "Not an array!", LogSeverity::Fatal);
         } return this.length;
     }
 
-    pub fn Element(&this) -> &QualifiedType {
+    pub fn Element(&this) -> &SemanticType {
         if !this.IsArray() {
-            Logger::Log("QualifiedType", "Not an array!", LogSeverity::Fatal);
-        } else if this.pointee == null {
-            Logger::Log("QualifiedType", "Null pointee!", LogSeverity::Fatal);
+            Logger::Log("SemanticType", "Not an array!", LogSeverity::Fatal);
         } return this.pointee;
     }
 
-    pub fn Parameters(&this) -> &Vector<ParameterType> {
+    pub fn Parameters(&this) -> &Vector<*SemanticType> {
         if !this.IsFunction() {
-            Logger::Log("QualifiedType", "Not a function!", LogSeverity::Fatal);
+            Logger::Log("SemanticType", "Not a function!", LogSeverity::Fatal);
         } return this.params;
     }
 
-    pub fn Return(&this) -> &ReturnType {
+    pub fn Return(&this) -> &SemanticType {
         if !this.IsFunction() {
-            Logger::Log("QualifiedType", "Not a function!", LogSeverity::Fatal);
+            Logger::Log("SemanticType", "Not a function!", LogSeverity::Fatal);
         } return this._return;
     }
 
     pub fn Fields(&this) -> &mut Map<String, Field> {
         if !this.HasFields() {
-            Logger::Log("QualifiedType", "Not a class or structure!", LogSeverity::Fatal);
+            Logger::Log("SemanticType", "Not a class or structure!", LogSeverity::Fatal);
         }
 
         unsafe {
-            return (this as &mut QualifiedType).fields;
+            return (this as &mut SemanticType).fields;
         }
     }
 
@@ -349,7 +306,7 @@ class QualifiedType {
 
     pub fn Methods(&this) -> &Vector<Method> {
         if !this.HasMethods() {
-            Logger::Log("QualifiedType", "Not a class, structure or variant!", LogSeverity::Fatal);
+            Logger::Log("SemanticType", "Not a class, structure or variant!", LogSeverity::Fatal);
         } return this.methods;
     }
 
@@ -357,167 +314,36 @@ class QualifiedType {
         return this.IsClass() || this.IsStructure() || this.IsVariant();
     }
 
-    pub fn Has(&this, name: &String) -> bool {
-        for method in this.Methods() {
-            if method.name == name {
-                if method.public {
-                    return true;
-                }
-
-                if compiler->_class != null {
-                    if *compiler->_class == this {
-                        return true;
-                    }
-                }
-            }
-        } return false;
-    }
-
-    pub fn Has(&this, name: &String, params: &Vector<*QualifiedType>) -> bool {
-        for method in this.Methods() {
-            if method.name == name {
-                let mut state = false;
-
-                if compiler->_class != null {
-                    state = *compiler->_class == this;
-                }
-
-                if method.public || state {
-                    let _params = method.function.Type().Pointee().Parameters();
-                    let has_pack = method.function.Type().Pointee().pack_name != "";
-                    let mut offset: usize = method._static ? 0 : 1;
-                    if _params[0].sret != null { offset += 1; }
-                    let mut _match = true;
-
-                    if (!has_pack && params.Size() != _params.Size() - offset) || (has_pack && params.Size() < _params.Size() - offset) {
-                        continue;
-                    }
-
-                    for j in 0..(_params.Size() - offset) {
-                        let param_type = _params[j + offset];
-                        let _type = param_type.byval != null ? param_type.byval : param_type._type;
-                        let param_score = _type->ScoreParameter(*params[j]);
-
-                        if param_score == 0 {
-                            _match = false;
-                            break;
-                        }
-                    }
-
-                    if _match {
-                        return true;
-                    }
-                }
-            }
-        } return false;
-    }
-
-    pub fn Get(&this, name: &String, node: *Node) -> *Method {
-        let mut state = 0;
+    pub fn GetCandidates(&this, name: &String, node: *Node, test: bool) -> Vector<*HIRFunction> {
+        let mut result = Vector<*HIRFunction>();
+        let mut found = false;
 
         for method in this.Methods() {
-            if method.name == name {
-                let mut _state = false;
-
-                if compiler->_class != null {
-                    _state = *compiler->_class == this;
-                }
-
-                if !method.public && !_state {
-                    if state < 1 { state = 1; }
-                } else {
-                    return &method;
-                }
+            if method.name != name {
+                continue;
             }
+
+            if method.public || (analyzer->current_class != null && *analyzer->current_class == this) {
+                result.PushBack(method.function);
+            } found = true;
         }
 
-        if state == 0 {
-            Logger::Log("Class '" + this.name + "' doesn't contain any method named '" + name + "'.", node, LogSeverity::Error);
-            return null;
-        } else {
-            Logger::Log("Function '" + name + "' is not accessible.", node, LogSeverity::Error);
-            return null;
-        }
-    }
-
-    pub fn Get(&this, name: &String, params: &Vector<*QualifiedType>, node: *Node) -> *Method {
-        let methods = this.Methods();
-        let mut index: usize = 0;
-        let mut best: u64 = 0;
-        let mut state = 0;
-
-        for i in 0..methods.Size() {
-            let method = methods[i];
-
-            if method.name == name {
-                let mut _state = false;
-
-                if compiler->_class != null {
-                    _state = *compiler->_class == this;
-                }
-
-                if !method.public && !_state {
-                    if state < 1 { state = 1; }
-                } else {
-                    let (mut _match, mut score: u64) = (true, 1);
-                    let _params = method.function.Type().Pointee().Parameters();
-                    let has_pack = method.function.Type().Pointee().pack_name != "";
-                    let mut offset: usize = method._static ? 0 : 1;
-                    if _params[0].sret != null { offset += 1; }
-
-                    if (!has_pack && params.Size() != _params.Size() - offset) || (has_pack && params.Size() < _params.Size() - offset) {
-                        continue;
-                    }
-
-                    for j in 0..(_params.Size() - offset) {
-                        let param_type = _params[j + offset];
-                        let _type = param_type.byval != null ? param_type.byval : param_type._type;
-                        let param_score = _type->ScoreParameter(*params[j]);
-
-                        if param_score != 0 {
-                            score += param_score;
-                        } else {
-                            _match = false;
-                            break;
-                        }
-                    }
-
-                    if !_match {
-                        state = 2;
-                    } else if score > best {
-                        (index, best) = (i, score);
-                    }
-                }
-            }
-        }
-
-        if best != 0 {
-            return methods[index];
-        } else {
-            if state == 0 {
-                if name == this.name {
-                    Logger::Log("Class '" + this.name + "' does not define a constructor method.", node, LogSeverity::Error);
-                } else {
-                    Logger::Log("Class '" + this.name + "' doesn't contain any method named '" + name + "'.", node, LogSeverity::Error);
-                } return null;
-            } else if state == 1 {
+        if result.Empty() && !test {
+            if found {
                 Logger::Log("Function '" + name + "' is not accessible.", node, LogSeverity::Error);
-                return null;
             } else {
                 Logger::Log("Invalid arguments for: '" + name + "'.", node, LogSeverity::Error);
-                return null;
             }
-        }
+        } return result;
     }
 
-    pub fn operator==(&this, other: &QualifiedType) -> bool {
+    pub fn operator==(&this, other: &SemanticType) -> bool {
         if this.IsInteger() && other.IsInteger() {
             return this.signed == other.signed && this.width == other.width;
         } else if this.IsFloat() && other.IsFloat() {
             return this.width == other.width;
         } else if (this.IsPointer() || this.IsArray()) && (other.IsPointer() || other.IsArray()) {
             if this.pointee == other.pointee { return true; }
-            if this.pointee == null || other.pointee == null { return false; }
             return *this.pointee == *other.pointee;
         } else if this.IsFunction() && other.IsFunction() {
             if this.params.Size() != other.params.Size() {
@@ -525,7 +351,7 @@ class QualifiedType {
             }
 
             for i in 0..this.params.Size() {
-                let (left, right) = (this.params[i]._type, other.params[i]._type);
+                let (left, right) = (this.params[i], other.params[i]);
 
                 if left != right {
                     if left == null || right == null { return false; }
@@ -533,7 +359,7 @@ class QualifiedType {
                 }
             }
 
-            let (left, right) = (this._return._type, other._return._type);
+            let (left, right) = (this._return, other._return);
 
             if left != right {
                 if left == null || right == null { return false; }
@@ -544,7 +370,7 @@ class QualifiedType {
         }
     }
 
-    pub fn operator!=(&this, other: &QualifiedType) -> bool {
+    pub fn operator!=(&this, other: &SemanticType) -> bool {
         return !(this == other);
     }
 
@@ -588,14 +414,16 @@ class QualifiedType {
                     first = false;
                 }
 
-                result += param._type->ToString();
+                result += param->ToString();
             } result += ')';
 
-            if this._return._type->kind != TypeKind::Void {
-                result += " -> " + this._return._type->ToString();
+            if this._return->kind != TypeKind::Void {
+                result += " -> " + this._return->ToString();
             } return result;
         } else {
             return this.name;
         }
     }
 }
+
+#[include "src/SemanticAnalyzer.zir" : *]

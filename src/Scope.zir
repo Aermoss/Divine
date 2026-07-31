@@ -14,94 +14,113 @@
  * limitations under the License.
  */
 
-#[include "std/str", "std/vec", "src/Symbol.zir", "src/Value.zir" : *]
+#[include "std/str", "std/vec", "src/Symbol.zir", "src/Value.zir", "src/HIR.zir" : *]
 
 class Scope {
     pub parent: *mut Scope,
     pub children: Vector<*Scope>,
-    pub name: String, pub global: bool,
-    pub symbols: Vector<*Symbol>,
-    pub instances: Vector<QualifiedValue>;
+    pub symbols: Map<String, Vector<*Symbol>>,
+    pub name: String, pub global: bool;
 
     Scope(&mut this, parent: *mut Scope, name: &String, global: bool) {
         (this.parent, this.name, this.global) = (parent, name, global);
     }
 
     ~Scope(&this) {
-        for symbol in this.symbols {
-            delete symbol;
+        for pair in this.symbols {
+            for symbol in pair.right {
+                delete symbol;
+            }
         }
     }
 
     pub fn Has(&this, name: &String) -> bool {
-        for symbol in this.symbols {
-            if symbol->name == name {
-                return true;
-            }
-        } return false;
+        return this.symbols.Has(name);
     }
-    
+
     pub fn Has(&this, name: &String, kind: SymbolKind) -> bool {
-        for symbol in this.symbols {
-            if symbol->name == name && symbol->kind == kind {
+        for symbol in this.symbols.Get(name, Vector<*Symbol>()) {
+            if symbol->kind == kind {
                 return true;
             }
         } return false;
     }
 
-    pub fn Set(&mut this, name: &String, kind: SymbolKind, value: &QualifiedValue, overload: bool, node: *Node) -> *Symbol {
+    pub fn Set(&mut this, name: &String, kind: SymbolKind, value: &SemanticValue, overload: bool, node: *Node) -> *Symbol {
         if this.Has(name) && !overload {
             Logger::Log("Symbol '" + name + "' already exists.", node, LogSeverity::Error);
             return null;
-        } else {
-            let symbol: *Symbol = new Symbol(name, kind, value);
-            this.symbols.PushBack(symbol);
-            return symbol;
+        } else if !this.symbols.Has(name) { 
+            this.symbols[name] = Vector<*Symbol>();
         }
+
+        let symbol: *Symbol = new Symbol(kind, value);
+        this.symbols[name].PushBack(symbol);
+        return symbol;
     }
 
-    pub fn Set(&mut this, name: &String, kind: SymbolKind, pointer: *void, overload: bool, node: *Node) -> *Symbol {
+    pub fn Set(&mut this, name: &String, kind: SymbolKind, declaration: *HIRDeclaration, overload: bool, node: *Node) -> *Symbol {
         if this.Has(name) && !overload {
             Logger::Log("Symbol '" + name + "' already exists.", node, LogSeverity::Error);
             return null;
-        } else {
-            let symbol: *Symbol = new Symbol(name, kind, pointer);
-            this.symbols.PushBack(symbol);
-            return symbol;
+        } else if !this.symbols.Has(name) { 
+            this.symbols[name] = Vector<*Symbol>();
         }
+
+        let symbol: *Symbol = new Symbol(kind, declaration);
+        this.symbols[name].PushBack(symbol);
+        return symbol;
+    }
+
+    pub fn Set(&mut this, name: &String, kind: SymbolKind, _type: *SemanticType, node: *Node) -> *Symbol {
+        if this.Has(name) {
+            Logger::Log("Symbol '" + name + "' already exists.", node, LogSeverity::Error);
+            return null;
+        } else if !this.symbols.Has(name) { 
+            this.symbols[name] = Vector<*Symbol>();
+        }
+
+        let symbol: *Symbol = new Symbol(kind, SemanticValue(_type));
+        this.symbols[name].PushBack(symbol);
+        return symbol;
+    }
+
+    pub fn Set(&mut this, name: &String, kind: SymbolKind, generic: *mut Generic, node: *Node) -> *Symbol {
+        if this.Has(name) {
+            Logger::Log("Symbol '" + name + "' already exists.", node, LogSeverity::Error);
+            return null;
+        } else if !this.symbols.Has(name) { 
+            this.symbols[name] = Vector<*Symbol>();
+        }
+
+        let symbol: *Symbol = new Symbol(kind, generic);
+        this.symbols[name].PushBack(symbol);
+        return symbol;
     }
 
     pub fn Get(&this, name: &String) -> *Symbol {
-        for symbol in this.symbols {
-            if symbol->name == name {
-                return symbol;
-            }
+        for symbol in this.symbols.Get(name, Vector<*Symbol>()) {
+            return symbol;
         } return null;
     }
 
     pub fn Get(&this, name: &String, kind: SymbolKind) -> *Symbol {
-        for symbol in this.symbols {
-            if symbol->name == name && symbol->kind == kind {
+        for symbol in this.symbols.Get(name, Vector<*Symbol>()) {
+            if symbol->kind == kind {
                 return symbol;
             }
         } return null;
     }
 
     pub fn GetAll(&this, name: &String) -> Vector<*Symbol> {
-        let mut result = Vector<*Symbol>();
-
-        for symbol in this.symbols {
-            if symbol->name == name {
-                result.PushBack(symbol);
-            }
-        } return result;
+        return this.symbols.Get(name, Vector<*Symbol>());
     }
 
     pub fn GetAll(&this, name: &String, kind: SymbolKind) -> Vector<*Symbol> {
         let mut result = Vector<*Symbol>();
 
-        for symbol in this.symbols {
-            if symbol->name == name && symbol->kind == kind {
+        for symbol in this.symbols.Get(name, Vector<*Symbol>()) {
+            if symbol->kind == kind {
                 result.PushBack(symbol);
             }
         } return result;

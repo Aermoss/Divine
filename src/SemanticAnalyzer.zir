@@ -15,13 +15,12 @@
  */
 
 #[include "std/str", "std/vec", "std/map", "std/pair", "std/arena",
-    "src/SemanticGeneric.zir", "src/SemanticTypeManager.zir", "src/SemanticTypes.zir", "src/SemanticValue.zir",
-        "src/SemanticScopeManager.zir", "src/SemanticScope.zir", "src/SemanticSymbol.zir",
-            "src/Tokens.zir", "src/Nodes.zir", "src/HIR.zir", "src/Logger.zir" : *]
+    "src/ScopeManager.zir", "src/Scope.zir", "src/Symbol.zir", "src/Generic.zir", "src/TypeManager.zir", "src/Types.zir", "src/Value.zir",
+        "src/Tokens.zir", "src/Nodes.zir", "src/HIR.zir", "src/Logger.zir" : *]
 
 class SemanticForward {
     pub _class: *SemanticType,
-    pub generic: *SemanticGeneric = null,
+    pub generic: *Generic = null,
     pub types: Vector<*SemanticType>,
     pub node: *FunctionNode,
     pub hir: *mut HIRFunction;
@@ -30,7 +29,7 @@ class SemanticForward {
         (this._class, this.node, this.hir) = (_class, node, hir);
     }
 
-    SemanticForward(&mut this, _class: *SemanticType, generic: *SemanticGeneric, types: &Vector<*SemanticType>, node: *FunctionNode, hir: *mut HIRFunction) {
+    SemanticForward(&mut this, _class: *SemanticType, generic: *Generic, types: &Vector<*SemanticType>, node: *FunctionNode, hir: *mut HIRFunction) {
         (this._class, this.generic, this.types, this.node, this.hir) = (_class, generic, types, node, hir);
     }
 }
@@ -39,18 +38,18 @@ class SemanticAnalyzer {
     arena: Arena,
     module: *mut HIRModule = null,
 
-    pub type_manager: SemanticTypeManager,
-    pub scope_manager: SemanticScopeManager,
+    pub type_manager: TypeManager,
+    pub scope_manager: ScopeManager,
 
     forwards: Vector<SemanticForward>,
-    pass_cache: Map<*Node, Pair<*mut SemanticType, *mut SemanticScope>>,
-    loop_scopes: Vector<*mut SemanticScope>,
+    pass_cache: Map<*Node, Pair<*mut SemanticType, *mut Scope>>,
+    loop_scopes: Vector<*mut Scope>,
 
     pub mangling: bool = true,
     pub _unsafe: bool = false,
 
-    pub generics: Vector<*SemanticGeneric>,
-    pub current_generic: *mut SemanticGeneric = null,
+    pub generics: Vector<*Generic>,
+    pub current_generic: *mut Generic = null,
     pub current_function: *SemanticType = null,
     pub current_class: *SemanticType = null;
 
@@ -103,7 +102,7 @@ class SemanticAnalyzer {
 
         while i < this.forwards.Size() {
             let forward: SemanticForward = this.forwards[i];
-            let mut symbols = Map<String, *SemanticSymbol>();
+            let mut symbols = Map<String, *Symbol>();
             let prev_scope = this.scope_manager.current;
             this.current_function = (forward.hir as *HIRDeclaration)->_type;
             this.current_class = forward._class;
@@ -114,7 +113,7 @@ class SemanticAnalyzer {
 
                 for _type in forward.types {
                     let name = forward.generic->type_names[index];
-                    symbols[name] = this.scope_manager.current->Set(name, SemanticSymbolKind::Type, _type, forward.node);
+                    symbols[name] = this.scope_manager.current->Set(name, SymbolKind::Type, _type, forward.node);
                     index += 1;
                 }
             }
@@ -125,10 +124,10 @@ class SemanticAnalyzer {
 
             for j in 0..params.Size() {
                 if offset > j {
-                    this.scope_manager.Set("this".ToString(), SemanticSymbolKind::Parameter, SemanticValue(params[j], ValueCategory::Place), false, forward.node);
+                    this.scope_manager.Set("this".ToString(), SymbolKind::Parameter, SemanticValue(params[j], ValueCategory::Place), false, forward.node);
                 } else {
                     let parameter: *ParameterNode = forward.node->_type->parameters[j - offset];
-                    this.scope_manager.Set(parameter->name, SemanticSymbolKind::Parameter, SemanticValue(params[j], ValueCategory::Place, parameter->mutable), false, parameter);
+                    this.scope_manager.Set(parameter->name, SymbolKind::Parameter, SemanticValue(params[j], ValueCategory::Place, parameter->mutable), false, parameter);
                 }
             }
 
@@ -236,7 +235,7 @@ class SemanticAnalyzer {
     }
 
     fn AnalyzeTypeDefinition(&mut this, type_definition: *TypeDefinitionNode) {
-        this.scope_manager.Set(type_definition->name, SemanticSymbolKind::Type, this.ResolveType(type_definition->_type), type_definition);
+        this.scope_manager.Set(type_definition->name, SymbolKind::Type, this.ResolveType(type_definition->_type), type_definition);
     }
 
     fn AnalyzeDeclarationThirdPass(&mut this, declaration: *Node) -> bool {
@@ -276,12 +275,12 @@ class SemanticAnalyzer {
 
     fn AnalyzeConstant(&mut this, constant: *ConstantNode) {
         let _type = this.ResolveType(constant->_type);
-        this.scope_manager.Set(constant->name, SemanticSymbolKind::GlobalVariable, SemanticValue(_type, ValueCategory::Place), false, constant);
+        this.scope_manager.Set(constant->name, SymbolKind::GlobalVariable, SemanticValue(_type, ValueCategory::Place), false, constant);
     }
 
     fn AnalyzeStatic(&mut this, _static: *StaticNode) {
         let _type = this.ResolveType(_static->_type);
-        this.scope_manager.Set(_static->name, SemanticSymbolKind::Variable, SemanticValue(_type, ValueCategory::Place, _static->mutable), false, _static);
+        this.scope_manager.Set(_static->name, SymbolKind::Variable, SemanticValue(_type, ValueCategory::Place, _static->mutable), false, _static);
 
         if _static->alignment != null {
             let alignment = this.AnalyzeExpression(_static->alignment).Materialize(this.type_manager.IntegerPointer(false));
@@ -297,10 +296,10 @@ class SemanticAnalyzer {
         }
     }
 
-    pub fn AnalyzeFunction(&mut this, function: *FunctionNode, generic: *mut SemanticGeneric) -> *HIRFunction {
+    pub fn AnalyzeFunction(&mut this, function: *FunctionNode, generic: *mut Generic) -> *HIRFunction {
         if function->generic && generic == null {
-            let _generic = new SemanticGeneric(function);
-            this.scope_manager.Set(function->name, SemanticSymbolKind::Generic, _generic, function);
+            let _generic = new Generic(function);
+            this.scope_manager.Set(function->name, SymbolKind::Generic, _generic, function);
             return null;
         }
 
@@ -340,7 +339,7 @@ class SemanticAnalyzer {
         if generic != null {
             generic->Set(SemanticValue((hir as *HIRDeclaration)->_type));
         } else {
-            this.scope_manager.Set(function->name, SemanticSymbolKind::Function, hir, this.mangling && !function->no_mangle, function);
+            this.scope_manager.Set(function->name, SymbolKind::Function, hir, this.mangling && !function->no_mangle, function);
         }
 
         if function->body != null {
@@ -352,11 +351,11 @@ class SemanticAnalyzer {
         } return hir;
     }
 
-    fn AnalyzeClassFirstPass(&mut this, _class: *ClassNode, generic: *mut SemanticGeneric) -> Pair<*mut SemanticType, *mut SemanticScope> {
+    fn AnalyzeClassFirstPass(&mut this, _class: *ClassNode, generic: *mut Generic) -> Pair<*mut SemanticType, *mut Scope> {
         if _class->generic && generic == null {
-            let _generic = new SemanticGeneric(_class);
-            let symbol = this.scope_manager.Set(_class->name, SemanticSymbolKind::Generic, _generic, _class);
-            return Pair<*mut SemanticType, *mut SemanticScope>(null, null);
+            let _generic = new Generic(_class);
+            let symbol = this.scope_manager.Set(_class->name, SymbolKind::Generic, _generic, _class);
+            return Pair<*mut SemanticType, *mut Scope>(null, null);
         }
 
         let _type = this.type_manager.Class(_class->name);
@@ -365,36 +364,36 @@ class SemanticAnalyzer {
             this.scope_manager.PushScope(generic->current, true);
             generic->Set(SemanticValue(_type));
         } else {
-            this.scope_manager.Set(_class->name, SemanticSymbolKind::Class, _type, _class);
+            this.scope_manager.Set(_class->name, SymbolKind::Class, _type, _class);
             this.scope_manager.PushScope(_class->name, true);
         }
 
         let scope = this.scope_manager.current;
         this.scope_manager.PopScope();
-        return Pair<*mut SemanticType, *mut SemanticScope>(_type, scope);
+        return Pair<*mut SemanticType, *mut Scope>(_type, scope);
     }
 
-    fn AnalyzeClassSecondPass(&mut this, _type: *mut SemanticType, _class: *ClassNode, scope: *mut SemanticScope) {
+    fn AnalyzeClassSecondPass(&mut this, _type: *mut SemanticType, _class: *ClassNode, scope: *mut Scope) {
         let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
         (this.current_class, this.scope_manager.current) = (_type, scope);
 
         for i in 0.._class->parents.Size() {
             let parent_type = this.ResolveType(_class->parents[i]);
             if parent_type == null { continue; }
-            _type->fields[parent_type->name] = SemanticField(i, parent_type, null, false);
+            _type->fields[parent_type->name] = Field(i, parent_type, null, false);
         }
 
         for i in 0.._class->fields.Size() {
             let field = _class->fields[i];
             let field_type = this.ResolveType(field.right->_type);
             if field_type == null { continue; }
-            _type->fields[field.right->name] = SemanticField(i, field_type, field.right->initializer, field.left);
+            _type->fields[field.right->name] = Field(i, field_type, field.right->initializer, field.left);
         }
 
         (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
     }
 
-    fn AnalyzeClassThirdPass(&mut this, _type: *mut SemanticType, _class: *ClassNode, scope: *mut SemanticScope) {
+    fn AnalyzeClassThirdPass(&mut this, _type: *mut SemanticType, _class: *ClassNode, scope: *mut Scope) {
         let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
         (this.current_class, this.scope_manager.current) = (_type, scope);
 
@@ -402,7 +401,7 @@ class SemanticAnalyzer {
             let function = this.AnalyzeFunction(constructor, null);
 
             if function != null {
-                _type->methods.PushBack(SemanticMethod(constructor->name, function, false, true));
+                _type->methods.PushBack(Method(constructor->name, function, false, true));
             }
         }
 
@@ -410,7 +409,7 @@ class SemanticAnalyzer {
             let function = this.AnalyzeFunction(_class->destructor, null);
 
             if function != null {
-                _type->methods.PushBack(SemanticMethod(_class->destructor->name, function, false, true));
+                _type->methods.PushBack(Method(_class->destructor->name, function, false, true));
             }
         }
 
@@ -420,14 +419,14 @@ class SemanticAnalyzer {
             if function == null { continue; }
 
             if !method.right->generic {
-                _type->methods.PushBack(SemanticMethod(method.right->name, function, _static, method.left));
+                _type->methods.PushBack(Method(method.right->name, function, _static, method.left));
             }
         }
 
         (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
     }
 
-    pub fn AnalyzeClass(&mut this, _class: *ClassNode, generic: *mut SemanticGeneric) -> *SemanticType {
+    pub fn AnalyzeClass(&mut this, _class: *ClassNode, generic: *mut Generic) -> *SemanticType {
         let cache = this.AnalyzeClassFirstPass(_class, generic);
 
         if cache.left != null {
@@ -436,11 +435,11 @@ class SemanticAnalyzer {
         } return cache.left;
     }
 
-    fn AnalyzeStructureFirstPass(&mut this, structure: *StructureNode, generic: *mut SemanticGeneric) -> Pair<*mut SemanticType, *mut SemanticScope> {
+    fn AnalyzeStructureFirstPass(&mut this, structure: *StructureNode, generic: *mut Generic) -> Pair<*mut SemanticType, *mut Scope> {
         if structure->generic && generic == null {
-            let _generic = new SemanticGeneric(structure);
-            this.scope_manager.Set(structure->name, SemanticSymbolKind::Generic, _generic, structure);
-            return Pair<*mut SemanticType, *mut SemanticScope>(null, null);
+            let _generic = new Generic(structure);
+            this.scope_manager.Set(structure->name, SymbolKind::Generic, _generic, structure);
+            return Pair<*mut SemanticType, *mut Scope>(null, null);
         }
 
         let _type = this.type_manager.Structure(structure->name);
@@ -449,16 +448,16 @@ class SemanticAnalyzer {
             this.scope_manager.PushScope(generic->current, true);
             generic->Set(SemanticValue(_type));
         } else {
-            this.scope_manager.Set(structure->name, SemanticSymbolKind::Structure, _type, structure);
+            this.scope_manager.Set(structure->name, SymbolKind::Structure, _type, structure);
             this.scope_manager.PushScope(structure->name, true);
         }
 
         let scope = this.scope_manager.current;
         this.scope_manager.PopScope();
-        return Pair<*mut SemanticType, *mut SemanticScope>(_type, scope);
+        return Pair<*mut SemanticType, *mut Scope>(_type, scope);
     }
 
-    fn AnalyzeStructureSecondPass(&mut this, _type: *mut SemanticType, structure: *StructureNode, scope: *mut SemanticScope) {
+    fn AnalyzeStructureSecondPass(&mut this, _type: *mut SemanticType, structure: *StructureNode, scope: *mut Scope) {
         let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
         (this.current_class, this.scope_manager.current) = (_type, scope);
 
@@ -466,13 +465,13 @@ class SemanticAnalyzer {
             let field = structure->fields[i];
             let field_type = this.ResolveType(field.right->_type);
             if field_type == null { continue; }
-            _type->fields[field.right->name] = SemanticField(i, field_type, field.right->initializer, field.left);
+            _type->fields[field.right->name] = Field(i, field_type, field.right->initializer, field.left);
         }
 
         (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
     }
 
-    fn AnalyzeStructureThirdPass(&mut this, _type: *mut SemanticType, structure: *StructureNode, scope: *mut SemanticScope) {
+    fn AnalyzeStructureThirdPass(&mut this, _type: *mut SemanticType, structure: *StructureNode, scope: *mut Scope) {
         let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
         (this.current_class, this.scope_manager.current) = (_type, scope);
 
@@ -482,14 +481,14 @@ class SemanticAnalyzer {
             if function == null { continue; }
 
             if !method.right->generic {
-                _type->methods.PushBack(SemanticMethod(method.right->name, function, _static, method.left));
+                _type->methods.PushBack(Method(method.right->name, function, _static, method.left));
             }
         }
 
         (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
     }
 
-    pub fn AnalyzeStructure(&mut this, structure: *StructureNode, generic: *mut SemanticGeneric) -> *SemanticType {
+    pub fn AnalyzeStructure(&mut this, structure: *StructureNode, generic: *mut Generic) -> *SemanticType {
         let cache = this.AnalyzeStructureFirstPass(structure, generic);
 
         if cache.left != null {
@@ -508,21 +507,21 @@ class SemanticAnalyzer {
         }
 
         let _type = this.type_manager.Enumeration(enumeration->name, underlying_type);
-        this.scope_manager.Set(enumeration->name, SemanticSymbolKind::Type, _type, enumeration);
+        this.scope_manager.Set(enumeration->name, SymbolKind::Type, _type, enumeration);
         this.scope_manager.PushScope(enumeration->name, true);
 
         for variant in enumeration->variants {
-            this.scope_manager.Set(variant->name, SemanticSymbolKind::Constant, _type, enumeration);
+            this.scope_manager.Set(variant->name, SymbolKind::Constant, _type, enumeration);
         }
 
         this.scope_manager.PopScope();
     }
 
-    fn AnalyzeVariantFirstPass(&mut this, enumeration: *EnumerationNode, generic: *mut SemanticGeneric) -> Pair<*mut SemanticType, *mut SemanticScope> {
+    fn AnalyzeVariantFirstPass(&mut this, enumeration: *EnumerationNode, generic: *mut Generic) -> Pair<*mut SemanticType, *mut Scope> {
         if enumeration->generic && generic == null {
-            let _generic = new SemanticGeneric(enumeration);
-            this.scope_manager.Set(enumeration->name, SemanticSymbolKind::Generic, _generic, enumeration);
-            return Pair<*mut SemanticType, *mut SemanticScope>(null, null);
+            let _generic = new Generic(enumeration);
+            this.scope_manager.Set(enumeration->name, SymbolKind::Generic, _generic, enumeration);
+            return Pair<*mut SemanticType, *mut Scope>(null, null);
         }
 
         let _type = this.type_manager.Variant(enumeration->name);
@@ -531,16 +530,16 @@ class SemanticAnalyzer {
             this.scope_manager.PushScope(generic->current, true);
             generic->Set(SemanticValue(_type));
         } else {
-            this.scope_manager.Set(enumeration->name, SemanticSymbolKind::Variant, _type, enumeration);
+            this.scope_manager.Set(enumeration->name, SymbolKind::Variant, _type, enumeration);
             this.scope_manager.PushScope(enumeration->name, true);
         }
 
         let scope = this.scope_manager.current;
         this.scope_manager.PopScope();
-        return Pair<*mut SemanticType, *mut SemanticScope>(_type, scope);
+        return Pair<*mut SemanticType, *mut Scope>(_type, scope);
     }
 
-    fn AnalyzeVariantSecondPass(&mut this, _type: *mut SemanticType, enumeration: *EnumerationNode, scope: *mut SemanticScope) {
+    fn AnalyzeVariantSecondPass(&mut this, _type: *mut SemanticType, enumeration: *EnumerationNode, scope: *mut Scope) {
         let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
         (this.current_class, this.scope_manager.current) = (_type, scope);
 
@@ -552,7 +551,7 @@ class SemanticAnalyzer {
             }
 
             _type->variants.PushBack(Pair<String, Vector<*SemanticType>>(variant->name, types));
-            this.scope_manager.Set(variant->name, SemanticSymbolKind::Variant, _type, variant);
+            this.scope_manager.Set(variant->name, SymbolKind::Variant, _type, variant);
         }
 
         for variant in enumeration->variants {
@@ -562,7 +561,7 @@ class SemanticAnalyzer {
         (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
     }
 
-    fn AnalyzeVariantThirdPass(&mut this, _type: *mut SemanticType, enumeration: *EnumerationNode, scope: *mut SemanticScope) {
+    fn AnalyzeVariantThirdPass(&mut this, _type: *mut SemanticType, enumeration: *EnumerationNode, scope: *mut Scope) {
         let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
         (this.current_class, this.scope_manager.current) = (_type, scope);
 
@@ -572,14 +571,14 @@ class SemanticAnalyzer {
             if function == null { continue; }
 
             if !method.right->generic {
-                _type->methods.PushBack(SemanticMethod(method.right->name, function, _static, method.left));
+                _type->methods.PushBack(Method(method.right->name, function, _static, method.left));
             }
         }
 
         (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
     }
 
-    pub fn AnalyzeVariant(&mut this, enumeration: *EnumerationNode, generic: *mut SemanticGeneric) -> *SemanticType {
+    pub fn AnalyzeVariant(&mut this, enumeration: *EnumerationNode, generic: *mut Generic) -> *SemanticType {
         let cache = this.AnalyzeVariantFirstPass(enumeration, generic);
 
         if cache.left != null {
@@ -831,11 +830,11 @@ class SemanticAnalyzer {
 
         if is_range {
             let result = SemanticValue(_type, ValueCategory::Place, true);
-            this.scope_manager.Set(_for->variable, SemanticSymbolKind::Variable, result, false, _for);
+            this.scope_manager.Set(_for->variable, SymbolKind::Variable, result, false, _for);
         } else {
             if _type.IsPointer() {
                 let result = SemanticValue(_type.Pointee(), ValueCategory::Place, true);
-                this.scope_manager.Set(_for->variable, SemanticSymbolKind::Variable, result, false, _for);
+                this.scope_manager.Set(_for->variable, SymbolKind::Variable, result, false, _for);
             } else if _type.HasMethods() {
                 let mut values = Vector<SemanticValue>();
                 values.PushBack(SemanticValue(_type, ValueCategory::Place, true));
@@ -846,7 +845,7 @@ class SemanticAnalyzer {
                 let result = this.AnalyzeResolvedCall(candidates, values, _for);
                 if result.Null() { return; }
 
-                this.scope_manager.Set(_for->variable, SemanticSymbolKind::Variable, result, false, _for);
+                this.scope_manager.Set(_for->variable, SymbolKind::Variable, result, false, _for);
             } else {
                 Logger::Log("For loop only supports pointer iterators or classes with 'operator*' operator.", _for, LogSeverity::Error);
                 return;
@@ -945,7 +944,7 @@ class SemanticAnalyzer {
         }
 
         if !value.Null() {
-            this.scope_manager.Set(variable->name, SemanticSymbolKind::Variable, value, false, variable);
+            this.scope_manager.Set(variable->name, SymbolKind::Variable, value, false, variable);
         }
 
         if variable->next != null {
@@ -1113,7 +1112,7 @@ class SemanticAnalyzer {
                 return SemanticValue();
             }
 
-            if symbol->kind == SemanticSymbolKind::Variant {
+            if symbol->kind == SymbolKind::Variant {
                 return SemanticValue(symbol->value.Type());
             } else {
                 return symbol->value;
@@ -1331,8 +1330,8 @@ class SemanticAnalyzer {
                 if type_application->expression->_type == NodeType::PRIMITIVE_TYPE {
                     let primitive_type = type_application->expression as *PrimitiveTypeNode;
 
-                    if this.scope_manager.Has(primitive_type->name, SemanticSymbolKind::Generic) {
-                        let generic = this.scope_manager.Get(primitive_type->name, SemanticSymbolKind::Generic)->generic;
+                    if this.scope_manager.Has(primitive_type->name, SymbolKind::Generic) {
+                        let generic = this.scope_manager.Get(primitive_type->name, SymbolKind::Generic)->generic;
 
                         if generic->node->_type == NodeType::FUNCTION {
                             return this.AnalyzeResolvedCall(generic->Get(types).left.Type(), values, call);
@@ -1349,7 +1348,7 @@ class SemanticAnalyzer {
                     let scope = this.scope_manager.ResolveScopeHalf(resolution, true);
 
                     if scope != null {
-                        let symbol = scope->Get(resolution->identifier->name, SemanticSymbolKind::Generic);
+                        let symbol = scope->Get(resolution->identifier->name, SymbolKind::Generic);
 
                         if symbol != null {
                             return this.AnalyzeResolvedCall(symbol->generic->Get(types).left.Type(), values, call);
@@ -1369,26 +1368,26 @@ class SemanticAnalyzer {
             } return SemanticValue();
         } else {
             let mut state = false;
-            let mut symbol: *SemanticSymbol = null;
+            let mut symbol: *Symbol = null;
 
             if call->expression->_type == NodeType::IDENTIFIER {
                 let identifier = call->expression as *IdentifierNode;
 
-                if this.scope_manager.Has(identifier->name, SemanticSymbolKind::Variant) {
-                    symbol = this.scope_manager.Get(identifier->name, SemanticSymbolKind::Variant);
+                if this.scope_manager.Has(identifier->name, SymbolKind::Variant) {
+                    symbol = this.scope_manager.Get(identifier->name, SymbolKind::Variant);
                 } else {
-                    state = this.scope_manager.Has(identifier->name, SemanticSymbolKind::Variable)
-                        || this.scope_manager.Has(identifier->name, SemanticSymbolKind::Parameter);
+                    state = this.scope_manager.Has(identifier->name, SymbolKind::Variable)
+                        || this.scope_manager.Has(identifier->name, SymbolKind::Parameter);
                 }
             } else if call->expression->_type == NodeType::SCOPE_RESOLUTION {
                 let resolution = call->expression as *ScopeResolutionNode;
                 let scope = this.scope_manager.ResolveScopeHalf(resolution, false);
                 if scope == null { return SemanticValue(); }
 
-                if scope->Has(resolution->identifier->name, SemanticSymbolKind::Variant) {
-                    symbol = scope->Get(resolution->identifier->name, SemanticSymbolKind::Variant);
+                if scope->Has(resolution->identifier->name, SymbolKind::Variant) {
+                    symbol = scope->Get(resolution->identifier->name, SymbolKind::Variant);
                 } else {
-                    state = scope->Has(resolution->identifier->name, SemanticSymbolKind::Variable);
+                    state = scope->Has(resolution->identifier->name, SymbolKind::Variable);
                 }
             }
 
@@ -2033,8 +2032,8 @@ class SemanticAnalyzer {
             let mut name = node->expression->_type == NodeType::IDENTIFIER ?
                 (node->expression as *IdentifierNode)->name : (node->expression as *PrimitiveTypeNode)->name;
 
-            if this.scope_manager.Has(name, SemanticSymbolKind::Generic) {
-                let generic = this.scope_manager.Get(name, SemanticSymbolKind::Generic)->generic;
+            if this.scope_manager.Has(name, SymbolKind::Generic) {
+                let generic = this.scope_manager.Get(name, SymbolKind::Generic)->generic;
 
                 if generic->node->_type == NodeType::FUNCTION {
                     return generic->Get(types).left;
@@ -2053,7 +2052,7 @@ class SemanticAnalyzer {
             let resolution = node->expression as *ScopeResolutionNode;
             let scope = this.scope_manager.ResolveScopeHalf(resolution, true);
             if scope == null { return SemanticValue(); }
-            let symbol = scope->Get(resolution->identifier->name, SemanticSymbolKind::Generic);
+            let symbol = scope->Get(resolution->identifier->name, SymbolKind::Generic);
             if symbol == null { return SemanticValue(); }
             return symbol->generic->Get(types).left;
         } else {
@@ -2104,13 +2103,13 @@ class SemanticAnalyzer {
 
                 return this.type_manager.Float(width);
             } else {
-                if this.scope_manager.Has(primitive_type->name, SemanticSymbolKind::Type) {
-                    return this.scope_manager.Get(primitive_type->name, SemanticSymbolKind::Type)->value.Type();
-                } else if this.scope_manager.Has(primitive_type->name, SemanticSymbolKind::Class) {
-                    return this.scope_manager.Get(primitive_type->name, SemanticSymbolKind::Class)->value.Type();
-                } else if this.scope_manager.Has(primitive_type->name, SemanticSymbolKind::Structure) {
-                    return this.scope_manager.Get(primitive_type->name, SemanticSymbolKind::Structure)->value.Type();
-                } else if this.scope_manager.Has(primitive_type->name, SemanticSymbolKind::Generic) {
+                if this.scope_manager.Has(primitive_type->name, SymbolKind::Type) {
+                    return this.scope_manager.Get(primitive_type->name, SymbolKind::Type)->value.Type();
+                } else if this.scope_manager.Has(primitive_type->name, SymbolKind::Class) {
+                    return this.scope_manager.Get(primitive_type->name, SymbolKind::Class)->value.Type();
+                } else if this.scope_manager.Has(primitive_type->name, SymbolKind::Structure) {
+                    return this.scope_manager.Get(primitive_type->name, SymbolKind::Structure)->value.Type();
+                } else if this.scope_manager.Has(primitive_type->name, SymbolKind::Generic) {
                     Logger::Log("Generic type '" + primitive_type->name + "' requires parameters.", _type, LogSeverity::Error);
                 } else {
                     Logger::Log("Type '" + primitive_type->name + "' not found.", _type, LogSeverity::Error);
@@ -2129,8 +2128,8 @@ class SemanticAnalyzer {
             if type_application->expression->_type == NodeType::PRIMITIVE_TYPE {
                 let primitive_type = type_application->expression as *PrimitiveTypeNode;
 
-                if this.scope_manager.Has(primitive_type->name, SemanticSymbolKind::Generic) {
-                    return this.scope_manager.Get(primitive_type->name, SemanticSymbolKind::Generic)->generic->Get(types).left.Type();
+                if this.scope_manager.Has(primitive_type->name, SymbolKind::Generic) {
+                    return this.scope_manager.Get(primitive_type->name, SymbolKind::Generic)->generic->Get(types).left.Type();
                 } else {
                     if this.scope_manager.Has(primitive_type->name) {
                         Logger::Log("Type '" + primitive_type->name + "' is not generic.", _type, LogSeverity::Error);

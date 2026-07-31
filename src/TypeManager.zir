@@ -17,63 +17,63 @@
 #[include "std/io", "std/str", "std/vec", "src/Types.zir" : *]
 
 class TypeManager {
-    types: Vector<*QualifiedType>,
-    void_type: *QualifiedType = null,
-    bool_type: *QualifiedType = null,
-    char_type: *QualifiedType = null,
-    integer_literal_type: *QualifiedType = null,
-    float_literal_type: *QualifiedType = null,
-    signed_types: Map<u32, *QualifiedType>,
-    unsigned_types: Map<u32, *QualifiedType>,
-    size_types: Map<bool, *QualifiedType>,
-    float_types: Map<u32, *QualifiedType>,
-    pointer_types: Map<u64, *QualifiedType>,
-    reference_types: Map<u64, *QualifiedType>;
+    types: Vector<*SemanticType>,
+    void_type: *SemanticType = null,
+    bool_type: *SemanticType = null,
+    char_type: *SemanticType = null,
+    integer_literal_type: *SemanticType = null,
+    float_literal_type: *SemanticType = null,
+    signed_types: Map<u32, *SemanticType>,
+    unsigned_types: Map<u32, *SemanticType>,
+    size_types: Map<bool, *SemanticType>,
+    float_types: Map<u32, *SemanticType>,
+    pointer_types: Map<u64, *SemanticType>,
+    reference_types: Map<u64, *SemanticType>;
 
     ~TypeManager(&mut this) {
-        WriteLine("Disposing " + String::FromInteger(this.types.Size() as u64) + " types (" + String::FromFloat((this.types.Size() * sizeof(QualifiedType)) as f64 / 1024.0 / 1024.0) + " MB)...");
+        WriteLine("Disposing " + String::FromInteger(this.types.Size() as u64) + " types (" + String::FromFloat((this.types.Size() * sizeof(SemanticType)) as f64 / 1024.0 / 1024.0) + " MB)...");
 
         for _type in this.types {
             delete _type;
         }
     }
 
-    pub fn Void(&mut this) -> *QualifiedType {
+    pub fn Void(&mut this) -> *SemanticType {
         if this.void_type == null {
-            this.void_type = new QualifiedType(TypeKind::Void, LLVMVoidTypeInContext(compiler->context));
+            this.void_type = new SemanticType(TypeKind::Void);
             this.types.PushBack(this.void_type);
         } return this.void_type;
     }
 
-    pub fn Boolean(&mut this) -> *QualifiedType {
+    pub fn Boolean(&mut this) -> *SemanticType {
         if this.bool_type != null {
             return this.bool_type;
         } else {
-            let _type = new QualifiedType(TypeKind::Boolean, LLVMInt1TypeInContext(compiler->context));
+            let _type = new SemanticType(TypeKind::Boolean);
             this.types.PushBack(_type);
             (this.bool_type, _type->width) = (_type, 1);
             return _type;
         }
     }
 
-    pub fn Character(&mut this) -> *QualifiedType {
+    pub fn Character(&mut this) -> *SemanticType {
         if this.char_type != null {
             return this.char_type;
         } else {
-            let _type = new QualifiedType(TypeKind::Character, LLVMInt32TypeInContext(compiler->context));
+            let _type = new SemanticType(TypeKind::Character);
             this.types.PushBack(_type);
             (this.char_type, _type->width) = (_type, 32);
             return _type;
         }
     }
 
-    pub fn Integer(&mut this, width: u32, signed: bool) -> *QualifiedType {
+    pub fn Integer(&mut this, width: u32, signed: bool) -> *SemanticType {
         if signed && this.signed_types.Has(width) {
             return this.signed_types[width];
         } else if !signed && this.unsigned_types.Has(width) {
             return this.unsigned_types[width];
         } else {
-            let _type = new QualifiedType(TypeKind::Integer, LLVMIntTypeInContext(compiler->context, width));
+            let _type = new SemanticType(TypeKind::Integer);
             this.types.PushBack(_type);
             (_type->width, _type->signed) = (width, signed);
 
@@ -85,142 +85,126 @@ class TypeManager {
         }
     }
 
-    pub fn IntegerPointer(&mut this, signed: bool) -> *QualifiedType {
+    pub fn IntegerPointer(&mut this, signed: bool) -> *SemanticType {
         if this.size_types.Has(signed) {
             return this.size_types[signed];
         } else {
-            let _type = new QualifiedType(TypeKind::Integer, LLVMIntPtrTypeInContext(compiler->context, compiler->target->layout));
+            let _type = new SemanticType(TypeKind::Integer);
             this.types.PushBack(_type);
             (this.size_types[signed], _type->signed) = (_type, signed);
             return _type;
         }
     }
 
-    pub fn IntegerLiteral(&mut this) -> *QualifiedType {
+    pub fn IntegerLiteral(&mut this) -> *SemanticType {
         if this.integer_literal_type != null {
             return this.integer_literal_type;
         } else {
-            let _type = new QualifiedType(TypeKind::IntegerLiteral, null);
+            let _type = new SemanticType(TypeKind::IntegerLiteral);
             this.types.PushBack(_type);
             (this.integer_literal_type, _type->width, _type->signed) = (_type, 32, true);
             return _type;
         }
     }
 
-    pub fn Float(&mut this, width: u32) -> *QualifiedType {
+    pub fn Float(&mut this, width: u32) -> *SemanticType {
         if this.float_types.Has(width) {
             return this.float_types[width];
         } else {
-            let _type = new QualifiedType(TypeKind::Float, width == 64 ? LLVMDoubleTypeInContext(compiler->context) : LLVMFloatTypeInContext(compiler->context));
+            let _type = new SemanticType(TypeKind::Float);
             this.types.PushBack(_type);
             (this.float_types[width], _type->width) = (_type, width);
             return _type;
         }
     }
 
-    pub fn FloatLiteral(&mut this) -> *QualifiedType {
+    pub fn FloatLiteral(&mut this) -> *SemanticType {
         if this.float_literal_type != null {
             return this.float_literal_type;
         } else {
-            let _type = new QualifiedType(TypeKind::FloatLiteral, null);
+            let _type = new SemanticType(TypeKind::FloatLiteral);
             this.types.PushBack(_type);
             (this.float_literal_type, _type->width) = (_type, 64);
             return _type;
         }
     }
 
-    pub fn Function(&mut this, value: LLVMTypeRef, params: &Vector<ParameterType>, _return: &ReturnType) -> *mut QualifiedType {
-        let _type = new QualifiedType(TypeKind::Function, value);
+    pub fn Function(&mut this, params: &Vector<*SemanticType>, _return: *SemanticType) -> *mut SemanticType {
+        let _type = new SemanticType(TypeKind::Function);
         this.types.PushBack(_type);
         (_type->params, _type->_return) = (params, _return);
         return _type;
     }
 
-    pub fn PackSpecializedFunction(&mut this, value: LLVMTypeRef, params: &Vector<ParameterType>, _return: &ReturnType, declaration: *FunctionNode, pack_scope: *mut Scope) -> *mut QualifiedType {
-        let _type = new QualifiedType(TypeKind::PackSpecializedFunction, value);
-        this.types.PushBack(_type);
-        (_type->params, _type->_return, _type->name, _type->pack_name, _type->declaration, _type->pack_scope) = (params, _return, declaration->name, declaration->_type->pack_name, declaration, pack_scope);
-        return _type;
-    }
-
-    pub fn Function(&mut this, value: LLVMTypeRef, params: &Vector<ParameterType>, _return: &ReturnType, declaration: *FunctionNode, pack_scope: *mut Scope) -> *mut QualifiedType {
-        let _type = new QualifiedType(TypeKind::Function, value);
-        this.types.PushBack(_type);
-        (_type->params, _type->_return, _type->name, _type->pack_name, _type->declaration, _type->pack_scope) = (params, _return, declaration->name, declaration->_type->pack_name, declaration, pack_scope);
-        return _type;
-    }
-
-    pub fn Function(&mut this, value: LLVMTypeRef, params: &Vector<ParameterType>, _return: &ReturnType, name: &String) -> *mut QualifiedType {
-        let _type = new QualifiedType(TypeKind::Function, value);
+    pub fn Function(&mut this, params: &Vector<*SemanticType>, _return: *SemanticType, name: &String) -> *mut SemanticType {
+        let _type = new SemanticType(TypeKind::Function);
         this.types.PushBack(_type);
         (_type->params, _type->_return, _type->name) = (params, _return, name);
         return _type;
     }
 
-    pub fn Class(&mut this, value: LLVMTypeRef, name: &String) -> *mut QualifiedType {
-        let _type = new QualifiedType(TypeKind::Class, value);
+    pub fn Class(&mut this, name: &String) -> *mut SemanticType {
+        let _type = new SemanticType(TypeKind::Class);
         this.types.PushBack(_type);
         _type->name = name;
         return _type;
     }
 
-    pub fn Structure(&mut this, value: LLVMTypeRef, name: &String) -> *mut QualifiedType {
-        let _type = new QualifiedType(TypeKind::Structure, value);
+    pub fn Structure(&mut this, name: &String) -> *mut SemanticType {
+        let _type = new SemanticType(TypeKind::Structure);
         this.types.PushBack(_type);
         _type->name = name;
         return _type;
     }
 
-    pub fn Enumeration(&mut this, underlying_type: *QualifiedType, name: &String) -> *QualifiedType {
-        let _type = new QualifiedType(TypeKind::Enumeration, underlying_type->Value());
+    pub fn Enumeration(&mut this, name: &String, underlying_type: *SemanticType) -> *SemanticType {
+        let _type = new SemanticType(TypeKind::Enumeration);
         this.types.PushBack(_type);
         (_type->width, _type->signed, _type->name) = (underlying_type->width, underlying_type->signed, name);
         return _type;
     }
 
-    pub fn Variant(&mut this, value: LLVMTypeRef, name: &String) -> *mut QualifiedType {
-        let _type = new QualifiedType(TypeKind::Variant, value);
+    pub fn Variant(&mut this, name: &String) -> *mut SemanticType {
+        let _type = new SemanticType(TypeKind::Variant);
         this.types.PushBack(_type);
         _type->name = name;
         return _type;
     }
 
-    pub fn Pointer(&mut this, pointee: *QualifiedType, mutable: bool) -> *QualifiedType {
+    pub fn Pointer(&mut this, pointee: *SemanticType, mutable: bool) -> *SemanticType {
         let key = (pointee as u64) ^ (mutable ? 1 : 0);
 
         if this.pointer_types.Has(key) {
             return this.pointer_types[key];
         } else {
-            let _type = new QualifiedType(TypeKind::Pointer, LLVMPointerType(pointee->Value(), 0));
+            let _type = new SemanticType(TypeKind::Pointer);
             this.types.PushBack(_type);
             (this.pointer_types[key], _type->mutable, _type->pointee) = (_type, mutable, pointee);
             return _type;
         }
     }
 
-    pub fn NullPointer(&mut this) -> *QualifiedType {
+    pub fn NullPointer(&mut this) -> *SemanticType {
         return this.Pointer(this.Void(), false);
     }
 
-    pub fn Reference(&mut this, pointee: *QualifiedType, mutable: bool) -> *QualifiedType {
+    pub fn Reference(&mut this, pointee: *SemanticType, mutable: bool) -> *SemanticType {
         let key = (pointee as u64) ^ (mutable ? 1 : 0);
 
         if this.reference_types.Has(key) {
             return this.reference_types[key];
         } else {
-            let _type = new QualifiedType(TypeKind::Reference, LLVMPointerType(pointee->Value(), 0));
+            let _type = new SemanticType(TypeKind::Reference);
             this.types.PushBack(_type);
             (this.reference_types[key], _type->mutable, _type->pointee) = (_type, mutable, pointee);
             return _type;
         }
     }
 
-    pub fn Array(&mut this, pointee: *QualifiedType, length: usize, mutable: bool) -> *QualifiedType {
-        let _type = new QualifiedType(TypeKind::Array, LLVMArrayType2(pointee->Value(), length as u64));
+    pub fn Array(&mut this, pointee: *SemanticType, length: usize, mutable: bool) -> *SemanticType {
+        let _type = new SemanticType(TypeKind::Array);
         this.types.PushBack(_type);
         (_type->mutable, _type->length, _type->pointee) = (mutable, length, pointee);
         return _type;
     }
 }
-
-#[include "src/Compiler.zir" : *]

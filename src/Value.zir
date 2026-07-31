@@ -14,233 +14,133 @@
  * limitations under the License.
  */
 
-#[include "std/str", "vendor/llvm-c/Core.zir", "src/Types.zir" : *]
+#[include "std/str", "src/Types.zir" : *]
 
-const F32_MAX: f64 = 3.40282347e+38;
-const F64_MAX: f64 = 1.7976931348623157e+308;
+enum ValueCategory: u8 {
+    Place, Value
+}
 
-class QualifiedValue {
-    value: LLVMValueRef = null, _type: *QualifiedType = null,
-    pub instance: LLVMValueRef = null, pub instance_type: *QualifiedType = null,
-    lvalue: bool = false, pub temporary: bool = false,
+class SemanticValue {
+    _type: *SemanticType = null,
+    category: ValueCategory = ValueCategory::Value,
+    mutable: bool = false,
+    deferred: *Node = null;
 
-    deferred_integer: u64 = 0, deferred_float: f64 = 0.0,
-    deferred_negative: bool = false, deferred_bitpattern: bool = false,
-    deferred_node: *Node = null;
+    SemanticValue(&mut this) {}
 
-    QualifiedValue(&mut this, value: LLVMValueRef, _type: *QualifiedType) {
-        (this.value, this._type) = (value, _type);
+    SemanticValue(&mut this, _type: *SemanticType) {
+        this._type = _type;
     }
 
-    QualifiedValue(&mut this, value: LLVMValueRef, _type: *QualifiedType, instance: &QualifiedValue) {
-        (this.value, this._type, this.instance, this.instance_type) = (value, _type, instance.value, instance._type);
+    SemanticValue(&mut this, _type: *SemanticType, category: ValueCategory, mutable: bool) {
+        (this._type, this.category, this.mutable) = (_type, category, mutable);
     }
 
-    QualifiedValue(&mut this, value: &QualifiedValue, instance: &QualifiedValue) {
-        (this.value, this._type, this.instance, this.instance_type) = (value.value, value._type, instance.value, instance._type);
+    SemanticValue(&mut this, _type: *SemanticType, category: ValueCategory) {
+        (this._type, this.category) = (_type, category);
     }
 
-    QualifiedValue(&mut this, value: LLVMValueRef, _type: *QualifiedType, lvalue: bool, temporary: bool) {
-        (this.value, this._type, this.lvalue, this.temporary) = (value, _type, lvalue, temporary);
-    }
-
-    QualifiedValue(&mut this, value: LLVMValueRef, _type: *QualifiedType, lvalue: bool) {
-        (this.value, this._type, this.lvalue) = (value, _type, lvalue);
-    }
-
-    QualifiedValue(&mut this, _type: *QualifiedType, integer: u64) {
-        (this._type, this.deferred_integer) = (_type, integer);
-    }
-
-    QualifiedValue(&mut this, _type: *QualifiedType, integer: u64, negative: bool) {
-        (this._type, this.deferred_integer, this.deferred_negative) = (_type, integer, negative);
-    }
-
-    QualifiedValue(&mut this, _type: *QualifiedType, integer: u64, negative: bool, bitpattern: bool) {
-        (this._type, this.deferred_integer, this.deferred_negative, this.deferred_bitpattern) = (_type, integer, negative, bitpattern);
-    }
-
-    QualifiedValue(&mut this, _type: *QualifiedType, float: f64) {
-        (this._type, this.deferred_float) = (_type, float);
-    }
-
-    QualifiedValue(&mut this, _type: *QualifiedType, node: *Node) {
-        (this._type, this.deferred_node) = (_type, node);
+    SemanticValue(&mut this, _type: *SemanticType, deferred: *Node) {
+        (this._type, this.deferred) = (_type, deferred);
     }
 
     pub fn Null(&this) -> bool {
-        return this.value == null && this._type == null;
+        return this._type == null;
     }
 
-    pub fn Value(&this) -> LLVMValueRef {
-        if this.value == null {
-            Logger::Log("QualifiedValue", "Null value!", LogSeverity::Fatal);
-        } return this.value;
-    }
-
-    pub fn Type(&this) -> &QualifiedType {
-        if this._type == null {
-            Logger::Log("QualifiedValue", "Null type!", LogSeverity::Fatal);
+    pub fn Type(&this) -> &SemanticType {
+        if this.Null() {
+            Logger::Log("SemanticValue", "Null type!", LogSeverity::Fatal);
         } return this._type;
     }
 
-    pub fn Materialize(&this, target: &QualifiedType) -> QualifiedValue {
-        if this.deferred_node != null {
-            return compiler->CompileExpression(this.deferred_node, target, true).Materialize(target);
+    pub fn IsPlace(&this) -> bool {
+        return this.category == ValueCategory::Place;
+    }
+
+    pub fn IsValue(&this) -> bool {
+        return this.category == ValueCategory::Value;
+    }
+
+    pub fn IsMutable(&this) -> bool {
+        return this.mutable;
+    }
+
+    pub fn WithType(&this, _type: *SemanticType) -> SemanticValue {
+        return SemanticValue(_type, this.category, this.mutable);
+    }
+
+    pub fn WithCategory(&this, category: ValueCategory) -> SemanticValue {
+        return SemanticValue(this._type, category, this.mutable);
+    }
+
+    pub fn WithCategoryAndMutability(&this, category: ValueCategory, mutable: bool) -> SemanticValue {
+        return SemanticValue(this._type, category, mutable);
+    }
+
+    pub fn WithMutability(&this, mutable: bool) -> SemanticValue {
+        return SemanticValue(this._type, this.category, mutable);
+    }
+
+    pub fn Materialize(&this, target: &SemanticType) -> SemanticValue {
+        if this.deferred != null {
+            return analyzer->AnalyzeExpression(this.deferred, target).Materialize(target);
+        } else if this.Null() {
+            return this;
         }
 
         if this.Type().IsInteger() && this.Type().IsLiteral() && target.IsPointer() {
             if !(target.IsReference() && target.Pointee().IsInteger()) {
-                return this.Materialize(compiler->type_manager.IntegerPointer(false));
+                return SemanticValue(analyzer->type_manager.IntegerPointer(false));
             }
         }
 
-        if this.Type().IsInteger() && this.Type().IsLiteral() && target.IsInteger() {
-            let mut value = this.deferred_integer;
-            let width = target.Width() as u64;
-            let mut overflow = false;
-
-            if width < 64 {
-                let signed_limit = 1 << (width - 1);
-                let unsigned_limit = 1 << width;
-
-                if this.deferred_bitpattern {
-                    overflow = value >= unsigned_limit;
-                } else if this.deferred_negative {
-                    overflow = target.IsSigned() ? value > signed_limit : value >= unsigned_limit;
+        if this.Type().IsLiteral() {
+            if this.Type().IsInteger() {
+                if !target.IsInteger() || target.IsLiteral() {
+                    return SemanticValue(analyzer->type_manager.Integer(32, true));
                 } else {
-                    overflow = target.IsSigned() ? value >= signed_limit : value >= unsigned_limit;
+                    return SemanticValue(target);
                 }
-
-                if !overflow && this.deferred_negative {
-                    value = (!value + 1) & (unsigned_limit - 1);
-                }
+            } else if !target.IsFloat() || target.IsLiteral() {
+                return SemanticValue(analyzer->type_manager.Float(64));
             } else {
-                if !this.deferred_bitpattern && this.deferred_negative && target.IsSigned() {
-                    overflow = value > (1 << 63);
-                }
-
-                if !overflow && this.deferred_negative {
-                    value = !value + 1;
-                }
-            }
-
-            if overflow {
-                Logger::Log("Integer literal '" + (this.deferred_negative ? "-" : "").ToString() + String::FromInteger(this.deferred_integer) + "' overflows target type '" + target.ToString() + "'.", LogSeverity::Error);
-                value = 0;
-            }
-
-            return QualifiedValue(LLVMConstInt(target.Value(), value, target.IsSigned() ? 1 : 0), target);
-        } else if this.Type().IsFloat() && this.Type().IsLiteral() && target.IsFloat() {
-            let mut value = this.deferred_float;
-
-            if (value < 0.0 ? -value : value) > (target.Width() == 32 ? F32_MAX : F64_MAX) {
-                Logger::Log("Float literal '" + String::FromFloat(value) + "' overflows target type '" + target.ToString() + "'.", LogSeverity::Error);
-                value = 0.0;
-            }
-
-            return QualifiedValue(LLVMConstReal(target.Value(), value), target);
-        } else {
-            return this;
-        }
-    }
-
-    pub fn MaterializeWithFallback(&this, target: &QualifiedType) -> QualifiedValue {
-        if this.deferred_node != null {
-            return compiler->CompileExpression(this.deferred_node, target, true).MaterializeWithFallback(target);
-        }
-
-        let value = this.Materialize(target);
-
-        if value.Type().IsLiteral() {
-            return value.Materialize();
-        } else {
-            return value;
-        }
-    }
-
-    pub fn Materialize(&this) -> QualifiedValue {
-        if this.deferred_node != null {
-            return compiler->CompileExpression(this.deferred_node, null, true).Materialize();
-        }
-
-        if this.Type().kind == TypeKind::IntegerLiteral {
-            return this.Materialize(compiler->type_manager.Integer(32, true));
-        } else if this.Type().kind == TypeKind::FloatLiteral {
-            return this.Materialize(compiler->type_manager.Float(64));
-        } else {
-            return this;
-        }
-    }
-
-    pub fn Load(&this, args...) -> QualifiedValue {
-        if LLVMIsAGlobalVariable(this.Value()) != null {
-            if LLVMIsGlobalConstant(this.Value()) != 0 && !this.Type().Pointee().HasFields() && !this.Type().Pointee().IsPointer() {
-                return QualifiedValue(LLVMGetInitializer(this.Value()), this.Type().Pointee()); // args...
-            }
-        }
-
-        return QualifiedValue(LLVMBuildLoad2(compiler->builder, this.Type().Pointee().Value(), this.Value(), ""), this.Type().Pointee(), args...);
-    }
-
-    pub fn IsLValue(&this) -> bool { return this.lvalue; }
-    pub fn IsRValue(&this) -> bool { return !this.lvalue; }
-
-    pub fn ToRValue(&this) -> QualifiedValue {
-        if this.IsLValue() {
-            if this.Type().Pointee().IsArray() {
-                let _type = compiler->type_manager.Pointer(this.Type().Pointee().Element(), this.Type().IsMutable());
-                return QualifiedValue(LLVMBuildBitCast(compiler->builder, this.Value(), _type->Value(), ""), _type);
-            } else {
-                return this.Load();
+                return SemanticValue(target);
             }
         } return this;
     }
 
-    pub fn ToRValueType(&this) -> &QualifiedType {
-        if this.IsLValue() {
-            if this.Type().Pointee().IsArray() {
-                return compiler->type_manager.Pointer(this.Type().Pointee().Element(), this.Type().IsMutable());
-            } else {
-                return this.Type().Pointee();
-            }
-        } return this.Type();
-    }
-
-    pub fn MakeLValue(&this) -> QualifiedValue {
-        return QualifiedValue(this.value, this._type, true);
-    }
-
-    pub fn MakeCompatible(&this, target: &QualifiedType) -> QualifiedValue {
-        if target.IsPointer() && this.Type().IsPointer() {
-            if target.Pointee().IsClass() && this.Type().Pointee().IsClass() {
-                let fields = this.Type().Pointee().Fields();
-
-                for i in 0..fields.Size() {
-                    if fields[i].left == target.Pointee().name {
-                        let mut value_ref = this.Value();
-
-                        if i != 0 {
-                            value_ref = LLVMBuildStructGEP2(compiler->builder, this.Type().Pointee().Value(), this.Value(), i as u32, "");
-                        }
-
-                        return QualifiedValue(LLVMBuildBitCast(compiler->builder, value_ref, target.Value(), ""), target);
-                    }
-                }
-            }
+    pub fn Materialize(&this) -> SemanticValue {
+        if this.deferred != null {
+            return analyzer->AnalyzeExpression(this.deferred, null).Materialize();
+        } else if !this.Null() && this.Type().IsLiteral() {
+            return SemanticValue(this.Type().IsInteger() ? analyzer->type_manager.Integer(32, true) : analyzer->type_manager.Float(64));
         } return this;
     }
 
-    pub fn ToString(&this) -> String {
-        if this.value != null {
-            let mut result = String();
-            let string = LLVMPrintValueToString(this.value);
-            result += string;
-            LLVMDisposeMessage(string);
-            return result;
-        } else {
-            Logger::Log("QualifiedValue", "Null value!", LogSeverity::Fatal);
-            return String("");
-        }
+    pub fn ExplicitDereference(&this) -> SemanticValue {
+        if !this.Type().IsPointer() {
+            Logger::Log("SemanticValue", "Explicit dereference called on non-pointer type!", LogSeverity::Fatal);
+        } return SemanticValue(this.Type().Pointee(), ValueCategory::Place, this.Type().IsMutable());
+    }
+
+    pub fn ImplicitDereference(&this) -> SemanticValue {
+        if !this.Null() && this.Type().IsReference() {
+            return SemanticValue(this.Type().Pointee(), ValueCategory::Place, this.Type().IsMutable());
+        } return this;
+    }
+
+    pub fn ExplicitAddressOf(&this) -> SemanticValue {
+        if !this.IsPlace() {
+            Logger::Log("SemanticValue", "Explicit address-of called on non-place value!", LogSeverity::Fatal);
+        } return SemanticValue(analyzer->type_manager.Reference(this.Type(), this.IsMutable()));
+    }
+
+    pub fn ImplicitAddressOf(&this) -> SemanticValue {
+        if !this.Null() && this.IsPlace() {
+            return SemanticValue(analyzer->type_manager.Reference(this.Type(), this.IsMutable()));
+        } return this;
     }
 }
+
+#[include "src/SemanticAnalyzer.zir" : *]

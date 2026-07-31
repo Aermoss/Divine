@@ -18,7 +18,7 @@
     "src/Scope.zir", "src/Symbol.zir", "src/Value.zir", "src/Types.zir" : *]
 
 class Generic {
-    cache: Map<String, Pair<SemanticValue, *mut Scope>>,
+    cache: Map<String, Pair<*HIRDeclaration, *mut Scope>>,
 
     pub node: *Node,
     pub scope: *mut Scope,
@@ -49,24 +49,23 @@ class Generic {
         }
     }
 
-    pub fn Set(&mut this, value: SemanticValue) {
+    pub fn Set(&mut this, declaration: *HIRDeclaration) {
         if this.current.Empty() {
             Logger::Log("Generic", "Not in a generic compilation!", LogSeverity::Fatal);
         }
 
-        let scope = !value.Null() ? analyzer->scope_manager.current : null;
-        this.cache[this.current] = Pair<SemanticValue, *mut Scope>(value, scope);
+        this.cache[this.current] = Pair<*HIRDeclaration, *mut Scope>(declaration, analyzer->scope_manager.current);
         this.current = "";
     }
 
-    pub fn Get(&mut this, types: &Vector<*SemanticType>) -> Pair<SemanticValue, *mut Scope> {
+    pub fn Get(&mut this, types: &Vector<*SemanticType>) -> Pair<*HIRDeclaration, *mut Scope> {
         if !this.current.Empty() {
             Logger::Log("Generic", "Nested generics are not supported!", LogSeverity::Fatal);
         }
 
         if types.Size() != this.type_names.Size() {
             Logger::Log("Generic", "Generic type parameter count mismatch.", LogSeverity::Error);
-            return Pair<SemanticValue, *mut Scope>(SemanticValue(), null);
+            return Pair<*HIRDeclaration, *mut Scope>(null, null);
         }
 
         let (prev_mangling, prev_unsafe) = (analyzer->mangling, analyzer->_unsafe);
@@ -104,16 +103,14 @@ class Generic {
             analyzer->scope_manager.Set(this.type_names[i], SymbolKind::Type, this.types[i], this.node);
         }
 
-        let mut result: SemanticValue;
-
         if this.node->_type == NodeType::CLASS {
-            result = SemanticValue(analyzer->AnalyzeClass(this.node as *ClassNode, this));
+            analyzer->AnalyzeClass(this.node as *ClassNode, this);
         } else if this.node->_type == NodeType::STRUCTURE {
-            result = SemanticValue(analyzer->AnalyzeStructure(this.node as *StructureNode, this));
+            analyzer->AnalyzeStructure(this.node as *StructureNode, this);
         } else if this.node->_type == NodeType::ENUMERATION {
-            result = SemanticValue(analyzer->AnalyzeVariant(this.node as *EnumerationNode, this));
+            analyzer->AnalyzeVariant(this.node as *EnumerationNode, this);
         } else {
-            result = SemanticValue((analyzer->AnalyzeFunction(this.node as *FunctionNode, this) as *HIRDeclaration)->_type);
+            analyzer->AnalyzeFunction(this.node as *FunctionNode, this);
         }
 
         this.types.Clear();

@@ -15,7 +15,7 @@
  */
 
 #[include "std/str", "std/vec", "std/map", "std/pair", "std/arena",
-    "src/ScopeManager.zir", "src/Scope.zir", "src/Symbol.zir", "src/Generic.zir", "src/TypeManager.zir", "src/Types.zir", "src/Value.zir",
+    "src/ScopeManager.zir", "src/Scope.zir", "src/Symbol.zir", "src/Generic.zir", "src/TypeManager.zir", "src/Types.zir",
         "src/Tokens.zir", "src/Nodes.zir", "src/HIR.zir", "src/Logger.zir" : *]
 
 class SemanticForward {
@@ -152,11 +152,11 @@ class SemanticAnalyzer {
                     continue;
                 }
 
-                let mut values = Vector<SemanticValue>();
+                let mut values = Vector<*HIRExpression>();
 
                 for argument in constructor->arguments {
                     let value = this.AnalyzeExpression(argument);
-                    if value.Null() { continue; }
+                    if value == null { continue; }
                     values.PushBack(value);
                 }
             }
@@ -282,6 +282,64 @@ class SemanticAnalyzer {
         } return true;
     }
 
+    pub fn Materialize(&mut this, _expression: *HIRExpression, target: &SemanticType) -> *HIRExpression {
+        unsafe {
+            let expression = _expression as *mut HIRExpression;
+        }
+
+        if expression == null {
+            return expression;
+        } else if expression->deferred != null {
+            return this.Materialize(this.AnalyzeExpression(expression->deferred, target), target);
+        }
+
+        if expression->_type->IsInteger() && expression->_type->IsLiteral() && target.IsPointer() {
+            if !(target.IsReference() && target.Pointee().IsInteger()) {
+                expression->_type = this.type_manager.IntegerPointer(false);
+            }
+        }
+
+        if expression->_type->IsLiteral() {
+            if expression->_type->IsInteger() {
+                if !target.IsInteger() || target.IsLiteral() {
+                    expression->_type = this.type_manager.Integer(32, true);
+                } else {
+                    expression->_type = target;
+                }
+            } else if !target.IsFloat() || target.IsLiteral() {
+                expression->_type = this.type_manager.Float(64);
+            } else {
+                expression->_type = target;
+            }
+        } return expression;
+    }
+
+    fn Materialize(&mut this, _expression: *HIRExpression) -> *HIRExpression {
+        unsafe {
+            let expression = _expression as *mut HIRExpression;
+        }
+
+        if expression != null {
+            if expression->deferred != null {
+                return this.Materialize(this.AnalyzeExpression(expression->deferred, null));
+            } else if expression->_type->IsLiteral() {
+                expression->_type = expression->_type->IsInteger() ? this.type_manager.Integer(32, true) : this.type_manager.Float(64);
+            }
+        } return expression;
+    }
+
+    fn ImplicitDereference(&mut this, expression: *HIRExpression) -> *HIRExpression {
+        if expression != null && expression->_type->IsReference() {
+            return this.arena.New<HIRDereference>(expression->_type->Pointee(), HIRExpressionCategory::Place, expression->_type->IsMutable());
+        } return expression;
+    }
+
+    fn ImplicitAddressOf(&mut this, expression: *HIRExpression) -> *HIRExpression {
+        if expression != null && expression->category == HIRExpressionCategory::Place {
+            return this.arena.New<HIRAddressOf>(this.type_manager.Reference(expression->_type, expression->mutable));
+        } return expression;
+    }
+
     fn AnalyzeConstant(&mut this, constant: *ConstantNode) {
         let _type = this.ResolveType(constant->_type);
         let declaration = this.arena.New<HIRConstant>(constant->name, _type, null);
@@ -296,13 +354,10 @@ class SemanticAnalyzer {
         this.module->declarations.PushBack(declaration);
 
         if _static->alignment != null {
-            let alignment = this.AnalyzeExpression(_static->alignment).Materialize(this.type_manager.IntegerPointer(false));
+            let alignment = this.Materialize(this.AnalyzeExpression(_static->alignment), this.type_manager.IntegerPointer(false));
+            if alignment == null { return; }
 
-            if alignment.Null() {
-                return;
-            }
-
-            if !alignment.Type().IsIntegerPointer() || alignment.Type().IsSigned() {
+            if !alignment->_type->IsIntegerPointer() || alignment->_type->IsSigned() {
                 Logger::Log("Static alignment must be of type 'usize'.", _static, LogSeverity::Error);
                 return;
             }
@@ -716,15 +771,15 @@ class SemanticAnalyzer {
     fn AnalyzeReturn(&mut this, _return: *ReturnNode) {
         if _return->expression == null { return; }
         let return_type = this.current_function->Return();
-        let value = this.AnalyzeExpression(_return->expression).Materialize(return_type);
-        if value.Null() { return; }
+        let value = this.Materialize(this.AnalyzeExpression(_return->expression), return_type);
+        if value == null { return; }
     }
 
     fn AnalyzeIf(&mut this, _if: *IfNode) {
-        let condition = this.AnalyzeExpression(_if->condition).ImplicitDereference();
+        let condition = this.ImplicitDereference(this.AnalyzeExpression(_if->condition));
 
-        if !condition.Null() && !condition.Type().IsBoolean() {
-            Logger::Log("Invalid condition type '" + condition.Type().ToString() + "'.", _if->condition, LogSeverity::Error);
+        if condition != null && !condition->_type->IsBoolean() {
+            Logger::Log("Invalid condition type '" + condition->_type->ToString() + "'.", _if->condition, LogSeverity::Error);
         }
 
         this.scope_manager.PushScope(String("then"), false);
@@ -747,8 +802,8 @@ class SemanticAnalyzer {
     }
 
     fn AnalyzeIfLet(&mut this, if_let: *IfLetNode) {
-        let expression = this.AnalyzeExpression(if_let->expression).ImplicitDereference();
-        if expression.Null() { return; }
+        let expression = this.ImplicitDereference(this.AnalyzeExpression(if_let->expression));
+        if expression == null { return; }
 
         this.scope_manager.PushScope(String("then"), false);
         this.AnalyzeStatement(if_let->body);
@@ -770,10 +825,10 @@ class SemanticAnalyzer {
     }
 
     fn AnalyzeWhile(&mut this, _while: *WhileNode) {
-        let condition = this.AnalyzeExpression(_while->condition).ImplicitDereference();
+        let condition = this.ImplicitDereference(this.AnalyzeExpression(_while->condition));
 
-        if !condition.Null() && !condition.Type().IsBoolean() {
-            Logger::Log("Invalid condition type '" + condition.Type().ToString() + "'.", _while->condition, LogSeverity::Error);
+        if condition != null && !condition->_type->IsBoolean() {
+            Logger::Log("Invalid condition type '" + condition->_type->ToString() + "'.", _while->condition, LogSeverity::Error);
         }
 
         this.scope_manager.PushScope(String("while"), false);
@@ -790,8 +845,8 @@ class SemanticAnalyzer {
     }
 
     fn AnalyzeWhileLet(&mut this, while_let: *WhileLetNode) {
-        let expression = this.AnalyzeExpression(while_let->expression).Materialize();
-        if expression.Null() { return; }
+        let expression = this.Materialize(this.AnalyzeExpression(while_let->expression));
+        if expression == null { return; }
 
         this.scope_manager.PushScope(String("while"), false);
         this.loop_scopes.PushBack(this.scope_manager.current);
@@ -801,7 +856,7 @@ class SemanticAnalyzer {
     }
 
     fn AnalyzeFor(&mut this, _for: *ForNode) {
-        let (mut start: SemanticValue, mut end: SemanticValue);
+        let (mut start: *HIRExpression, mut end: *HIRExpression);
         let (mut is_range, mut is_inclusive) = (false, false);
 
         if _for->iterable->_type == NodeType::RANGE {
@@ -809,67 +864,67 @@ class SemanticAnalyzer {
             (is_range, is_inclusive) = (true, range->inclusive);
 
             start = this.AnalyzeExpression(range->start);
-            if start.Null() { return; }
+            if start == null { return; }
 
             end = this.AnalyzeExpression(range->end);
-            if end.Null() { return; }
+            if end == null { return; }
 
-            start = start.Materialize(end.Type());
-            end = end.Materialize(start.Type());
+            start = this.Materialize(start, end->_type);
+            end = this.Materialize(end, start->_type);
         } else {
-            let iterable = this.AnalyzeExpression(_for->iterable).ImplicitDereference();
-            if iterable.Null() { return; }
+            let iterable = this.ImplicitDereference(this.AnalyzeExpression(_for->iterable));
+            if iterable == null { return; }
 
-            if iterable.Type().HasMethods() {
-                let mut values = Vector<SemanticValue>();
-                values.PushBack(iterable.ImplicitAddressOf());
+            if iterable->_type->HasMethods() {
+                let mut values = Vector<*HIRExpression>();
+                values.PushBack(this.ImplicitAddressOf(iterable));
 
-                let begin_candidates = iterable.Type().GetCandidates("Begin".ToString(), _for, true);
+                let begin_candidates = iterable->_type->GetCandidates("Begin".ToString(), _for, true);
                 let begin_function = this.ResolveOverload(begin_candidates, values, _for, true);
                 
                 if begin_function != null {
                     start = this.AnalyzeResolvedCall(begin_function, values, _for);
-                    if start.Null() { return; }
+                    if start == null { return; }
                 }
 
-                let end_candidates = iterable.Type().GetCandidates("End".ToString(), _for, true);
+                let end_candidates = iterable->_type->GetCandidates("End".ToString(), _for, true);
                 let end_function = this.ResolveOverload(end_candidates, values, _for, true);
 
                 if end_function != null {
                     end = this.AnalyzeResolvedCall(end_function, values, _for);
-                    if end.Null() { return; }
+                    if end == null { return; }
                 }
             }
 
-            if start.Null() || end.Null() {
+            if start == null || end == null {
                 Logger::Log("For loop only supports range expressions or classes with '.Begin()' and '.End()' methods.", _for, LogSeverity::Error);
                 return;
             }
         }
 
-        if start.Type() != end.Type() {
+        if start->_type != end->_type {
             Logger::Log("Start and end expressions of a for loop must have the same type.", _for, LogSeverity::Error);
             return;
         }
 
-        let _type = start.Type();
+        let _type = start->_type;
 
         if is_range {
-            if !_type.IsInteger() && !_type.IsFloat() {
+            if !_type->IsInteger() && !_type->IsFloat() {
                 Logger::Log("For loop only supports range expressions of integer or floating point types.", _for, LogSeverity::Error);
                 return;
             }
         } else {
-            if _type.HasMethods() {
-                let mut values = Vector<SemanticValue>();
-                values.PushBack(SemanticValue(_type, ValueCategory::Place, true));
+            if _type->HasMethods() {
+                let mut values = Vector<*HIRExpression>();
+                values.PushBack(SemanticValue(_type, HIRExpressionCategory::Place, true));
                 values.PushBack(end);
 
-                let candidates = _type.GetCandidates("operator!=".ToString(), _for, false);
+                let candidates = _type->GetCandidates("operator!=".ToString(), _for, false);
                 if candidates.Empty() { return; }
 
                 this.AnalyzeResolvedCall(candidates, values, _for);
-            } else if !_type.IsPointer() {
+            } else if !_type->IsPointer() {
                 Logger::Log("For loop only supports pointer iterators or classes with '!=' operator.", _for, LogSeverity::Error);
                 return;
             }
@@ -882,20 +937,20 @@ class SemanticAnalyzer {
             let variable = this.arena.New<HIRVariable>(_for->variable, _type, null, false);
             this.scope_manager.Set(_for->variable, variable, _for);
         } else {
-            if _type.IsPointer() {
-                let variable = this.arena.New<HIRVariable>(_for->variable, _type.Pointee(), null, false);
+            if _type->IsPointer() {
+                let variable = this.arena.New<HIRVariable>(_for->variable, _type->Pointee(), null, false);
                 this.scope_manager.Set(_for->variable, variable, _for);
-            } else if _type.HasMethods() {
-                let mut values = Vector<SemanticValue>();
-                values.PushBack(SemanticValue(_type, ValueCategory::Place, true));
+            } else if _type->HasMethods() {
+                let mut values = Vector<*HIRExpression>();
+                values.PushBack(SemanticValue(_type, HIRExpressionCategory::Place, true));
 
-                let candidates = _type.GetCandidates("operator*".ToString(), _for, false);
+                let candidates = _type->GetCandidates("operator*".ToString(), _for, false);
                 if candidates.Empty() { return; }
 
                 let result = this.AnalyzeResolvedCall(candidates, values, _for);
-                if result.Null() { return; }
+                if result == null { return; }
 
-                let variable = this.arena.New<HIRVariable>(_for->variable, result.Type(), null, false);
+                let variable = this.arena.New<HIRVariable>(_for->variable, result->_type, null, false);
                 this.scope_manager.Set(_for->variable, variable, _for);
             } else {
                 Logger::Log("For loop only supports pointer iterators or classes with 'operator*' operator.", _for, LogSeverity::Error);
@@ -908,21 +963,21 @@ class SemanticAnalyzer {
         this.scope_manager.PopScope();
 
         if is_range {
-            if !_type.IsInteger() && !_type.IsFloat() {
+            if !_type->IsInteger() && !_type->IsFloat() {
                 Logger::Log("For loop only supports range expressions of integer or floating point types.", _for, LogSeverity::Error);
                 return;
             }
         } else {
-            if _type.HasMethods() {
-                let mut values = Vector<SemanticValue>();
-                values.PushBack(SemanticValue(_type, ValueCategory::Place, true));
+            if _type->HasMethods() {
+                let mut values = Vector<*HIRExpression>();
+                values.PushBack(SemanticValue(_type, HIRExpressionCategory::Place, true));
                 values.PushBack(SemanticValue(this.type_manager.IntegerPointer(false)));
 
-                let candidates = _type.GetCandidates("operator+=".ToString(), _for, false);
+                let candidates = _type->GetCandidates("operator+=".ToString(), _for, false);
                 if candidates.Empty() { return; }
 
                 this.AnalyzeResolvedCall(candidates, values, _for);
-            } else if !_type.IsPointer() {
+            } else if !_type->IsPointer() {
                 Logger::Log("For loop only supports pointer iterators or classes with '+=' operator.", _for, LogSeverity::Error);
                 return;
             }
@@ -985,7 +1040,7 @@ class SemanticAnalyzer {
         if variable->_type != null {
             _type = this.ResolveType(variable->_type);
         } else if variable->initializer != null {
-            _type = this.AnalyzeExpression(variable->initializer).Materialize().Type();
+            _type = this.Materialize(this.AnalyzeExpression(variable->initializer))->_type;
         } else {
             Logger::Log("Type annotation required for variable '" + variable->name + "' without initializer.", variable, LogSeverity::Error);
         }
@@ -1001,80 +1056,80 @@ class SemanticAnalyzer {
         }
     }
 
-    fn AnalyzeAssignment(&mut this, assignment: *AssignmentNode) -> SemanticValue {
+    fn AnalyzeAssignment(&mut this, assignment: *AssignmentNode) -> *HIRExpression {
         let _operator = assignment->_operator;
         let left_raw = this.AnalyzeExpression(assignment->left);
-        let mut left = left_raw.ImplicitDereference();
-        if left.Null() { return SemanticValue(); }
+        let mut left = this.ImplicitDereference(left_raw);
+        if left == null { return null; }
 
         let right_raw = this.AnalyzeExpression(assignment->right);
-        let mut right = right_raw.ImplicitDereference();
-        if right.Null() { return SemanticValue(); }
+        let mut right = this.ImplicitDereference(right_raw);
+        if right == null { return null; }
 
-        if left.Type().IsPointer() && (_operator == TokenType::PLUS_ASSIGN || _operator == TokenType::MINUS_ASSIGN) {
-            right = right.Materialize(this.type_manager.IntegerPointer(false));
+        if left->_type->IsPointer() && (_operator == TokenType::PLUS_ASSIGN || _operator == TokenType::MINUS_ASSIGN) {
+            right = this.Materialize(right, this.type_manager.IntegerPointer(false));
         } else {
-            right = right.Materialize(left.Type());
+            right = this.Materialize(right, left->_type);
         }
 
-        if left.Type().HasMethods() {
-            let mut values = Vector<SemanticValue>();
-            values.PushBack(left.ImplicitAddressOf());
+        if left->_type->HasMethods() {
+            let mut values = Vector<*HIRExpression>();
+            values.PushBack(this.ImplicitAddressOf(left));
             values.PushBack(right_raw);
 
             let name = "operator" + _operator.ToAssignmentOperatorString();
-            let candidates = left.Type().GetCandidates(name, assignment, true);
+            let candidates = left->_type->GetCandidates(name, assignment, true);
             let function = this.ResolveOverload(candidates, values, assignment, true);
 
             if function != null {
                 this.AnalyzeResolvedCall(function, values, assignment);
-            } else if left.Type() == right.Type() {
+            } else if left->_type == right->_type {
                 if _operator != TokenType::ASSIGN {
-                    Logger::Log("Invalid class assignment operation '" + _operator.ToString() + "' for type '" + left.Type().ToString() + "'.", assignment, LogSeverity::Error);
+                    Logger::Log("Invalid class assignment operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", assignment, LogSeverity::Error);
                 }
             } else {
-                Logger::Log("Incompatible class assignment types. ('" + left.Type().ToString() + "' != '" + right.Type().ToString() + "').", assignment, LogSeverity::Error);
+                Logger::Log("Incompatible class assignment types. ('" + left->_type->ToString() + "' != '" + right->_type->ToString() + "').", assignment, LogSeverity::Error);
             }
-        } else if !left.IsPlace() {
+        } else if left->category != HIRExpressionCategory::Place {
             Logger::Log("Cannot assign to non-place value.", assignment, LogSeverity::Error);
-        } else if !left.IsMutable() {
+        } else if !left->mutable {
             Logger::Log("Cannot assign to immutable value.", assignment, LogSeverity::Error);
         } else {
             if _operator != TokenType::ASSIGN {
-                if (left.Type().IsBoolean() || left.Type().IsEnumeration() || left.Type().IsInteger() || left.Type().IsFloat()) && left.Type() != right.Type() {
-                    Logger::Log("Incompatible assignment operation types. ('" + left.Type().ToString() + "' != '" + right.Type().ToString() + "').", assignment, LogSeverity::Error);
+                if (left->_type->IsBoolean() || left->_type->IsEnumeration() || left->_type->IsInteger() || left->_type->IsFloat()) && left->_type != right->_type {
+                    Logger::Log("Incompatible assignment operation types. ('" + left->_type->ToString() + "' != '" + right->_type->ToString() + "').", assignment, LogSeverity::Error);
                 }
 
-                if left.Type().IsBoolean() || left.Type().IsEnumeration() {
+                if left->_type->IsBoolean() || left->_type->IsEnumeration() {
                     if _operator != TokenType::AND_ASSIGN && _operator != TokenType::OR_ASSIGN && _operator != TokenType::XOR_ASSIGN {
-                        Logger::Log("Invalid assignment operation '" + _operator.ToString() + "' for type '" + left.Type().ToString() + "'.", assignment, LogSeverity::Error);
+                        Logger::Log("Invalid assignment operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", assignment, LogSeverity::Error);
                     }
-                } else if left.Type().IsInteger() {
+                } else if left->_type->IsInteger() {
                     if _operator != TokenType::PLUS_ASSIGN && _operator != TokenType::MINUS_ASSIGN && _operator != TokenType::MUL_ASSIGN && _operator != TokenType::DIV_ASSIGN && _operator != TokenType::MOD_ASSIGN &&
                         _operator != TokenType::AND_ASSIGN && _operator != TokenType::OR_ASSIGN && _operator != TokenType::XOR_ASSIGN && _operator != TokenType::LSHIFT_ASSIGN && _operator != TokenType::RSHIFT_ASSIGN {
-                        Logger::Log("Invalid assignment operation '" + _operator.ToString() + "' for type '" + left.Type().ToString() + "'.", assignment, LogSeverity::Error);
+                        Logger::Log("Invalid assignment operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", assignment, LogSeverity::Error);
                     }
-                } else if left.Type().IsFloat() {
+                } else if left->_type->IsFloat() {
                     if _operator != TokenType::PLUS_ASSIGN && _operator != TokenType::MINUS_ASSIGN && _operator != TokenType::MUL_ASSIGN && _operator != TokenType::DIV_ASSIGN && _operator != TokenType::MOD_ASSIGN {
-                        Logger::Log("Invalid assignment operation '" + _operator.ToString() + "' for type '" + left.Type().ToString() + "'.", assignment, LogSeverity::Error);
+                        Logger::Log("Invalid assignment operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", assignment, LogSeverity::Error);
                     }
-                } else if left.Type().IsPointer() {
-                    if !right.Type().IsIntegerPointer() {
+                } else if left->_type->IsPointer() {
+                    if !right->_type->IsIntegerPointer() {
                         Logger::Log("Pointer arithmetic requires an operand of pointer-sized type.", assignment, LogSeverity::Error);
                     }
 
                     if _operator != TokenType::PLUS_ASSIGN && _operator != TokenType::MINUS_ASSIGN {
-                        Logger::Log("Invalid pointer assignment operation '" + _operator.ToString() + "' for type '" + left.Type().ToString() + "'.", assignment, LogSeverity::Error);
+                        Logger::Log("Invalid pointer assignment operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", assignment, LogSeverity::Error);
                     }
                 } else {
-                    Logger::Log("Invalid type '" + left.Type().ToString() + "' for assignment operation '" + _operator.ToString() + "'.", assignment, LogSeverity::Error);
+                    Logger::Log("Invalid type '" + left->_type->ToString() + "' for assignment operation '" + _operator.ToString() + "'.", assignment, LogSeverity::Error);
                 }
             }
         }
 
         if assignment->next != null {
             this.AnalyzeAssignment(assignment->next);
-            return SemanticValue();
+            return null;
         } else {
             return left_raw;
         }
@@ -1133,28 +1188,28 @@ class SemanticAnalyzer {
         }
     }
 
-    fn AnalyzeExpression(&mut this, expression: *Node) -> SemanticValue {
+    fn AnalyzeExpression(&mut this, expression: *Node) -> *HIRExpression {
         if expression->_type == NodeType::UNARY || expression->_type == NodeType::BINARY || expression->_type == NodeType::TERNARY {
             let _type = this.IsDeferrableExpression(expression);
 
             if _type != null {
-                return SemanticValue(_type, expression);
+                return this.arena.New<HIRExpression>(_type, expression);
             }
         }
 
         return this.AnalyzeExpression(expression, null);
     }
 
-    pub fn AnalyzeExpression(&mut this, expression: *Node, target: *SemanticType) -> SemanticValue {
+    pub fn AnalyzeExpression(&mut this, expression: *Node, target: *SemanticType) -> *HIRExpression {
         if expression->_type == NodeType::LITERAL {
-            return SemanticValue(this.AnalyzeLiteral(expression as *LiteralNode)->_type);
+            return this.AnalyzeLiteral(expression as *LiteralNode);
         } else if expression->_type == NodeType::CALL {
             return this.AnalyzeCall(expression as *CallNode);
         } else if expression->_type == NodeType::IDENTIFIER || expression->_type == NodeType::SCOPE_RESOLUTION {
             let symbol = this.scope_manager.Resolve(expression, false);
 
             if symbol == null {
-                return SemanticValue();
+                return null;
             }
 
             if symbol->kind == SymbolKind::Statement {
@@ -1162,23 +1217,23 @@ class SemanticAnalyzer {
 
                 if statement->kind == HIRStatementKind::Variable {
                     let variable = statement as *HIRVariable;
-                    return SemanticValue(variable->_type, ValueCategory::Place, variable->mutable);
+                    return SemanticValue(variable->_type, HIRExpressionCategory::Place, variable->mutable);
                 } else {
                     Logger::Log("Cannot use statement as an expression.", expression, LogSeverity::Error);
-                    return SemanticValue();
+                    return null;
                 }
             } else if symbol->kind == SymbolKind::Declaration {
                 let declaration = symbol->declaration;
 
                 if declaration->kind == HIRDeclarationKind::Constant {
-                    return SemanticValue(declaration->_type, ValueCategory::Place, false);
+                    return SemanticValue(declaration->_type, HIRExpressionCategory::Place, false);
                 } else if declaration->kind == HIRDeclarationKind::Static {
-                    return SemanticValue(declaration->_type, ValueCategory::Place, (declaration as *HIRStatic)->mutable);
+                    return SemanticValue(declaration->_type, HIRExpressionCategory::Place, (declaration as *HIRStatic)->mutable);
                 } else if declaration->kind == HIRDeclarationKind::Parameter {
-                    return SemanticValue(declaration->_type, ValueCategory::Place, (declaration as *HIRParameter)->mutable);
+                    return SemanticValue(declaration->_type, HIRExpressionCategory::Place, (declaration as *HIRParameter)->mutable);
                 } else {
                     Logger::Log("Cannot use declaration '" + declaration->name + "' as an expression.", expression, LogSeverity::Error);
-                    return SemanticValue();
+                    return null;
                 }
             } else {
                 return SemanticValue(symbol->_type);
@@ -1202,8 +1257,8 @@ class SemanticAnalyzer {
         } else if expression->_type == NodeType::STRUCTURE_INITIALIZER {
             return this.AnalyzeStructureInitializer(expression as *StructureInitializerNode);
         } else {
-            Logger::Log("Unknown expression '" + expression->_type.ToString() + "'.", expression, LogSeverity::Error);
-            return SemanticValue();
+            Logger::Log("Unknown expression '" + expression->_type->ToString() + "'.", expression, LogSeverity::Error);
+            return null;
         }
     }
 
@@ -1289,19 +1344,19 @@ class SemanticAnalyzer {
         } else if literal->_type == TokenType::NULL {
             return this.arena.New<HIRNullLiteral>(this.type_manager.NullPointer());
         } else {
-            Logger::Log("Unknown literal type '" + literal->_type.ToString() + "'.", literal, LogSeverity::Error);
+            Logger::Log("Unknown literal type '" + literal->_type->ToString() + "'.", literal, LogSeverity::Error);
             return null;
         }
     }
 
-    fn AnalyzeCall(&mut this, call: *CallNode) -> SemanticValue {
+    fn AnalyzeCall(&mut this, call: *CallNode) -> *HIRExpression {
         if call->expression->_type == NodeType::IDENTIFIER {
             let identifier = call->expression as *IdentifierNode;
 
             if identifier->name == "sizeof" || identifier->name == "alignof" {
                 if call->arguments.Size() != 1 {
                     Logger::Log("Invalid number of arguments for '" + identifier->name + "'.", call, LogSeverity::Error);
-                    return SemanticValue();
+                    return null;
                 }
 
                 let mut _type: *SemanticType;
@@ -1309,7 +1364,7 @@ class SemanticAnalyzer {
 
                 if argument->_type == NodeType::IDENTIFIER || argument->_type == NodeType::SCOPE_RESOLUTION {
                     let symbol = this.scope_manager.Resolve(argument, false);
-                    if symbol == null { return SemanticValue(); }
+                    if symbol == null { return null; }
 
                     if symbol->kind == SymbolKind::Statement {
                         let statement = symbol->statement;
@@ -1318,7 +1373,7 @@ class SemanticAnalyzer {
                             _type = (statement as *HIRVariable)->_type;
                         } else {
                             Logger::Log("Cannot use statement as a type.", call, LogSeverity::Error);
-                            return SemanticValue();
+                            return null;
                         }
                     } else if symbol->kind == SymbolKind::Declaration {
                         _type = symbol->declaration->_type;
@@ -1333,62 +1388,62 @@ class SemanticAnalyzer {
             }
         }
 
-        let mut values = Vector<SemanticValue>();
+        let mut values = Vector<*HIRExpression>();
 
         for argument in call->arguments {
             let value = this.AnalyzeExpression(argument);
-            if value.Null() { return SemanticValue(); }
+            if value == null { return null; }
             values.PushBack(value);
         }
 
         if call->expression->_type == NodeType::MEMBER_ACCESS {
             let member_access = call->expression as *MemberAccessNode;
-            let mut instance = this.AnalyzeExpression(member_access->expression).ImplicitDereference();
-            if instance.Null() { return SemanticValue(); }
+            let mut instance = this.ImplicitDereference(this.AnalyzeExpression(member_access->expression));
+            if instance == null { return null; }
 
             if member_access->arrow {
-                if instance.Type().HasMethods() {
-                    let values = Vector<SemanticValue>();
-                    values.PushBack(instance.ImplicitAddressOf());
+                if instance->_type->HasMethods() {
+                    let values = Vector<*HIRExpression>();
+                    values.PushBack(this.ImplicitAddressOf(instance));
 
-                    let candidates = instance.Type().GetCandidates("operator->".ToString(), member_access, false);
-                    if candidates.Empty() { return SemanticValue(); }
+                    let candidates = instance->_type->GetCandidates("operator->".ToString(), member_access, false);
+                    if candidates.Empty() { return null; }
 
-                    instance = this.AnalyzeResolvedCall(candidates, values, member_access).ImplicitDereference();
-                } else if instance.Type().IsPointer() {
-                    instance = instance.ExplicitDereference();
+                    instance = this.ImplicitDereference(this.AnalyzeResolvedCall(candidates, values, member_access));
+                } else if instance->_type->IsPointer() {
+                    instance = this.ImplicitDereference(instance);
                 } else {
                     Logger::Log("Expected a pointer type for arrow operator.", member_access, LogSeverity::Error);
-                    return SemanticValue();
+                    return null;
                 }
             }
 
-            if !instance.Type().HasFields() && !instance.Type().HasMethods() {
+            if !instance->_type->HasFields() && !instance->_type->HasMethods() {
                 if member_access->arrow {
                     Logger::Log("Expected a dot operator.", call, LogSeverity::Error);
-                    return SemanticValue();
+                    return null;
                 }
 
-                values.Insert(0, instance.ImplicitAddressOf());
+                values.Insert(0, this.ImplicitAddressOf(instance));
                 let candidates = this.scope_manager.ResolveCandidates(member_access->member, call, false);
-                if candidates.Empty() { return SemanticValue(); }
+                if candidates.Empty() { return null; }
                 return this.AnalyzeResolvedCall(candidates, values, call);
             } else {
-                let index = instance.Type().HasFields() ? instance.Type().Index(member_access->member) : -1;
+                let index = instance->_type->HasFields() ? instance->_type->Index(member_access->member) : -1;
 
                 if index != -1 {
-                    let field = instance.Type().Fields()[member_access->member];
+                    let field = instance->_type->Fields()[member_access->member];
 
-                    if !field.public && (this.current_class != null && *this.current_class != instance.Type()) {
+                    if !field.public && (this.current_class != null && *this.current_class != *instance->_type) {
                         Logger::Log("Field '" + member_access->member + "' is private.", call, LogSeverity::Error);
-                        return SemanticValue();
+                        return null;
                     }
 
-                    return this.AnalyzeResolvedCall(instance.WithType(field._type).Type(), values, call);
+                    return this.AnalyzeResolvedCall(instance.WithType(field._type)._type, values, call);
                 } else {
-                    values.Insert(0, instance.ImplicitAddressOf());
-                    let candidates = instance.Type().GetCandidates(member_access->member, call, false);
-                    if candidates.Empty() { return SemanticValue(); }
+                    values.Insert(0, this.ImplicitAddressOf(instance));
+                    let candidates = instance->_type->GetCandidates(member_access->member, call, false);
+                    if candidates.Empty() { return null; }
                     return this.AnalyzeResolvedCall(candidates, values, call);
                 }
             }
@@ -1412,7 +1467,7 @@ class SemanticAnalyzer {
 
                             if declaration->kind != HIRDeclarationKind::Function {
                                 Logger::Log("Generic '" + primitive_type->name + "' is not a function.", call, LogSeverity::Error);
-                                return SemanticValue();
+                                return null;
                             }
 
                             return this.AnalyzeResolvedCall(declaration as *HIRFunction, values, call);
@@ -1422,19 +1477,19 @@ class SemanticAnalyzer {
                             Logger::Log("Function '" + primitive_type->name + "' is not generic.", call, LogSeverity::Error);
                         } else {
                             Logger::Log("Function '" + primitive_type->name + "' not found.", call, LogSeverity::Error);
-                        } return SemanticValue();
+                        } return null;
                     }
                 } else if type_application->expression->_type == NodeType::SCOPE_RESOLUTION {
                     let resolution = type_application->expression as *ScopeResolutionNode;
                     let scope = this.scope_manager.ResolveScopeHalf(resolution, false);
-                    if scope == null { return SemanticValue(); }
+                    if scope == null { return null; }
                     let symbol = scope->Get(resolution->identifier->name, SymbolKind::Generic);
-                    if symbol == null { return SemanticValue(); }
+                    if symbol == null { return null; }
                     let declaration = symbol->generic->Get(types).left;
 
                     if declaration->kind != HIRDeclarationKind::Function {
                         Logger::Log("Generic '" + resolution->identifier->name + "' is not a function.", call, LogSeverity::Error);
-                        return SemanticValue();
+                        return null;
                     }
 
                     return this.AnalyzeResolvedCall(declaration as *HIRFunction, values, call);
@@ -1442,7 +1497,7 @@ class SemanticAnalyzer {
             }
 
             let _class = this.ResolveType(call->expression);
-            if _class == null { return SemanticValue(); }
+            if _class == null { return null; }
             return SemanticValue(_class);
         } else {
             let candidates = this.scope_manager.ResolveCandidates(call->expression, true);
@@ -1453,15 +1508,15 @@ class SemanticAnalyzer {
 
             let value = this.AnalyzeExpression(call->expression);
 
-            if !value.Null() {
-                return this.AnalyzeResolvedCall(value.Type(), values, call);
+            if value != null {
+                return this.AnalyzeResolvedCall(value->_type, values, call);
             } else {
-                return SemanticValue();
+                return null;
             }
         }
     }
 
-    fn ResolveOverload(&mut this, candidates: &Vector<*HIRFunction>, values: &Vector<SemanticValue>, node: *Node, test: bool) -> *HIRFunction {
+    fn ResolveOverload(&mut this, candidates: &Vector<*HIRFunction>, values: &Vector<*HIRExpression>, node: *Node, test: bool) -> *HIRFunction {
         let mut index: usize = 0;
         let mut best: u64 = 0;
 
@@ -1472,7 +1527,7 @@ class SemanticAnalyzer {
             let (mut _match, mut score: u64) = (true, 1);
 
             for j in 0..params.Size() {
-                let param_score = params[j]->ScoreParameter(values[j].Type());
+                let param_score = params[j]->ScoreParameter(values[j]->_type);
 
                 if param_score != 0 {
                     score += param_score;
@@ -1497,60 +1552,60 @@ class SemanticAnalyzer {
         }
     }
 
-    fn AnalyzeResolvedCall(&mut this, function: *HIRFunction, values: &Vector<SemanticValue>, node: *Node) -> SemanticValue {
+    fn AnalyzeResolvedCall(&mut this, function: *HIRFunction, values: &Vector<*HIRExpression>, node: *Node) -> *HIRExpression {
         return this.AnalyzeResolvedCall((function as *HIRDeclaration)->_type, values, node);
     }
 
-    fn AnalyzeResolvedCall(&mut this, candidates: &Vector<*HIRFunction>, values: &Vector<SemanticValue>, node: *Node) -> SemanticValue {
+    fn AnalyzeResolvedCall(&mut this, candidates: &Vector<*HIRFunction>, values: &Vector<*HIRExpression>, node: *Node) -> *HIRExpression {
         let function = this.ResolveOverload(candidates, values, node, false);
-        if function == null { return SemanticValue(); }
+        if function == null { return null; }
         return this.AnalyzeResolvedCall(function, values, node);
     }
 
-    fn AnalyzeResolvedCall(&mut this, function: &SemanticType, values: &Vector<SemanticValue>, node: *Node) -> SemanticValue {
+    fn AnalyzeResolvedCall(&mut this, function: &SemanticType, values: &Vector<*HIRExpression>, node: *Node) -> *HIRExpression {
         let param_types = function.Parameters();
 
         for i in 0..param_types.Size() {
             let param_type: *SemanticType = param_types[i];
-            let value = values[i].Materialize(param_type);
+            let value = this.Materialize(values[i], param_type);
         }
 
         return SemanticValue(function.Return());
     }
 
-    fn AnalyzeNew(&mut this, _new: *NewNode) -> SemanticValue {
+    fn AnalyzeNew(&mut this, _new: *NewNode) -> *HIRExpression {
         let _type = this.ResolveType(_new->_type);
 
         if _type == null {
-            return SemanticValue();
+            return null;
         }
 
         if _new->size != null {
-            let size = this.AnalyzeExpression(_new->size).Materialize(this.type_manager.IntegerPointer(false));
+            let size = this.Materialize(this.AnalyzeExpression(_new->size), this.type_manager.IntegerPointer(false));
 
-            if size.Null() {
-                return SemanticValue();
+            if size == null {
+                return null;
             }
 
-            if !size.Type().IsIntegerPointer() || size.Type().IsSigned() {
+            if !size->_type->IsIntegerPointer() || size->_type->IsSigned() {
                 Logger::Log("Array size must be of type 'usize'.", _new, LogSeverity::Error);
-                return SemanticValue();
+                return null;
             }
         }
 
         return SemanticValue(this.type_manager.Pointer(_type, true));
     }
 
-    fn AnalyzeDelete(&mut this, _delete: *DeleteNode) -> SemanticValue {
+    fn AnalyzeDelete(&mut this, _delete: *DeleteNode) -> *HIRExpression {
         let mut pointer = this.AnalyzeExpression(_delete->expression);
 
-        if pointer.Null() {
-            return SemanticValue();
+        if pointer == null {
+            return null;
         }
 
-        if !pointer.Type().IsPointer() {
+        if !pointer->_type->IsPointer() {
             Logger::Log("Delete value must be a pointer.", _delete, LogSeverity::Error);
-        } return SemanticValue();
+        } return null;
     }
 
     fn LiteralNeedsExplicitType(&mut this, expression: *Node, target: *SemanticType) -> bool {
@@ -1567,27 +1622,27 @@ class SemanticAnalyzer {
         }
     }
 
-    fn AnalyzeCast(&mut this, cast: *CastNode) -> SemanticValue {
+    fn AnalyzeCast(&mut this, cast: *CastNode) -> *HIRExpression {
         let mut target = this.ResolveType(cast->target_type);
-        if target == null { return SemanticValue(); }
+        if target == null { return null; }
 
-        let value = this.AnalyzeExpression(cast->expression).Materialize(target);
-        if value.Null() { return SemanticValue(); }
+        let value = this.Materialize(this.AnalyzeExpression(cast->expression), target);
+        if value == null { return null; }
 
-        if value.Type() == *target && this.LiteralNeedsExplicitType(cast->expression, target) {
+        if *value->_type == *target && this.LiteralNeedsExplicitType(cast->expression, target) {
             return value;
         }
 
         return this.AnalyzeResolvedCast(value, target, cast);
     }
 
-    fn AnalyzeResolvedCast(&mut this, mut value: SemanticValue, target: &SemanticType, node: *Node) -> SemanticValue {
+    fn AnalyzeResolvedCast(&mut this, mut value: *HIRExpression, target: &SemanticType, node: *Node) -> *HIRExpression {
         if !target.IsPointer() {
-            value = value.ImplicitDereference();
+            value = this.ImplicitDereference(value);
         }
 
         let mut left: *SemanticType = target;
-        let mut right: *SemanticType = value.Type();
+        let mut right: *SemanticType = value->_type;
         let (mut state, mut failed) = (false, false);
 
         while left->IsPointer() && right->IsPointer() {
@@ -1600,54 +1655,54 @@ class SemanticAnalyzer {
             (left, right) = (left->Pointee(), right->Pointee());
         }
 
-        if value.Type() == target {
+        if *value->_type == target {
             if !state {
-                Logger::Log("Redundant cast. ('" + value.Type().ToString() + "' to '" + target.ToString() + "')", node, LogSeverity::Warning);
+                Logger::Log("Redundant cast. ('" + value->_type->ToString() + "' to '" + target.ToString() + "')", node, LogSeverity::Warning);
             } else {
                 if !failed || this._unsafe {
                     return SemanticValue(target);
                 } else {
                     Logger::Log("Cannot cast immutable pointer to mutable pointer.", node, LogSeverity::Error);
-                    return SemanticValue();
+                    return null;
                 }
             }
         }
 
-        if value.Type().IsBoolean() {
+        if value->_type->IsBoolean() {
             if target.IsInteger() {
                 return SemanticValue(target);
             }
-        } else if value.Type().IsCharacter() {
+        } else if value->_type->IsCharacter() {
             if target.IsInteger() {
                 return SemanticValue(target);
             }
-        } else if value.Type().IsInteger() {
+        } else if value->_type->IsInteger() {
             if target.IsPointer() || target.IsInteger() || target.IsFloat() || target.IsEnumeration() {
                 return SemanticValue(target);
             } else if target.IsCharacter() {
-                if value.Type().Width() == 8 && !value.Type().IsSigned() {
+                if value->_type->Width() == 8 && !value->_type->IsSigned() {
                     return SemanticValue(target);
                 }
             }
-        } else if value.Type().IsFloat() {
+        } else if value->_type->IsFloat() {
             if target.IsInteger() || target.IsFloat() {
                 return SemanticValue(target);
             }
-        } else if value.Type().IsPointer() {
+        } else if value->_type->IsPointer() {
             if target.IsInteger() {
                 return SemanticValue(target);
             }
-        } else if value.Type().IsEnumeration() {
+        } else if value->_type->IsEnumeration() {
             if target.IsInteger() {
                 return SemanticValue(target);
             }
         }
 
-        if value.Type().IsPointer() && target.IsPointer() {
-            if value.Type().Pointee().IsClass() && target.Pointee().IsClass() {
+        if value->_type->IsPointer() && target.IsPointer() {
+            if value->_type->Pointee().IsClass() && target.Pointee().IsClass() {
                 let mut related = false;
 
-                for field in value.Type().Pointee().Fields() {
+                for field in value->_type->Pointee().Fields() {
                     if field.left == target.Pointee().name {
                         related = true;
                         break;
@@ -1656,7 +1711,7 @@ class SemanticAnalyzer {
 
                 if !related {
                     for field in target.Pointee().Fields() {
-                        if field.left == value.Type().Pointee().name {
+                        if field.left == value->_type->Pointee().name {
                             related = true;
                             break;
                         }
@@ -1664,108 +1719,108 @@ class SemanticAnalyzer {
                 }
 
                 if !related {
-                    Logger::Log("Cannot cast class '" + value.Type().Pointee().name + "' to unrelated class '" + target.Pointee().name + "'.", node, LogSeverity::Error);
-                    return SemanticValue();
+                    Logger::Log("Cannot cast class '" + value->_type->Pointee().name + "' to unrelated class '" + target.Pointee().name + "'.", node, LogSeverity::Error);
+                    return null;
                 }
             }
 
             return SemanticValue(target);
         } else {
-            Logger::Log("Cannot cast '" + value.Type().ToString() + "' to '" + target.ToString() + "'.", node, LogSeverity::Error);
-            return SemanticValue();
+            Logger::Log("Cannot cast '" + value->_type->ToString() + "' to '" + target.ToString() + "'.", node, LogSeverity::Error);
+            return null;
         }
     }
 
-    fn AnalyzeIndexAccess(&mut this, index_access: *IndexAccessNode) -> SemanticValue {
-        let value = this.AnalyzeExpression(index_access->expression).ImplicitDereference();
+    fn AnalyzeIndexAccess(&mut this, index_access: *IndexAccessNode) -> *HIRExpression {
+        let value = this.ImplicitDereference(this.AnalyzeExpression(index_access->expression));
 
-        if value.Null() {
-            return SemanticValue();
+        if value == null {
+            return null;
         }
 
-        let index = this.AnalyzeExpression(index_access->index).ImplicitDereference().Materialize(this.type_manager.IntegerPointer(false));
+        let index = this.Materialize(this.ImplicitDereference(this.AnalyzeExpression(index_access->index)), this.type_manager.IntegerPointer(false));
 
-        if index.Null() {
-            return SemanticValue();
+        if index == null {
+            return null;
         }
 
-        if value.Type().HasMethods() {
-            let mut values = Vector<SemanticValue>();
-            values.PushBack(value.ImplicitAddressOf());
+        if value->_type->HasMethods() {
+            let mut values = Vector<*HIRExpression>();
+            values.PushBack(this.ImplicitAddressOf(value));
             values.PushBack(index);
 
-            let candidates = value.Type().GetCandidates("operator[]".ToString(), index_access, false);
-            if candidates.Empty() { return SemanticValue(); }
+            let candidates = value->_type->GetCandidates("operator[]".ToString(), index_access, false);
+            if candidates.Empty() { return null; }
 
             return this.AnalyzeResolvedCall(candidates, values, index_access);
         }
 
-        if !value.Type().IsPointer() {
+        if !value->_type->IsPointer() {
             Logger::Log("Indexed value must be a pointer.", index_access, LogSeverity::Error);
-            return SemanticValue();
+            return null;
         }
 
-        if !index.Type().IsIntegerPointer() || index.Type().IsSigned() {
+        if !index->_type->IsIntegerPointer() || index->_type->IsSigned() {
             Logger::Log("Index must be of type 'usize'.", index_access, LogSeverity::Error);
-            return SemanticValue();
+            return null;
         }
 
-        return SemanticValue(value.Type().AsReference());
+        return SemanticValue(value->_type->AsReference());
     }
 
-    fn AnalyzeMemberAccess(&mut this, member_access: *MemberAccessNode) -> SemanticValue {
-        let mut instance = this.AnalyzeExpression(member_access->expression).ImplicitDereference();
+    fn AnalyzeMemberAccess(&mut this, member_access: *MemberAccessNode) -> *HIRExpression {
+        let mut instance = this.ImplicitDereference(this.AnalyzeExpression(member_access->expression));
 
-        if instance.Null() {
-            return SemanticValue();
+        if instance == null {
+            return null;
         }
 
         if member_access->arrow {
-            if instance.Type().HasMethods() {
-                let values = Vector<SemanticValue>();
-                values.PushBack(instance.ImplicitAddressOf());
+            if instance->_type->HasMethods() {
+                let values = Vector<*HIRExpression>();
+                values.PushBack(this.ImplicitAddressOf(instance));
 
-                let candidates = instance.Type().GetCandidates("operator->".ToString(), member_access, false);
-                if candidates.Empty() { return SemanticValue(); }
+                let candidates = instance->_type->GetCandidates("operator->".ToString(), member_access, false);
+                if candidates.Empty() { return null; }
 
-                instance = this.AnalyzeResolvedCall(candidates, values, member_access).ImplicitDereference();
-            } else if instance.Type().IsPointer() {
-                instance = instance.ExplicitDereference();
+                instance = this.ImplicitDereference(this.AnalyzeResolvedCall(candidates, values, member_access));
+            } else if instance->_type->IsPointer() {
+                instance = this.ImplicitDereference(instance);
             } else {
                 Logger::Log("Expected a pointer type for arrow operator.", member_access, LogSeverity::Error);
-                return SemanticValue();
+                return null;
             }
         }
 
-        if !instance.Type().HasFields() {
-            Logger::Log("Cannot access field '" + member_access->member + "' of type '" + instance.Type().ToString() + "'.", member_access, LogSeverity::Error);
-            return SemanticValue();
+        if !instance->_type->HasFields() {
+            Logger::Log("Cannot access field '" + member_access->member + "' of type '" + instance->_type->ToString() + "'.", member_access, LogSeverity::Error);
+            return null;
         }
 
-        let index = instance.Type().Index(member_access->member);
+        let index = instance->_type->Index(member_access->member);
 
         if index != -1 {
-            let field = instance.Type().Fields()[index as usize].right;
+            let field = instance->_type->Fields()[index as usize].right;
 
-            if !field.public && (this.current_class != null && *this.current_class != instance.Type()) {
+            if !field.public && (this.current_class != null && *this.current_class != *instance->_type) {
                 Logger::Log("Field '" + member_access->member + "' is private.", member_access, LogSeverity::Error);
-                return SemanticValue();
+                return null;
             }
 
-            return instance.WithType(field._type);
+            return instance.WithType(field._type)._type;
         } else {
-            Logger::Log("Field '" + member_access->member + "' not found in type '" + instance.Type().ToString() + "'.", member_access, LogSeverity::Error);
-            return SemanticValue();
+            Logger::Log("Field '" + member_access->member + "' not found in type '" + instance->_type->ToString() + "'.", member_access, LogSeverity::Error);
+            return null;
         }
     }
 
-    fn AnalyzeUnary(&mut this, unary: *UnaryNode, target: *SemanticType) -> SemanticValue {
+    fn AnalyzeUnary(&mut this, unary: *UnaryNode, target: *SemanticType) -> *HIRExpression {
         let raw = this.AnalyzeExpression(unary->operand);
-        let mut value = raw.ImplicitDereference();
-        if value.Null() { return SemanticValue(); }
+        let mut value = this.ImplicitDereference(raw);
+        if value == null { return null; }
 
-        let mut values = Vector<SemanticValue>();
-        values.PushBack(value.ImplicitAddressOf());
+        let mut values = Vector<*HIRExpression>();
+        values.PushBack(this.ImplicitAddressOf(value));
 
         let name = "operator" + unary->_operator.ToUnaryOperatorString();
         let candidates = this.scope_manager.ResolveCandidates(name, unary, true);
@@ -1775,8 +1830,8 @@ class SemanticAnalyzer {
             return this.AnalyzeResolvedCall(function, values, unary);
         }
 
-        if value.Type().HasMethods() {
-            let candidates = value.Type().GetCandidates(name, unary, true);
+        if value->_type->HasMethods() {
+            let candidates = value->_type->GetCandidates(name, unary, true);
             let function = this.ResolveOverload(candidates, values, unary, true);
 
             if function != null {
@@ -1785,24 +1840,24 @@ class SemanticAnalyzer {
         }
 
         if unary->_operator == TokenType::BITWISE_AND {
-            if !raw.IsPlace() {
+            if raw->category != HIRExpressionCategory::Place {
                 Logger::Log("Cannot take reference to non-place value.", unary, LogSeverity::Error);
-                return SemanticValue();
+                return null;
             }
 
-            if unary->mutable && !raw.IsMutable() {
+            if unary->mutable && !raw->mutable {
                 Logger::Log("Cannot take mutable reference to immutable value.", unary, LogSeverity::Error);
-                return SemanticValue();
+                return null;
             }
 
-            return SemanticValue(this.type_manager.Reference(raw.Type(), unary->mutable));
+            return this.arena.New<HIRAddressOf>(this.type_manager.Reference(raw->_type, unary->mutable));
         } else if unary->_operator == TokenType::MUL {
-            if !raw.Type().IsPointer() {
-                Logger::Log("Cannot dereference non-pointer type '" + raw.Type().ToString() + "'.", unary, LogSeverity::Error);
-                return SemanticValue();
+            if !raw->_type->IsPointer() {
+                Logger::Log("Cannot dereference non-pointer type '" + raw->_type->ToString() + "'.", unary, LogSeverity::Error);
+                return null;
             }
 
-            return raw.ExplicitDereference();
+            return this.arena.New<HIRDereference>(raw->_type->Pointee(), HIRExpressionCategory::Place, raw->_type->IsMutable());
         } else {
             let mut operand_target: *SemanticType = null;
 
@@ -1817,38 +1872,38 @@ class SemanticAnalyzer {
             }
 
             if operand_target != null {
-                value = value.Materialize(operand_target);
+                value = this.Materialize(value, operand_target);
             } else {
-                value = value.Materialize();
+                value = this.Materialize(value);
             }
 
             if unary->_operator == TokenType::MINUS {
-                if value.Type().IsInteger() || value.Type().IsFloat() {
-                    if value.Type().IsInteger() && !value.Type().IsSigned() {
-                        Logger::Log("Cannot negate unsigned type '" + value.Type().ToString() + "'.", unary, LogSeverity::Error);
-                        return SemanticValue();
+                if value->_type->IsInteger() || value->_type->IsFloat() {
+                    if value->_type->IsInteger() && !value->_type->IsSigned() {
+                        Logger::Log("Cannot negate unsigned type '" + value->_type->ToString() + "'.", unary, LogSeverity::Error);
+                        return null;
                     }
 
-                    return SemanticValue(value.Type());
+                    return SemanticValue(value->_type);
                 } else {
-                    Logger::Log("Cannot negate type '" + value.Type().ToString() + "'.", unary, LogSeverity::Error);
-                    return SemanticValue();
+                    Logger::Log("Cannot negate type '" + value->_type->ToString() + "'.", unary, LogSeverity::Error);
+                    return null;
                 }
             } else if unary->_operator == TokenType::NOT {
-                if value.Type().IsInteger() || value.Type().IsBoolean() {
-                    return SemanticValue(value.Type());
+                if value->_type->IsInteger() || value->_type->IsBoolean() {
+                    return SemanticValue(value->_type);
                 } else {
-                    Logger::Log("Cannot invert type '" + value.Type().ToString() + "'.", unary, LogSeverity::Error);
-                    return SemanticValue();
+                    Logger::Log("Cannot invert type '" + value->_type->ToString() + "'.", unary, LogSeverity::Error);
+                    return null;
                 }
             } else {
                 Logger::Log("Invalid unary operation '" + unary->_operator.ToString() + "'.", unary, LogSeverity::Error);
-                return SemanticValue();
+                return null;
             }
         }
     }
 
-    fn AnalyzeBinary(&mut this, binary: *BinaryNode, target: *SemanticType) -> SemanticValue {
+    fn AnalyzeBinary(&mut this, binary: *BinaryNode, target: *SemanticType) -> *HIRExpression {
         let mut operand_target: *SemanticType = null;
 
         if target != null && binary->_operator != TokenType::EQUAL && binary->_operator != TokenType::NOT_EQUAL && binary->_operator != TokenType::GREATER && binary->_operator != TokenType::LESS && binary->_operator != TokenType::GREATER_EQUAL && binary->_operator != TokenType::LESS_EQUAL && binary->_operator != TokenType::AND && binary->_operator != TokenType::OR {
@@ -1858,49 +1913,49 @@ class SemanticAnalyzer {
         }
 
         let mut left = this.AnalyzeExpression(binary->left);
-        if left.Null() { return SemanticValue(); }
+        if left == null { return null; }
 
         if operand_target != null {
-            left = left.Materialize(operand_target);
+            left = this.Materialize(left, operand_target);
         }
 
         if binary->_operator == TokenType::AND || binary->_operator == TokenType::OR {
-            if !left.Type().IsBoolean() {
-                Logger::Log("Invalid type '" + left.Type().ToString() + "' for binary operation '" + binary->_operator.ToString() + "'.", binary, LogSeverity::Error);
-                return SemanticValue();
+            if !left->_type->IsBoolean() {
+                Logger::Log("Invalid type '" + left->_type->ToString() + "' for binary operation '" + binary->_operator.ToString() + "'.", binary, LogSeverity::Error);
+                return null;
             }
 
             this.scope_manager.PushScope(String("short circuit"), false);
             let right = this.AnalyzeExpression(binary->right);
             this.scope_manager.PopScope();
 
-            if right.Null() {
-                return SemanticValue();
+            if right == null {
+                return null;
             }
 
-            if !right.Type().IsBoolean() {
-                Logger::Log("Invalid type '" + right.Type().ToString() + "' for binary operation '" + binary->_operator.ToString() + "'.", binary, LogSeverity::Error);
-                return SemanticValue();
+            if !right->_type->IsBoolean() {
+                Logger::Log("Invalid type '" + right->_type->ToString() + "' for binary operation '" + binary->_operator.ToString() + "'.", binary, LogSeverity::Error);
+                return null;
             }
 
-            return SemanticValue(left.Type());
+            return SemanticValue(left->_type);
         }
 
         let mut right = this.AnalyzeExpression(binary->right);
-        if right.Null() { return SemanticValue(); }
+        if right == null { return null; }
 
         if operand_target != null {
-            right = right.Materialize(operand_target);
+            right = this.Materialize(right, operand_target);
         }
 
         return this.AnalyzeResolvedBinary(left, right, binary->_operator, binary);
     }
 
-    fn AnalyzeResolvedBinary(&mut this, mut left: SemanticValue, mut right: SemanticValue, _operator: TokenType, node: *Node) -> SemanticValue {
+    fn AnalyzeResolvedBinary(&mut this, mut left: *HIRExpression, mut right: *HIRExpression, _operator: TokenType, node: *Node) -> *HIRExpression {
         let (left_raw, right_raw) = (left, right);
-        (left, right) = (left.ImplicitDereference(), right.ImplicitDereference());
+        (left, right) = (this.ImplicitDereference(left), this.ImplicitDereference(right));
 
-        let mut values = Vector<SemanticValue>();
+        let mut values = Vector<*HIRExpression>();
         values.PushBack(left);
         values.PushBack(right);
 
@@ -1910,16 +1965,16 @@ class SemanticAnalyzer {
 
         if function != null {
             return this.AnalyzeResolvedCall(function, values, node);
-        } else if left.Type().HasFields() || right.Type().HasFields() {
-            let instance = left.Type().HasFields() ? left : right;
-            let value = left.Type().HasFields() ? right_raw : left_raw;
+        } else if left->_type->HasFields() || right->_type->HasFields() {
+            let instance = left->_type->HasFields() ? left : right;
+            let value = left->_type->HasFields() ? right_raw : left_raw;
 
-            let mut values = Vector<SemanticValue>();
-            values.PushBack(instance.ImplicitAddressOf());
+            let mut values = Vector<*HIRExpression>();
+            values.PushBack(this.ImplicitAddressOf(instance));
             values.PushBack(value);
 
-            if instance.Type().HasMethods() {
-                let candidates = instance.Type().GetCandidates(name, node, true);
+            if instance->_type->HasMethods() {
+                let candidates = instance->_type->GetCandidates(name, node, true);
                 let function = this.ResolveOverload(candidates, values, node, true);
 
                 if function != null {
@@ -1927,77 +1982,77 @@ class SemanticAnalyzer {
                 }
             }
 
-            if left.Type() == right.Type() {
+            if *left->_type == *right->_type {
                 if _operator != TokenType::EQUAL && _operator != TokenType::NOT_EQUAL {
-                    Logger::Log("Invalid binary operation '" + _operator.ToString() + "' for type '" + left.Type().ToString() + "'.", node, LogSeverity::Error);
-                    return SemanticValue();
+                    Logger::Log("Invalid binary operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
+                    return null;
                 }
 
                 return SemanticValue(this.type_manager.Boolean());
             } else {
-                Logger::Log("Incompatible binary operation types. ('" + left.Type().ToString() + "' != '" + right.Type().ToString() + "').", node, LogSeverity::Error);
-                return SemanticValue();
+                Logger::Log("Incompatible binary operation types. ('" + left->_type->ToString() + "' != '" + right->_type->ToString() + "').", node, LogSeverity::Error);
+                return null;
             }
         }
 
-        if left.Type().IsPointer() && right.Type().IsInteger() && right.Type().IsLiteral() {
-            right = right.Materialize(this.type_manager.IntegerPointer(false));
-        } else if right.Type().IsPointer() && left.Type().IsInteger() && left.Type().IsLiteral() {
-            left = left.Materialize(this.type_manager.IntegerPointer(false));
+        if left->_type->IsPointer() && right->_type->IsInteger() && right->_type->IsLiteral() {
+            right = this.Materialize(right, this.type_manager.IntegerPointer(false));
+        } else if right->_type->IsPointer() && left->_type->IsInteger() && left->_type->IsLiteral() {
+            left = this.Materialize(left, this.type_manager.IntegerPointer(false));
         } else {
-            (left, right) = (left.Materialize(right.Type()), right.Materialize(left.Type()));
+            (left, right) = (this.Materialize(left, right->_type), this.Materialize(right, left->_type));
         }
 
-        if left.Type().IsBoolean() && right.Type().IsBoolean() {
+        if left->_type->IsBoolean() && right->_type->IsBoolean() {
             if _operator == TokenType::EQUAL || _operator == TokenType::NOT_EQUAL {
                 return SemanticValue(this.type_manager.Boolean());
             } else if _operator == TokenType::AND || _operator == TokenType::BITWISE_AND || _operator == TokenType::OR || _operator == TokenType::BITWISE_OR || _operator == TokenType::BITWISE_XOR {
-                return SemanticValue(left.Type());
+                return SemanticValue(left->_type);
             } else {
-                Logger::Log("Invalid binary operation '" + _operator.ToString() + "' for type '" + left.Type().ToString() + "'.", node, LogSeverity::Error);
-                return SemanticValue();
+                Logger::Log("Invalid binary operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
+                return null;
             }
-        } else if left.Type().IsCharacter() && right.Type().IsCharacter() {
+        } else if left->_type->IsCharacter() && right->_type->IsCharacter() {
             if _operator == TokenType::EQUAL || _operator == TokenType::NOT_EQUAL || _operator == TokenType::GREATER || _operator == TokenType::GREATER_EQUAL || _operator == TokenType::LESS || _operator == TokenType::LESS_EQUAL {
                 return SemanticValue(this.type_manager.Boolean());
             } else {
-                Logger::Log("Invalid binary operation '" + _operator.ToString() + "' for type '" + left.Type().ToString() + "'.", node, LogSeverity::Error);
-                return SemanticValue();
+                Logger::Log("Invalid binary operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
+                return null;
             }
-        } else if left.Type().IsInteger() && right.Type().IsInteger() {
-            if left.Type() != right.Type() {
-                Logger::Log("Incompatible binary operation types. ('" + left.Type().ToString() + "' != '" + right.Type().ToString() + "').", node, LogSeverity::Error);
-                return SemanticValue();
+        } else if left->_type->IsInteger() && right->_type->IsInteger() {
+            if *left->_type != *right->_type {
+                Logger::Log("Incompatible binary operation types. ('" + left->_type->ToString() + "' != '" + right->_type->ToString() + "').", node, LogSeverity::Error);
+                return null;
             }
 
             if _operator == TokenType::PLUS || _operator == TokenType::MINUS || _operator == TokenType::MUL || _operator == TokenType::DIV || _operator == TokenType::MOD {
-                return SemanticValue(left.Type());
+                return SemanticValue(left->_type);
             } else if _operator == TokenType::EQUAL || _operator == TokenType::NOT_EQUAL || _operator == TokenType::GREATER || _operator == TokenType::GREATER_EQUAL || _operator == TokenType::LESS || _operator == TokenType::LESS_EQUAL {
                 return SemanticValue(this.type_manager.Boolean());
             } else if _operator == TokenType::BITWISE_AND || _operator == TokenType::BITWISE_OR || _operator == TokenType::BITWISE_XOR || _operator == TokenType::LSHIFT || _operator == TokenType::RSHIFT {
-                return SemanticValue(left.Type());
+                return SemanticValue(left->_type);
             } else {
-                Logger::Log("Invalid binary operation '" + _operator.ToString() + "' for type '" + left.Type().ToString() + "'.", node, LogSeverity::Error);
-                return SemanticValue();
+                Logger::Log("Invalid binary operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
+                return null;
             }
-        } else if left.Type().IsFloat() && right.Type().IsFloat() {
-            if left.Type() != right.Type() {
-                Logger::Log("Incompatible binary operation types. ('" + left.Type().ToString() + "' != '" + right.Type().ToString() + "').", node, LogSeverity::Error);
-                return SemanticValue();
+        } else if left->_type->IsFloat() && right->_type->IsFloat() {
+            if *left->_type != *right->_type {
+                Logger::Log("Incompatible binary operation types. ('" + left->_type->ToString() + "' != '" + right->_type->ToString() + "').", node, LogSeverity::Error);
+                return null;
             }
 
             if _operator == TokenType::PLUS || _operator == TokenType::MINUS || _operator == TokenType::MUL || _operator == TokenType::DIV || _operator == TokenType::MOD {
-                return SemanticValue(left.Type());
+                return SemanticValue(left->_type);
             } else if _operator == TokenType::EQUAL || _operator == TokenType::NOT_EQUAL || _operator == TokenType::GREATER || _operator == TokenType::GREATER_EQUAL || _operator == TokenType::LESS || _operator == TokenType::LESS_EQUAL {
                 return SemanticValue(this.type_manager.Boolean());
             } else {
-                Logger::Log("Invalid binary operation '" + _operator.ToString() + "' for type '" + left.Type().ToString() + "'.", node, LogSeverity::Error);
-                return SemanticValue();
+                Logger::Log("Invalid binary operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
+                return null;
             }
-        } else if left.Type().IsPointer() && right.Type().IsPointer() {
-            if left.Type() != right.Type() && !(left.Type().IsNullPointer() || right.Type().IsNullPointer()) {
-                Logger::Log("Incompatible binary operation types. ('" + left.Type().ToString() + "' != '" + right.Type().ToString() + "').", node, LogSeverity::Error);
-                return SemanticValue();
+        } else if left->_type->IsPointer() && right->_type->IsPointer() {
+            if *left->_type != *right->_type && !(left->_type->IsNullPointer() || right->_type->IsNullPointer()) {
+                Logger::Log("Incompatible binary operation types. ('" + left->_type->ToString() + "' != '" + right->_type->ToString() + "').", node, LogSeverity::Error);
+                return null;
             }
 
             if _operator == TokenType::MINUS {
@@ -2005,79 +2060,80 @@ class SemanticAnalyzer {
             } else if _operator == TokenType::EQUAL || _operator == TokenType::NOT_EQUAL || _operator == TokenType::GREATER || _operator == TokenType::GREATER_EQUAL || _operator == TokenType::LESS || _operator == TokenType::LESS_EQUAL {
                 return SemanticValue(this.type_manager.Boolean());
             } else {
-                Logger::Log("Invalid pointer binary operation '" + _operator.ToString() + "' for type '" + left.Type().ToString() + "'.", node, LogSeverity::Error);
-                return SemanticValue();
+                Logger::Log("Invalid pointer binary operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
+                return null;
             }
-        } else if (left.Type().IsPointer() && right.Type().IsInteger()) || (left.Type().IsInteger() && right.Type().IsPointer()) {
-            let pointer = left.Type().IsPointer() ? left : right;
-            let index = left.Type().IsPointer() ? right : left;
+        } else if (left->_type->IsPointer() && right->_type->IsInteger()) || (left->_type->IsInteger() && right->_type->IsPointer()) {
+            let pointer = left->_type->IsPointer() ? left : right;
+            let index = left->_type->IsPointer() ? right : left;
 
-            if !index.Type().IsIntegerPointer() {
+            if !index->_type->IsIntegerPointer() {
                 Logger::Log("Pointer arithmetic requires an operand of pointer-sized type.", node, LogSeverity::Error);
-                return SemanticValue();
+                return null;
             }
 
             if _operator == TokenType::PLUS {
-                return SemanticValue(pointer.Type());
+                return SemanticValue(pointer->_type);
             } else if _operator == TokenType::MINUS {
-                if left.Type().IsInteger() {
+                if left->_type->IsInteger() {
                     Logger::Log("Cannot subtract a pointer from an integer.", node, LogSeverity::Error);
-                    return SemanticValue();
+                    return null;
                 }
 
-                return SemanticValue(pointer.Type());
+                return SemanticValue(pointer->_type);
             } else {
-                Logger::Log("Invalid pointer binary operation '" + _operator.ToString() + "' for type '" + left.Type().ToString() + "'.", node, LogSeverity::Error);
-                return SemanticValue();
+                Logger::Log("Invalid pointer binary operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
+                return null;
             }
-        } else if left.Type().IsEnumeration() && right.Type().IsEnumeration() {
-            if left.Type() != right.Type() {
-                Logger::Log("Incompatible binary operation types. ('" + left.Type().ToString() + "' != '" + right.Type().ToString() + "').", node, LogSeverity::Error);
-                return SemanticValue();
+        } else if left->_type->IsEnumeration() && right->_type->IsEnumeration() {
+            if *left->_type != *right->_type {
+                Logger::Log("Incompatible binary operation types. ('" + left->_type->ToString() + "' != '" + right->_type->ToString() + "').", node, LogSeverity::Error);
+                return null;
             }
 
             if _operator == TokenType::BITWISE_AND || _operator == TokenType::BITWISE_OR || _operator == TokenType::BITWISE_XOR {
-                return SemanticValue(left.Type());
+                return SemanticValue(left->_type);
             } else if _operator == TokenType::EQUAL || _operator == TokenType::NOT_EQUAL || _operator == TokenType::GREATER || _operator == TokenType::GREATER_EQUAL || _operator == TokenType::LESS || _operator == TokenType::LESS_EQUAL {
                 return SemanticValue(this.type_manager.Boolean());
             } else {
-                Logger::Log("Invalid binary operation '" + _operator.ToString() + "' for type '" + left.Type().ToString() + "'.", node, LogSeverity::Error);
-                return SemanticValue();
+                Logger::Log("Invalid binary operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
+                return null;
             }
         } else {
-            Logger::Log("Invalid type '" + left.Type().ToString() + "' for binary operation '" + _operator.ToString() + "'.", node, LogSeverity::Error);
-            return SemanticValue();
+            Logger::Log("Invalid type '" + left->_type->ToString() + "' for binary operation '" + _operator.ToString() + "'.", node, LogSeverity::Error);
+            return null;
         }
     }
 
-    fn AnalyzeTernary(&mut this, ternary: *TernaryNode, target: *SemanticType) -> SemanticValue {
-        let condition = this.AnalyzeExpression(ternary->condition).ImplicitDereference();
+    fn AnalyzeTernary(&mut this, ternary: *TernaryNode, target: *SemanticType) -> *HIRExpression {
+        let condition = this.ImplicitDereference(this.AnalyzeExpression(ternary->condition));
 
-        if !condition.Null() && !condition.Type().IsBoolean() {
-            Logger::Log("Invalid condition type '" + condition.Type().ToString() + "'.", ternary->condition, LogSeverity::Error);
+        if condition != null && !condition->_type->IsBoolean() {
+            Logger::Log("Invalid condition type '" + condition->_type->ToString() + "'.", ternary->condition, LogSeverity::Error);
         }
 
         let mut then_value = this.AnalyzeExpression(ternary->then);
-        if then_value.Null() { return SemanticValue(); }
+        if then_value == null { return null; }
 
         let mut else_value = this.AnalyzeExpression(ternary->_else);
-        if else_value.Null() { return SemanticValue(); }
+        if else_value == null { return null; }
 
-        then_value.Materialize(target != null ? target : else_value.Type());
-        else_value.Materialize(target != null ? target : then_value.Type());
+        this.Materialize(then_value, target != null ? target : else_value->_type);
+        this.Materialize(else_value, target != null ? target : then_value->_type);
 
-        let mutable = then_value.IsMutable() && else_value.IsMutable() ? true : false;
-        let category = then_value.IsPlace() && else_value.IsPlace() ? ValueCategory::Place : ValueCategory::Value;
-        return SemanticValue(then_value.Type(), category, mutable);
+        let mutable = then_value->mutable && else_value->mutable ? true : false;
+        let category = (then_value->category == HIRExpressionCategory::Place && else_value->category == HIRExpressionCategory::Place)
+            ? HIRExpressionCategory::Place : HIRExpressionCategory::Value;
+        return SemanticValue(then_value->_type, category, mutable);
     }
 
-    fn AnalyzeStructureInitializer(&mut this, node: *StructureInitializerNode) -> SemanticValue {
+    fn AnalyzeStructureInitializer(&mut this, node: *StructureInitializerNode) -> *HIRExpression {
         let symbol = this.scope_manager.Resolve(node->expression, false);
-        if symbol == null { return SemanticValue(); }
+        if symbol == null { return null; }
 
         if symbol->kind != SymbolKind::Declaration || symbol->declaration->kind != HIRDeclarationKind::Structure {
             Logger::Log("Cannot initialize non-structure type.", node, LogSeverity::Error);
-            return SemanticValue();
+            return null;
         }
 
         return SemanticValue(symbol->declaration->_type);
@@ -2199,7 +2255,7 @@ class SemanticAnalyzer {
 
             return this.type_manager.Function(param_types, return_type);
         } else {
-            Logger::Log("Unknown type '" + _type->_type.ToString() + "'.", _type, LogSeverity::Error);
+            Logger::Log("Unknown type '" + _type->_type->ToString() + "'.", _type, LogSeverity::Error);
             return null;
         }
     }

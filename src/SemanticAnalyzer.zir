@@ -330,26 +330,40 @@ class SemanticAnalyzer {
 
     fn ImplicitDereference(&mut this, expression: *HIRExpression) -> *HIRExpression {
         if expression != null && expression->_type->IsReference() {
-            return this.arena.New<HIRDereference>(expression->_type->Pointee(), HIRExpressionCategory::Place, expression->_type->IsMutable());
+            return this.arena.New<HIRDereference>(expression);
         } return expression;
     }
 
     fn ImplicitAddressOf(&mut this, expression: *HIRExpression) -> *HIRExpression {
         if expression != null && expression->category == HIRExpressionCategory::Place {
-            return this.arena.New<HIRAddressOf>(this.type_manager.Reference(expression->_type, expression->mutable));
+            return this.arena.New<HIRAddressOf>(expression, expression->mutable);
         } return expression;
     }
 
     fn AnalyzeConstant(&mut this, constant: *ConstantNode) {
+        let mut initializer: *HIRExpression = null;
         let _type = this.ResolveType(constant->_type);
-        let declaration = this.arena.New<HIRConstant>(constant->name, _type, null);
+        if _type == null { return; }
+
+        if constant->initializer != null {
+            initializer = this.Materialize(this.AnalyzeExpression(constant->initializer), _type);
+        }
+
+        let declaration = this.arena.New<HIRConstant>(constant->name, _type, initializer);
         this.scope_manager.Set(constant->name, declaration, false, constant);
         this.module->declarations.PushBack(declaration);
     }
 
     fn AnalyzeStatic(&mut this, _static: *StaticNode) {
+        let mut initializer: *HIRExpression = null;
         let _type = this.ResolveType(_static->_type);
-        let declaration = this.arena.New<HIRStatic>(_static->name, _type, null, _static->mutable);
+        if _type == null { return; }
+
+        if _static->initializer != null && !_static->zero_initializer {
+            initializer = this.Materialize(this.AnalyzeExpression(_static->initializer), _type);
+        }
+
+        let declaration = this.arena.New<HIRStatic>(_static->name, _type, initializer, _static->mutable);
         this.scope_manager.Set(_static->name, declaration, false, _static);
         this.module->declarations.PushBack(declaration);
 
@@ -1035,18 +1049,20 @@ class SemanticAnalyzer {
     }
 
     fn AnalyzeVariable(&mut this, variable: *VariableNode) {
+        let mut initializer: *HIRExpression = null;
         let mut _type: *SemanticType = null;
 
         if variable->_type != null {
             _type = this.ResolveType(variable->_type);
         } else if variable->initializer != null {
-            _type = this.Materialize(this.AnalyzeExpression(variable->initializer))->_type;
+            initializer = this.AnalyzeExpression(variable->initializer);
+            _type = initializer->_type;
         } else {
             Logger::Log("Type annotation required for variable '" + variable->name + "' without initializer.", variable, LogSeverity::Error);
         }
 
         if _type != null {
-            let statement = this.arena.New<HIRVariable>(variable->name, _type, null, variable->mutable);
+            let statement = this.arena.New<HIRVariable>(variable->name, _type, initializer, variable->mutable);
             this.scope_manager.Set(variable->name, statement, variable);
             this.current_block->statements.PushBack(statement);
         }
@@ -1216,8 +1232,7 @@ class SemanticAnalyzer {
                 let statement = symbol->statement;
 
                 if statement->kind == HIRStatementKind::Variable {
-                    let variable = statement as *HIRVariable;
-                    return SemanticValue(variable->_type, HIRExpressionCategory::Place, variable->mutable);
+                    return this.arena.New<HIRVariableRef>(statement as *HIRVariable);
                 } else {
                     Logger::Log("Cannot use statement as an expression.", expression, LogSeverity::Error);
                     return null;
@@ -1226,11 +1241,11 @@ class SemanticAnalyzer {
                 let declaration = symbol->declaration;
 
                 if declaration->kind == HIRDeclarationKind::Constant {
-                    return SemanticValue(declaration->_type, HIRExpressionCategory::Place, false);
+                    return this.arena.New<HIRDeclarationRef>(declaration, false);
                 } else if declaration->kind == HIRDeclarationKind::Static {
-                    return SemanticValue(declaration->_type, HIRExpressionCategory::Place, (declaration as *HIRStatic)->mutable);
+                    return this.arena.New<HIRDeclarationRef>(declaration, (declaration as *HIRStatic)->mutable);
                 } else if declaration->kind == HIRDeclarationKind::Parameter {
-                    return SemanticValue(declaration->_type, HIRExpressionCategory::Place, (declaration as *HIRParameter)->mutable);
+                    return this.arena.New<HIRDeclarationRef>(declaration, (declaration as *HIRParameter)->mutable);
                 } else {
                     Logger::Log("Cannot use declaration '" + declaration->name + "' as an expression.", expression, LogSeverity::Error);
                     return null;
@@ -1257,7 +1272,7 @@ class SemanticAnalyzer {
         } else if expression->_type == NodeType::STRUCTURE_INITIALIZER {
             return this.AnalyzeStructureInitializer(expression as *StructureInitializerNode);
         } else {
-            Logger::Log("Unknown expression '" + expression->_type->ToString() + "'.", expression, LogSeverity::Error);
+            Logger::Log("Unknown expression '" + expression->_type.ToString() + "'.", expression, LogSeverity::Error);
             return null;
         }
     }
@@ -1344,7 +1359,7 @@ class SemanticAnalyzer {
         } else if literal->_type == TokenType::NULL {
             return this.arena.New<HIRNullLiteral>(this.type_manager.NullPointer());
         } else {
-            Logger::Log("Unknown literal type '" + literal->_type->ToString() + "'.", literal, LogSeverity::Error);
+            Logger::Log("Unknown literal type '" + literal->_type.ToString() + "'.", literal, LogSeverity::Error);
             return null;
         }
     }
@@ -1439,7 +1454,7 @@ class SemanticAnalyzer {
                         return null;
                     }
 
-                    return this.AnalyzeResolvedCall(instance.WithType(field._type)._type, values, call);
+                    return this.AnalyzeResolvedCall(field._type, values, call);
                 } else {
                     values.Insert(0, this.ImplicitAddressOf(instance));
                     let candidates = instance->_type->GetCandidates(member_access->member, call, false);
@@ -1567,21 +1582,22 @@ class SemanticAnalyzer {
 
         for i in 0..param_types.Size() {
             let param_type: *SemanticType = param_types[i];
-            let value = this.Materialize(values[i], param_type);
+            values[i] = this.Materialize(values[i], param_type);
         }
 
-        return SemanticValue(function.Return());
+        return this.arena.New<HIRCall>(function, values);
     }
 
     fn AnalyzeNew(&mut this, _new: *NewNode) -> *HIRExpression {
         let _type = this.ResolveType(_new->_type);
+        let mut size: *HIRExpression = null;
 
         if _type == null {
             return null;
         }
 
         if _new->size != null {
-            let size = this.Materialize(this.AnalyzeExpression(_new->size), this.type_manager.IntegerPointer(false));
+            size = this.Materialize(this.AnalyzeExpression(_new->size), this.type_manager.IntegerPointer(false));
 
             if size == null {
                 return null;
@@ -1593,11 +1609,11 @@ class SemanticAnalyzer {
             }
         }
 
-        return SemanticValue(this.type_manager.Pointer(_type, true));
+        return this.arena.New<HIRNew>(_type, size);
     }
 
     fn AnalyzeDelete(&mut this, _delete: *DeleteNode) -> *HIRExpression {
-        let mut pointer = this.AnalyzeExpression(_delete->expression);
+        let pointer = this.AnalyzeExpression(_delete->expression);
 
         if pointer == null {
             return null;
@@ -1605,7 +1621,10 @@ class SemanticAnalyzer {
 
         if !pointer->_type->IsPointer() {
             Logger::Log("Delete value must be a pointer.", _delete, LogSeverity::Error);
-        } return null;
+            return null;
+        }
+
+        return this.arena.New<HIRDelete>(pointer);
     }
 
     fn LiteralNeedsExplicitType(&mut this, expression: *Node, target: *SemanticType) -> bool {
@@ -1660,7 +1679,7 @@ class SemanticAnalyzer {
                 Logger::Log("Redundant cast. ('" + value->_type->ToString() + "' to '" + target.ToString() + "')", node, LogSeverity::Warning);
             } else {
                 if !failed || this._unsafe {
-                    return SemanticValue(target);
+                    return this.arena.New<HIRCast>(value, target);
                 } else {
                     Logger::Log("Cannot cast immutable pointer to mutable pointer.", node, LogSeverity::Error);
                     return null;
@@ -1670,31 +1689,31 @@ class SemanticAnalyzer {
 
         if value->_type->IsBoolean() {
             if target.IsInteger() {
-                return SemanticValue(target);
+                return this.arena.New<HIRCast>(value, target);
             }
         } else if value->_type->IsCharacter() {
             if target.IsInteger() {
-                return SemanticValue(target);
+                return this.arena.New<HIRCast>(value, target);
             }
         } else if value->_type->IsInteger() {
             if target.IsPointer() || target.IsInteger() || target.IsFloat() || target.IsEnumeration() {
-                return SemanticValue(target);
+                return this.arena.New<HIRCast>(value, target);
             } else if target.IsCharacter() {
                 if value->_type->Width() == 8 && !value->_type->IsSigned() {
-                    return SemanticValue(target);
+                    return this.arena.New<HIRCast>(value, target);
                 }
             }
         } else if value->_type->IsFloat() {
             if target.IsInteger() || target.IsFloat() {
-                return SemanticValue(target);
+                return this.arena.New<HIRCast>(value, target);
             }
         } else if value->_type->IsPointer() {
             if target.IsInteger() {
-                return SemanticValue(target);
+                return this.arena.New<HIRCast>(value, target);
             }
         } else if value->_type->IsEnumeration() {
             if target.IsInteger() {
-                return SemanticValue(target);
+                return this.arena.New<HIRCast>(value, target);
             }
         }
 
@@ -1724,7 +1743,7 @@ class SemanticAnalyzer {
                 }
             }
 
-            return SemanticValue(target);
+            return this.arena.New<HIRCast>(value, target);
         } else {
             Logger::Log("Cannot cast '" + value->_type->ToString() + "' to '" + target.ToString() + "'.", node, LogSeverity::Error);
             return null;
@@ -1765,7 +1784,7 @@ class SemanticAnalyzer {
             return null;
         }
 
-        return SemanticValue(value->_type->AsReference());
+        return this.arena.New<HIRIndexAccess>(value, index);
     }
 
     fn AnalyzeMemberAccess(&mut this, member_access: *MemberAccessNode) -> *HIRExpression {
@@ -1807,7 +1826,7 @@ class SemanticAnalyzer {
                 return null;
             }
 
-            return instance.WithType(field._type)._type;
+            return this.arena.New<HIRMemberAccess>(instance, field._type, index as usize);
         } else {
             Logger::Log("Field '" + member_access->member + "' not found in type '" + instance->_type->ToString() + "'.", member_access, LogSeverity::Error);
             return null;
@@ -1850,14 +1869,14 @@ class SemanticAnalyzer {
                 return null;
             }
 
-            return this.arena.New<HIRAddressOf>(this.type_manager.Reference(raw->_type, unary->mutable));
+            return this.arena.New<HIRAddressOf>(raw, unary->mutable);
         } else if unary->_operator == TokenType::MUL {
             if !raw->_type->IsPointer() {
                 Logger::Log("Cannot dereference non-pointer type '" + raw->_type->ToString() + "'.", unary, LogSeverity::Error);
                 return null;
             }
 
-            return this.arena.New<HIRDereference>(raw->_type->Pointee(), HIRExpressionCategory::Place, raw->_type->IsMutable());
+            return this.arena.New<HIRDereference>(raw);
         } else {
             let mut operand_target: *SemanticType = null;
 
@@ -1884,14 +1903,14 @@ class SemanticAnalyzer {
                         return null;
                     }
 
-                    return SemanticValue(value->_type);
+                    return this.arena.New<HIRUnary>(unary->_operator, value);
                 } else {
                     Logger::Log("Cannot negate type '" + value->_type->ToString() + "'.", unary, LogSeverity::Error);
                     return null;
                 }
             } else if unary->_operator == TokenType::NOT {
                 if value->_type->IsInteger() || value->_type->IsBoolean() {
-                    return SemanticValue(value->_type);
+                    return this.arena.New<HIRUnary>(unary->_operator, value);
                 } else {
                     Logger::Log("Cannot invert type '" + value->_type->ToString() + "'.", unary, LogSeverity::Error);
                     return null;
@@ -1938,7 +1957,7 @@ class SemanticAnalyzer {
                 return null;
             }
 
-            return SemanticValue(left->_type);
+            return this.arena.New<HIRBinary>(binary->_operator, left, right, left->_type);
         }
 
         let mut right = this.AnalyzeExpression(binary->right);
@@ -1988,7 +2007,7 @@ class SemanticAnalyzer {
                     return null;
                 }
 
-                return SemanticValue(this.type_manager.Boolean());
+                return this.arena.New<HIRBinary>(_operator, left, right, this.type_manager.Boolean());
             } else {
                 Logger::Log("Incompatible binary operation types. ('" + left->_type->ToString() + "' != '" + right->_type->ToString() + "').", node, LogSeverity::Error);
                 return null;
@@ -2005,16 +2024,16 @@ class SemanticAnalyzer {
 
         if left->_type->IsBoolean() && right->_type->IsBoolean() {
             if _operator == TokenType::EQUAL || _operator == TokenType::NOT_EQUAL {
-                return SemanticValue(this.type_manager.Boolean());
+                return this.arena.New<HIRBinary>(_operator, left, right, this.type_manager.Boolean());
             } else if _operator == TokenType::AND || _operator == TokenType::BITWISE_AND || _operator == TokenType::OR || _operator == TokenType::BITWISE_OR || _operator == TokenType::BITWISE_XOR {
-                return SemanticValue(left->_type);
+                return this.arena.New<HIRBinary>(_operator, left, right, left->_type);
             } else {
                 Logger::Log("Invalid binary operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
                 return null;
             }
         } else if left->_type->IsCharacter() && right->_type->IsCharacter() {
             if _operator == TokenType::EQUAL || _operator == TokenType::NOT_EQUAL || _operator == TokenType::GREATER || _operator == TokenType::GREATER_EQUAL || _operator == TokenType::LESS || _operator == TokenType::LESS_EQUAL {
-                return SemanticValue(this.type_manager.Boolean());
+                return this.arena.New<HIRBinary>(_operator, left, right, this.type_manager.Boolean());
             } else {
                 Logger::Log("Invalid binary operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
                 return null;
@@ -2026,11 +2045,11 @@ class SemanticAnalyzer {
             }
 
             if _operator == TokenType::PLUS || _operator == TokenType::MINUS || _operator == TokenType::MUL || _operator == TokenType::DIV || _operator == TokenType::MOD {
-                return SemanticValue(left->_type);
+                return this.arena.New<HIRBinary>(_operator, left, right, left->_type);
             } else if _operator == TokenType::EQUAL || _operator == TokenType::NOT_EQUAL || _operator == TokenType::GREATER || _operator == TokenType::GREATER_EQUAL || _operator == TokenType::LESS || _operator == TokenType::LESS_EQUAL {
-                return SemanticValue(this.type_manager.Boolean());
+                return this.arena.New<HIRBinary>(_operator, left, right, this.type_manager.Boolean());
             } else if _operator == TokenType::BITWISE_AND || _operator == TokenType::BITWISE_OR || _operator == TokenType::BITWISE_XOR || _operator == TokenType::LSHIFT || _operator == TokenType::RSHIFT {
-                return SemanticValue(left->_type);
+                return this.arena.New<HIRBinary>(_operator, left, right, left->_type);
             } else {
                 Logger::Log("Invalid binary operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
                 return null;
@@ -2042,9 +2061,9 @@ class SemanticAnalyzer {
             }
 
             if _operator == TokenType::PLUS || _operator == TokenType::MINUS || _operator == TokenType::MUL || _operator == TokenType::DIV || _operator == TokenType::MOD {
-                return SemanticValue(left->_type);
+                return this.arena.New<HIRBinary>(_operator, left, right, left->_type);
             } else if _operator == TokenType::EQUAL || _operator == TokenType::NOT_EQUAL || _operator == TokenType::GREATER || _operator == TokenType::GREATER_EQUAL || _operator == TokenType::LESS || _operator == TokenType::LESS_EQUAL {
-                return SemanticValue(this.type_manager.Boolean());
+                return this.arena.New<HIRBinary>(_operator, left, right, this.type_manager.Boolean());
             } else {
                 Logger::Log("Invalid binary operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
                 return null;
@@ -2056,9 +2075,9 @@ class SemanticAnalyzer {
             }
 
             if _operator == TokenType::MINUS {
-                return SemanticValue(this.type_manager.IntegerPointer(false));
+                return this.arena.New<HIRBinary>(_operator, left, right, this.type_manager.IntegerPointer(false));
             } else if _operator == TokenType::EQUAL || _operator == TokenType::NOT_EQUAL || _operator == TokenType::GREATER || _operator == TokenType::GREATER_EQUAL || _operator == TokenType::LESS || _operator == TokenType::LESS_EQUAL {
-                return SemanticValue(this.type_manager.Boolean());
+                return this.arena.New<HIRBinary>(_operator, left, right, this.type_manager.Boolean());
             } else {
                 Logger::Log("Invalid pointer binary operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
                 return null;
@@ -2073,14 +2092,14 @@ class SemanticAnalyzer {
             }
 
             if _operator == TokenType::PLUS {
-                return SemanticValue(pointer->_type);
+                return this.arena.New<HIRBinary>(_operator, left, right, pointer->_type);
             } else if _operator == TokenType::MINUS {
                 if left->_type->IsInteger() {
                     Logger::Log("Cannot subtract a pointer from an integer.", node, LogSeverity::Error);
                     return null;
                 }
 
-                return SemanticValue(pointer->_type);
+                return this.arena.New<HIRBinary>(_operator, left, right, pointer->_type);
             } else {
                 Logger::Log("Invalid pointer binary operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
                 return null;
@@ -2092,9 +2111,9 @@ class SemanticAnalyzer {
             }
 
             if _operator == TokenType::BITWISE_AND || _operator == TokenType::BITWISE_OR || _operator == TokenType::BITWISE_XOR {
-                return SemanticValue(left->_type);
+                return this.arena.New<HIRBinary>(_operator, left, right, left->_type);
             } else if _operator == TokenType::EQUAL || _operator == TokenType::NOT_EQUAL || _operator == TokenType::GREATER || _operator == TokenType::GREATER_EQUAL || _operator == TokenType::LESS || _operator == TokenType::LESS_EQUAL {
-                return SemanticValue(this.type_manager.Boolean());
+                return this.arena.New<HIRBinary>(_operator, left, right, this.type_manager.Boolean());
             } else {
                 Logger::Log("Invalid binary operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
                 return null;
@@ -2124,7 +2143,7 @@ class SemanticAnalyzer {
         let mutable = then_value->mutable && else_value->mutable ? true : false;
         let category = (then_value->category == HIRExpressionCategory::Place && else_value->category == HIRExpressionCategory::Place)
             ? HIRExpressionCategory::Place : HIRExpressionCategory::Value;
-        return SemanticValue(then_value->_type, category, mutable);
+        return this.arena.New<HIRTernary>(condition, then_value, else_value, category, mutable);
     }
 
     fn AnalyzeStructureInitializer(&mut this, node: *StructureInitializerNode) -> *HIRExpression {
@@ -2136,7 +2155,16 @@ class SemanticAnalyzer {
             return null;
         }
 
-        return SemanticValue(symbol->declaration->_type);
+        let structure = symbol->declaration as *HIRStructure;
+        let mut values = Vector<*HIRExpression>();
+
+        for field_value in node->field_values {
+            let value = this.AnalyzeExpression(field_value);
+            if value == null { return null; }
+            values.PushBack(value);
+        }
+
+        return this.arena.New<HIRStructureInitializer>(structure, values);
     }
 
     pub fn ResolveType(&mut this, _type: *Node) -> *SemanticType {
@@ -2255,7 +2283,7 @@ class SemanticAnalyzer {
 
             return this.type_manager.Function(param_types, return_type);
         } else {
-            Logger::Log("Unknown type '" + _type->_type->ToString() + "'.", _type, LogSeverity::Error);
+            Logger::Log("Unknown type '" + _type->_type.ToString() + "'.", _type, LogSeverity::Error);
             return null;
         }
     }

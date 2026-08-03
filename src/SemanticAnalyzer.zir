@@ -807,6 +807,7 @@ class SemanticAnalyzer {
             if value == null { return; }
         }
 
+        this.AnalyzeDestructors(null);
         this.current_block->statements.PushBack(this.arena.New<HIRReturn>(value));
     }
 
@@ -1027,12 +1028,27 @@ class SemanticAnalyzer {
         this.scope_manager.PopScope();
     }
 
+    fn AnalyzeDestructors(&mut this, target: *mut Scope) {
+        let mut scope = this.scope_manager.current;
+
+        while scope != null && !scope->global {
+            for instance in scope->instances.Reverse() {
+                let destructor = this.arena.New<HIRDestruct>(instance);
+                this.current_block->statements.PushBack(this.arena.New<HIRExpressionStatement>(destructor));
+            }
+
+            if scope == target { break; }
+            scope = scope->parent;
+        }
+    }
+
     fn AnalyzeContinue(&mut this, _continue: *ContinueNode) {
         if this.loop_scopes.Empty() {
             Logger::Log("Continue statement outside of loop.", _continue, LogSeverity::Error);
             return;
         }
 
+        this.AnalyzeDestructors(this.loop_scopes.Back());
         this.current_block->statements.PushBack(this.arena.New<HIRContinue>());
     }
 
@@ -1042,6 +1058,7 @@ class SemanticAnalyzer {
             return;
         }
 
+        this.AnalyzeDestructors(this.loop_scopes.Back());
         this.current_block->statements.PushBack(this.arena.New<HIRBreak>());
     }
 
@@ -1069,6 +1086,7 @@ class SemanticAnalyzer {
             this.AnalyzeStatement(statement);
         }
 
+        this.AnalyzeDestructors(this.scope_manager.current);
         this.current_block = prev_block;
         return statement;
     }
@@ -1531,7 +1549,13 @@ class SemanticAnalyzer {
 
             let _class = this.ResolveType(call->expression);
             if _class == null { return null; }
-            return SemanticValue(_class);
+
+            if !_class->IsClass() {
+                Logger::Log("Only class types can be constructed with a call expression.", call, LogSeverity::Error);
+                return null;
+            }
+
+            return this.arena.New<HIRConstruct>(_class, values);
         } else {
             let candidates = this.scope_manager.ResolveCandidates(call->expression, true);
 

@@ -137,6 +137,10 @@ class SemanticAnalyzer {
                     let parameter = this.arena.New<HIRParameter>(node->name, params[j], node->mutable);
                     this.scope_manager.Set(node->name, parameter, false, node);
                     forward.function->parameters.PushBack(parameter);
+
+                    if params[j]->IsClass() {
+                        this.scope_manager.RegisterInstance(this.arena.New<HIRDeclarationRef>(parameter, false));
+                    }
                 }
             }
 
@@ -748,7 +752,11 @@ class SemanticAnalyzer {
         if statement->_type == NodeType::RETURN {
             this.AnalyzeReturn(statement as *ReturnNode);
         } else if statement->_type == NodeType::EXPRESSION {
-            this.AnalyzeExpression((statement as *ExpressionNode)->expression);
+            let expression = this.AnalyzeExpression((statement as *ExpressionNode)->expression);
+
+            if expression != null {
+                this.current_block->statements.PushBack(this.arena.New<HIRExpressionStatement>(expression));
+            }
         } else if statement->_type == NodeType::IF {
             this.AnalyzeIf(statement as *IfNode);
         } else if statement->_type == NodeType::IF_LET {
@@ -774,7 +782,15 @@ class SemanticAnalyzer {
         } else if statement->_type == NodeType::VARIABLE {
             this.AnalyzeVariable(statement as *VariableNode);
         } else if statement->_type == NodeType::ASSIGNMENT {
-            this.AnalyzeAssignment(statement as *AssignmentNode);
+            let mut assignment = statement as *AssignmentNode;
+
+            while assignment != null {
+                let expression = this.AnalyzeAssignment(assignment);
+
+                if expression != null {
+                    this.current_block->statements.PushBack(this.arena.New<HIRExpressionStatement>(expression));
+                } assignment = assignment->next;
+            }
         } else if statement->_type == NodeType::ASSEMBLY {
             this.AnalyzeAssembly(statement as *AssemblyNode);
         } else {
@@ -787,6 +803,7 @@ class SemanticAnalyzer {
         let return_type = this.current_function->Return();
         let value = this.Materialize(this.AnalyzeExpression(_return->expression), return_type);
         if value == null { return; }
+        this.current_block->statements.PushBack(this.arena.New<HIRReturn>(value));
     }
 
     fn AnalyzeIf(&mut this, _if: *IfNode) {
@@ -1006,18 +1023,22 @@ class SemanticAnalyzer {
         this.scope_manager.PopScope();
     }
 
-    fn AnalyzeContinue(&this, _continue: *ContinueNode) {
+    fn AnalyzeContinue(&mut this, _continue: *ContinueNode) {
         if this.loop_scopes.Empty() {
             Logger::Log("Continue statement outside of loop.", _continue, LogSeverity::Error);
             return;
         }
+
+        this.current_block->statements.PushBack(this.arena.New<HIRContinue>());
     }
 
-    fn AnalyzeBreak(&this, _break: *BreakNode) {
+    fn AnalyzeBreak(&mut this, _break: *BreakNode) {
         if this.loop_scopes.Empty() {
             Logger::Log("Break statement outside of loop.", _break, LogSeverity::Error);
             return;
         }
+
+        this.current_block->statements.PushBack(this.arena.New<HIRBreak>());
     }
 
     fn AnalyzeMatch(&mut this, _match: *MatchNode) {
@@ -1065,11 +1086,28 @@ class SemanticAnalyzer {
             let statement = this.arena.New<HIRVariable>(variable->name, _type, initializer, variable->mutable);
             this.scope_manager.Set(variable->name, statement, variable);
             this.current_block->statements.PushBack(statement);
+
+            if _type->IsClass() {
+                this.scope_manager.RegisterInstance(this.arena.New<HIRVariableRef>(statement));
+            }
         }
 
         if variable->next != null {
             this.AnalyzeVariable(variable->next);
         }
+    }
+
+    fn AssignmentToBinaryOperator(&this, _operator: TokenType) -> TokenType {
+        if _operator == TokenType::PLUS_ASSIGN { return TokenType::PLUS; }
+        else if _operator == TokenType::MINUS_ASSIGN { return TokenType::MINUS; }
+        else if _operator == TokenType::MUL_ASSIGN { return TokenType::MUL; }
+        else if _operator == TokenType::DIV_ASSIGN { return TokenType::DIV; }
+        else if _operator == TokenType::MOD_ASSIGN { return TokenType::MOD; }
+        else if _operator == TokenType::LSHIFT_ASSIGN { return TokenType::LSHIFT; }
+        else if _operator == TokenType::RSHIFT_ASSIGN { return TokenType::RSHIFT; }
+        else if _operator == TokenType::AND_ASSIGN { return TokenType::BITWISE_AND; }
+        else if _operator == TokenType::OR_ASSIGN { return TokenType::BITWISE_OR; }
+        else { return TokenType::BITWISE_XOR; }
     }
 
     fn AnalyzeAssignment(&mut this, assignment: *AssignmentNode) -> *HIRExpression {
@@ -1105,50 +1143,25 @@ class SemanticAnalyzer {
                 }
             } else {
                 Logger::Log("Incompatible class assignment types. ('" + left->_type->ToString() + "' != '" + right->_type->ToString() + "').", assignment, LogSeverity::Error);
-            }
-        } else if left->category != HIRExpressionCategory::Place {
+            } return null;
+        }
+
+        if left->category != HIRExpressionCategory::Place {
             Logger::Log("Cannot assign to non-place value.", assignment, LogSeverity::Error);
-        } else if !left->mutable {
-            Logger::Log("Cannot assign to immutable value.", assignment, LogSeverity::Error);
-        } else {
-            if _operator != TokenType::ASSIGN {
-                if (left->_type->IsBoolean() || left->_type->IsEnumeration() || left->_type->IsInteger() || left->_type->IsFloat()) && left->_type != right->_type {
-                    Logger::Log("Incompatible assignment operation types. ('" + left->_type->ToString() + "' != '" + right->_type->ToString() + "').", assignment, LogSeverity::Error);
-                }
-
-                if left->_type->IsBoolean() || left->_type->IsEnumeration() {
-                    if _operator != TokenType::AND_ASSIGN && _operator != TokenType::OR_ASSIGN && _operator != TokenType::XOR_ASSIGN {
-                        Logger::Log("Invalid assignment operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", assignment, LogSeverity::Error);
-                    }
-                } else if left->_type->IsInteger() {
-                    if _operator != TokenType::PLUS_ASSIGN && _operator != TokenType::MINUS_ASSIGN && _operator != TokenType::MUL_ASSIGN && _operator != TokenType::DIV_ASSIGN && _operator != TokenType::MOD_ASSIGN &&
-                        _operator != TokenType::AND_ASSIGN && _operator != TokenType::OR_ASSIGN && _operator != TokenType::XOR_ASSIGN && _operator != TokenType::LSHIFT_ASSIGN && _operator != TokenType::RSHIFT_ASSIGN {
-                        Logger::Log("Invalid assignment operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", assignment, LogSeverity::Error);
-                    }
-                } else if left->_type->IsFloat() {
-                    if _operator != TokenType::PLUS_ASSIGN && _operator != TokenType::MINUS_ASSIGN && _operator != TokenType::MUL_ASSIGN && _operator != TokenType::DIV_ASSIGN && _operator != TokenType::MOD_ASSIGN {
-                        Logger::Log("Invalid assignment operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", assignment, LogSeverity::Error);
-                    }
-                } else if left->_type->IsPointer() {
-                    if !right->_type->IsIntegerPointer() {
-                        Logger::Log("Pointer arithmetic requires an operand of pointer-sized type.", assignment, LogSeverity::Error);
-                    }
-
-                    if _operator != TokenType::PLUS_ASSIGN && _operator != TokenType::MINUS_ASSIGN {
-                        Logger::Log("Invalid pointer assignment operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", assignment, LogSeverity::Error);
-                    }
-                } else {
-                    Logger::Log("Invalid type '" + left->_type->ToString() + "' for assignment operation '" + _operator.ToString() + "'.", assignment, LogSeverity::Error);
-                }
-            }
-        }
-
-        if assignment->next != null {
-            this.AnalyzeAssignment(assignment->next);
             return null;
-        } else {
-            return left_raw;
         }
+
+        if !left->mutable {
+            Logger::Log("Cannot assign to immutable value.", assignment, LogSeverity::Error);
+            return null;
+        }
+
+        if _operator != TokenType::ASSIGN {
+            right = this.AnalyzeResolvedBinary(left, right, this.AssignmentToBinaryOperator(_operator), assignment);
+            if right == null { return null; }
+        }
+
+        return this.arena.New<HIRAssignment>(left, right);
     }
 
     fn IsDeferrableExpression(&mut this, node: *Node) -> *SemanticType {
@@ -1209,7 +1222,7 @@ class SemanticAnalyzer {
             let _type = this.IsDeferrableExpression(expression);
 
             if _type != null {
-                return this.arena.New<HIRExpression>(_type, expression);
+                return this.arena.New<HIRDeferredExpression>(_type, expression);
             }
         }
 
@@ -1251,7 +1264,8 @@ class SemanticAnalyzer {
                     return null;
                 }
             } else {
-                return SemanticValue(symbol->_type);
+                Logger::Log("Cannot use a type as an expression.", expression, LogSeverity::Error);
+                return null;
             }
         } else if expression->_type == NodeType::NEW {
             return this.AnalyzeNew(expression as *NewNode);
@@ -1399,7 +1413,7 @@ class SemanticAnalyzer {
                     _type = this.ResolveType(argument);
                 }
 
-                return SemanticValue(this.type_manager.IntegerPointer(false));
+                return this.arena.New<HIRIntrinsic>(identifier->name == "sizeof" ? HIRIntrinsicKind::SizeOf : HIRIntrinsicKind::AlignOf, _type);
             }
         }
 
@@ -1660,9 +1674,8 @@ class SemanticAnalyzer {
             value = this.ImplicitDereference(value);
         }
 
-        let mut left: *SemanticType = target;
-        let mut right: *SemanticType = value->_type;
         let (mut state, mut failed) = (false, false);
+        let (mut left: *SemanticType, mut right) = (target, value->_type);
 
         while left->IsPointer() && right->IsPointer() {
             if left->IsMutable() != right->IsMutable() {

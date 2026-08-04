@@ -1262,7 +1262,7 @@ class SemanticAnalyzer {
             } else if symbol->kind == SymbolKind::Declaration {
                 let declaration = symbol->declaration;
 
-                if declaration->kind == HIRDeclarationKind::Constant {
+                if declaration->kind == HIRDeclarationKind::Constant || declaration->kind == HIRDeclarationKind::Function {
                     return this.arena.New<HIRDeclarationRef>(declaration, false);
                 } else if declaration->kind == HIRDeclarationKind::Static {
                     return this.arena.New<HIRDeclarationRef>(declaration, (declaration as *HIRStatic)->mutable);
@@ -1477,7 +1477,8 @@ class SemanticAnalyzer {
                         return null;
                     }
 
-                    return this.AnalyzeResolvedCall(field._type, values, call);
+                    let target = this.arena.New<HIRMemberAccess>(instance, field._type, index as usize);
+                    return this.AnalyzeResolvedCall(target, values, call);
                 } else {
                     values.Insert(0, this.ImplicitAddressOf(instance));
                     let candidates = instance->_type->GetCandidates(member_access->member, call, false);
@@ -1553,7 +1554,7 @@ class SemanticAnalyzer {
             let value = this.AnalyzeExpression(call->expression);
 
             if value != null {
-                return this.AnalyzeResolvedCall(value->_type, values, call);
+                return this.AnalyzeResolvedCall(value, values, call);
             } else {
                 return null;
             }
@@ -1596,18 +1597,24 @@ class SemanticAnalyzer {
         }
     }
 
-    fn AnalyzeResolvedCall(&mut this, function: *HIRFunction, values: &Vector<*HIRExpression>, node: *Node) -> *HIRExpression {
-        return this.AnalyzeResolvedCall((function as *HIRDeclaration)->_type, values, node);
-    }
-
     fn AnalyzeResolvedCall(&mut this, candidates: &Vector<*HIRFunction>, values: &Vector<*HIRExpression>, node: *Node) -> *HIRExpression {
         let function = this.ResolveOverload(candidates, values, node, false);
         if function == null { return null; }
         return this.AnalyzeResolvedCall(function, values, node);
     }
 
-    fn AnalyzeResolvedCall(&mut this, function: &SemanticType, values: &Vector<*HIRExpression>, node: *Node) -> *HIRExpression {
-        let param_types = function.Parameters();
+    fn AnalyzeResolvedCall(&mut this, function: *HIRFunction, values: &Vector<*HIRExpression>, node: *Node) -> *HIRExpression {
+        let expression = this.arena.New<HIRDeclarationRef>(function as *HIRDeclaration, false);
+        return this.AnalyzeResolvedCall(expression, values, node);
+    }
+
+    fn AnalyzeResolvedCall(&mut this, function: *HIRExpression, values: &Vector<*HIRExpression>, node: *Node) -> *HIRExpression {
+        if !function->_type->IsFunction() {
+            Logger::Log("Call target is not a function.", node, LogSeverity::Error);
+            return null;
+        }
+
+        let param_types = function->_type->Parameters();
 
         for i in 0..param_types.Size() {
             let param_type: *SemanticType = param_types[i];

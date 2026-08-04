@@ -136,8 +136,8 @@ class CodeGenerator {
         let value = LLVMAddFunction(this.module, name.Data(), _type);
 
         if function->body != null {
-            /* let entry = LLVMAppendBasicBlockInContext(this.context, value, "");
-            LLVMPositionBuilderAtEnd(this.builder, entry); */
+            let entry = LLVMAppendBasicBlockInContext(this.context, value, "entry");
+            LLVMPositionBuilderAtEnd(this.builder, entry);
             this.GenerateBlock(function->body);
         }
     }
@@ -185,12 +185,42 @@ class CodeGenerator {
     fn GenerateStatement(&mut this, statement: *HIRStatement) {
         if statement->kind == HIRStatementKind::Block {
             this.GenerateBlock(statement as *HIRBlock);
+        } else if statement->kind == HIRStatementKind::Return {
+            this.GenerateReturn(statement as *HIRReturn);
         }
     }
 
     fn GenerateBlock(&mut this, block: *HIRBlock) {
         for statement in block->statements {
             this.GenerateStatement(statement);
+        }
+    }
+
+    fn GenerateReturn(&mut this, _return: *HIRReturn) {
+        if _return->expression == null {
+            LLVMBuildRetVoid(this.builder);
+        } else {
+            let value = this.GenerateExpression(_return->expression);
+
+            if value != null {
+                LLVMBuildRet(this.builder, value);
+            }
+        }
+    }
+
+    fn GenerateExpression(&mut this, expression: *HIRExpression) -> LLVMValueRef {
+        if expression->kind == HIRExpressionKind::IntegerLiteral {
+            return LLVMConstInt(this.GenerateType(expression->_type), (expression as *HIRIntegerLiteral)->value, expression->_type->IsSigned() ? 1 : 0);
+        } else if expression->kind == HIRExpressionKind::FloatLiteral {
+            return LLVMConstReal(this.GenerateType(expression->_type), (expression as *HIRFloatLiteral)->value);
+        } else if expression->kind == HIRExpressionKind::BooleanLiteral {
+            return LLVMConstInt(this.GenerateType(expression->_type), (expression as *HIRBooleanLiteral)->value ? 1 : 0, 0);
+        } else if expression->kind == HIRExpressionKind::CharacterLiteral {
+            return LLVMConstInt(this.GenerateType(expression->_type), (expression as *HIRCharacterLiteral)->value as u64, 0);
+        } else if expression->kind == HIRExpressionKind::NullLiteral {
+            return LLVMConstNull(this.GenerateType(expression->_type));
+        } else {
+            return null;
         }
     }
 

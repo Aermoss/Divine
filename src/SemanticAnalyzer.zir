@@ -898,13 +898,9 @@ class SemanticAnalyzer {
         if _for->iterable->_type == NodeType::RANGE {
             let range = _for->iterable as *RangeNode;
             (is_range, is_inclusive) = (true, range->inclusive);
-
             start = this.AnalyzeExpression(range->start);
-            if start == null { return; }
-
             end = this.AnalyzeExpression(range->end);
-            if end == null { return; }
-
+            if start == null || end == null { return; }
             start = this.Materialize(start, end->_type);
             end = this.Materialize(end, start->_type);
         } else {
@@ -913,29 +909,30 @@ class SemanticAnalyzer {
 
             if iterable->_type->HasMethods() {
                 let mut values = Vector<*HIRExpression>();
-                values.PushBack(this.ImplicitAddressOf(iterable));
+            let mut values = Vector<*HIRExpression>();
+            values.PushBack(this.ImplicitAddressOf(iterable));
+            let mut begin_function: *HIRFunction = null;
+            let mut end_function: *HIRFunction = null;
 
+            if iterable->_type->HasMethods() {
                 let begin_candidates = iterable->_type->GetCandidates("Begin".ToString(), _for, true);
-                let begin_function = this.ResolveOverload(begin_candidates, values, _for, true);
                 
-                if begin_function != null {
-                    start = this.AnalyzeResolvedCall(begin_function, values, _for);
-                    if start == null { return; }
-                }
+                begin_function = this.ResolveOverload(begin_candidates, values, _for, true);
 
                 let end_candidates = iterable->_type->GetCandidates("End".ToString(), _for, true);
                 let end_function = this.ResolveOverload(end_candidates, values, _for, true);
 
-                if end_function != null {
-                    end = this.AnalyzeResolvedCall(end_function, values, _for);
-                    if end == null { return; }
-                }
+                end_function = this.ResolveOverload(end_candidates, values, _for, true);
             }
 
             if start == null || end == null {
                 Logger::Log("For loop only supports range expressions or classes with '.Begin()' and '.End()' methods.", _for, LogSeverity::Error);
+            if begin_function == null || end_function == null {
+                Logger::Log("For loop iterable must provide 'Begin()' and 'End()' methods.", _for, LogSeverity::Error);
                 return;
             }
+            end = this.AnalyzeResolvedCall(end_function, values, _for);
+            if start == null || end == null { return; }
         }
 
         if start->_type != end->_type {
@@ -945,7 +942,6 @@ class SemanticAnalyzer {
 
         let _type = start->_type;
 
-        if is_range {
             if !_type->IsInteger() && !_type->IsFloat() {
                 Logger::Log("For loop only supports range expressions of integer or floating point types.", _for, LogSeverity::Error);
                 return;

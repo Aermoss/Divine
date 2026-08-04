@@ -893,11 +893,11 @@ class SemanticAnalyzer {
 
     fn AnalyzeFor(&mut this, _for: *ForNode) {
         let (mut start: *HIRExpression, mut end: *HIRExpression);
-        let (mut is_range, mut is_inclusive) = (false, false);
+        let (mut is_range, mut inclusive) = (false, false);
 
         if _for->iterable->_type == NodeType::RANGE {
             let range = _for->iterable as *RangeNode;
-            (is_range, is_inclusive) = (true, range->inclusive);
+            (is_range, inclusive) = (true, range->inclusive);
             start = this.AnalyzeExpression(range->start);
             end = this.AnalyzeExpression(range->end);
             if start == null || end == null { return; }
@@ -935,80 +935,76 @@ class SemanticAnalyzer {
             return;
         }
 
-        let _type = start->_type;
+        let iterator_type = start->_type;
 
-            if !_type->IsInteger() && !_type->IsFloat() {
-                Logger::Log("For loop only supports range expressions of integer or floating point types.", _for, LogSeverity::Error);
-                return;
+        if is_range && !iterator_type->IsInteger() && !iterator_type->IsFloat() {
+            Logger::Log("For loop ranges require an integer or floating point type.", _for, LogSeverity::Error);
+            return;
+        }
+
+        if !is_range && !iterator_type->IsPointer() && !iterator_type->HasMethods() {
+            Logger::Log("For loop requires a pointer iterator or an iterator class.", _for, LogSeverity::Error);
+            return;
+        }
+
+        let iterator = this.arena.New<HIRVariable>("iterator".ToString(), iterator_type, start, true);
+        let iterator_ref = this.arena.New<HIRVariableRef>(iterator);
+
+        let mut variable: *HIRVariable = null;
+        let mut condition: *HIRExpression = null;
+        let mut step: *HIRExpression = null;
+
+        if is_range {
+            let mut one: *HIRExpression = null;
+
+            if iterator_type->IsFloat() {
+                one = this.arena.New<HIRFloatLiteral>(1.0f64, iterator_type);
+            } else {
+                one = this.arena.New<HIRIntegerLiteral>(1u64, iterator_type);
             }
+
+            let _operator = inclusive ? TokenType::LESS_EQUAL : TokenType::LESS;
+            condition = this.arena.New<HIRBinary>(_operator, iterator_ref, end, this.type_manager.Boolean());
+            let next = this.arena.New<HIRBinary>(TokenType::PLUS, iterator_ref, one, iterator_type);
+            step = this.arena.New<HIRAssignment>(iterator_ref, next);
+            variable = this.arena.New<HIRVariable>(_for->variable, iterator_type, iterator_ref, false);
+        } else if iterator_type->IsPointer() {
+            condition = this.arena.New<HIRBinary>(TokenType::NOT_EQUAL, iterator_ref, end, this.type_manager.Boolean());
+            let step_value = this.arena.New<HIRBinary>(TokenType::PLUS, iterator_ref, this.arena.New<HIRIntegerLiteral>(1u64, this.type_manager.IntegerPointer(false)), iterator_type);
+            step = this.arena.New<HIRAssignment>(iterator_ref, step_value);
+            let value = this.arena.New<HIRDereference>(iterator_ref);
+            variable = this.arena.New<HIRVariable>(_for->variable, iterator_type->Pointee(), value, false);
         } else {
-            if _type->HasMethods() {
-                let mut values = Vector<*HIRExpression>();
-                values.PushBack(SemanticValue(_type, HIRExpressionCategory::Place, true));
-                values.PushBack(end);
+            let mut values = Vector<*HIRExpression>();
+            values.PushBack(iterator_ref);
+            values.PushBack(end);
+            let condition_candidates = iterator_type->GetCandidates("operator!=".ToString(), _for, false);
+            condition = this.AnalyzeResolvedCall(condition_candidates, values, _for);
+            if condition == null { return; }
 
-                let candidates = _type->GetCandidates("operator!=".ToString(), _for, false);
-                if candidates.Empty() { return; }
+            values = Vector<*HIRExpression>();
+            values.PushBack(iterator_ref);
+            values.PushBack(this.arena.New<HIRIntegerLiteral>(1u64, this.type_manager.IntegerPointer(false)));
+            let step_candidates = iterator_type->GetCandidates("operator+=".ToString(), _for, false);
+            step = this.AnalyzeResolvedCall(step_candidates, values, _for);
+            if step == null { return; }
 
-                this.AnalyzeResolvedCall(candidates, values, _for);
-            } else if !_type->IsPointer() {
-                Logger::Log("For loop only supports pointer iterators or classes with '!=' operator.", _for, LogSeverity::Error);
-                return;
-            }
+            values = Vector<*HIRExpression>();
+            values.PushBack(iterator_ref);
+            let dereference_candidates = iterator_type->GetCandidates("operator*".ToString(), _for, false);
+            let value = this.AnalyzeResolvedCall(dereference_candidates, values, _for);
+            if value == null { return; }
+            variable = this.arena.New<HIRVariable>(_for->variable, value->_type, value, false);
         }
 
         this.scope_manager.PushScope(String("for"), false);
         this.loop_scopes.PushBack(this.scope_manager.current);
-
-        if is_range {
-            let variable = this.arena.New<HIRVariable>(_for->variable, _type, null, false);
-            this.scope_manager.Set(_for->variable, variable, _for);
-        } else {
-            if _type->IsPointer() {
-                let variable = this.arena.New<HIRVariable>(_for->variable, _type->Pointee(), null, false);
-                this.scope_manager.Set(_for->variable, variable, _for);
-            } else if _type->HasMethods() {
-                let mut values = Vector<*HIRExpression>();
-                values.PushBack(SemanticValue(_type, HIRExpressionCategory::Place, true));
-
-                let candidates = _type->GetCandidates("operator*".ToString(), _for, false);
-                if candidates.Empty() { return; }
-
-                let result = this.AnalyzeResolvedCall(candidates, values, _for);
-                if result == null { return; }
-
-                let variable = this.arena.New<HIRVariable>(_for->variable, result->_type, null, false);
-                this.scope_manager.Set(_for->variable, variable, _for);
-            } else {
-                Logger::Log("For loop only supports pointer iterators or classes with 'operator*' operator.", _for, LogSeverity::Error);
-                return;
-            }
-        }
-
-        this.AnalyzeBlock(_for->body as *BlockNode);
+        this.scope_manager.Set(_for->variable, variable as *HIRStatement, _for);
+        let body = this.AnalyzeBlock(_for->body as *BlockNode);
         this.loop_scopes.PopBack();
         this.scope_manager.PopScope();
 
-        if is_range {
-            if !_type->IsInteger() && !_type->IsFloat() {
-                Logger::Log("For loop only supports range expressions of integer or floating point types.", _for, LogSeverity::Error);
-                return;
-            }
-        } else {
-            if _type->HasMethods() {
-                let mut values = Vector<*HIRExpression>();
-                values.PushBack(SemanticValue(_type, HIRExpressionCategory::Place, true));
-                values.PushBack(SemanticValue(this.type_manager.IntegerPointer(false)));
-
-                let candidates = _type->GetCandidates("operator+=".ToString(), _for, false);
-                if candidates.Empty() { return; }
-
-                this.AnalyzeResolvedCall(candidates, values, _for);
-            } else if !_type->IsPointer() {
-                Logger::Log("For loop only supports pointer iterators or classes with '+=' operator.", _for, LogSeverity::Error);
-                return;
-            }
-        }
+        this.current_block->statements.PushBack(this.arena.New<HIRFor>(iterator, variable, condition, step, body));
     }
 
     fn AnalyzeLoop(&mut this, _loop: *LoopNode) {

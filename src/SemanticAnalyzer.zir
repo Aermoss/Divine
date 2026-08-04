@@ -819,22 +819,27 @@ class SemanticAnalyzer {
         }
 
         this.scope_manager.PushScope(String("then"), false);
-        this.AnalyzeBlock(_if->body as *BlockNode);
+        let (then_body, mut else_body: *HIRBlock) = (this.AnalyzeBlock(_if->body as *BlockNode), null);
         this.scope_manager.PopScope();
 
         if _if->_else != null {
             this.scope_manager.PushScope(String("else"), false);
 
-            if _if->_else->_type == NodeType::IF_LET {
-                this.AnalyzeIfLet(_if->_else as *IfLetNode);
-            } else if _if->_else->_type == NodeType::IF {
-                this.AnalyzeIf(_if->_else as *IfNode);
+            if _if->_else->_type == NodeType::BLOCK {
+                else_body = this.AnalyzeBlock(_if->_else as *BlockNode);
             } else {
-                this.AnalyzeBlock(_if->_else as *BlockNode);
+                let prev_block = this.current_block;
+                let else_block = this.arena.New<HIRBlock>();
+                this.current_block = else_block;
+                this.AnalyzeStatement(_if->_else);
+                this.current_block = prev_block;
+                else_body = else_block;
             }
 
             this.scope_manager.PopScope();
         }
+
+        this.current_block->statements.PushBack(this.arena.New<HIRIf>(condition, then_body, else_body));
     }
 
     fn AnalyzeIfLet(&mut this, if_let: *IfLetNode) {
@@ -842,18 +847,21 @@ class SemanticAnalyzer {
         if expression == null { return; }
 
         this.scope_manager.PushScope(String("then"), false);
-        this.AnalyzeStatement(if_let->body);
+        let (then_body, mut else_body: *HIRBlock) = (this.AnalyzeBlock(if_let->body as *BlockNode), null);
         this.scope_manager.PopScope();
 
         if if_let->_else != null {
             this.scope_manager.PushScope(String("else"), false);
 
-            if if_let->_else->_type == NodeType::IF_LET {
-                this.AnalyzeIfLet(if_let->_else as *IfLetNode);
-            } else if if_let->_else->_type == NodeType::IF {
-                this.AnalyzeIf(if_let->_else as *IfNode);
+            if if_let->_else->_type == NodeType::BLOCK {
+                else_body = this.AnalyzeBlock(if_let->_else as *BlockNode);
             } else {
-                this.AnalyzeBlock(if_let->_else as *BlockNode);
+                let prev_block = this.current_block;
+                let else_block = this.arena.New<HIRBlock>();
+                this.current_block = else_block;
+                this.AnalyzeStatement(if_let->_else);
+                this.current_block = prev_block;
+                else_body = else_block;
             }
 
             this.scope_manager.PopScope();
@@ -869,15 +877,17 @@ class SemanticAnalyzer {
 
         this.scope_manager.PushScope(String("while"), false);
         this.loop_scopes.PushBack(this.scope_manager.current);
-        this.AnalyzeBlock(_while->body as *BlockNode);
+        let (while_body, mut else_body: *HIRBlock) = (this.AnalyzeBlock(_while->body as *BlockNode), null);
         this.loop_scopes.PopBack();
         this.scope_manager.PopScope();
 
         if _while->_else != null {
             this.scope_manager.PushScope(String("else"), false);
-            this.AnalyzeBlock(_while->_else as *BlockNode);
+            else_body = this.AnalyzeBlock(_while->_else as *BlockNode);
             this.scope_manager.PopScope();
         }
+
+        this.current_block->statements.PushBack(this.arena.New<HIRWhile>(condition, while_body, else_body));
     }
 
     fn AnalyzeWhileLet(&mut this, while_let: *WhileLetNode) {

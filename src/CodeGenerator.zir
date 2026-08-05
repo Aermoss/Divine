@@ -309,8 +309,9 @@ class CodeGenerator {
             LLVMBuildCondBr(this.builder, condition, then_block, else_block);
             LLVMPositionBuilderAtEnd(this.builder, else_block);
             this.GenerateBlock(_if->else_body);
+            let current = LLVMGetInsertBlock(this.builder);
 
-            if LLVMGetBasicBlockTerminator(else_block) == null {
+            if current != null && LLVMGetBasicBlockTerminator(current) == null {
                 LLVMBuildBr(this.builder, merge_block);
             } else {
                 else_terminated = true;
@@ -319,8 +320,9 @@ class CodeGenerator {
 
         LLVMPositionBuilderAtEnd(this.builder, then_block);
         this.GenerateBlock(_if->then_body);
+        let current = LLVMGetInsertBlock(this.builder);
 
-        if LLVMGetBasicBlockTerminator(then_block) == null {
+        if current != null && LLVMGetBasicBlockTerminator(current) == null {
             LLVMBuildBr(this.builder, merge_block);
         } else {
             then_terminated = true;
@@ -404,11 +406,28 @@ class CodeGenerator {
             return LLVMConstInt(this.GenerateType(expression->_type), (expression as *HIRCharacterLiteral)->value as u64, 0);
         } else if expression->kind == HIRExpressionKind::NullLiteral {
             return LLVMConstNull(this.GenerateType(expression->_type));
+        } else if expression->kind == HIRExpressionKind::Unary {
+            return this.GenerateUnary(expression as *HIRUnary);
         } else if expression->kind == HIRExpressionKind::Binary {
             return this.GenerateBinary(expression as *HIRBinary);
-        } else {
-            return null;
-        }
+        } else if expression->kind == HIRExpressionKind::Ternary {
+            return this.GenerateTernary(expression as *HIRTernary);
+        } else { return null; }
+    }
+
+    fn GenerateUnary(&mut this, unary: *HIRUnary) -> LLVMValueRef {
+        let operand = this.GenerateExpression(unary->operand);
+        if operand == null { return null; }
+
+        if unary->_operator == TokenType::MINUS {
+            if unary->operand->_type->IsFloat() {
+                return LLVMBuildFNeg(this.builder, operand, "neg");
+            } else {
+                return LLVMBuildNeg(this.builder, operand, "neg");
+            }
+        } else if unary->_operator == TokenType::NOT {
+            return LLVMBuildNot(this.builder, operand, "not");
+        } else { return null; }
     }
 
     fn GenerateBinary(&mut this, binary: *HIRBinary) -> LLVMValueRef {
@@ -417,25 +436,94 @@ class CodeGenerator {
         if left == null || right == null { return null; }
 
         if binary->left->_type->IsFloat() {
-            if binary->_operator == TokenType::EQUAL { return LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOEQ, left, right, "eq"); }
-            else if binary->_operator == TokenType::NOT_EQUAL { return LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealONE, left, right, "ne"); }
-            else if binary->_operator == TokenType::LESS { return LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOLT, left, right, "lt"); }
-            else if binary->_operator == TokenType::LESS_EQUAL { return LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOLE, left, right, "le"); }
-            else if binary->_operator == TokenType::GREATER { return LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOGT, left, right, "gt"); }
-            else if binary->_operator == TokenType::GREATER_EQUAL { return LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOGE, left, right, "ge"); }
-            else { return null; }
+            if binary->_operator == TokenType::PLUS {
+                return LLVMBuildFAdd(this.builder, left, right, "add");
+            } else if binary->_operator == TokenType::MINUS {
+                return LLVMBuildFSub(this.builder, left, right, "sub");
+            } else if binary->_operator == TokenType::MUL {
+                return LLVMBuildFMul(this.builder, left, right, "mul");
+            } else if binary->_operator == TokenType::DIV {
+                return LLVMBuildFDiv(this.builder, left, right, "div");
+            } else if binary->_operator == TokenType::MOD {
+                return LLVMBuildFRem(this.builder, left, right, "mod");
+            } else if binary->_operator == TokenType::EQUAL {
+                return LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOEQ, left, right, "eq");
+            } else if binary->_operator == TokenType::NOT_EQUAL {
+                return LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealONE, left, right, "ne");
+            } else if binary->_operator == TokenType::LESS {
+                return LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOLT, left, right, "lt");
+            } else if binary->_operator == TokenType::LESS_EQUAL {
+                return LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOLE, left, right, "le");
+            } else if binary->_operator == TokenType::GREATER {
+                return LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOGT, left, right, "gt");
+            } else if binary->_operator == TokenType::GREATER_EQUAL {
+                return LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOGE, left, right, "ge");
+            } else { return null; }
         } else {
             let signed = binary->left->_type->IsSigned();
-            if binary->_operator == TokenType::EQUAL { return LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntEQ, left, right, "eq"); }
-            else if binary->_operator == TokenType::NOT_EQUAL { return LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntNE, left, right, "ne"); }
-            else if binary->_operator == TokenType::LESS { return LLVMBuildICmp(this.builder, signed ? LLVMIntPredicate::LLVMIntSLT : LLVMIntPredicate::LLVMIntULT, left, right, "lt"); }
-            else if binary->_operator == TokenType::LESS_EQUAL { return LLVMBuildICmp(this.builder, signed ? LLVMIntPredicate::LLVMIntSLE : LLVMIntPredicate::LLVMIntULE, left, right, "le"); }
-            else if binary->_operator == TokenType::GREATER { return LLVMBuildICmp(this.builder, signed ? LLVMIntPredicate::LLVMIntSGT : LLVMIntPredicate::LLVMIntUGT, left, right, "gt"); }
-            else if binary->_operator == TokenType::GREATER_EQUAL { return LLVMBuildICmp(this.builder, signed ? LLVMIntPredicate::LLVMIntSGE : LLVMIntPredicate::LLVMIntUGE, left, right, "ge"); }
-            else if binary->_operator == TokenType::AND { return LLVMBuildAnd(this.builder, left, right, "and"); }
-            else if binary->_operator == TokenType::OR { return LLVMBuildOr(this.builder, left, right, "or"); }
-            else { return null; }
+
+            if binary->_operator == TokenType::PLUS {
+                return LLVMBuildAdd(this.builder, left, right, "add");
+            } else if binary->_operator == TokenType::MINUS {
+                return LLVMBuildSub(this.builder, left, right, "sub");
+            } else if binary->_operator == TokenType::MUL {
+                return LLVMBuildMul(this.builder, left, right, "mul");
+            } else if binary->_operator == TokenType::DIV {
+                return signed ? LLVMBuildSDiv(this.builder, left, right, "div") : LLVMBuildUDiv(this.builder, left, right, "div");
+            } else if binary->_operator == TokenType::MOD {
+                return signed ? LLVMBuildSRem(this.builder, left, right, "rem") : LLVMBuildURem(this.builder, left, right, "rem");
+            } else if binary->_operator == TokenType::EQUAL {
+                return LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntEQ, left, right, "eq");
+            } else if binary->_operator == TokenType::NOT_EQUAL {
+                return LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntNE, left, right, "ne");
+            } else if binary->_operator == TokenType::LESS {
+                return LLVMBuildICmp(this.builder, signed ? LLVMIntPredicate::LLVMIntSLT : LLVMIntPredicate::LLVMIntULT, left, right, "lt");
+            } else if binary->_operator == TokenType::LESS_EQUAL {
+                return LLVMBuildICmp(this.builder, signed ? LLVMIntPredicate::LLVMIntSLE : LLVMIntPredicate::LLVMIntULE, left, right, "le");
+            } else if binary->_operator == TokenType::GREATER {
+                return LLVMBuildICmp(this.builder, signed ? LLVMIntPredicate::LLVMIntSGT : LLVMIntPredicate::LLVMIntUGT, left, right, "gt");
+            } else if binary->_operator == TokenType::GREATER_EQUAL {
+                return LLVMBuildICmp(this.builder, signed ? LLVMIntPredicate::LLVMIntSGE : LLVMIntPredicate::LLVMIntUGE, left, right, "ge");
+            } else if binary->_operator == TokenType::BITWISE_AND || binary->_operator == TokenType::AND {
+                return LLVMBuildAnd(this.builder, left, right, "and");
+            } else if binary->_operator == TokenType::BITWISE_OR || binary->_operator == TokenType::OR {
+                return LLVMBuildOr(this.builder, left, right, "or");
+            } else if binary->_operator == TokenType::BITWISE_XOR {
+                return LLVMBuildXor(this.builder, left, right, "xor");
+            } else if binary->_operator == TokenType::LSHIFT {
+                return LLVMBuildShl(this.builder, left, right, "shl");
+            } else if binary->_operator == TokenType::RSHIFT {
+                return signed ? LLVMBuildAShr(this.builder, left, right, "shr") : LLVMBuildLShr(this.builder, left, right, "shr");
+            } else { return null; }
         }
+    }
+
+    fn GenerateTernary(&mut this, ternary: *HIRTernary) -> LLVMValueRef {
+        let condition = this.GenerateExpression(ternary->condition);
+        if condition == null { return null; }
+
+        let function = LLVMGetBasicBlockParent(LLVMGetInsertBlock(this.builder));
+        let then_block = LLVMAppendBasicBlockInContext(this.context, function, "ternary.then");
+        let else_block = LLVMAppendBasicBlockInContext(this.context, function, "ternary.else");
+        let merge_block = LLVMAppendBasicBlockInContext(this.context, function, "ternary.merge");
+        LLVMBuildCondBr(this.builder, condition, then_block, else_block);
+
+        LLVMPositionBuilderAtEnd(this.builder, then_block);
+        let then_value = this.GenerateExpression(ternary->then);
+        if then_value == null { return null; }
+        LLVMBuildBr(this.builder, merge_block);
+
+        LLVMPositionBuilderAtEnd(this.builder, else_block);
+        let else_value = this.GenerateExpression(ternary->_else);
+        if else_value == null { return null; }
+        LLVMBuildBr(this.builder, merge_block);
+
+        LLVMPositionBuilderAtEnd(this.builder, merge_block);
+        let phi = LLVMBuildPhi(this.builder, this.GenerateType((ternary as *HIRExpression)->_type), "ternary.phi");
+        let mut incoming_blocks[]: LLVMBasicBlockRef = { then_block, else_block };
+        let mut incoming_values[]: LLVMValueRef = { then_value, else_value };
+        LLVMAddIncoming(phi, incoming_values, incoming_blocks, 2);
+        return phi;
     }
 
     fn GenerateType(&mut this, _type: *SemanticType) -> LLVMTypeRef {

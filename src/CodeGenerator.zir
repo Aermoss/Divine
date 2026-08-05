@@ -375,8 +375,11 @@ class CodeGenerator {
             let declaration = (expression as *HIRDeclarationRef)->declaration;
 
             if declaration->kind == HIRDeclarationKind::Function {
-                if !this.functions.Has(declaration as *HIRFunction) { return null; }
-                return this.functions[declaration as *HIRFunction];
+                let function = declaration as *HIRFunction;
+
+                if this.functions.Has(function) {
+                    return this.functions[function];
+                } else { return null; }
             }
 
             let storage = this.GeneratePlace(expression);
@@ -408,10 +411,14 @@ class CodeGenerator {
             return LLVMBuildGlobalStringPtr(this.builder, (expression as *HIRStringLiteral)->value.Data(), "string");
         } else if expression->kind == HIRExpressionKind::NullLiteral {
             return LLVMConstNull(this.GenerateType(expression->_type));
+        } else if expression->kind == HIRExpressionKind::Call {
+            return this.GenerateCall(expression as *HIRCall);
         } else if expression->kind == HIRExpressionKind::New {
             return this.GenerateNew(expression as *HIRNew);
         } else if expression->kind == HIRExpressionKind::Delete {
             return this.GenerateDelete(expression as *HIRDelete);
+        } else if expression->kind == HIRExpressionKind::Cast {
+            return this.GenerateCast(expression as *HIRCast);
         } else if expression->kind == HIRExpressionKind::Unary {
             return this.GenerateUnary(expression as *HIRUnary);
         } else if expression->kind == HIRExpressionKind::Binary {
@@ -419,6 +426,24 @@ class CodeGenerator {
         } else if expression->kind == HIRExpressionKind::Ternary {
             return this.GenerateTernary(expression as *HIRTernary);
         } else { return null; }
+    }
+
+    fn GenerateCall(&mut this, call: *HIRCall) -> LLVMValueRef {
+        let _type = call->function->_type;
+        let function = this.GenerateExpression(call->function);
+        if function == null { return null; }
+        let arguments = Vector<LLVMValueRef>();
+
+        for argument in call->arguments {
+            arguments.PushBack(this.GenerateExpression(argument));
+        }
+
+        let name = _type->Return()->IsVoid() ? "" : "call";
+        let result = LLVMBuildCall2(this.builder, this.GenerateType(_type), function, arguments.Data(), arguments.Size() as u32, name);
+
+        if !_type->Return()->IsVoid() {
+            return result;
+        } return null;
     }
 
     fn GenerateNew(&mut this, _new: *HIRNew) -> LLVMValueRef {
@@ -440,6 +465,13 @@ class CodeGenerator {
         if pointer != null {
             LLVMBuildFree(this.builder, pointer);
         } return null;
+    }
+
+    fn GenerateCast(&mut this, cast: *HIRCast) -> LLVMValueRef {
+        let value = this.GenerateExpression(cast->value);
+        let target = this.GenerateType((cast as *HIRExpression)->_type);
+        if value == null || target == null { return null; }
+        return value;
     }
 
     fn GenerateUnary(&mut this, unary: *HIRUnary) -> LLVMValueRef {

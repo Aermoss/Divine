@@ -273,22 +273,6 @@ class CodeGenerator {
         }
     }
 
-    fn GeneratePlace(&mut this, expression: *HIRExpression) -> LLVMValueRef {
-        if expression->kind == HIRExpressionKind::VariableRef {
-            let variable = (expression as *HIRVariableRef)->variable;
-            if !this.variables.Has(variable) { return null; }
-            return this.variables[variable];
-        } else if expression->kind == HIRExpressionKind::DeclarationRef {
-            let declaration = (expression as *HIRDeclarationRef)->declaration;
-            if !this.declarations.Has(declaration) { return null; }
-            return this.declarations[declaration];
-        } else if expression->kind == HIRExpressionKind::Dereference {
-            return this.GenerateExpression((expression as *HIRDereference)->operand);
-        } else {
-            return null;
-        }
-    }
-
     fn GenerateIf(&mut this, _if: *HIRIf) {
         let (mut then_terminated, mut else_terminated) = (false, false);
         let condition = this.GenerateExpression(_if->condition);
@@ -366,40 +350,32 @@ class CodeGenerator {
         LLVMPositionBuilderAtEnd(this.builder, end_block);
     }
 
-    fn GenerateExpression(&mut this, expression: *HIRExpression) -> LLVMValueRef {
+    fn GeneratePlaceExpression(&mut this, expression: *HIRExpression) -> LLVMValueRef {
         if expression->kind == HIRExpressionKind::VariableRef {
-            let storage = this.GeneratePlace(expression);
-            if storage == null { return null; }
-            return LLVMBuildLoad2(this.builder, this.GenerateType(expression->_type), storage, "load");
+            let variable = (expression as *HIRVariableRef)->variable;
+
+            if this.variables.Has(variable) {
+                return this.variables[variable];
+            } return null;
         } else if expression->kind == HIRExpressionKind::DeclarationRef {
             let declaration = (expression as *HIRDeclarationRef)->declaration;
 
-            if declaration->kind == HIRDeclarationKind::Function {
-                let function = declaration as *HIRFunction;
-
-                if this.functions.Has(function) {
-                    return this.functions[function];
-                } else { return null; }
-            }
-
-            let storage = this.GeneratePlace(expression);
-            if storage == null { return null; }
-            return LLVMBuildLoad2(this.builder, this.GenerateType(expression->_type), storage, "load");
-        } else if expression->kind == HIRExpressionKind::AddressOf {
-            return this.GeneratePlace((expression as *HIRAddressOf)->operand);
-        } else if expression->kind == HIRExpressionKind::Dereference {
-            let pointer = this.GenerateExpression((expression as *HIRDereference)->operand);
-            if pointer == null { return null; }
-            return LLVMBuildLoad2(this.builder, this.GenerateType(expression->_type), pointer, "deref");
-        } else if expression->kind == HIRExpressionKind::Assignment {
-            let assignment = expression as *HIRAssignment;
-            let storage = this.GeneratePlace(assignment->left);
-            let value = this.GenerateExpression(assignment->right);
-
-            if storage != null && value != null {
-                LLVMBuildStore(this.builder, value, storage);
+            if this.declarations.Has(declaration) {
+                return this.declarations[declaration];
             } return null;
-        } else if expression->kind == HIRExpressionKind::BooleanLiteral {
+        } else if expression->kind == HIRExpressionKind::Dereference {
+            return this.GenerateExpression((expression as *HIRDereference)->operand);
+        } else if expression->kind == HIRExpressionKind::IndexAccess {
+            return this.GenerateIndexAccess(expression as *HIRIndexAccess);
+        } else if expression->kind == HIRExpressionKind::MemberAccess {
+            return this.GenerateMemberAccess(expression as *HIRMemberAccess);
+        } else {
+            return null;
+        }
+    }
+
+    fn GenerateExpression(&mut this, expression: *HIRExpression) -> LLVMValueRef {
+        if expression->kind == HIRExpressionKind::BooleanLiteral {
             return LLVMConstInt(this.GenerateType(expression->_type), (expression as *HIRBooleanLiteral)->value ? 1 : 0, 0);
         } else if expression->kind == HIRExpressionKind::CharacterLiteral {
             return LLVMConstInt(this.GenerateType(expression->_type), (expression as *HIRCharacterLiteral)->value as u64, 0);
@@ -411,6 +387,8 @@ class CodeGenerator {
             return LLVMBuildGlobalStringPtr(this.builder, (expression as *HIRStringLiteral)->value.Data(), "string");
         } else if expression->kind == HIRExpressionKind::NullLiteral {
             return LLVMConstNull(this.GenerateType(expression->_type));
+        } else if expression->kind == HIRExpressionKind::Assignment {
+            return this.GenerateAssignment(expression as *HIRAssignment);
         } else if expression->kind == HIRExpressionKind::Call {
             return this.GenerateCall(expression as *HIRCall);
         } else if expression->kind == HIRExpressionKind::New {
@@ -425,7 +403,24 @@ class CodeGenerator {
             return this.GenerateBinary(expression as *HIRBinary);
         } else if expression->kind == HIRExpressionKind::Ternary {
             return this.GenerateTernary(expression as *HIRTernary);
-        } else { return null; }
+        } else if expression->kind == HIRExpressionKind::AddressOf {
+            return this.GeneratePlaceExpression((expression as *HIRAddressOf)->operand);
+        } else {
+            let place = this.GeneratePlaceExpression(expression);
+
+            if place != null {
+                return LLVMBuildLoad2(this.builder, this.GenerateType(expression->_type), place, "load");
+            } return null;
+        }
+    }
+
+    fn GenerateAssignment(&mut this, assignment: *HIRAssignment) -> LLVMValueRef {
+        let storage = this.GeneratePlaceExpression(assignment->left);
+        let value = this.GenerateExpression(assignment->right);
+
+        if storage != null && value != null {
+            LLVMBuildStore(this.builder, value, storage);
+        } return null;
     }
 
     fn GenerateCall(&mut this, call: *HIRCall) -> LLVMValueRef {
@@ -472,6 +467,22 @@ class CodeGenerator {
         let target = this.GenerateType((cast as *HIRExpression)->_type);
         if value == null || target == null { return null; }
         return value;
+    }
+
+    fn GenerateIndexAccess(&mut this, access: *HIRIndexAccess) -> LLVMValueRef {
+        let value = this.GeneratePlaceExpression(access->value);
+        let index = this.GenerateExpression(access->index);
+        let _type = this.GenerateType(access->value->_type->Pointee());
+        if value == null || index == null || _type == null { return null; }
+        let mut indices[]: LLVMValueRef = { index };
+        return LLVMBuildGEP2(this.builder, _type, value, indices, 1, "index");
+    }
+
+    fn GenerateMemberAccess(&mut this, access: *HIRMemberAccess) -> LLVMValueRef {
+        let instance = this.GeneratePlaceExpression(access->instance);
+        let _type = this.GenerateType(access->instance->_type);
+        if instance == null || _type == null { return null; }
+        return LLVMBuildStructGEP2(this.builder, _type, instance, access->index as u32, "member");
     }
 
     fn GenerateUnary(&mut this, unary: *HIRUnary) -> LLVMValueRef {

@@ -47,7 +47,7 @@ class SemanticAnalyzer {
     variant_data: Map<*Node, Pair<*mut HIRVariant, *mut Scope>>,
     loop_scopes: Vector<*mut Scope>,
 
-    pub mangling: bool = true,
+    pub abi: HIRDeclarationABI = HIRDeclarationABI::Zircon,
     pub _unsafe: bool = false,
 
     pub generics: Vector<*Generic>,
@@ -420,13 +420,13 @@ class SemanticAnalyzer {
         }
 
         let _type = this.type_manager.Function(param_types, return_type);
-        let declaration = this.arena.New<HIRFunction>(function->name, _type);
+        let declaration = this.arena.New<HIRFunction>(function->no_mangle, this.abi, function->name, _type);
         this.module->declarations.PushBack(declaration);
 
         if generic != null {
             generic->Set(declaration);
         } else {
-            this.scope_manager.Set(function->name, declaration, this.mangling && !function->no_mangle, function);
+            this.scope_manager.Set(function->name, declaration, this.abi == HIRDeclarationABI::Zircon && !function->no_mangle, function);
         }
 
         if function->body != null {
@@ -711,7 +711,7 @@ class SemanticAnalyzer {
     }
 
     fn AnalyzeExtern(&mut this, _extern: *ExternNode) {
-        if !this.mangling {
+        if this.abi != HIRDeclarationABI::Zircon {
             Logger::Log("Already in an extern block.", _extern, LogSeverity::Error);
             return;
         }
@@ -721,13 +721,14 @@ class SemanticAnalyzer {
             return;
         }
 
-        this.mangling = false;
+        let previous_abi = this.abi;
+        this.abi = HIRDeclarationABI::C;
 
         for declaration in _extern->declarations {
             this.AnalyzeDeclarationThirdPass(declaration);
         }
 
-        this.mangling = true;
+        this.abi = previous_abi;
     }
 
     fn AnalyzeAssembly(&mut this, assembly: *AssemblyNode) {

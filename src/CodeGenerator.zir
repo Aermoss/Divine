@@ -108,6 +108,10 @@ class CodeGenerator {
         for declaration in module->declarations {
             this.GenerateDeclarationThirdPass(declaration);
         }
+
+        for declaration in module->declarations {
+            this.GenerateDeclarationFourthPass(declaration);
+        }
     }
 
     fn GenerateDeclarationFirstPass(&mut this, declaration: *HIRDeclaration) {
@@ -132,7 +136,17 @@ class CodeGenerator {
         } else if declaration->kind == HIRDeclarationKind::Structure {
             this.GenerateStructureThirdPass(declaration as *HIRStructure);
         } else if declaration->kind == HIRDeclarationKind::Function {
-            this.GenerateFunction(declaration as *HIRFunction);
+            this.GenerateFunctionFirstPass(declaration as *HIRFunction);
+        }
+    }
+
+    fn GenerateDeclarationFourthPass(&mut this, declaration: *HIRDeclaration) {
+        if declaration->kind == HIRDeclarationKind::Structure {
+            this.GenerateStructureFourthPass(declaration as *HIRStructure);
+        } else if declaration->kind == HIRDeclarationKind::Class {
+            this.GenerateClassFourthPass(declaration as *HIRClass);
+        } else if declaration->kind == HIRDeclarationKind::Function {
+            this.GenerateFunctionSecondPass(declaration as *HIRFunction);
         }
     }
 
@@ -199,7 +213,7 @@ class CodeGenerator {
         LLVMAddCallSiteAttribute(call, index as LLVMAttributeIndex, attribute);
     }
 
-    fn GenerateFunction(&mut this, function: *HIRFunction) {
+    fn GenerateFunctionFirstPass(&mut this, function: *HIRFunction) {
         let declaration = function as *HIRDeclaration;
         let source_return_type = declaration->_type->Return();
         let returns_sret = this.IsIndirectAggregate(source_return_type);
@@ -232,57 +246,64 @@ class CodeGenerator {
             this.AddTypeAttribute(value, 1, "sret", source_return_type);
         }
 
-        let param_offset: u32 = returns_sret ? 1 : 0;
         let parameters = declaration->_type->Parameters();
 
         for i in 0..parameters.Size() {
             let parameter: *SemanticType = parameters[i];
 
             if this.IsIndirectAggregate(parameter) {
-                this.AddTypeAttribute(value, param_offset + i as u32 + 1, "byval", parameter);
+                this.AddTypeAttribute(value, (returns_sret ? 2 : 1) + i as u32, "byval", parameter);
+            }
+        }
+    }
+
+    fn GenerateFunctionSecondPass(&mut this, function: *HIRFunction) {
+        let declaration = function as *HIRDeclaration;
+        if function->body == null || !this.functions.Has(function) { return; }
+        let source_return_type = declaration->_type->Return();
+        let returns_sret = this.IsIndirectAggregate(source_return_type);
+        let mut return_type = this.LoweredType(source_return_type);
+        if return_type == null { return; }
+
+        let value = this.functions[function];
+        let entry = LLVMAppendBasicBlockInContext(this.context, value, "entry");
+        LLVMPositionBuilderAtEnd(this.builder, entry);
+        this.current_sret = returns_sret ? LLVMGetParam(value, 0) : null;
+        this.current_return_type = source_return_type;
+        this.declarations.Clear();
+        this.variables.Clear();
+
+        for i in 0..function->parameters.Size() {
+            let parameter: *HIRParameter = function->parameters[i];
+            let parameter_value = LLVMGetParam(value, (returns_sret ? 1 : 0) + i as u32);
+            let parameter_type = (parameter as *HIRDeclaration)->_type;
+
+            if this.IsIndirectAggregate(parameter_type) {
+                this.declarations[(parameter as *HIRDeclaration)] = parameter_value;
+            } else if this.IsAggregate(parameter_type) {
+                this.declarations[(parameter as *HIRDeclaration)] = this.RaiseAggregateValue(parameter_value, parameter_type);
+            } else {
+                let storage = LLVMBuildAlloca(this.builder, this.GenerateType(parameter_type), (parameter as *HIRDeclaration)->name.Data());
+                LLVMBuildStore(this.builder, parameter_value, storage);
+                this.declarations[(parameter as *HIRDeclaration)] = storage;
             }
         }
 
-        if function->body != null {
-            let entry = LLVMAppendBasicBlockInContext(this.context, value, "entry");
-            LLVMPositionBuilderAtEnd(this.builder, entry);
-            this.current_sret = returns_sret ? LLVMGetParam(value, 0) : null;
-            this.current_return_type = source_return_type;
-            this.declarations.Clear();
-            this.variables.Clear();
+        this.GenerateBlock(function->body);
+        let mut block = LLVMGetFirstBasicBlock(value);
 
-            for i in 0..function->parameters.Size() {
-                let parameter: *HIRParameter = function->parameters[i];
-                let parameter_value = LLVMGetParam(value, param_offset + i as u32);
-                let parameter_type = (parameter as *HIRDeclaration)->_type;
+        while block != null {
+            if LLVMGetBasicBlockTerminator(block) == null {
+                LLVMPositionBuilderAtEnd(this.builder, block);
 
-                if this.IsIndirectAggregate(parameter_type) {
-                    this.declarations[(parameter as *HIRDeclaration)] = parameter_value;
-                } else if this.IsAggregate(parameter_type) {
-                    this.declarations[(parameter as *HIRDeclaration)] = this.RaiseAggregateValue(parameter_value, parameter_type);
+                if returns_sret || source_return_type->IsVoid() {
+                    LLVMBuildRetVoid(this.builder);
                 } else {
-                    let storage = LLVMBuildAlloca(this.builder, this.GenerateType(parameter_type), (parameter as *HIRDeclaration)->name.Data());
-                    LLVMBuildStore(this.builder, parameter_value, storage);
-                    this.declarations[(parameter as *HIRDeclaration)] = storage;
+                    LLVMBuildRet(this.builder, LLVMConstNull(return_type));
                 }
             }
 
-            this.GenerateBlock(function->body);
-            let mut block = LLVMGetFirstBasicBlock(value);
-
-            while block != null {
-                if LLVMGetBasicBlockTerminator(block) == null {
-                    LLVMPositionBuilderAtEnd(this.builder, block);
-
-                    if returns_sret || source_return_type->IsVoid() {
-                        LLVMBuildRetVoid(this.builder);
-                    } else {
-                        LLVMBuildRet(this.builder, LLVMConstNull(return_type));
-                    }
-                }
-
-                block = LLVMGetNextBasicBlock(block);
-            }
+            block = LLVMGetNextBasicBlock(block);
         }
     }
 
@@ -310,18 +331,32 @@ class CodeGenerator {
         this.namespaces.PushBack((_class as *HIRDeclaration)->name);
 
         for constructor in _class->constructors {
-            this.GenerateFunction(constructor);
+            this.GenerateFunctionFirstPass(constructor);
         }
 
         if _class->destructor != null {
-            this.GenerateFunction(_class->destructor);
+            this.GenerateFunctionFirstPass(_class->destructor);
         }
 
         for method in _class->methods {
-            this.GenerateFunction(method);
+            this.GenerateFunctionFirstPass(method);
         }
 
         this.namespaces.PopBack();
+    }
+
+    fn GenerateClassFourthPass(&mut this, _class: *HIRClass) {
+        for constructor in _class->constructors {
+            this.GenerateFunctionSecondPass(constructor);
+        }
+
+        if _class->destructor != null {
+            this.GenerateFunctionSecondPass(_class->destructor);
+        }
+
+        for method in _class->methods {
+            this.GenerateFunctionSecondPass(method);
+        }
     }
 
     fn GenerateStructureFirstPass(&mut this, structure: *HIRStructure) {
@@ -348,10 +383,16 @@ class CodeGenerator {
         this.namespaces.PushBack((structure as *HIRDeclaration)->name);
 
         for method in structure->methods {
-            this.GenerateFunction(method);
+            this.GenerateFunctionFirstPass(method);
         }
 
         this.namespaces.PopBack();
+    }
+
+    fn GenerateStructureFourthPass(&mut this, structure: *HIRStructure) {
+        for method in structure->methods {
+            this.GenerateFunctionSecondPass(method);
+        }
     }
 
     fn GenerateStatement(&mut this, statement: *HIRStatement) {

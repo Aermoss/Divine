@@ -123,7 +123,9 @@ class CodeGenerator {
     }
 
     fn GenerateDeclarationSecondPass(&mut this, declaration: *HIRDeclaration) {
-        if declaration->kind == HIRDeclarationKind::Class {
+        if declaration->kind == HIRDeclarationKind::Constant {
+            this.GenerateConstant(declaration as *HIRConstant);
+        } else if declaration->kind == HIRDeclarationKind::Class {
             this.GenerateClassSecondPass(declaration as *HIRClass);
         } else if declaration->kind == HIRDeclarationKind::Structure {
             this.GenerateStructureSecondPass(declaration as *HIRStructure);
@@ -131,13 +133,54 @@ class CodeGenerator {
     }
 
     fn GenerateDeclarationThirdPass(&mut this, declaration: *HIRDeclaration) {
-        if declaration->kind == HIRDeclarationKind::Class {
+        if declaration->kind == HIRDeclarationKind::Static {
+            this.GenerateStatic(declaration as *HIRStatic);
+        } else if declaration->kind == HIRDeclarationKind::Class {
             this.GenerateClassThirdPass(declaration as *HIRClass);
         } else if declaration->kind == HIRDeclarationKind::Structure {
             this.GenerateStructureThirdPass(declaration as *HIRStructure);
         } else if declaration->kind == HIRDeclarationKind::Function {
             this.GenerateFunctionFirstPass(declaration as *HIRFunction);
         }
+    }
+
+    fn GenerateConstant(&mut this, constant: *HIRConstant) {
+        let declaration = constant as *HIRDeclaration;
+        let _type = this.GenerateType(declaration->_type);
+        if _type == null { return; }
+
+        let initializer = this.GenerateExpression(constant->initializer);
+        if initializer == null { return; }
+
+        let global = LLVMAddGlobal(this.module, _type, declaration->name.Data());
+        LLVMSetInitializer(global, initializer);
+        LLVMSetGlobalConstant(global, 1);
+
+        this.declarations[declaration] = global;
+    }
+
+    fn GenerateStatic(&mut this, _static: *HIRStatic) {
+        let declaration = _static as *HIRDeclaration;
+        let _type = this.GenerateType(declaration->_type);
+        if _type == null { return; }
+
+        let global = LLVMAddGlobal(this.module, _type, declaration->name.Data());
+        LLVMSetLinkage(global, declaration->linkage == HIRDeclarationLinkage::Internal ? LLVMLinkage::LLVMInternalLinkage : LLVMLinkage::LLVMExternalLinkage);
+        LLVMSetGlobalConstant(global, !_static->mutable ? 1 : 0);
+
+        if _static->initializer != null {
+            let initializer = this.GenerateExpression(_static->initializer);
+            if initializer == null { return; }
+            LLVMSetInitializer(global, initializer);
+        }
+
+        if _static->alignment != null {
+            let alignment = this.GenerateExpression(_static->alignment);
+            if alignment == null { return; }
+            LLVMSetAlignment(global, LLVMConstIntGetZExtValue(alignment) as u32);
+        }
+
+        this.declarations[declaration] = global;
     }
 
     fn GenerateDeclarationFourthPass(&mut this, declaration: *HIRDeclaration) {
@@ -218,12 +261,12 @@ class CodeGenerator {
 
         let mut name = declaration->name;
 
-        if declaration->abi == HIRDeclarationABI::Zircon && !function->no_mangle {
+        if declaration->abi == HIRDeclarationABI::Native && !function->no_mangle {
             name = Mangler::MangleFunction(name, declaration->_type, Vector<*SemanticType>(), this.namespaces);
         }
 
         let value = LLVMAddFunction(this.module, name.Data(), LLVMFunctionType(return_type, param_types.Data(), param_types.Size() as u32, 0));
-        LLVMSetFunctionCallConv(value, (declaration->abi == HIRDeclarationABI::Zircon ? LLVMCallConv::LLVMFastCallConv : LLVMCallConv::LLVMCCallConv) as u32);
+        LLVMSetFunctionCallConv(value, (declaration->abi == HIRDeclarationABI::Native ? LLVMCallConv::LLVMFastCallConv : LLVMCallConv::LLVMCCallConv) as u32);
         this.functions[function] = value;
 
         if this.freestanding || true {

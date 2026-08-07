@@ -47,7 +47,8 @@ class SemanticAnalyzer {
     variant_data: Map<*Node, Pair<*mut HIRVariant, *mut Scope>>,
     loop_scopes: Vector<*mut Scope>,
 
-    pub abi: HIRDeclarationABI = HIRDeclarationABI::Zircon,
+    pub abi: HIRDeclarationABI = HIRDeclarationABI::Native,
+    pub linkage: HIRDeclarationLinkage = HIRDeclarationLinkage::Internal,
     pub _unsafe: bool = false,
 
     pub generics: Vector<*Generic>,
@@ -368,12 +369,10 @@ class SemanticAnalyzer {
             initializer = this.Materialize(this.AnalyzeExpression(_static->initializer), _type);
         }
 
-        let declaration = this.arena.New<HIRStatic>(_static->name, _type, initializer, _static->mutable);
-        this.scope_manager.Set(_static->name, declaration, false, _static);
-        this.module->declarations.PushBack(declaration);
+        let mut alignment: *HIRExpression = null;
 
         if _static->alignment != null {
-            let alignment = this.Materialize(this.AnalyzeExpression(_static->alignment), this.type_manager.IntegerPointer(false));
+            alignment = this.Materialize(this.AnalyzeExpression(_static->alignment), this.type_manager.IntegerPointer(false));
             if alignment == null { return; }
 
             if !alignment->_type->IsIntegerPointer() || alignment->_type->IsSigned() {
@@ -381,6 +380,10 @@ class SemanticAnalyzer {
                 return;
             }
         }
+
+        let declaration = this.arena.New<HIRStatic>(_static->name, _type, initializer, alignment, _static->mutable, this.linkage);
+        this.scope_manager.Set(_static->name, declaration, false, _static);
+        this.module->declarations.PushBack(declaration);
     }
 
     pub fn AnalyzeFunction(&mut this, function: *FunctionNode, generic: *mut Generic) -> *HIRFunction {
@@ -420,12 +423,12 @@ class SemanticAnalyzer {
             return null;
         }
 
-        let declaration = this.arena.New<HIRFunction>(function->no_mangle, this.abi, function->name, this.type_manager.Function(param_types, return_type));
+        let declaration = this.arena.New<HIRFunction>(function->name, this.type_manager.Function(param_types, return_type), function->no_mangle, this.abi);
 
         if generic != null {
             generic->Set(declaration);
         } else {
-            this.scope_manager.Set(function->name, declaration, this.abi == HIRDeclarationABI::Zircon && !function->no_mangle, function);
+            this.scope_manager.Set(function->name, declaration, this.abi == HIRDeclarationABI::Native && !function->no_mangle, function);
         }
 
         if function->body != null {
@@ -715,7 +718,7 @@ class SemanticAnalyzer {
     }
 
     fn AnalyzeExtern(&mut this, _extern: *ExternNode) {
-        if this.abi != HIRDeclarationABI::Zircon {
+        if this.abi != HIRDeclarationABI::Native {
             Logger::Log("Already in an extern block.", _extern, LogSeverity::Error);
             return;
         }
@@ -725,14 +728,14 @@ class SemanticAnalyzer {
             return;
         }
 
-        let previous_abi = this.abi;
-        this.abi = HIRDeclarationABI::C;
+        let (previous_abi, previous_linkage) = (this.abi, this.linkage);
+        (this.abi, this.linkage) = (HIRDeclarationABI::C, HIRDeclarationLinkage::External);
 
         for declaration in _extern->declarations {
             this.AnalyzeDeclarationThirdPass(declaration);
         }
 
-        this.abi = previous_abi;
+        (this.abi, this.linkage) = (previous_abi, previous_linkage);
     }
 
     fn AnalyzeAssembly(&mut this, assembly: *AssemblyNode) {

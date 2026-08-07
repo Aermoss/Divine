@@ -21,7 +21,7 @@ class CodeGenerator {
     module: LLVMModuleRef = null,
     builder: LLVMBuilderRef = null,
     context: LLVMContextRef,
-    target: *Target,
+    pub target: *Target,
 
     namespaces: Vector<String>,
     structures: Map<*SemanticType, LLVMTypeRef>,
@@ -37,6 +37,10 @@ class CodeGenerator {
     no_red_zone: bool;
 
     CodeGenerator(&mut this, target: &Target, freestanding: bool, no_red_zone: bool) {
+        if generator != null {
+            Logger::Log("Another instance of 'CodeGenerator' already exists!", LogSeverity::Fatal);
+        } generator = this;
+
         (this.freestanding, this.no_red_zone) = (freestanding, no_red_zone);
         (this.context, this.target) = (LLVMContextCreate(), target);
     }
@@ -53,6 +57,7 @@ class CodeGenerator {
         }
 
         LLVMContextDispose(this.context);
+        generator = null;
     }
 
     pub fn Generate(&mut this, module: *HIRModule) -> LLVMModuleRef {
@@ -620,10 +625,117 @@ class CodeGenerator {
     }
 
     fn GenerateCast(&mut this, cast: *HIRCast) -> LLVMValueRef {
-        let value = this.GenerateExpression(cast->value);
-        let target = this.GenerateType((cast as *HIRExpression)->_type);
+        let (source_type, target_type) = (cast->value->_type, (cast as *HIRExpression)->_type);
+        let (mut value, target) = (this.GenerateExpression(cast->value), this.GenerateType(target_type));
         if value == null || target == null { return null; }
-        return value;
+
+        if source_type->IsBoolean() {
+            if target_type->IsInteger() {
+                return LLVMBuildZExt(this.builder, value, target, "cast");
+            }
+        } else if source_type->IsCharacter() {
+            if target_type->IsInteger() {
+                if source_type->Width() < target_type->Width() {
+                    return LLVMBuildZExt(this.builder, value, target, "cast");
+                } else if source_type->Width() > target_type->Width() {
+                    return LLVMBuildTrunc(this.builder, value, target, "cast");
+                }
+            }
+        } else if source_type->IsInteger() {
+            if target_type->IsCharacter() {
+                if source_type->Width() == 8 && !source_type->IsSigned() {
+                    return LLVMBuildZExt(this.builder, value, target, "cast");
+                }
+            }
+
+            if target_type->IsInteger() || target_type->IsEnumeration() {
+                if source_type->Width() < target_type->Width() {
+                    if source_type->IsSigned() {
+                        return LLVMBuildSExt(this.builder, value, target, "cast");
+                    } else {
+                        return LLVMBuildZExt(this.builder, value, target, "cast");
+                    }
+                } else if source_type->Width() > target_type->Width() {
+                    return LLVMBuildTrunc(this.builder, value, target, "cast");
+                }
+            }
+
+            if target_type->IsFloat() {
+                if source_type->IsSigned() {
+                    return LLVMBuildSIToFP(this.builder, value, target, "cast");
+                } else {
+                    return LLVMBuildUIToFP(this.builder, value, target, "cast");
+                }
+            }
+
+            if target_type->IsPointer() {
+                return LLVMBuildIntToPtr(this.builder, value, target, "cast");
+            }
+        } else if source_type->IsFloat() {
+            if target_type->IsInteger() {
+                if target_type->IsSigned() {
+                    return LLVMBuildFPToSI(this.builder, value, target, "cast");
+                } else {
+                    return LLVMBuildFPToUI(this.builder, value, target, "cast");
+                }
+            }
+
+            if target_type->IsFloat() {
+                if source_type->Width() < target_type->Width() {
+                    return LLVMBuildFPExt(this.builder, value, target, "cast");
+                } else if source_type->Width() > target_type->Width() {
+                    return LLVMBuildFPTrunc(this.builder, value, target, "cast");
+                }
+            }
+        } else if source_type->IsPointer() {
+            if target_type->IsInteger() {
+                return LLVMBuildPtrToInt(this.builder, value, target, "cast");
+            }
+
+            if target_type->IsPointer() {
+                if source_type->Pointee().IsClass() && target_type->Pointee().IsClass() {
+                    let (source_class, target_class) = (source_type->Pointee(), target_type->Pointee());
+                    let (source_fields, target_fields) = (source_class->Fields(), target_class->Fields());
+                    let (mut related, mut index: u32) = (false, 0);
+
+                    for i in 0..source_fields.Size() {
+                        if source_fields[i].left == target_class->name {
+                            (related, index) = (true, i as u32);
+                            break;
+                        }
+                    }
+
+                    if !related {
+                        for i in 0..target_fields.Size() {
+                            if target_fields[i].left == source_class->name {
+                                (related, index) = (true, -(i as isize) as u32);
+                                break;
+                            }
+                        }
+                    }
+
+                    if index != 0 {
+                        value = LLVMBuildStructGEP2(this.builder, this.GenerateType(source_type->Pointee()), value, index, "cast.base");
+                    } else if !related {
+                        return null;
+                    }
+                }
+
+                return LLVMBuildBitCast(this.builder, value, target, "cast");
+            }
+        } else if source_type->IsEnumeration() {
+            if target_type->IsInteger() {
+                if source_type->Width() < target_type->Width() {
+                    if source_type->IsSigned() {
+                        return LLVMBuildSExt(this.builder, value, target, "cast");
+                    } else {
+                        return LLVMBuildZExt(this.builder, value, target, "cast");
+                    }
+                } else if source_type->Width() > target_type->Width() {
+                    return LLVMBuildTrunc(this.builder, value, target, "cast");
+                }
+            }
+        } return value;
     }
 
     fn GenerateIndexAccess(&mut this, access: *HIRIndexAccess) -> LLVMValueRef {
@@ -829,9 +941,7 @@ class CodeGenerator {
         } else if _type->IsCharacter() {
             return LLVMInt32TypeInContext(this.context);
         } else if _type->IsInteger() {
-            let mut width = _type->Width();
-            if width == 0 { width = LLVMPointerSize(this.target->layout) * 8; }
-            return LLVMIntTypeInContext(this.context, width);
+            return LLVMIntTypeInContext(this.context, _type->Width());
         } else if _type->IsFloat() {
             if _type->Width() == 64 {
                 return LLVMDoubleTypeInContext(this.context);
@@ -864,3 +974,5 @@ class CodeGenerator {
         }
     }
 }
+
+static mut generator: *mut CodeGenerator = null;

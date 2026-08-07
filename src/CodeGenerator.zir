@@ -455,6 +455,8 @@ class CodeGenerator {
             this.GenerateIf(statement as *HIRIf);
         } else if statement->kind == HIRStatementKind::While {
             this.GenerateWhile(statement as *HIRWhile);
+        } else if statement->kind == HIRStatementKind::Loop {
+            this.GenerateLoop(statement as *HIRLoop);
         } else if statement->kind == HIRStatementKind::Break {
             if !this.break_blocks.Empty() {
                 LLVMBuildBr(this.builder, this.break_blocks.Back());
@@ -580,6 +582,26 @@ class CodeGenerator {
 
         if LLVMGetBasicBlockTerminator(body_block) == null {
             LLVMBuildBr(this.builder, condition_block);
+        }
+
+        LLVMPositionBuilderAtEnd(this.builder, end_block);
+    }
+
+    fn GenerateLoop(&mut this, _loop: *HIRLoop) {
+        let function = LLVMGetBasicBlockParent(LLVMGetInsertBlock(this.builder));
+        let body_block = LLVMAppendBasicBlockInContext(this.context, function, "loop.body");
+        let end_block = LLVMAppendBasicBlockInContext(this.context, function, "loop.end");
+        LLVMBuildBr(this.builder, body_block);
+
+        LLVMPositionBuilderAtEnd(this.builder, body_block);
+        this.break_blocks.PushBack(end_block);
+        this.continue_blocks.PushBack(body_block);
+        this.GenerateBlock(_loop->body);
+        this.continue_blocks.PopBack();
+        this.break_blocks.PopBack();
+
+        if LLVMGetBasicBlockTerminator(body_block) == null {
+            LLVMBuildBr(this.builder, body_block);
         }
 
         LLVMPositionBuilderAtEnd(this.builder, end_block);
@@ -861,7 +883,7 @@ class CodeGenerator {
     }
 
     fn GenerateIndexAccess(&mut this, access: *HIRIndexAccess) -> LLVMValueRef {
-        let value = this.GeneratePlaceExpression(access->value);
+        let value = this.GenerateExpression(access->value);
         let index = this.GenerateExpression(access->index);
         let _type = this.GenerateType(access->value->_type->Pointee());
         if value == null || index == null || _type == null { return null; }

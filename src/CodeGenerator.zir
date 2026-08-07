@@ -770,6 +770,7 @@ class CodeGenerator {
     }
 
     fn GenerateBinary(&mut this, binary: *HIRBinary) -> LLVMValueRef {
+        let left_type = binary->left->_type;
         let left = this.GenerateExpression(binary->left);
         if left == null { return null; }
 
@@ -799,11 +800,12 @@ class CodeGenerator {
             return phi;
         }
 
+        let right_type = binary->right->_type;
         let right = this.GenerateExpression(binary->right);
         if right == null { return null; }
 
-        if binary->left->_type->IsInteger() {
-            let signed = binary->left->_type->IsSigned();
+        if left_type->IsInteger() {
+            let signed = left_type->IsSigned();
 
             if binary->_operator == TokenType::PLUS {
                 return LLVMBuildAdd(this.builder, left, right, "add");
@@ -838,7 +840,7 @@ class CodeGenerator {
             } else if binary->_operator == TokenType::RSHIFT {
                 return signed ? LLVMBuildAShr(this.builder, left, right, "shr") : LLVMBuildLShr(this.builder, left, right, "shr");
             } else { return null; }
-        } else if binary->left->_type->IsFloat() {
+        } else if left_type->IsFloat() {
             if binary->_operator == TokenType::PLUS {
                 return LLVMBuildFAdd(this.builder, left, right, "add");
             } else if binary->_operator == TokenType::MINUS {
@@ -862,19 +864,19 @@ class CodeGenerator {
             } else if binary->_operator == TokenType::GREATER_EQUAL {
                 return LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOGE, left, right, "ge");
             } else { return null; }
-        } else if binary->left->_type->IsPointer() || binary->right->_type->IsPointer() {
-            let mut pointer = binary->left->_type->IsPointer() ? left : right;
-            let mut other = binary->left->_type->IsPointer() ? right : left;
+        } else if left_type->IsPointer() || right_type->IsPointer() {
+            let mut pointer = left_type->IsPointer() ? left : right;
+            let mut other = left_type->IsPointer() ? right : left;
 
-            if binary->left->_type->IsPointer() && binary->right->_type->IsPointer() {
-                if binary->left->_type->IsNullPointer() {
-                    pointer = LLVMBuildPointerCast(this.builder, left, this.GenerateType(binary->right->_type), "null.cast");
-                } else if binary->right->_type->IsNullPointer() {
-                    other = LLVMBuildPointerCast(this.builder, right, this.GenerateType(binary->left->_type), "null.cast");
+            if left_type->IsPointer() && right_type->IsPointer() {
+                if left_type->IsNullPointer() {
+                    pointer = LLVMBuildPointerCast(this.builder, left, this.GenerateType(right_type), "null.cast");
+                } else if right_type->IsNullPointer() {
+                    other = LLVMBuildPointerCast(this.builder, right, this.GenerateType(left_type), "null.cast");
                 }
 
                 if binary->_operator == TokenType::MINUS {
-                    let element_type = binary->left->_type->IsNullPointer() ? binary->right->_type->Pointee() : binary->left->_type->Pointee();
+                    let element_type = left_type->IsNullPointer() ? right_type->Pointee() : left_type->Pointee();
                     return LLVMBuildPtrDiff2(this.builder, this.GenerateType(element_type), pointer, other, "ptr.sub");
                 } else if binary->_operator == TokenType::EQUAL {
                     return LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntEQ, pointer, other, "eq");
@@ -893,10 +895,10 @@ class CodeGenerator {
 
             if binary->_operator == TokenType::PLUS {
                 let mut indices[]: LLVMValueRef = { other };
-                return LLVMBuildGEP2(this.builder, this.GenerateType(binary->left->_type->IsPointer() ? binary->left->_type->Pointee() : binary->right->_type->Pointee()), pointer, indices, 1, "ptr.add");
-            } else if binary->_operator == TokenType::MINUS && binary->left->_type->IsPointer() {
+                return LLVMBuildGEP2(this.builder, this.GenerateType(left_type->IsPointer() ? left_type->Pointee() : right_type->Pointee()), pointer, indices, 1, "ptr.add");
+            } else if binary->_operator == TokenType::MINUS && left_type->IsPointer() {
                 let mut indices[]: LLVMValueRef = { LLVMBuildNeg(this.builder, other, "ptr.neg") };
-                return LLVMBuildGEP2(this.builder, this.GenerateType(binary->left->_type->Pointee()), pointer, indices, 1, "ptr.sub");
+                return LLVMBuildGEP2(this.builder, this.GenerateType(left_type->Pointee()), pointer, indices, 1, "ptr.sub");
             } else { return null; }
         } else { return null; }
     }

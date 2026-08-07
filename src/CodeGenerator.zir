@@ -197,22 +197,6 @@ class CodeGenerator {
         return LLVMBuildLoad2(this.builder, source_type, storage, "abi.value");
     }
 
-    fn AddTypeAttribute(&mut this, function: LLVMValueRef, index: u32, name: *i8, source_type: *SemanticType) {
-        let _type = this.GenerateType(source_type);
-        if _type == null { return; }
-        let length: usize = name[0] == 's' ? 4 : 5;
-        let attribute = LLVMCreateTypeAttribute(this.context, LLVMGetEnumAttributeKindForName(name, length), _type);
-        LLVMAddAttributeAtIndex(function, index as LLVMAttributeIndex, attribute);
-    }
-
-    fn AddCallTypeAttribute(&mut this, call: LLVMValueRef, index: u32, name: *i8, source_type: *SemanticType) {
-        let _type = this.GenerateType(source_type);
-        if _type == null { return; }
-        let length: usize = name[0] == 's' ? 4 : 5;
-        let attribute = LLVMCreateTypeAttribute(this.context, LLVMGetEnumAttributeKindForName(name, length), _type);
-        LLVMAddCallSiteAttribute(call, index as LLVMAttributeIndex, attribute);
-    }
-
     fn GenerateFunctionFirstPass(&mut this, function: *HIRFunction) {
         let declaration = function as *HIRDeclaration;
         let source_return_type = declaration->_type->Return();
@@ -242,8 +226,25 @@ class CodeGenerator {
         LLVMSetFunctionCallConv(value, (declaration->abi == HIRDeclarationABI::Zircon ? LLVMCallConv::LLVMFastCallConv : LLVMCallConv::LLVMCCallConv) as u32);
         this.functions[function] = value;
 
+        if this.freestanding || true {
+            let attribute = LLVMCreateStringAttribute(this.context, "no-stack-arg-probe", 18, "", 0);
+            LLVMAddAttributeAtIndex(value, LLVMAttributeIndex::LLVMAttributeFunctionIndex, attribute);
+        }
+
+        if this.no_red_zone {
+            let attribute = LLVMCreateEnumAttribute(this.context, LLVMGetEnumAttributeKindForName("noredzone", 9), 0);
+            LLVMAddAttributeAtIndex(value, LLVMAttributeIndex::LLVMAttributeFunctionIndex, attribute);
+        }
+
+        if !this.target->features.Empty() {
+            let attribute = LLVMCreateStringAttribute(this.context, "target-features", 15, this.target->features.Data(), this.target->features.Length() as u32);
+            LLVMAddAttributeAtIndex(value, LLVMAttributeIndex::LLVMAttributeFunctionIndex, attribute);
+        }
+
         if returns_sret {
-            this.AddTypeAttribute(value, 1, "sret", source_return_type);
+            let _type = this.GenerateType(source_return_type);
+            let attribute = LLVMCreateTypeAttribute(this.context, LLVMGetEnumAttributeKindForName("sret", 4), _type);
+            LLVMAddAttributeAtIndex(value, 1 as LLVMAttributeIndex, attribute);
         }
 
         let parameters = declaration->_type->Parameters();
@@ -252,7 +253,9 @@ class CodeGenerator {
             let parameter: *SemanticType = parameters[i];
 
             if this.IsIndirectAggregate(parameter) {
-                this.AddTypeAttribute(value, (returns_sret ? 2 : 1) + i as u32, "byval", parameter);
+                let _type = this.GenerateType(parameter);
+                let attribute = LLVMCreateTypeAttribute(this.context, LLVMGetEnumAttributeKindForName("byval", 5), _type);
+                LLVMAddAttributeAtIndex(value, (i + (returns_sret ? 2 : 1)) as LLVMAttributeIndex, attribute);
             }
         }
     }
@@ -654,16 +657,18 @@ class CodeGenerator {
         LLVMSetInstructionCallConv(result, LLVMGetFunctionCallConv(function));
 
         if returns_sret {
-            this.AddCallTypeAttribute(result, 1, "sret", source_return_type);
+            let _type = this.GenerateType(source_return_type);
+            let attribute = LLVMCreateTypeAttribute(this.context, LLVMGetEnumAttributeKindForName("sret", 4), _type);
+            LLVMAddCallSiteAttribute(result, 1 as LLVMAttributeIndex, attribute);
         }
-
-        let arg_offset: u32 = returns_sret ? 1 : 0;
 
         for i in 0..call->arguments.Size() {
             let source_type: *SemanticType = _type->Parameters()[i];
 
             if this.IsIndirectAggregate(source_type) {
-                this.AddCallTypeAttribute(result, arg_offset + i as u32 + 1, "byval", source_type);
+                let _type = this.GenerateType(source_type);
+                let attribute = LLVMCreateTypeAttribute(this.context, LLVMGetEnumAttributeKindForName("byval", 5), _type);
+                LLVMAddCallSiteAttribute(result, (i + (returns_sret ? 2 : 1)) as LLVMAttributeIndex, attribute);
             }
         }
 

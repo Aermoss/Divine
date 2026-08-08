@@ -482,13 +482,14 @@ class CodeGenerator {
         if _return->expression == null {
             LLVMBuildRetVoid(this.builder);
         } else {
-            let value = this.GenerateExpression(_return->expression);
+            if this.current_sret != null {
+                this.GenerateExpressionTo(_return->expression, this.current_sret);
+                LLVMBuildRetVoid(this.builder);
+            } else {
+                let value = this.GenerateExpression(_return->expression);
+                if value == null { return; }
 
-            if value != null {
-                if this.current_sret != null {
-                    LLVMBuildStore(this.builder, value, this.current_sret);
-                    LLVMBuildRetVoid(this.builder);
-                } else if this.IsAggregate(this.current_return_type) {
+                if this.IsAggregate(this.current_return_type) {
                     LLVMBuildRet(this.builder, this.LowerAggregateValue(value, this.current_return_type));
                 } else {
                     LLVMBuildRet(this.builder, value);
@@ -504,11 +505,7 @@ class CodeGenerator {
         this.variables[variable] = storage;
 
         if variable->initializer != null {
-            let value = this.GenerateExpression(variable->initializer);
-
-            if value != null {
-                LLVMBuildStore(this.builder, value, storage);
-            }
+            this.GenerateExpressionTo(variable->initializer, storage);
         }
     }
 
@@ -681,6 +678,20 @@ class CodeGenerator {
         }
     }
 
+    fn GenerateExpressionTo(&mut this, expression: *HIRExpression, destination: LLVMValueRef) -> LLVMValueRef {
+        if expression->kind == HIRExpressionKind::Call {
+            return this.GenerateCall(expression as *HIRCall, destination);
+        } else if expression->kind == HIRExpressionKind::Construct {
+            return this.GenerateConstruct(expression as *HIRConstruct, destination);
+        } else {
+            let value = this.GenerateExpression(expression);
+
+            if value != null && destination != null {
+                LLVMBuildStore(this.builder, value, destination);
+            } return destination;
+        }
+    }
+
     fn GenerateExpression(&mut this, expression: *HIRExpression) -> LLVMValueRef {
         if expression->kind == HIRExpressionKind::BooleanLiteral {
             return LLVMConstInt(this.GenerateType(expression->_type), (expression as *HIRBooleanLiteral)->value ? 1 : 0, 0);
@@ -697,13 +708,13 @@ class CodeGenerator {
         } else if expression->kind == HIRExpressionKind::Assignment {
             return this.GenerateAssignment(expression as *HIRAssignment);
         } else if expression->kind == HIRExpressionKind::Call {
-            return this.GenerateCall(expression as *HIRCall);
+            return this.GenerateCall(expression as *HIRCall, null);
         } else if expression->kind == HIRExpressionKind::New {
             return this.GenerateNew(expression as *HIRNew);
         } else if expression->kind == HIRExpressionKind::Delete {
             return this.GenerateDelete(expression as *HIRDelete);
         } else if expression->kind == HIRExpressionKind::Construct {
-            return this.GenerateConstruct(expression as *HIRConstruct);
+            return this.GenerateConstruct(expression as *HIRConstruct, null);
         } else if expression->kind == HIRExpressionKind::Destruct {
             return this.GenerateDestruct(expression as *HIRDestruct);
         } else if expression->kind == HIRExpressionKind::Cast {
@@ -740,7 +751,7 @@ class CodeGenerator {
         } return null;
     }
 
-    fn GenerateCall(&mut this, call: *HIRCall) -> LLVMValueRef {
+    fn GenerateCall(&mut this, call: *HIRCall, destination: LLVMValueRef) -> LLVMValueRef {
         let _type = call->function->_type;
         let function = this.GenerateExpression(call->function);
         if function == null { return null; }
@@ -749,19 +760,29 @@ class CodeGenerator {
         let returns_sret = this.IsIndirectAggregate(source_return_type);
 
         if returns_sret {
-            arguments.PushBack(LLVMBuildAlloca(this.builder, this.GenerateType(source_return_type), "abi.return"));
+            arguments.PushBack(destination != null ? destination : LLVMBuildAlloca(this.builder, this.GenerateType(source_return_type), "abi.return"));
         }
 
         for i in 0..call->arguments.Size() {
-            let argument = call->arguments[i];
-            let value = this.GenerateExpression(argument);
-            if value == null { return null; }
             let source_type = _type->Parameters()[i];
+            let reference_aggregate = source_type->IsPointer() && this.IsAggregate(source_type->Pointee());
+            let argument = call->arguments[i];
 
-            if this.IsAggregate(source_type) {
-                arguments.PushBack(this.LowerAggregateValue(value, source_type));
+            if (this.IsIndirectAggregate(source_type) || reference_aggregate) && this.IsAggregate(argument->_type) {
+                let mut storage_type: *SemanticType = source_type;
+                if reference_aggregate { storage_type = source_type->Pointee(); }
+                let argument_storage = LLVMBuildAlloca(this.builder, this.GenerateType(storage_type), "abi.argument");
+                if this.GenerateExpressionTo(argument, argument_storage) == null { return null; }
+                arguments.PushBack(argument_storage);
             } else {
-                arguments.PushBack(value);
+                let value = this.GenerateExpression(argument);
+                if value == null { return null; }
+
+                if this.IsAggregate(source_type) {
+                    arguments.PushBack(this.LowerAggregateValue(value, source_type));
+                } else {
+                    arguments.PushBack(value);
+                }
             }
         }
 
@@ -787,7 +808,7 @@ class CodeGenerator {
         }
 
         if returns_sret {
-            return LLVMBuildLoad2(this.builder, this.GenerateType(source_return_type), arguments[0], "abi.return.value");
+            return destination != null ? destination : LLVMBuildLoad2(this.builder, this.GenerateType(source_return_type), arguments[0], "abi.return.value");
         } else if !source_return_type->IsVoid() {
             if this.IsAggregate(source_return_type) {
                 return this.RaiseAggregateValue(result, source_return_type);

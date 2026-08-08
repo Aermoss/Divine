@@ -457,6 +457,8 @@ class CodeGenerator {
             this.GenerateWhile(statement as *HIRWhile);
         } else if statement->kind == HIRStatementKind::Loop {
             this.GenerateLoop(statement as *HIRLoop);
+        } else if statement->kind == HIRStatementKind::For {
+            this.GenerateFor(statement as *HIRFor);
         } else if statement->kind == HIRStatementKind::Break {
             if !this.break_blocks.Empty() {
                 LLVMBuildBr(this.builder, this.break_blocks.Back());
@@ -598,6 +600,52 @@ class CodeGenerator {
 
         if current != null && LLVMGetBasicBlockTerminator(current) == null {
             LLVMBuildBr(this.builder, body_block);
+        }
+
+        LLVMPositionBuilderAtEnd(this.builder, end_block);
+    }
+
+    fn GenerateFor(&mut this, _for: *HIRFor) {
+        this.GenerateVariable(_for->iterator);
+        let variable_type = this.GenerateType(_for->variable->_type);
+        if variable_type == null { return; }
+        let variable_storage = LLVMBuildAlloca(this.builder, variable_type, _for->variable->name.Data());
+        this.variables[_for->variable] = variable_storage;
+
+        let function = LLVMGetBasicBlockParent(LLVMGetInsertBlock(this.builder));
+        let condition_block = LLVMAppendBasicBlockInContext(this.context, function, "for.cond");
+        let body_block = LLVMAppendBasicBlockInContext(this.context, function, "for.body");
+        let step_block = LLVMAppendBasicBlockInContext(this.context, function, "for.step");
+        let end_block = LLVMAppendBasicBlockInContext(this.context, function, "for.end");
+        LLVMBuildBr(this.builder, condition_block);
+
+        LLVMPositionBuilderAtEnd(this.builder, condition_block);
+        let condition = this.GenerateExpression(_for->condition);
+        if condition == null { LLVMBuildUnreachable(this.builder); return; }
+        LLVMBuildCondBr(this.builder, condition, body_block, end_block);
+
+        LLVMPositionBuilderAtEnd(this.builder, body_block);
+        let value = this.GenerateExpression(_for->variable->initializer);
+        if value == null { LLVMBuildUnreachable(this.builder); return; }
+        LLVMBuildStore(this.builder, value, variable_storage);
+
+        this.break_blocks.PushBack(end_block);
+        this.continue_blocks.PushBack(step_block);
+        this.GenerateBlock(_for->body);
+        this.continue_blocks.PopBack();
+        this.break_blocks.PopBack();
+        let mut current = LLVMGetInsertBlock(this.builder);
+
+        if current != null && LLVMGetBasicBlockTerminator(current) == null {
+            LLVMBuildBr(this.builder, step_block);
+        }
+
+        LLVMPositionBuilderAtEnd(this.builder, step_block);
+        this.GenerateExpression(_for->step);
+        current = LLVMGetInsertBlock(this.builder);
+
+        if current != null && LLVMGetBasicBlockTerminator(current) == null {
+            LLVMBuildBr(this.builder, condition_block);
         }
 
         LLVMPositionBuilderAtEnd(this.builder, end_block);

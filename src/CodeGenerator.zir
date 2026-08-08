@@ -25,6 +25,7 @@ class CodeGenerator {
 
     namespaces: Vector<String>,
     structures: Map<*SemanticType, LLVMTypeRef>,
+    instances: Map<*HIRConstruct, LLVMValueRef>,
     variables: Map<*HIRVariable, LLVMValueRef>,
     declarations: Map<*HIRDeclaration, LLVMValueRef>,
     functions: Map<*HIRFunction, LLVMValueRef>,
@@ -317,6 +318,7 @@ class CodeGenerator {
         this.current_sret = returns_sret ? LLVMGetParam(value, 0) : null;
         this.current_return_type = source_return_type;
         let declarations = this.declarations;
+        this.instances.Clear();
         this.variables.Clear();
 
         for i in 0..function->parameters.Size() {
@@ -669,6 +671,10 @@ class CodeGenerator {
             if this.declarations.Has(declaration) {
                 return this.declarations[declaration];
             } return null;
+        } else if expression->kind == HIRExpressionKind::Construct {
+            if this.instances.Has(expression as *HIRConstruct) {
+                return this.instances[expression as *HIRConstruct];
+            } return null;
         } else if expression->kind == HIRExpressionKind::MemberAccess {
             return this.GenerateMemberAccess(expression as *HIRMemberAccess);
         } else if expression->kind == HIRExpressionKind::Dereference {
@@ -709,14 +715,14 @@ class CodeGenerator {
             return this.GenerateAssignment(expression as *HIRAssignment);
         } else if expression->kind == HIRExpressionKind::Call {
             return this.GenerateCall(expression as *HIRCall, null);
-        } else if expression->kind == HIRExpressionKind::New {
-            return this.GenerateNew(expression as *HIRNew);
-        } else if expression->kind == HIRExpressionKind::Delete {
-            return this.GenerateDelete(expression as *HIRDelete);
         } else if expression->kind == HIRExpressionKind::Construct {
             return this.GenerateConstruct(expression as *HIRConstruct, null);
         } else if expression->kind == HIRExpressionKind::Destruct {
             return this.GenerateDestruct(expression as *HIRDestruct);
+        } else if expression->kind == HIRExpressionKind::New {
+            return this.GenerateNew(expression as *HIRNew);
+        } else if expression->kind == HIRExpressionKind::Delete {
+            return this.GenerateDelete(expression as *HIRDelete);
         } else if expression->kind == HIRExpressionKind::Cast {
             return this.GenerateCast(expression as *HIRCast);
         } else if expression->kind == HIRExpressionKind::Unary {
@@ -816,6 +822,18 @@ class CodeGenerator {
         } return null;
     }
 
+    fn GenerateConstruct(&mut this, construct: *HIRConstruct, destination: LLVMValueRef) -> LLVMValueRef {
+        let target = destination != null ? destination : LLVMBuildAlloca(this.builder, this.GenerateType(construct->_type), "construct");
+        this.instances[construct] = target;
+        this.GenerateCall(construct->call, target);
+        return target;
+    }
+
+    fn GenerateDestruct(&mut this, destruct: *HIRDestruct) -> LLVMValueRef {
+        this.GenerateCall(destruct->call, null);
+        return null;
+    }
+
     fn GenerateNew(&mut this, _new: *HIRNew) -> LLVMValueRef {
         let _type = this.GenerateType(_new->_type);
         if _type == null { return null; }
@@ -835,40 +853,6 @@ class CodeGenerator {
         if pointer != null {
             LLVMBuildFree(this.builder, pointer);
         } return null;
-    }
-
-    fn GenerateConstruct(&mut this, construct: *HIRConstruct) -> LLVMValueRef {
-        let instance_type = this.GenerateType(construct->_type);
-        let instance = LLVMBuildAlloca(this.builder, instance_type, "construct");
-        let function = this.functions[construct->function];
-        let arguments = Vector<LLVMValueRef>();
-        arguments.PushBack(instance);
-
-        for argument in construct->arguments {
-            let value = this.GenerateExpression(argument);
-            if value == null { return null; }
-            arguments.PushBack(value);
-        }
-
-        let function_type = this.GenerateType((construct->function as *HIRDeclaration)->_type);
-        let call = LLVMBuildCall2(this.builder, function_type, function, arguments.Data(), arguments.Size() as u32, "");
-        if call == null { return null; }
-        LLVMSetInstructionCallConv(call, LLVMGetFunctionCallConv(function));
-        return LLVMBuildLoad2(this.builder, instance_type, instance, "construct.value");
-    }
-
-    fn GenerateDestruct(&mut this, destruct: *HIRDestruct) -> LLVMValueRef {
-        let target = this.GeneratePlaceExpression(destruct->target);
-        let function = this.functions[destruct->function];
-        if target == null || function == null { return null; }
-
-        let arguments = Vector<LLVMValueRef>();
-        arguments.PushBack(target);
-        let function_type = this.GenerateType((destruct->function as *HIRDeclaration)->_type);
-        let call = LLVMBuildCall2(this.builder, function_type, function, arguments.Data(), 1, "");
-        if call == null { return null; }
-        LLVMSetInstructionCallConv(call, LLVMGetFunctionCallConv(function));
-        return null;
     }
 
     fn GenerateCast(&mut this, cast: *HIRCast) -> LLVMValueRef {

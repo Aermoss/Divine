@@ -336,13 +336,33 @@ class SemanticAnalyzer {
 
     fn ImplicitDereference(&mut this, expression: *HIRExpression) -> *HIRExpression {
         if expression != null && expression->_type->IsReference() {
+            if expression->kind == HIRExpressionKind::AddressOf {
+                return (expression as *HIRAddressOf)->operand;
+            }
+
             return this.arena.New<HIRDereference>(expression);
         } return expression;
     }
 
     fn ImplicitAddressOf(&mut this, expression: *HIRExpression) -> *HIRExpression {
         if expression != null && expression->category == HIRExpressionCategory::Place {
+            if expression->kind == HIRExpressionKind::Dereference {
+                return (expression as *HIRDereference)->operand;
+            }
+
             return this.arena.New<HIRAddressOf>(expression, expression->mutable);
+        } return expression;
+    }
+
+    pub fn MakeCompatible(&mut this, expression: *HIRExpression, target: &SemanticType) -> *HIRExpression {
+        if target.IsPointer() && expression->_type->IsPointer() {
+            if target.Pointee().IsClass() && expression->_type->Pointee().IsClass() {
+                for field in expression->_type->Pointee().Fields() {
+                    if field.left == target.Pointee().name {
+                        return this.arena.New<HIRCast>(expression, target);
+                    }
+                }
+            }
         } return expression;
     }
 
@@ -1652,7 +1672,27 @@ class SemanticAnalyzer {
 
         for i in 0..param_types.Size() {
             let param_type: *SemanticType = param_types[i];
-            values[i] = this.Materialize(values[i], param_type);
+            let mut value = this.Materialize(values[i], param_type);
+
+            if param_type->IsReference() && param_type->Pointee().IsCompatible(value->_type) {
+                value = this.ImplicitAddressOf(value);
+            }
+
+            if value->_type->IsReference() && param_type->IsCompatible(value->_type->Pointee()) {
+                value = this.ImplicitDereference(value);
+            }
+
+            if !param_type->IsCompatible(value->_type) {
+                Logger::Log("Incompatible argument types for function '" + function->_type->name + "'. ('" + param_type->ToString() + "' != '" + value->_type->ToString() + "').", node, LogSeverity::Error);
+                return null;
+            }
+
+            if !param_type->IsMutabilityCompatible(value->_type) {
+                Logger::Log("Cannot assign immutable pointer to mutable pointer.", node, LogSeverity::Error);
+                return null;
+            }
+
+            values[i] = this.MakeCompatible(value, param_type);
         }
 
         return this.arena.New<HIRCall>(function, values);

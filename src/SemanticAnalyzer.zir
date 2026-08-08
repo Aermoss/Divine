@@ -1017,7 +1017,7 @@ class SemanticAnalyzer {
 
         this.scope_manager.PushScope(String("for"), false);
         this.loop_scopes.PushBack(this.scope_manager.current);
-        this.scope_manager.Set(_for->variable, variable as *HIRStatement, _for);
+        this.scope_manager.Set(_for->variable, variable, _for);
         let body = this.AnalyzeBlock(_for->body as *BlockNode);
         this.loop_scopes.PopBack();
         this.scope_manager.PopScope();
@@ -1040,8 +1040,15 @@ class SemanticAnalyzer {
 
         while scope != null && !scope->global {
             for instance in scope->instances.Reverse() {
-                let destructor = this.arena.New<HIRDestruct>(instance);
-                this.current_block->statements.PushBack(this.arena.New<HIRExpressionStatement>(destructor));
+                let _type = instance->_type;
+                let candidates = _type->GetCandidates(("~" + _type->name), null, true);
+                if candidates.Empty() { continue; }
+                let mut values = Vector<*HIRExpression>();
+                values.PushBack(instance);
+                let destructor = this.ResolveOverload(candidates, values, null, true);
+                if destructor == null { continue; }
+                let expression = this.arena.New<HIRDestruct>(destructor, instance);
+                this.current_block->statements.PushBack(this.arena.New<HIRExpressionStatement>(expression));
             }
 
             if scope == target { break; }
@@ -1567,7 +1574,22 @@ class SemanticAnalyzer {
                 return null;
             }
 
-            return this.arena.New<HIRConstruct>(_class, values);
+            let instance = this.arena.New<HIRConstruct>(_class);
+            values.Insert(0, instance); // should be a reference to the variable, not the constructor itself
+
+            let candidates = _class->GetCandidates(_class->name, call, false);
+            let constructor = this.ResolveOverload(candidates, values, call, false);
+            if constructor == null { return null; }
+            let parameters = (constructor as *HIRDeclaration)->_type->Parameters();
+            instance->function = constructor;
+
+            for i in 1..values.Size() {
+                if i < parameters.Size() {
+                    instance->arguments.PushBack(this.Materialize(values[i], parameters[i]));
+                } else {
+                    instance->arguments.PushBack(this.Materialize(values[i]));
+                }
+            } return instance;
         } else {
             let candidates = this.scope_manager.ResolveCandidates(call->expression, true);
 

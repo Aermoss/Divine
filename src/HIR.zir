@@ -44,6 +44,70 @@ class HIRExpression {
     HIRExpression(&mut this, kind: HIRExpressionKind, _type: *SemanticType, deferred: *Node) {
         (this.kind, this._type, this.deferred) = (kind, _type, deferred);
     }
+
+    pub fn ToString(&this) -> String {
+        let mut result = String();
+
+        if this.kind == HIRExpressionKind::IntegerLiteral {
+            result += String::FromInteger((this as *HIRIntegerLiteral)->value);
+        } else if this.kind == HIRExpressionKind::FloatLiteral {
+            result += String::FromFloat((this as *HIRFloatLiteral)->value);
+        } else if this.kind == HIRExpressionKind::BooleanLiteral {
+            result += (this as *HIRBooleanLiteral)->value ? "true" : "false";
+        } else if this.kind == HIRExpressionKind::CharacterLiteral {
+            result += '\'' + String::FromInteger((this as *HIRCharacterLiteral)->value as u64).Escape() + '\'';
+        } else if this.kind == HIRExpressionKind::StringLiteral {
+            result += '"' + (this as *HIRStringLiteral)->value.Escape() + '"';
+        } else if this.kind == HIRExpressionKind::NullLiteral {
+            result += "null";
+        } else if this.kind == HIRExpressionKind::VariableRef {
+            result += '%' + (this as *HIRVariableRef)->variable->name;
+        } else if this.kind == HIRExpressionKind::DeclarationRef {
+            if (this as *HIRDeclarationRef)->declaration->kind == HIRDeclarationKind::Parameter {
+                result += '%' + (this as *HIRDeclarationRef)->declaration->name;
+            } else if (this as *HIRDeclarationRef)->declaration->kind == HIRDeclarationKind::Function {
+                result += "@\"" + (this as *HIRDeclarationRef)->declaration->name + '"';
+            } else {
+                result += '@' + (this as *HIRDeclarationRef)->declaration->name;
+            }
+        } else if this.kind == HIRExpressionKind::Call {
+            let call = this as *HIRCall;
+            result += "call " + call->function->ToString() + '(';
+
+            for i in 0..call->arguments.Size() {
+                if i != 0 { result += ", "; }
+                result += call->arguments[i]->ToString();
+            } result += ')';
+        } else if this.kind == HIRExpressionKind::Unary {
+            let unary = this as *HIRUnary;
+            result += ToUnaryOperatorString(unary->_operator) + '(' + unary->operand->ToString() + ')';
+        } else if this.kind == HIRExpressionKind::Binary {
+            let binary = this as *HIRBinary;
+            result += '(' + binary->left->ToString() + ' ' + ToBinaryOperatorString(binary->_operator) + ' ' + binary->right->ToString() + ')';
+        } else if this.kind == HIRExpressionKind::Ternary {
+            let ternary = this as *HIRTernary;
+            result += '(' + ternary->condition->ToString() + " ? " + ternary->then->ToString() + " : " + ternary->_else->ToString() + ')';
+        } else if this.kind == HIRExpressionKind::Assignment {
+            let assignment = this as *HIRAssignment;
+            result += assignment->left->ToString() + " = " + assignment->right->ToString();
+        } else if this.kind == HIRExpressionKind::Cast {
+            result += (this as *HIRCast)->value->ToString() + " as " + this._type->ToString();
+        } else if this.kind == HIRExpressionKind::IndexAccess {
+            let access = this as *HIRIndexAccess;
+            result += access->value->ToString() + '[' + access->index->ToString() + ']';
+        } else if this.kind == HIRExpressionKind::MemberAccess {
+            let access = this as *HIRMemberAccess;
+            result += "(member " + access->instance->ToString() + ", " + String::FromInteger(access->index as u64) + ')';
+        } else if this.kind == HIRExpressionKind::Dereference {
+            result += "*(" + (this as *HIRDereference)->operand->ToString() + ')';
+        } else if this.kind == HIRExpressionKind::AddressOf {
+            result += "&(" + (this as *HIRAddressOf)->operand->ToString() + ')';
+        } else if this.kind == HIRExpressionKind::Temporary {
+            result += "(temporary " + (this as *HIRTemporary)->initializer->ToString() + ')';
+        } else {
+            result += "<invalid expression>";
+        } return result;
+    }
 }
 
 class HIRIntegerLiteral : HIRExpression {
@@ -273,6 +337,56 @@ class HIRStatement {
     HIRStatement(&mut this, kind: HIRStatementKind) {
         this.kind = kind;
     }
+
+    pub fn ToString(&this) -> String {
+        return this.ToString(0);
+    }
+
+    pub fn ToString(&this, indent: usize) -> String {
+        let mut result = String();
+
+        if this.kind == HIRStatementKind::Block {
+            let block = this as *HIRBlock;
+            result += "{\n";
+
+            for i in 0..block->statements.Size() {
+                result += block->statements[i]->ToString(indent + 1) + '\n';
+            } result += (' ' * indent * 4) + '}';
+        } else if this.kind == HIRStatementKind::Variable {
+            let variable = this as *HIRVariable;
+            result += (' ' * indent * 4) + "let %" + variable->name + ": " + variable->_type->ToString();
+
+            if variable->initializer != null {
+                result += " = " + variable->initializer->ToString();
+            }
+        } else if this.kind == HIRStatementKind::Expression {
+            result += (' ' * indent * 4) + (this as *HIRExpressionStatement)->expression->ToString();
+        } else if this.kind == HIRStatementKind::Return {
+            let return_statement = this as *HIRReturn;
+            result += (' ' * indent * 4) + "return";
+
+            if return_statement->expression != null {
+                result += ' ' + return_statement->expression->ToString();
+            }
+        } else if this.kind == HIRStatementKind::If {
+            let _if = this as *HIRIf;
+            result += (' ' * indent * 4) + "if " + _if->condition->ToString() + ' ' + (_if->then_body as *HIRStatement)->ToString(indent);
+
+            if _if->else_body != null {
+                result += " else " + (_if->else_body as *HIRStatement)->ToString(indent);
+            }
+        } else if this.kind == HIRStatementKind::While {
+            let _while = this as *HIRWhile;
+            result += (' ' * indent * 4) + "while " + _while->condition->ToString() + ' ' + (_while->while_body as *HIRStatement)->ToString(indent);
+        } else if this.kind == HIRStatementKind::Loop {
+            result += (' ' * indent * 4) + "loop " + ((this as *HIRLoop)->body as *HIRStatement)->ToString(indent);
+        } else if this.kind == HIRStatementKind::For {
+            let _for = this as *HIRFor;
+            result += (' ' * indent * 4) + "for " + (_for->iterator as *HIRStatement)->ToString() + ", " + _for->condition->ToString() + ", " + _for->step->ToString() + ' ' + (_for->body as *HIRStatement)->ToString(indent);
+        } else {
+            result += (' ' * indent * 4) + "<invalid statement>";
+        } return result;
+    }
 }
 
 class HIRBlock : HIRStatement {
@@ -386,6 +500,42 @@ class HIRDeclaration {
     HIRDeclaration(&mut this, kind: HIRDeclarationKind, linkage: HIRDeclarationLinkage, name: String, _type: *SemanticType) {
         (this.kind, this.linkage, this.name, this._type) = (kind, linkage, name, _type);
     }
+
+    pub fn ToString(&this) -> String {
+        let mut result = String();
+
+        if this->kind == HIRDeclarationKind::Function {
+            let function = this as *HIRFunction;
+            result += "fn @\"" + this.name + "\"(";
+
+            for i in 0..function->parameters.Size() {
+                if i != 0 { result += ", "; }
+                let parameter: *HIRParameter = function->parameters[i];
+                let declaration = parameter as *HIRDeclaration;
+                result += '%' + declaration->name + ": " + declaration->_type->ToString();
+            } result += ')';
+
+            if !this._type->Return().IsVoid() {
+                result += " -> " + this._type->Return().ToString();
+            }
+
+            if function->body != null {
+                result += ' ' + (function->body as *HIRStatement)->ToString();
+            }
+        } else if this->kind == HIRDeclarationKind::Constant {
+            let constant = this as *HIRConstant;
+            result += "const @" + this.name + ": " + this._type->ToString() + " = " + constant->initializer->ToString();
+        } else if this->kind == HIRDeclarationKind::Static {
+            let _static = this as *HIRStatic;
+            result += "static @" + this.name + ": " + this._type->ToString();
+
+            if _static->initializer != null {
+                result += " = " + _static->initializer->ToString();
+            }
+        } else {
+            result += "<invalid declaration>";
+        } return result;
+    }
 }
 
 class HIRParameter : HIRDeclaration {
@@ -454,6 +604,15 @@ class HIRModule {
     pub declarations: Vector<*HIRDeclaration>;
 
     HIRModule(&mut this) {}
+
+    pub fn ToString(&this) -> String {
+        let mut result = String();
+
+        for declaration in this.declarations {
+            if !result.Empty() { result += "\n"; }
+            result += declaration->ToString();
+        } return result;
+    }
 }
 
 #[include "src/SemanticAnalyzer.zir" : *]

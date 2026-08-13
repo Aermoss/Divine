@@ -18,7 +18,8 @@
 
 class HIRLowerer {
     arena: Arena,
-    declarations: Map<*HIRDeclaration, *MIRDeclaration>,
+    declarations: Map<*HIRDeclaration, *mut MIRDeclaration>,
+    current_block: *mut MIRBlock = null,
     module: *mut MIRModule = null;
 
     HIRLowerer(&mut this) {}
@@ -58,10 +59,16 @@ class HIRLowerer {
     fn LowerDeclarationThirdPass(&mut this, declaration: *HIRDeclaration) {
         if declaration->kind == HIRDeclarationKind::Static {
             this.LowerStatic(declaration as *HIRStatic);
+        } else if declaration->kind == HIRDeclarationKind::Function {
+            this.LowerFunctionFirstPass(declaration as *HIRFunction);
         }
     }
 
-    fn LowerDeclarationFourthPass(&mut this, declaration: *HIRDeclaration) {}
+    fn LowerDeclarationFourthPass(&mut this, declaration: *HIRDeclaration) {
+        if declaration->kind == HIRDeclarationKind::Function {
+            this.LowerFunctionSecondPass(declaration as *HIRFunction);
+        }
+    }
 
     fn LowerConstant(&mut this, constant: *HIRConstant) {
         let declaration = constant as *HIRDeclaration;
@@ -97,7 +104,36 @@ class HIRLowerer {
 
         let lowered = this.arena.New<MIRStatic>(declaration->name, this.LowerLinkage(declaration->linkage), declaration->_type, _static->mutable, initializer);
         this.module->declarations.PushBack(lowered as *MIRLinkableDeclaration);
-        this.declarations[declaration] = lowered as *MIRLinkableDeclaration;
+        this.declarations[declaration] = lowered as *mut MIRLinkableDeclaration;
+    }
+
+    fn LowerFunctionFirstPass(&mut this, function: *HIRFunction) {
+        let declaration = function as *HIRDeclaration;
+        let lowered = this.arena.New<MIRFunction>(declaration->name, this.LowerLinkage(declaration->linkage));
+        this.module->declarations.PushBack(lowered as *MIRLinkableDeclaration);
+        this.declarations[declaration] = lowered as *mut MIRLinkableDeclaration;
+    }
+
+    fn LowerFunctionSecondPass(&mut this, function: *HIRFunction) {
+        if function->body == null { return; }
+        let declaration = function as *HIRDeclaration;
+        let lowered_declaration: *MIRDeclaration = this.declarations[declaration];
+        let lowered_function = (lowered_declaration as *mut MIRLinkableDeclaration) as *mut MIRFunction;
+        this.current_block = this.arena.New<MIRBlock>("entry".ToString());
+        lowered_function->blocks.PushBack(this.current_block);
+        this.LowerBlock(function->body);
+    }
+
+    fn LowerBlock(&mut this, block: *HIRBlock) {
+        for statement in block->statements {
+            this.LowerStatement(statement);
+        }
+    }
+
+    fn LowerStatement(&mut this, statement: *HIRStatement) {
+        if statement->kind == HIRStatementKind::Expression {
+            this.LowerExpression((statement as *HIRExpressionStatement)->expression);
+        }
     }
 
     fn LowerExpression(&mut this, expression: *HIRExpression) -> *MIRInstruction {

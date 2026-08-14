@@ -16,34 +16,168 @@
 
 #[include "src/Types.zir" : *]
 
-enum MIRInstructionKind: u8 {
-    Alloca
+enum MIRValueKind: u8 {
+    Literal, GlobalRef, Parameter, Instruction
 }
 
-class MIRInstruction {
-    pub kind: MIRInstructionKind;
+class MIRValue {
+    pub kind: MIRValueKind,
+    pub _type: *SemanticType;
 
-    MIRInstruction(&mut this, kind: MIRInstructionKind) {
+    MIRValue(&mut this, kind: MIRValueKind, _type: *SemanticType) {
+        (this.kind, this._type) = (kind, _type);
+    }
+
+    pub fn ToString(&this) -> String {
+        if this->kind == MIRValueKind::Literal {
+            return (this as *MIRLiteral)->ToString();
+        } else if this->kind == MIRValueKind::GlobalRef {
+            return (this as *MIRGlobalRef)->ToString();
+        } else if this->kind == MIRValueKind::Parameter {
+            return (this as *MIRParameter)->ToString();
+        } else if this->kind == MIRValueKind::Instruction {
+            return (this as *MIRInstruction)->ToString();
+        } else {
+            return "<invalid value>".ToString();
+        }
+    }
+}
+
+enum MIRLiteralKind: u8 {
+    Integer, Float, Boolean, Character, String, Null
+}
+
+class MIRLiteral : MIRValue {
+    pub kind: MIRLiteralKind;
+
+    MIRLiteral(&mut this, kind: MIRLiteralKind, _type: *SemanticType) : MIRValue(MIRValueKind::Literal, _type) {
         this.kind = kind;
     }
 
     pub fn ToString(&this) -> String {
         let mut result = String();
 
-        if this->kind == MIRInstructionKind::Alloca {
-            let alloca = this as *MIRAlloca;
-            result += "alloca " + alloca->_type->ToString();
+        if this->kind == MIRLiteralKind::Integer {
+            result += String::FromInteger((this as *MIRIntegerLiteral)->value);
+        } else if this->kind == MIRLiteralKind::Float {
+            result += String::FromFloat((this as *MIRFloatLiteral)->value);
+        } else if this->kind == MIRLiteralKind::Boolean {
+            result += (this as *MIRBooleanLiteral)->value ? "true" : "false";
+        } else if this->kind == MIRLiteralKind::Character {
+            result += '\'' + String((this as *MIRCharacterLiteral)->value as i8).Escape() + '\'';
+        } else if this->kind == MIRLiteralKind::String {
+            result += '"' + (this as *MIRStringLiteral)->value.Escape() + '"';
+        } else if this->kind == MIRLiteralKind::Null {
+            result += "null";
         } else {
-            result += "<invalid instruction>";
+            result += "<invalid literal>";
         } return result;
+    }
+}
+
+class MIRIntegerLiteral : MIRLiteral {
+    pub value: u64;
+
+    MIRIntegerLiteral(&mut this, value: u64, _type: *SemanticType) : MIRLiteral(MIRLiteralKind::Integer, _type) {
+        this.value = value;
+    }
+}
+
+class MIRFloatLiteral : MIRLiteral {
+    pub value: f64;
+
+    MIRFloatLiteral(&mut this, value: f64, _type: *SemanticType) : MIRLiteral(MIRLiteralKind::Float, _type) {
+        this.value = value;
+    }
+}
+
+class MIRBooleanLiteral : MIRLiteral {
+    pub value: bool;
+
+    MIRBooleanLiteral(&mut this, value: bool, _type: *SemanticType) : MIRLiteral(MIRLiteralKind::Boolean, _type) {
+        this.value = value;
+    }
+}
+
+class MIRCharacterLiteral : MIRLiteral {
+    pub value: u32;
+
+    MIRCharacterLiteral(&mut this, value: u32, _type: *SemanticType) : MIRLiteral(MIRLiteralKind::Character, _type) {
+        this.value = value;
+    }
+}
+
+class MIRStringLiteral : MIRLiteral {
+    pub value: String;
+
+    MIRStringLiteral(&mut this, value: String, _type: *SemanticType) : MIRLiteral(MIRLiteralKind::String, _type) {
+        this.value = value;
+    }
+}
+
+class MIRNullLiteral : MIRLiteral {
+    MIRNullLiteral(&mut this, _type: *SemanticType) : MIRLiteral(MIRLiteralKind::Null, _type) {}
+}
+
+class MIRGlobalRef : MIRValue {
+    pub declaration: *MIRDeclaration;
+
+    MIRGlobalRef(&mut this, declaration: *MIRDeclaration) : MIRValue(MIRValueKind::GlobalRef, analyzer->type_manager.Pointer(declaration->_type, declaration->kind == MIRDeclarationKind::Static ? ((declaration as *MIRLinkableDeclaration) as *MIRStatic)->mutable : false)) {
+        this.declaration = declaration;
+    }
+
+    pub fn ToString(&this) -> String {
+        return '@' + this.declaration->name;
+    }
+}
+
+class MIRParameter : MIRValue {
+    pub name: String,
+    pub index: u32;
+
+    MIRParameter(&mut this, name: String, index: u32, _type: *SemanticType) : MIRValue(MIRValueKind::Parameter, _type) {
+        (this.name, this.index) = (name, index);
+    }
+
+    pub fn ToString(&this) -> String {
+        return '%' + this.name;
+    }
+}
+
+enum MIRInstructionKind: u8 {
+    Alloca
+}
+
+class MIRInstruction : MIRValue {
+    pub kind: MIRInstructionKind,
+    pub name: String;
+
+    MIRInstruction(&mut this, kind: MIRInstructionKind, name: String) : MIRValue(MIRValueKind::Instruction, analyzer->type_manager.Void()) {
+        (this.kind, this.name) = (kind, name);
+    }
+
+    MIRInstruction(&mut this, kind: MIRInstructionKind, name: String, _type: *SemanticType) : MIRValue(MIRValueKind::Instruction, _type) {
+        (this.kind, this.name) = (kind, name);
+    }
+
+    pub fn ToString(&this) -> String {
+        if this->kind == MIRInstructionKind::Alloca {
+            return (this as *MIRAlloca)->ToString();
+        } else {
+            return "<invalid instruction>".ToString();
+        }
     }
 }
 
 class MIRAlloca : MIRInstruction {
     pub _type: *SemanticType;
 
-    MIRAlloca(&mut this, _type: *SemanticType) : MIRInstruction(MIRInstructionKind::Alloca) {
+    MIRAlloca(&mut this, name: String, _type: *SemanticType) : MIRInstruction(MIRInstructionKind::Alloca, name, analyzer->type_manager.Pointer(_type, true)) {
         this._type = _type;
+    }
+
+    pub fn ToString(&this) -> String {
+        return "alloca " + this._type->ToString();
     }
 }
 
@@ -57,53 +191,41 @@ class MIRBlock {
 }
 
 enum MIRDeclarationKind: u8 {
-    Function, Constant, Static
+    Constant, Function, Static
 }
 
 class MIRDeclaration {
     pub kind: MIRDeclarationKind,
-    pub name: String;
+    pub name: String,
+    pub _type: *SemanticType;
 
-    MIRDeclaration(&mut this, kind: MIRDeclarationKind, name: String) {
-        (this.kind, this.name) = (kind, name);
+    MIRDeclaration(&mut this, kind: MIRDeclarationKind, name: String, _type: *SemanticType) {
+        (this.kind, this.name, this._type) = (kind, name, _type);
     }
 
     pub fn ToString(&this) -> String {
-        let mut result = String();
-
-        if this->kind == MIRDeclarationKind::Function {
-            result += "fn @\"" + this.name + "\"()";
-            let function = (this as *MIRLinkableDeclaration) as *MIRFunction;
-
-            if !function->blocks.Empty() {
-                result += " {\n";
-
-                for block in function->blocks {
-                    result += block->name + ":\n";
-                } result += "}";
-            }
-        } else if this->kind == MIRDeclarationKind::Constant {
-            let constant = this as *MIRConstant;
-            result += "const @" + this.name + ": " + constant->_type->ToString() + " = " + constant->initializer->ToString();
+        if this->kind == MIRDeclarationKind::Constant {
+            return (this as *MIRConstant)->ToString();
+        } else if this->kind == MIRDeclarationKind::Function {
+            return ((this as *MIRLinkableDeclaration) as *MIRFunction)->ToString();
         } else if this->kind == MIRDeclarationKind::Static {
-            let _static = (this as *MIRLinkableDeclaration) as *MIRStatic;
-            result += "static @" + this.name + ": " + _static->_type->ToString();
-
-            if _static->initializer != null {
-                result += " = " + _static->initializer->ToString();
-            }
+            return ((this as *MIRLinkableDeclaration) as *MIRStatic)->ToString();
         } else {
-            result += "<invalid declaration>";
-        } return result;
+            return "<invalid declaration>".ToString();
+        }
     }
 }
 
 class MIRConstant : MIRDeclaration {
-    pub _type: *SemanticType,
-    pub initializer: *MIRInstruction;
+    pub initializer: *MIRValue;
 
-    MIRConstant(&mut this, name: String, _type: *SemanticType, initializer: *MIRInstruction) : MIRDeclaration(MIRDeclarationKind::Constant, name) {
-        (this._type, this.initializer) = (_type, initializer);
+    MIRConstant(&mut this, name: String, _type: *SemanticType, initializer: *MIRValue) : MIRDeclaration(MIRDeclarationKind::Constant, name, _type) {
+        this.initializer = initializer;
+    }
+
+    pub fn ToString(&this) -> String {
+        let declaration = this as *MIRDeclaration;
+        return "const @" + declaration->name + ": " + declaration->_type->ToString() + " = " + this.initializer->ToString();
     }
 }
 
@@ -114,24 +236,56 @@ enum MIRDeclarationLinkage: u8 {
 class MIRLinkableDeclaration : MIRDeclaration {
     pub linkage: MIRDeclarationLinkage;
 
-    MIRLinkableDeclaration(&mut this, kind: MIRDeclarationKind, name: String, linkage: MIRDeclarationLinkage) : MIRDeclaration(kind, name) {
+    MIRLinkableDeclaration(&mut this, kind: MIRDeclarationKind, name: String, _type: *SemanticType, linkage: MIRDeclarationLinkage) : MIRDeclaration(kind, name, _type) {
         this.linkage = linkage;
     }
 }
 
 class MIRFunction : MIRLinkableDeclaration {
+    pub parameters: Vector<*MIRParameter>,
     pub blocks: Vector<*MIRBlock>;
 
-    MIRFunction(&mut this, name: String, linkage: MIRDeclarationLinkage) : MIRLinkableDeclaration(MIRDeclarationKind::Function, name, linkage) {}
+    MIRFunction(&mut this, name: String, _type: *SemanticType, linkage: MIRDeclarationLinkage) : MIRLinkableDeclaration(MIRDeclarationKind::Function, name, _type, linkage) {}
+
+    pub fn ToString(&this) -> String {
+        let declaration = (this as *MIRLinkableDeclaration) as *MIRDeclaration;
+        let mut result = "fn @\"" + declaration->name + "\"(";
+
+        for i in 0..this.parameters.Size() {
+            if i != 0 { result += ", "; }
+            let parameter: *MIRParameter = this.parameters[i];
+            result += '%' + parameter->name + ": " + (parameter as *MIRValue)->_type->ToString();
+        } result += ')';
+
+        if !declaration->_type->Return().IsVoid() {
+            result += " -> " + declaration->_type->Return().ToString();
+        }
+
+        if !this.blocks.Empty() {
+            result += " {\n";
+
+            for block in this.blocks {
+                result += block->name + ":\n";
+            } result += "}";
+        } return result;
+    }
 }
 
 class MIRStatic : MIRLinkableDeclaration {
-    pub _type: *SemanticType,
-    pub mutable: bool,
-    pub initializer: *MIRInstruction;
+    pub initializer: *MIRValue,
+    pub mutable: bool;
 
-    MIRStatic(&mut this, name: String, linkage: MIRDeclarationLinkage, _type: *SemanticType, mutable: bool, initializer: *MIRInstruction) : MIRLinkableDeclaration(MIRDeclarationKind::Static, name, linkage) {
-        (this._type, this.mutable, this.initializer) = (_type, mutable, initializer);
+    MIRStatic(&mut this, name: String, _type: *SemanticType, mutable: bool, initializer: *MIRValue, linkage: MIRDeclarationLinkage) : MIRLinkableDeclaration(MIRDeclarationKind::Static, name, _type, linkage) {
+        (this.initializer, this.mutable) = (initializer, mutable);
+    }
+
+    pub fn ToString(&this) -> String {
+        let declaration = (this as *MIRLinkableDeclaration) as *MIRDeclaration;
+        let mut result = "static @" + declaration->name + ": " + declaration->_type->ToString();
+
+        if this.initializer != null {
+            result += " = " + this.initializer->ToString();
+        } return result;
     }
 }
 

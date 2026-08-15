@@ -167,15 +167,15 @@ class MIRParameter : MIRValue {
 }
 
 enum MIRInstructionKind: u8 {
-    Alloca
+    Alloca, Load, Store, Return, Branch, CondBranch, Unreachable
 }
 
 class MIRInstruction : MIRValue {
     pub kind: MIRInstructionKind,
     pub name: String;
 
-    MIRInstruction(&mut this, kind: MIRInstructionKind, name: String) : MIRValue(MIRValueKind::Instruction, analyzer->type_manager.Void()) {
-        (this.kind, this.name) = (kind, name);
+    MIRInstruction(&mut this, kind: MIRInstructionKind) : MIRValue(MIRValueKind::Instruction, analyzer->type_manager.Void()) {
+        (this.kind, this.name) = (kind, "".ToString());
     }
 
     MIRInstruction(&mut this, kind: MIRInstructionKind, name: String, _type: *SemanticType) : MIRValue(MIRValueKind::Instruction, _type) {
@@ -185,6 +185,18 @@ class MIRInstruction : MIRValue {
     pub fn ToString(&this) -> String {
         if this->kind == MIRInstructionKind::Alloca {
             return (this as *MIRAlloca)->ToString();
+        } else if this->kind == MIRInstructionKind::Load {
+            return (this as *MIRLoad)->ToString();
+        } else if this->kind == MIRInstructionKind::Store {
+            return (this as *MIRStore)->ToString();
+        } else if this->kind == MIRInstructionKind::Return {
+            return (this as *MIRReturn)->ToString();
+        } else if this->kind == MIRInstructionKind::Branch {
+            return (this as *MIRBranch)->ToString();
+        } else if this->kind == MIRInstructionKind::CondBranch {
+            return (this as *MIRCondBranch)->ToString();
+        } else if this->kind == MIRInstructionKind::Unreachable {
+            return (this as *MIRUnreachable)->ToString();
         } else {
             return "<invalid instruction>".ToString();
         }
@@ -203,9 +215,85 @@ class MIRAlloca : MIRInstruction {
     }
 }
 
+class MIRLoad : MIRInstruction {
+    pub pointer: *MIRValue;
+
+    MIRLoad(&mut this, name: String, pointer: *MIRValue) : MIRInstruction(MIRInstructionKind::Load, name, pointer->_type->Pointee()) {
+        this.pointer = pointer;
+    }
+
+    pub fn ToString(&this) -> String {
+        return "load " + this.pointer->ToString();
+    }
+}
+
+class MIRStore : MIRInstruction {
+    pub pointer: *MIRValue,
+    pub value: *MIRValue;
+
+    MIRStore(&mut this, pointer: *MIRValue, value: *MIRValue) : MIRInstruction(MIRInstructionKind::Store) {
+        (this.pointer, this.value) = (pointer, value);
+    }
+
+    pub fn ToString(&this) -> String {
+        return "store " + this.pointer->ToString() + ", " + this.value->ToString();
+    }
+}
+
+class MIRReturn : MIRInstruction {
+    pub value: *MIRValue;
+
+    MIRReturn(&mut this, value: *MIRValue) : MIRInstruction(MIRInstructionKind::Return) {
+        this.value = value;
+    }
+
+    pub fn ToString(&this) -> String {
+        let mut result = "return".ToString();
+
+        if this.value != null {
+            result += ' ' + this.value->ToString();
+        } return result;
+    }
+}
+
+class MIRBranch : MIRInstruction {
+    pub target: *MIRBlock;
+
+    MIRBranch(&mut this, target: *MIRBlock) : MIRInstruction(MIRInstructionKind::Branch) {
+        this.target = target;
+    }
+
+    pub fn ToString(&this) -> String {
+        return "branch %" + this.target->name;
+    }
+}
+
+class MIRCondBranch : MIRInstruction {
+    pub condition: *MIRValue,
+    pub then_target: *MIRBlock,
+    pub else_target: *MIRBlock;
+
+    MIRCondBranch(&mut this, condition: *MIRValue, then_target: *MIRBlock, else_target: *MIRBlock) : MIRInstruction(MIRInstructionKind::CondBranch) {
+        (this.condition, this.then_target, this.else_target) = (condition, then_target, else_target);
+    }
+
+    pub fn ToString(&this) -> String {
+        return "branch " + this.condition->ToString() + ", %" + this.then_target->name + ", %" + this.else_target->name;
+    }
+}
+
+class MIRUnreachable : MIRInstruction {
+    MIRUnreachable(&mut this) : MIRInstruction(MIRInstructionKind::Unreachable) {}
+
+    pub fn ToString(&this) -> String {
+        return "unreachable".ToString();
+    }
+}
+
 class MIRBlock {
     pub name: String,
-    pub instructions: Vector<*MIRInstruction>;
+    pub instructions: Vector<*MIRInstruction>,
+    pub terminator: *MIRInstruction = null;
 
     MIRBlock(&mut this, name: String) {
         this.name = name;

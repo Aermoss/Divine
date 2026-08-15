@@ -72,7 +72,7 @@ class HIRLowerer {
 
     fn LowerConstant(&mut this, constant: *HIRConstant) {
         let declaration = constant as *HIRDeclaration;
-        let initializer = this.LowerExpression(constant->initializer);
+        let initializer = this.LowerConstantExpression(constant->initializer);
         if initializer == null { return; }
 
         let lowered = this.arena.New<MIRConstant>(declaration->name, declaration->_type, initializer);
@@ -93,7 +93,7 @@ class HIRLowerer {
         let mut initializer: *MIRValue = null;
 
         if _static->initializer != null {
-            initializer = this.LowerExpression(_static->initializer);
+            initializer = this.LowerConstantExpression(_static->initializer);
             if initializer == null { return; }
         }
 
@@ -138,6 +138,14 @@ class HIRLowerer {
         }
     }
 
+    fn LowerConstantExpression(&mut this, expression: *HIRExpression) -> *MIRValue {
+        if expression->kind == HIRExpressionKind::StringLiteral {
+            return this.arena.New<MIRStringLiteral>((expression as *HIRStringLiteral)->value, expression->_type) as *MIRLiteral;
+        } else {
+            return this.LowerExpression(expression);
+        }
+    }
+
     fn LowerExpression(&mut this, expression: *HIRExpression) -> *MIRValue {
         if expression->kind == HIRExpressionKind::BooleanLiteral {
             return this.arena.New<MIRBooleanLiteral>((expression as *HIRBooleanLiteral)->value, expression->_type) as *MIRLiteral;
@@ -148,7 +156,11 @@ class HIRLowerer {
         } else if expression->kind == HIRExpressionKind::FloatLiteral {
             return this.arena.New<MIRFloatLiteral>((expression as *HIRFloatLiteral)->value, expression->_type) as *MIRLiteral;
         } else if expression->kind == HIRExpressionKind::StringLiteral {
-            return this.arena.New<MIRStringLiteral>((expression as *HIRStringLiteral)->value, expression->_type) as *MIRLiteral;
+            let initializer = this.arena.New<MIRStringLiteral>((expression as *HIRStringLiteral)->value, expression->_type);
+            let _type = analyzer->type_manager.Array(analyzer->type_manager.Integer(8, false), initializer->value->Length() + 1, false);
+            let _static = this.arena.New<MIRStatic>("string".ToString(), _type, false, initializer as *MIRLiteral, MIRDeclarationLinkage::Internal) as *MIRLinkableDeclaration;
+            this.module->declarations.PushBack(_static);
+            return this.arena.New<MIRGlobalRef>(_static);
         } else if expression->kind == HIRExpressionKind::NullLiteral {
             return this.arena.New<MIRNullLiteral>(expression->_type) as *MIRLiteral;
         } else {

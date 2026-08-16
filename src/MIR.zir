@@ -149,7 +149,7 @@ class MIRGlobalRef : MIRValue {
     }
 
     pub fn ToString(&this) -> String {
-        return '@' + this.declaration->name;
+        return "@\"" + this.declaration->name + '"';
     }
 }
 
@@ -167,7 +167,7 @@ class MIRParameter : MIRValue {
 }
 
 enum MIRInstructionKind: u8 {
-    Alloca, Load, Store, Terminator
+    Alloca, Load, Store, Call, ArrayGEP, StructGEP, Terminator
 }
 
 class MIRInstruction : MIRValue {
@@ -185,7 +185,7 @@ class MIRInstruction : MIRValue {
     pub fn ToDefinitionString(&this) -> String {
         let mut result = String();
 
-        if !this.name.Empty() {
+        if !(this as *MIRValue)->_type->IsVoid() {
             result += '%' + this.name + " = ";
         }
 
@@ -195,10 +195,16 @@ class MIRInstruction : MIRValue {
             result += (this as *MIRLoad)->ToString();
         } else if this->kind == MIRInstructionKind::Store {
             result += (this as *MIRStore)->ToString();
+        } else if this->kind == MIRInstructionKind::Call {
+            result += (this as *MIRCall)->ToString();
+        } else if this->kind == MIRInstructionKind::ArrayGEP {
+            result += (this as *MIRArrayGEP)->ToString();
+        } else if this->kind == MIRInstructionKind::StructGEP {
+            result += (this as *MIRStructGEP)->ToString();
         } else if this->kind == MIRInstructionKind::Terminator {
             result += (this as *MIRTerminator)->ToString();
         } else {
-            result += "<invalid instruction>".ToString();
+            result += "<invalid instruction>";
         } return result;
     }
 
@@ -229,7 +235,7 @@ class MIRLoad : MIRInstruction {
     }
 
     pub fn ToString(&this) -> String {
-        return "load " + this.pointer->ToString();
+        return "load " + this.pointer->_type->Pointee()->ToString() + ", " + this.pointer->ToString();
     }
 }
 
@@ -243,6 +249,51 @@ class MIRStore : MIRInstruction {
 
     pub fn ToString(&this) -> String {
         return "store " + this.pointer->ToString() + ", " + this.value->ToString();
+    }
+}
+
+class MIRCall : MIRInstruction {
+    pub callee: *MIRValue,
+    pub arguments: Vector<*MIRValue>;
+
+    MIRCall(&mut this, name: String, callee: *MIRValue, arguments: Vector<*MIRValue>) : MIRInstruction(MIRInstructionKind::Call, name, callee->_type->Return()) {
+        (this.callee, this.arguments) = (callee, arguments);
+    }
+
+    pub fn ToString(&this) -> String {
+        let mut result = "call " + this.callee->ToString() + '(';
+
+        for i in 0..this.arguments.Size() {
+            if i != 0 { result += ", "; }
+            let argument: *MIRValue = this.arguments[i];
+            result += argument->ToString();
+        } return result + ')';
+    }
+}
+
+class MIRArrayGEP : MIRInstruction {
+    pub pointer: *MIRValue,
+    pub index: *MIRValue;
+
+    MIRArrayGEP(&mut this, name: String, pointer: *MIRValue, index: *MIRValue) : MIRInstruction(MIRInstructionKind::ArrayGEP, name, pointer->_type) {
+        (this.pointer, this.index) = (pointer, index);
+    }
+
+    pub fn ToString(&this) -> String {
+        return "getelementptr " + this.pointer->ToString() + ", " + this.index->ToString();
+    }
+}
+
+class MIRStructGEP : MIRInstruction {
+    pub pointer: *MIRValue,
+    pub index: u32;
+
+    MIRStructGEP(&mut this, name: String, pointer: *MIRValue, index: u32, _type: *SemanticType) : MIRInstruction(MIRInstructionKind::StructGEP, name, _type) {
+        (this.pointer, this.index) = (pointer, index);
+    }
+
+    pub fn ToString(&this) -> String {
+        return "getelementptr " + this.pointer->ToString() + ", " + String::FromInteger(this.index as u64);
     }
 }
 
@@ -390,7 +441,7 @@ class MIRConstant : MIRDeclaration {
 
     pub fn ToString(&this) -> String {
         let declaration = this as *MIRDeclaration;
-        return "const @" + declaration->name + ": " + declaration->_type->ToString() + " = " + this.initializer->ToString();
+        return "const @\"" + declaration->name + "\": " + declaration->_type->ToString() + " = " + this.initializer->ToString();
     }
 }
 
@@ -446,7 +497,7 @@ class MIRStatic : MIRLinkableDeclaration {
 
     pub fn ToString(&this) -> String {
         let declaration = (this as *MIRLinkableDeclaration) as *MIRDeclaration;
-        let mut result = "static @" + declaration->name + ": " + declaration->_type->ToString();
+        let mut result = "static @\"" + declaration->name + "\": " + declaration->_type->ToString();
 
         if this.initializer != null {
             result += " = " + this.initializer->ToString();

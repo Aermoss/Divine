@@ -302,6 +302,7 @@ class HIRLowerer {
             let alloca = this.arena.New<MIRAlloca>("temporary".ToString(), expression->_type);
             this.current_block->instructions.PushBack(alloca);
             let initializer = this.LowerExpression((expression as *HIRTemporary)->initializer);
+            if initializer == null { return null; }
             this.current_block->instructions.PushBack(this.arena.New<MIRStore>(alloca as *MIRInstruction, initializer));
             return alloca as *MIRInstruction;
         } else if expression->kind == HIRExpressionKind::MemberAccess {
@@ -380,9 +381,19 @@ class HIRLowerer {
     }
 
     fn LowerCall(&mut this, call: *HIRCall) -> *MIRValue {
-        let function = this.LowerExpression(call->function);
-        if function == null { return null; }
-        return null;
+        let callee = this.LowerExpression(call->function);
+        if callee == null { return null; }
+        let mut arguments = Vector<*MIRValue>();
+
+        for argument in call->arguments {
+            let lowered = this.LowerExpression(argument);
+            if lowered == null { return null; }
+            arguments.PushBack(lowered);
+        }
+
+        let lowered = this.arena.New<MIRCall>("call".ToString(), callee, arguments);
+        this.current_block->instructions.PushBack(lowered);
+        return lowered as *MIRInstruction;
     }
 
     fn LowerNew(&mut this, _new: *HIRNew) -> *MIRValue {
@@ -411,13 +422,19 @@ class HIRLowerer {
         let value = this.LowerExpression(index_access->value);
         let index = this.LowerExpression(index_access->index);
         if value == null || index == null { return null; }
-        return null;
+        let gep = this.arena.New<MIRArrayGEP>("index.access".ToString(), value, index);
+        this.current_block->instructions.PushBack(gep);
+        return gep as *MIRInstruction;
     }
 
     fn LowerMemberAccess(&mut this, member_access: *HIRMemberAccess) -> *MIRValue {
+        let expression = member_access as *HIRExpression;
         let instance = this.LowerPlaceExpression(member_access->instance);
         if instance == null { return null; }
-        return null;
+        let _type = analyzer->type_manager.Pointer(expression->_type, expression->mutable);
+        let gep = this.arena.New<MIRStructGEP>("field.access".ToString(), instance, member_access->index as u32, _type);
+        this.current_block->instructions.PushBack(gep);
+        return gep as *MIRInstruction;
     }
 
     fn LowerUnary(&mut this, unary: *HIRUnary) -> *MIRValue {

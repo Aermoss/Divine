@@ -21,6 +21,7 @@ class HIRLowerer {
     strings: Map<String, *MIRStatic>,
     variables: Map<*HIRVariable, *mut MIRValue>,
     declarations: Map<*HIRDeclaration, *mut MIRDeclaration>,
+    runtime_functions: Map<String, *MIRFunction>,
     break_blocks: Vector<*mut MIRBlock>,
     continue_blocks: Vector<*mut MIRBlock>,
     current_function: *mut MIRFunction = null,
@@ -384,6 +385,8 @@ class HIRLowerer {
             return this.arena.New<MIRGlobalRef>(_static as *MIRLinkableDeclaration);
         } else if expression->kind == HIRExpressionKind::NullLiteral {
             return this.arena.New<MIRNullLiteral>(expression->_type) as *MIRLiteral;
+        } else if expression->kind == HIRExpressionKind::Intrinsic {
+            return this.LowerIntrinsic(expression as *HIRIntrinsic);
         } else if expression->kind == HIRExpressionKind::Assignment {
             return this.LowerAssignment(expression as *HIRAssignment);
         } else if expression->kind == HIRExpressionKind::Call {
@@ -414,6 +417,11 @@ class HIRLowerer {
         }
     }
 
+    fn LowerIntrinsic(&mut this, intrinsic: *HIRIntrinsic) -> *MIRValue {
+        let value = intrinsic->kind == HIRIntrinsicKind::SizeOf ? intrinsic->_type->Size() : intrinsic->_type->Alignment();
+        return this.arena.New<MIRIntegerLiteral>(value as u64, (intrinsic as *HIRExpression)->_type) as *MIRLiteral;
+    }
+
     fn LowerAssignment(&mut this, assignment: *HIRAssignment) -> *MIRValue {
         let place = this.LowerPlaceExpression(assignment->left);
         let value = this.LowerExpression(assignment->right);
@@ -439,19 +447,61 @@ class HIRLowerer {
         return lowered as *MIRInstruction;
     }
 
+    fn LowerRuntimeFunction(&mut this, name: String, _type: *SemanticType) -> *MIRFunction {
+        for declaration in this.module->declarations {
+            if declaration->kind == MIRDeclarationKind::Function && declaration->name == name {
+                return (declaration as *MIRLinkableDeclaration) as *MIRFunction;
+            }
+        }
+
+        if this.runtime_functions.Has(name) {
+            return this.runtime_functions[name];
+        }
+
+        let parameters = _type->Parameters();
+        let function = this.arena.New<MIRFunction>(name, _type, MIRDeclarationLinkage::External);
+        this.module->declarations.PushBack(function as *MIRLinkableDeclaration);
+        this.runtime_functions[name] = function;
+
+        for i in 0..parameters.Size() {
+            let parameter: *SemanticType = parameters[i];
+            let lowered_parameter = this.arena.New<MIRParameter>("".ToString(), i as u32, parameter);
+            function->parameters.PushBack(lowered_parameter);
+        } return function;
+    }
+
     fn LowerNew(&mut this, _new: *HIRNew) -> *MIRValue {
+        let mut parameters = Vector<*SemanticType>();
+        let size_type = analyzer->type_manager.IntegerPointer(false);
+        parameters.PushBack(size_type);
+        let malloc = this.LowerRuntimeFunction("malloc".ToString(), analyzer->type_manager.Function(parameters, analyzer->type_manager.Pointer(analyzer->type_manager.Void(), true)));
+        let mut allocation_size = (this.arena.New<MIRIntegerLiteral>(_new->_type->Size() as u64, size_type) as *MIRLiteral) as *MIRValue;
+
         if _new->size != null {
             let size = this.LowerExpression(_new->size);
             if size == null { return null; }
-            return null;
-        } else {
-            return null;
+            let total_size = this.arena.New<MIRBinary>("new.size".ToString(), MIRBinaryKind::Mul, size, allocation_size, size_type);
+            this.current_block->instructions.PushBack(total_size);
+            allocation_size = total_size as *MIRInstruction;
         }
+
+        let mut arguments = Vector<*MIRValue>();
+        arguments.PushBack(allocation_size);
+        let call = this.arena.New<MIRCall>("new".ToString(), this.arena.New<MIRGlobalRef>(malloc as *MIRLinkableDeclaration), arguments);
+        this.current_block->instructions.PushBack(call);
+        return call as *MIRInstruction;
     }
 
     fn LowerDelete(&mut this, _delete: *HIRDelete) -> *MIRValue {
         let pointer = this.LowerExpression(_delete->value);
         if pointer == null { return null; }
+        let mut parameters = Vector<*SemanticType>();
+        parameters.PushBack(analyzer->type_manager.Pointer(analyzer->type_manager.Void(), true));
+        let free = this.LowerRuntimeFunction("free".ToString(), analyzer->type_manager.Function(parameters, analyzer->type_manager.Void()));
+        let mut arguments = Vector<*MIRValue>();
+        arguments.PushBack(pointer);
+        let call = this.arena.New<MIRCall>("delete".ToString(), this.arena.New<MIRGlobalRef>(free as *MIRLinkableDeclaration), arguments);
+        this.current_block->instructions.PushBack(call);
         return null;
     }
 

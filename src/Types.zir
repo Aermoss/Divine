@@ -258,6 +258,57 @@ class SemanticType {
         } return this.width == 0 ? LLVMPointerSize(generator->target->layout) * 8 : this.width;
     }
 
+    pub fn Alignment(&this) -> usize {
+        if this.IsBoolean() {
+            return 1;
+        } else if this.IsCharacter() || this.IsInteger() || this.IsFloat() || this.IsEnumeration() {
+            return (this.Width() / 8) as usize;
+        } else if this.IsPointer() {
+            return LLVMPointerSize(generator->target->layout) as usize;
+        } else if this.IsArray() {
+            return this.Element().Alignment();
+        } else if this.HasFields() {
+            let mut alignment: usize = 1;
+
+            for field in this.Fields() {
+                let field_alignment = field.right._type->Alignment();
+                if field_alignment > alignment { alignment = field_alignment; }
+            } return alignment;
+        } else {
+            return 1;
+        }
+    }
+
+    pub fn Size(&this) -> usize {
+        if this.IsVoid() {
+            return 0;
+        } else if this.IsBoolean() {
+            return 1;
+        } else if this.IsCharacter() || this.IsInteger() || this.IsFloat() || this.IsEnumeration() {
+            return (this.Width() / 8) as usize;
+        } else if this.IsPointer() {
+            return LLVMPointerSize(generator->target->layout) as usize;
+        } else if this.IsArray() {
+            return this.Element().Size() * this.Length();
+        } else if this.HasFields() {
+            let mut size: usize = 0;
+            let alignment = this.Alignment();
+
+            for field in this.Fields() {
+                let field_alignment = field.right._type->Alignment();
+                let remainder = size % field_alignment;
+                if remainder != 0 { size += field_alignment - remainder; }
+                size += field.right._type->Size();
+            }
+
+            let remainder = size % alignment;
+            if remainder != 0 { size += alignment - remainder; }
+            return size;
+        } else {
+            return 0;
+        }
+    }
+
     pub fn Length(&this) -> usize {
         if !this.IsArray() {
             Logger::Log("SemanticType", "Not an array!", LogSeverity::Fatal);

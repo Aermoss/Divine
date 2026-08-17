@@ -67,21 +67,21 @@ class SemanticAnalyzer {
         analyzer = null;
     }
 
-    pub fn Analyze(&mut this, root: *ASTRoot) -> *HIRModule {
+    pub fn Analyze(&mut this, module: *ASTModule) -> *HIRModule {
         this.arena.Clear();
         this.module = this.arena.New<HIRModule>();
         let mut declared = Map<*ASTNode, bool>();
 
-        for declaration in root->declarations {
+        for declaration in module->declarations {
             declared[declaration] = false;
             declared[declaration] |= this.AnalyzeDeclarationFirstPass(declaration);
         }
 
-        for declaration in root->declarations {
+        for declaration in module->declarations {
             declared[declaration] |= this.AnalyzeDeclarationSecondPass(declaration);
         }
 
-        for declaration in root->declarations {
+        for declaration in module->declarations {
             declared[declaration] |= this.AnalyzeDeclarationThirdPass(declaration);
 
             if !declared[declaration] {
@@ -146,7 +146,7 @@ class SemanticAnalyzer {
             }
 
             for constructor in forward.node->constructors {
-                let _class = this.ResolveType(constructor->expression);
+                let _class = this.ResolveType(constructor->_type);
 
                 if _class == null {
                     continue;
@@ -1284,8 +1284,6 @@ class SemanticAnalyzer {
     pub fn AnalyzeExpression(&mut this, expression: *ASTNode, target: *SemanticType) -> *HIRExpression {
         if expression->kind == ASTNodeKind::LITERAL {
             return this.AnalyzeLiteral(expression as *ASTLiteral);
-        } else if expression->kind == ASTNodeKind::CALL {
-            return this.AnalyzeCallExpression(expression as *ASTCall);
         } else if expression->kind == ASTNodeKind::IDENTIFIER || expression->kind == ASTNodeKind::SCOPE_RESOLUTION {
             let symbol = this.scope_manager.Resolve(expression, false);
 
@@ -1323,6 +1321,12 @@ class SemanticAnalyzer {
             return this.AnalyzeNewExpression(expression as *ASTNew);
         } else if expression->kind == ASTNodeKind::DELETE {
             return this.AnalyzeDeleteExpression(expression as *ASTDelete);
+        } else if expression->kind == ASTNodeKind::INTRINSIC {
+            return this.AnalyzeIntrinsicExpression(expression as *ASTIntrinsic);
+        } else if expression->kind == ASTNodeKind::CONSTRUCTOR {
+            return this.AnalyzeConstructorExpression(expression as *ASTConstructor);
+        } else if expression->kind == ASTNodeKind::CALL {
+            return this.AnalyzeCallExpression(expression as *ASTCall);
         } else if expression->kind == ASTNodeKind::CAST {
             return this.AnalyzeCastExpression(expression as *ASTCast);
         } else if expression->kind == ASTNodeKind::INDEX_ACCESS {
@@ -1335,6 +1339,8 @@ class SemanticAnalyzer {
             return this.AnalyzeBinaryExpression(expression as *ASTBinary, target);
         } else if expression->kind == ASTNodeKind::TERNARY {
             return this.AnalyzeTernaryExpression(expression as *ASTTernary, target);
+        } else if expression->kind == ASTNodeKind::TYPE_APPLICATION {
+            return this.AnalyzeTypeApplication(expression as *ASTTypeApplication);
         } else if expression->kind == ASTNodeKind::STRUCTURE_INITIALIZER {
             return this.AnalyzeStructureInitializer(expression as *ASTStructureInitializer);
         } else {
@@ -1430,45 +1436,73 @@ class SemanticAnalyzer {
         }
     }
 
-    fn AnalyzeCallExpression(&mut this, call: *ASTCall) -> *HIRExpression {
-        if call->expression->kind == ASTNodeKind::IDENTIFIER {
-            let identifier = call->expression as *ASTIdentifier;
+    fn AnalayzeIntrinsicKind(&mut this, kind: ASTIntrinsicKind) -> HIRIntrinsicKind {
+        if kind == ASTIntrinsicKind::SizeOf { return HIRIntrinsicKind::SizeOf; }
+        else { return HIRIntrinsicKind::AlignOf; }
+    }
 
-            if identifier->name == "sizeof" || identifier->name == "alignof" {
-                if call->arguments.Size() != 1 {
-                    Logger::Log("Invalid number of arguments for '" + identifier->name + "'.", call, LogSeverity::Error);
-                    return null;
-                }
-
-                let mut _type: *SemanticType;
-                let argument = call->arguments[0];
-
-                if argument->kind == ASTNodeKind::IDENTIFIER || argument->kind == ASTNodeKind::SCOPE_RESOLUTION {
-                    let symbol = this.scope_manager.Resolve(argument, false);
-                    if symbol == null { return null; }
-
-                    if symbol->kind == SymbolKind::Statement {
-                        let statement = symbol->statement;
-
-                        if statement->kind == HIRStatementKind::Variable {
-                            _type = (statement as *HIRVariableStatement)->_type;
-                        } else {
-                            Logger::Log("Cannot use statement as a type.", call, LogSeverity::Error);
-                            return null;
-                        }
-                    } else if symbol->kind == SymbolKind::Declaration {
-                        _type = symbol->declaration->_type;
-                    } else {
-                        _type = symbol->_type;
-                    }
-                } else {
-                    _type = this.ResolveType(argument);
-                }
-
-                return this.arena.New<HIRIntrinsicExpression>(identifier->name == "sizeof" ? HIRIntrinsicKind::SizeOf : HIRIntrinsicKind::AlignOf, _type);
-            }
+    fn AnalyzeIntrinsicExpression(&mut this, intrinsic: *ASTIntrinsic) -> *HIRExpression {
+        if intrinsic->arguments.Size() != 1 {
+            Logger::Log("Invalid number of arguments for intrinsic '" + intrinsic->kind.ToString() + "'.", intrinsic, LogSeverity::Error);
+            return null;
         }
 
+        let mut _type: *SemanticType;
+        let argument: *ASTNode = intrinsic->arguments[0];
+
+        if argument->kind == ASTNodeKind::IDENTIFIER || argument->kind == ASTNodeKind::SCOPE_RESOLUTION {
+            let symbol = this.scope_manager.Resolve(argument, false);
+            if symbol == null { return null; }
+
+            if symbol->kind == SymbolKind::Statement {
+                let statement = symbol->statement;
+
+                if statement->kind == HIRStatementKind::Variable {
+                    _type = (statement as *HIRVariableStatement)->_type;
+                } else {
+                    Logger::Log("Cannot use statement as a type.", intrinsic, LogSeverity::Error);
+                    return null;
+                }
+            } else if symbol->kind == SymbolKind::Declaration {
+                _type = symbol->declaration->_type;
+            } else {
+                _type = symbol->_type;
+            }
+        } else if argument->kind == ASTNodeKind::Type {
+            _type = this.ResolveType(argument as *ASTType);
+        } else {
+            Logger::Log("Invalid argument kind '" + argument->kind.ToString() + "' for intrinsic '" + intrinsic->kind.ToString() + "'.", intrinsic, LogSeverity::Error);
+            return null;
+        }
+
+        return this.arena.New<HIRIntrinsicExpression>(this.AnalayzeIntrinsicKind(intrinsic->kind), _type);
+    }
+
+    fn AnalyzeConstructorExpression(&mut this, constructor: *ASTConstructor) -> *HIRExpression {
+        let _class = this.ResolveType(constructor->_type);
+        if _class == null { return null; }
+
+        if !_class->IsClass() {
+            Logger::Log("Only class types can be constructed with a call expression.", constructor, LogSeverity::Error);
+            return null;
+        }
+
+        let mut values = Vector<*HIRExpression>();
+        let instance = this.arena.New<HIRConstructorExpression>(_class);
+        values.Insert(0, this.ImplicitAddressOf(instance));
+
+        for argument in constructor->arguments {
+            let value = this.AnalyzeExpression(argument);
+            if value == null { return null; }
+            values.PushBack(value);
+        }
+
+        let candidates = _class->GetCandidates(_class->name, constructor, false);
+        instance->call = this.AnalyzeResolvedCallExpression(candidates, values, constructor) as *HIRCallExpression;
+        return instance;
+    }
+
+    fn AnalyzeCallExpression(&mut this, call: *ASTCall) -> *HIRExpression {
         let mut values = Vector<*HIRExpression>();
 
         for argument in call->arguments {
@@ -1529,69 +1563,6 @@ class SemanticAnalyzer {
                     return this.AnalyzeResolvedCallExpression(candidates, values, call);
                 }
             }
-        } else if call->expression->kind == ASTNodeKind::TYPE_APPLICATION || call->expression->kind == ASTNodeKind::PRIMITIVE_TYPE {
-            if call->expression->kind == ASTNodeKind::TYPE_APPLICATION {
-                let type_application = call->expression as *ASTTypeApplication;
-                let mut types = Vector<*SemanticType>();
-
-                for _type in type_application->types {
-                    types.PushBack(this.ResolveType(_type));
-                }
-
-                if type_application->expression->kind == ASTNodeKind::PRIMITIVE_TYPE {
-                    let primitive_type = type_application->expression as *ASTPrimitiveType;
-
-                    if this.scope_manager.Has(primitive_type->name, SymbolKind::Generic) {
-                        let generic = this.scope_manager.Get(primitive_type->name, SymbolKind::Generic)->generic;
-
-                        if generic->declaration->kind == ASTDeclarationKind::Function {
-                            let declaration = generic->Get(types).left;
-
-                            if declaration->kind != HIRDeclarationKind::Function {
-                                Logger::Log("Generic '" + primitive_type->name + "' is not a function.", call, LogSeverity::Error);
-                                return null;
-                            }
-
-                            return this.AnalyzeResolvedCallExpression(declaration as *HIRFunctionDeclaration, values, call);
-                        }
-                    } else {
-                        if this.scope_manager.Has(primitive_type->name) {
-                            Logger::Log("Function '" + primitive_type->name + "' is not generic.", call, LogSeverity::Error);
-                        } else {
-                            Logger::Log("Function '" + primitive_type->name + "' not found.", call, LogSeverity::Error);
-                        } return null;
-                    }
-                } else if type_application->expression->kind == ASTNodeKind::SCOPE_RESOLUTION {
-                    let resolution = type_application->expression as *ASTScopeResolution;
-                    let scope = this.scope_manager.ResolveScopeHalf(resolution, false);
-                    if scope == null { return null; }
-                    let symbol = scope->Get(resolution->identifier->name, SymbolKind::Generic);
-                    if symbol == null { return null; }
-                    let declaration = symbol->generic->Get(types).left;
-
-                    if declaration->kind != HIRDeclarationKind::Function {
-                        Logger::Log("Generic '" + resolution->identifier->name + "' is not a function.", call, LogSeverity::Error);
-                        return null;
-                    }
-
-                    return this.AnalyzeResolvedCallExpression(declaration as *HIRFunctionDeclaration, values, call);
-                }
-            }
-
-            let _class = this.ResolveType(call->expression);
-            if _class == null { return null; }
-
-            if !_class->IsClass() {
-                Logger::Log("Only class types can be constructed with a call expression.", call, LogSeverity::Error);
-                return null;
-            }
-
-            let instance = this.arena.New<HIRConstructorExpression>(_class);
-            values.Insert(0, this.ImplicitAddressOf(instance));
-
-            let candidates = _class->GetCandidates(_class->name, call, false);
-            instance->call = this.AnalyzeResolvedCallExpression(candidates, values, call) as *HIRCallExpression;
-            return instance;
         } else {
             let candidates = this.scope_manager.ResolveCandidates(call->expression, true);
 
@@ -2249,6 +2220,39 @@ class SemanticAnalyzer {
         return this.arena.New<HIRTernaryExpression>(condition, then_value, else_value, category, mutable);
     }
 
+    fn AnalyzeTypeApplication(&mut this, type_application: *ASTTypeApplication) -> *HIRExpression {
+        let mut types = Vector<*SemanticType>();
+
+        for _type in type_application->types {
+            types.PushBack(this.ResolveType(_type));
+        }
+
+        if type_application->expression->kind == ASTNodeKind::Type && (type_application->expression as *ASTType)->kind == ASTTypeKind::Primitive {
+            let primitive_type = (type_application->expression as *ASTType) as *ASTPrimitiveType;
+
+            if this.scope_manager.Has(primitive_type->name, SymbolKind::Generic) {
+                let generic = this.scope_manager.Get(primitive_type->name, SymbolKind::Generic)->generic;
+                return this.arena.New<HIRDeclarationReference>(generic->Get(types).left, false);
+            } else {
+                if this.scope_manager.Has(primitive_type->name) {
+                    Logger::Log("Symbol '" + primitive_type->name + "' is not generic.", type_application, LogSeverity::Error);
+                } else {
+                    Logger::Log("Symbol '" + primitive_type->name + "' not found.", type_application, LogSeverity::Error);
+                } return null;
+            }
+        } else if type_application->expression->kind == ASTNodeKind::SCOPE_RESOLUTION {
+            let resolution = type_application->expression as *ASTScopeResolution;
+            let scope = this.scope_manager.ResolveScopeHalf(resolution, false);
+            if scope == null { return null; }
+            let symbol = scope->Get(resolution->identifier->name, SymbolKind::Generic);
+            if symbol == null { return null; }
+            return this.arena.New<HIRDeclarationReference>(symbol->generic->Get(types).left, false);
+        } else {
+            Logger::Log("Invalid type application.", type_application, LogSeverity::Error);
+            return null;
+        }
+    }
+
     fn AnalyzeStructureInitializer(&mut this, node: *ASTStructureInitializer) -> *HIRExpression {
         let symbol = this.scope_manager.Resolve(node->expression, false);
         if symbol == null { return null; }
@@ -2270,8 +2274,8 @@ class SemanticAnalyzer {
         return this.arena.New<HIRStructureLiteral>(structure, values);
     }
 
-    pub fn ResolveType(&mut this, _type: *ASTNode) -> *SemanticType {
-        if _type->kind == ASTNodeKind::PRIMITIVE_TYPE {
+    pub fn ResolveType(&mut this, _type: *ASTType) -> *SemanticType {
+        if _type->kind == ASTTypeKind::Primitive {
             let primitive_type = _type as *ASTPrimitiveType;
 
             if primitive_type->name == "void" {
@@ -2324,18 +2328,18 @@ class SemanticAnalyzer {
                 Logger::Log("Type '" + primitive_type->name + "' not found.", _type, LogSeverity::Error);
                 return null;
             }
-        } else if _type->kind == ASTNodeKind::TYPE_APPLICATION {
-            let type_application = _type as *ASTTypeApplication;
+        } else if _type->kind == ASTTypeKind::Generic {
+            let generic = _type as *ASTGenericType;
             let mut types = Vector<*SemanticType>();
 
-            for type_ in type_application->types {
+            for type_ in generic->types {
                 let resolved = this.ResolveType(type_);
                 if resolved == null { return null; }
                 types.PushBack(resolved);
             }
 
-            if type_application->expression->kind == ASTNodeKind::PRIMITIVE_TYPE {
-                let primitive_type = type_application->expression as *ASTPrimitiveType;
+            if generic->_type->kind == ASTTypeKind::Primitive {
+                let primitive_type = generic->_type as *ASTPrimitiveType;
 
                 if this.scope_manager.Has(primitive_type->name, SymbolKind::Generic) {
                     let declaration = this.scope_manager.Get(primitive_type->name, SymbolKind::Generic)->generic->Get(types).left;
@@ -2357,22 +2361,22 @@ class SemanticAnalyzer {
                 Logger::Log("Invalid type application.", _type, LogSeverity::Error);
                 return null;
             }
-        } else if _type->kind == ASTNodeKind::POINTER_TYPE {
+        } else if _type->kind == ASTTypeKind::Pointer {
             let pointer_type = _type as *ASTPointerType;
             let base_type = this.ResolveType(pointer_type->base_type);
             if base_type == null { return null; }
             return this.type_manager.Pointer(base_type, pointer_type->mutable);
-        } else if _type->kind == ASTNodeKind::REFERENCE_TYPE {
+        } else if _type->kind == ASTTypeKind::Reference {
             let reference_type = _type as *ASTReferenceType;
             let base_type = this.ResolveType(reference_type->base_type);
             if base_type == null { return null; }
             return this.type_manager.Reference(base_type, reference_type->mutable);
-        } else if _type->kind == ASTNodeKind::ARRAY_TYPE {
+        } else if _type->kind == ASTTypeKind::Array {
             let array_type = _type as *ASTArrayType;
             let element_type = this.ResolveType(array_type->element_type);
             if element_type == null { return null; }
             return this.type_manager.Pointer(element_type, true);
-        } else if _type->kind == ASTNodeKind::FUNCTION_TYPE {
+        } else if _type->kind == ASTTypeKind::Function {
             let function_type = _type as *ASTFunctionType;
             let return_type = this.ResolveType(function_type->return_type);
             if return_type == null { return null; }

@@ -291,6 +291,15 @@ class Parser {
         }
     }
 
+    fn IsIntrinsic(&this, name: String) -> bool {
+        return name == "sizeof" || name == "alignof";
+    }
+
+    fn ResolveIntrinsicKind(&this, name: String) -> ASTIntrinsicKind {
+        if name == "sizeof" { return ASTIntrinsicKind::SizeOf; }
+        else { return ASTIntrinsicKind::AlignOf; }
+    }
+
     fn ParsePostfix(&mut this) -> *ASTNode {
         let mut expression = this.ParsePrimary();
         if expression == null { return null; }
@@ -300,21 +309,58 @@ class Parser {
 
             if token._type == TokenType::LPAREN {
                 this.Advance();
-                let call = this.arena.New<ASTCall>(expression, token);
 
-                if !this.Match(TokenType::RPAREN) {
-                    while this.Current()._type != TokenType::RPAREN && this.Current()._type != TokenType::EOF {
-                        let expression = this.ParseExpression();
-                        if expression == null { return null; }
-                        call->arguments.PushBack(expression);
+                if expression->kind == ASTNodeKind::Type {
+                    let constructor = this.arena.New<ASTConstructor>(expression as *ASTType, token);
 
-                        if !this.Match(TokenType::COMMA) {
-                            break;
+                    if !this.Match(TokenType::RPAREN) {
+                        while this.Current()._type != TokenType::RPAREN && this.Current()._type != TokenType::EOF {
+                            let expression = this.ParseExpression();
+                            if expression == null { return null; }
+                            constructor->arguments.PushBack(expression);
+
+                            if !this.Match(TokenType::COMMA) {
+                                break;
+                            }
                         }
-                    }
 
-                    if !this.ExpectSuccess(TokenType::RPAREN) { return null; }
-                } expression = call;
+                        if !this.ExpectSuccess(TokenType::RPAREN) { return null; }
+                    } expression = constructor;
+                } else {
+                    if expression->kind == ASTNodeKind::IDENTIFIER && this.IsIntrinsic((expression as *ASTIdentifier)->name) {
+                        let intrinsic = this.arena.New<ASTIntrinsic>(this.ResolveIntrinsicKind((expression as *ASTIdentifier)->name), token);
+
+                        if !this.Match(TokenType::RPAREN) {
+                            while this.Current()._type != TokenType::RPAREN && this.Current()._type != TokenType::EOF {
+                                let expression = this.ParseExpression();
+                                if expression == null { return null; }
+                                intrinsic->arguments.PushBack(expression);
+
+                                if !this.Match(TokenType::COMMA) {
+                                    break;
+                                }
+                            }
+
+                            if !this.ExpectSuccess(TokenType::RPAREN) { return null; }
+                        } expression = intrinsic;
+                    } else {
+                        let call = this.arena.New<ASTCall>(expression, token);
+
+                        if !this.Match(TokenType::RPAREN) {
+                            while this.Current()._type != TokenType::RPAREN && this.Current()._type != TokenType::EOF {
+                                let expression = this.ParseExpression();
+                                if expression == null { return null; }
+                                call->arguments.PushBack(expression);
+
+                                if !this.Match(TokenType::COMMA) {
+                                    break;
+                                }
+                            }
+
+                            if !this.ExpectSuccess(TokenType::RPAREN) { return null; }
+                        } expression = call;
+                    }
+                }
             } else if token._type == TokenType::DOT || token._type == TokenType::ARROW {
                 this.Advance();
                 let member_access = this.arena.New<ASTMemberAccess>(expression, token._type == TokenType::ARROW, token);
@@ -337,7 +383,7 @@ class Parser {
                 if _expression == null { return null; }
                 expression = this.arena.New<ASTIndexAccess>(expression, _expression, token);
                 if !this.ExpectSuccess(TokenType::RBRACKET) { return null; }
-            } else if token._type == TokenType::LBRACE && (expression->kind == ASTNodeKind::SCOPE_RESOLUTION || expression->kind == ASTNodeKind::IDENTIFIER || expression->kind == ASTNodeKind::PRIMITIVE_TYPE) && this.IsStructureInitializer(expression->kind) {
+            } else if token._type == TokenType::LBRACE && (expression->kind == ASTNodeKind::SCOPE_RESOLUTION || expression->kind == ASTNodeKind::IDENTIFIER || (expression->kind == ASTNodeKind::Type && (expression as *ASTType)->kind == ASTTypeKind::Primitive)) && this.IsStructureInitializer(expression->kind) {
                 this.Advance();
                 let structure = this.arena.New<ASTStructureInitializer>(expression, token);
 
@@ -498,7 +544,7 @@ class Parser {
         } return expression;
     }
 
-    fn ParseType(&mut this) -> *ASTNode {
+    fn ParseType(&mut this) -> *ASTType {
         let mut references = Vector<bool>();
 
         if this.Match(TokenType::BITWISE_AND) {
@@ -516,7 +562,7 @@ class Parser {
         }
 
         let token = this.Current();
-        let mut node = null;
+        let mut node: *ASTType = null;
 
         if this.Match(TokenType::FUNCTION) {
             if !this.ExpectSuccess(TokenType::LPAREN) { return null; }
@@ -568,29 +614,47 @@ class Parser {
                 return null;
             }
 
-            node = this.arena.New<ASTPrimitiveType>(token.value, token);
             this.Advance();
 
-            loop {
-                if this.Match(TokenType::DOUBLE_COLON) {
+            if this.Peek(1)._type == TokenType::DOUBLE_COLON {
+                let path = this.arena.New<ASTPathType>(token);
+
+                loop {
                     let identifier = this.Expect(TokenType::IDENTIFIER);
                     if identifier._type == TokenType::UNKNOWN { return null; }
-                    node = this.arena.New<ASTScopeResolution>(node, this.arena.New<ASTIdentifier>(identifier.value, identifier), token);
-                } else if this.IsTypeApplication() {
+                    let segment = ASTPathSegment(identifier.value);
+
+                    if this.IsTypeApplication() {
+                        this.Advance();
+
+                        while this.Current()._type != TokenType::GREATER {
+                            let _type = this.ParseType();
+                            if _type == null { return null; }
+                            segment->types.PushBack(_type);
+                            if !this.Match(TokenType::COMMA) { break; }
+                        }
+
+                        if !this.ExpectSuccess(TokenType::GREATER) { return null; }
+                    }
+
+                    path->segments.PushBack(segment);
+                } node = path;
+            } else {
+                node = this.arena.New<ASTPrimitiveType>(token.value, token);
+
+                if this.IsTypeApplication() {
                     this.Advance();
-                    let type_application = this.arena.New<ASTTypeApplication>(node, token);
+                    let generic = this.arena.New<ASTGenericType>(node, token);
 
                     while this.Current()._type != TokenType::GREATER {
                         let _type = this.ParseType();
                         if _type == null { return null; }
-                        type_application->types.PushBack(_type);
+                        generic->types.PushBack(_type);
                         if !this.Match(TokenType::COMMA) { break; }
                     }
 
                     if !this.ExpectSuccess(TokenType::GREATER) { return null; }
-                    node = type_application;
-                } else {
-                    break;
+                    node = generic;
                 }
             }
         }
@@ -754,7 +818,7 @@ class Parser {
                 if current->initializer->kind == ASTNodeKind::INITIALIZER_LIST {
                     let list = current->initializer as *ASTInitializerList;
 
-                    if current->_type->kind == ASTNodeKind::ARRAY_TYPE {
+                    if current->_type->kind == ASTTypeKind::Array {
                         let array_type = current->_type as *mut ASTArrayType;
 
                         if array_type->size == null {
@@ -1337,10 +1401,10 @@ class Parser {
                         return null;
                     }
 
-                    if expression->kind == ASTNodeKind::CALL {
-                        function->constructors.PushBack(expression as *ASTCall);
+                    if expression->kind == ASTNodeKind::CONSTRUCTOR {
+                        function->constructors.PushBack(expression as *ASTConstructor);
                     } else {
-                        Logger::Log("Expected a function call.", token, LogSeverity::Error);
+                        Logger::Log("Expected a constructor.", token, LogSeverity::Error);
                         break;
                     }
                 }
@@ -1886,7 +1950,7 @@ class Parser {
         return this.arena.New<ASTAssemblyDeclaration>(code.value, token);
     }
 
-    pub fn Parse(&mut this, tokens: &Vector<Token>) -> *ASTRoot {
+    pub fn Parse(&mut this, tokens: &Vector<Token>) -> *ASTModule {
         (this.tokens, this.index) = (tokens, 0);
 
         this.types.Clear();
@@ -1927,16 +1991,16 @@ class Parser {
             }
         }
 
-        let root = this.arena.New<ASTRoot>();
+        let module = this.arena.New<ASTModule>();
 
         while this.Current()._type != TokenType::EOF {
             let declaration = this.ParseDeclaration();
 
             if declaration != null {
-                root->declarations.PushBack(declaration);
+                module->declarations.PushBack(declaration);
             } else {
                 this.SynchronizeDeclaration();
             }
-        } return root;
+        } return module;
     }
 }

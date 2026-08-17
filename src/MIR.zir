@@ -167,7 +167,9 @@ class MIRParameter : MIRValue {
 }
 
 enum MIRInstructionKind: u8 {
-    Alloca, Load, Store, Call, ArrayGEP, StructGEP, Unary, Binary, Terminator
+    Alloca, Load, Store, ArrayGEP, StructGEP,
+    Unary, Binary, Call,
+    Select, Phi, Terminator
 }
 
 class MIRInstruction : MIRValue {
@@ -195,8 +197,6 @@ class MIRInstruction : MIRValue {
             result += (this as *MIRLoad)->ToString();
         } else if this.kind == MIRInstructionKind::Store {
             result += (this as *MIRStore)->ToString();
-        } else if this.kind == MIRInstructionKind::Call {
-            result += (this as *MIRCall)->ToString();
         } else if this.kind == MIRInstructionKind::ArrayGEP {
             result += (this as *MIRArrayGEP)->ToString();
         } else if this.kind == MIRInstructionKind::StructGEP {
@@ -205,6 +205,12 @@ class MIRInstruction : MIRValue {
             result += (this as *MIRUnary)->ToString();
         } else if this.kind == MIRInstructionKind::Binary {
             result += (this as *MIRBinary)->ToString();
+        } else if this.kind == MIRInstructionKind::Call {
+            result += (this as *MIRCall)->ToString();
+        } else if this.kind == MIRInstructionKind::Select {
+            result += (this as *MIRSelect)->ToString();
+        } else if this.kind == MIRInstructionKind::Phi {
+            result += (this as *MIRPhi)->ToString();
         } else if this.kind == MIRInstructionKind::Terminator {
             result += (this as *MIRTerminator)->ToString();
         } else {
@@ -253,25 +259,6 @@ class MIRStore : MIRInstruction {
 
     pub fn ToString(&this) -> String {
         return "store " + this.pointer->ToString() + ", " + this.value->ToString();
-    }
-}
-
-class MIRCall : MIRInstruction {
-    pub callee: *MIRValue,
-    pub arguments: Vector<*MIRValue>;
-
-    MIRCall(&mut this, name: String, callee: *MIRValue, arguments: Vector<*MIRValue>) : MIRInstruction(MIRInstructionKind::Call, name, callee->_type->Return()) {
-        (this.callee, this.arguments) = (callee, arguments);
-    }
-
-    pub fn ToString(&this) -> String {
-        let mut result = "call " + this.callee->ToString() + '(';
-
-        for i in 0..this.arguments.Size() {
-            if i != 0 { result += ", "; }
-            let argument: *MIRValue = this.arguments[i];
-            result += argument->ToString();
-        } return result + ')';
     }
 }
 
@@ -382,6 +369,67 @@ class MIRBinary : MIRInstruction {
 
     pub fn ToString(&this) -> String {
         return this.kind.ToString() + ' ' + this.left->ToString() + ", " + this.right->ToString();
+    }
+}
+
+class MIRCall : MIRInstruction {
+    pub callee: *MIRValue,
+    pub arguments: Vector<*MIRValue>;
+
+    MIRCall(&mut this, name: String, callee: *MIRValue, arguments: Vector<*MIRValue>) : MIRInstruction(MIRInstructionKind::Call, name, callee->_type->Return()) {
+        (this.callee, this.arguments) = (callee, arguments);
+    }
+
+    pub fn ToString(&this) -> String {
+        let mut result = "call " + this.callee->ToString() + '(';
+
+        for i in 0..this.arguments.Size() {
+            if i != 0 { result += ", "; }
+            let argument: *MIRValue = this.arguments[i];
+            result += argument->ToString();
+        } return result + ')';
+    }
+}
+
+class MIRSelect : MIRInstruction {
+    pub condition: *MIRValue,
+    pub then_value: *MIRValue,
+    pub else_value: *MIRValue;
+
+    MIRSelect(&mut this, name: String, condition: *MIRValue, then_value: *MIRValue, else_value: *MIRValue, _type: *SemanticType) : MIRInstruction(MIRInstructionKind::Select, name, _type) {
+        (this.condition, this.then_value, this.else_value) = (condition, then_value, else_value);
+    }
+
+    pub fn ToString(&this) -> String {
+        return "select " + this.condition->ToString() + ", " + this.then_value->ToString() + ", " + this.else_value->ToString();
+    }
+}
+
+class MIRPhiIncoming {
+    pub value: *MIRValue,
+    pub block: *MIRBlock;
+
+    MIRPhiIncoming(&mut this, value: *MIRValue, block: *MIRBlock) {
+        (this.value, this.block) = (value, block);
+    }
+}
+
+class MIRPhi : MIRInstruction {
+    pub incomings: Vector<MIRPhiIncoming>;
+
+    MIRPhi(&mut this, name: String, _type: *SemanticType) : MIRInstruction(MIRInstructionKind::Phi, name, _type) {}
+
+    pub fn AddIncoming(&mut this, value: *MIRValue, block: *MIRBlock) {
+        this.incomings.PushBack(MIRPhiIncoming(value, block));
+    }
+
+    pub fn ToString(&this) -> String {
+        let mut result = "phi ".ToString();
+
+        for i in 0..this.incomings.Size() {
+            if i != 0 { result += ", "; }
+            result += '[' + this.incomings[i].value->ToString() + ", %" + this.incomings[i].block->name + ']';
+        } return result;
     }
 }
 

@@ -183,7 +183,6 @@ class HIRLowerer {
 
         let then_block = this.arena.New<MIRBlock>("if.then".ToString());
         this.current_function->blocks.PushBack(then_block);
-
         let merge_block = this.arena.New<MIRBlock>("if.merge".ToString());
         this.current_function->blocks.PushBack(merge_block);
 
@@ -222,7 +221,6 @@ class HIRLowerer {
 
         let body_block = this.arena.New<MIRBlock>("while.body".ToString());
         this.current_function->blocks.PushBack(body_block);
-
         let end_block = this.arena.New<MIRBlock>("while.end".ToString());
         this.current_function->blocks.PushBack(end_block);
 
@@ -245,7 +243,6 @@ class HIRLowerer {
     fn LowerLoop(&mut this, _loop: *HIRLoop) {
         let body_block = this.arena.New<MIRBlock>("loop.body".ToString());
         this.current_function->blocks.PushBack(body_block);
-
         let end_block = this.arena.New<MIRBlock>("loop.end".ToString());
         this.current_function->blocks.PushBack(end_block);
 
@@ -465,6 +462,33 @@ class HIRLowerer {
         let left = this.LowerExpression(binary->left);
         if left == null { return null; }
 
+        if binary->_operator == TokenType::AND || binary->_operator == TokenType::OR {
+            let mut right_block = this.arena.New<MIRBlock>("binary.right".ToString());
+            this.current_function->blocks.PushBack(right_block);
+            let merge_block = this.arena.New<MIRBlock>("binary.merge".ToString());
+            this.current_function->blocks.PushBack(merge_block);
+            let left_block = this.current_block;
+
+            if binary->_operator == TokenType::AND {
+                this.current_block->terminator = this.arena.New<MIRConditionalBranch>(left, right_block, merge_block);
+            } else {
+                this.current_block->terminator = this.arena.New<MIRConditionalBranch>(left, merge_block, right_block);
+            }
+
+            this.current_block = right_block;
+            let right = this.LowerExpression(binary->right);
+            if right == null { return null; }
+            this.current_block->terminator = this.arena.New<MIRBranch>(merge_block);
+            right_block = this.current_block;
+
+            this.current_block = merge_block;
+            let phi = this.arena.New<MIRPhi>("short.circuit".ToString(), result_type);
+            phi->AddIncoming(left, left_block);
+            phi->AddIncoming(right, right_block);
+            this.current_block->instructions.PushBack(phi);
+            return phi as *MIRInstruction;
+        }
+
         let right_type = binary->right->_type;
         let right = this.LowerExpression(binary->right);
         if right == null { return null; }
@@ -563,8 +587,36 @@ class HIRLowerer {
     }
 
     fn LowerTernary(&mut this, ternary: *HIRTernary) -> *MIRValue {
+        let expression = ternary as *HIRExpression;
         let condition = this.LowerExpression(ternary->condition);
         if condition == null { return null; }
-        return null;
+
+        let mut then_block = this.arena.New<MIRBlock>("ternary.then".ToString());
+        this.current_function->blocks.PushBack(then_block);
+        let mut else_block = this.arena.New<MIRBlock>("ternary.else".ToString());
+        this.current_function->blocks.PushBack(else_block);
+        let merge_block = this.arena.New<MIRBlock>("ternary.merge".ToString());
+        this.current_function->blocks.PushBack(merge_block);
+
+        this.current_block->terminator = this.arena.New<MIRConditionalBranch>(condition, then_block, else_block);
+
+        this.current_block = then_block;
+        let then_value = this.LowerExpression(ternary->then);
+        if then_value == null { return null; }
+        this.current_block->terminator = this.arena.New<MIRBranch>(merge_block);
+        then_block = this.current_block;
+
+        this.current_block = else_block;
+        let else_value = this.LowerExpression(ternary->_else);
+        if else_value == null { return null; }
+        this.current_block->terminator = this.arena.New<MIRBranch>(merge_block);
+        else_block = this.current_block;
+
+        this.current_block = merge_block;
+        let phi = this.arena.New<MIRPhi>("ternary".ToString(), expression->_type);
+        phi->AddIncoming(then_value, then_block);
+        phi->AddIncoming(else_value, else_block);
+        this.current_block->instructions.PushBack(phi);
+        return phi as *MIRInstruction;
     }
 }

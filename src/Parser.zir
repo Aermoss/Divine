@@ -545,7 +545,7 @@ class Parser {
                         let token = this.Current();
                         let _type = this.ParseType();
                         if _type == null { return null; }
-                        function_type->parameters.PushBack(this.arena.New<ASTParameter>(String(""), _type, false, token));
+                        function_type->parameters.PushBack(this.arena.New<ASTParameterDeclaration>(String(""), _type, false, token));
                     }
 
                     if !this.Match(TokenType::COMMA) {
@@ -1150,7 +1150,7 @@ class Parser {
         } return attributes;
     }
 
-    fn ParseDeclaration(&mut this) -> *ASTNode {
+    fn ParseDeclaration(&mut this) -> *ASTDeclaration {
         let attributes = this.ParseAttributes();
         let token = this.Current();
 
@@ -1171,7 +1171,7 @@ class Parser {
         } else if token._type == TokenType::TYPE {
             return this.ParseTypeDeclaration();
         } else if token._type == TokenType::ASSEMBLY || token._type == TokenType::VOLATILE {
-            return this.ParseAssembly();
+            return this.ParseAssemblyDeclaration();
         } else {
             this.Advance();
             Logger::Log("Expected declaration.", token, LogSeverity::Error);
@@ -1179,7 +1179,7 @@ class Parser {
         }
     }
 
-    fn ParseFunctionDeclaration(&mut this, attributes: &Vector<Pair<String, Vector<*ASTNode>>>, _class: bool) -> *ASTNode {
+    fn ParseFunctionDeclaration(&mut this, attributes: &Vector<Pair<String, Vector<*ASTNode>>>, _class: bool) -> *ASTFunctionDeclaration {
         let token = this.Current();
         let mut no_mangle = false;
 
@@ -1271,9 +1271,9 @@ class Parser {
             if this.Match(TokenType::BITWISE_AND) {
                 let mutable = this.Match(TokenType::MUT);
                 if !this.ExpectSuccess(TokenType::THIS) { this.types = types; return null; }
-                function_type->instance_kind = mutable ? InstanceKind::MutRef : InstanceKind::ConstRef;
+                function_type->instance_kind = mutable ? ASTInstanceKind::MutRef : ASTInstanceKind::ConstRef;
             } else if this.Match(TokenType::THIS) {
-                function_type->instance_kind = InstanceKind::Copy;
+                function_type->instance_kind = ASTInstanceKind::Copy;
             } else {
                 has_instance = false;
             }
@@ -1358,7 +1358,7 @@ class Parser {
         } return function;
     }
 
-    fn ParseParameter(&mut this) -> *ASTParameter {
+    fn ParseParameter(&mut this) -> *ASTParameterDeclaration {
         let mutable = this.Match(TokenType::MUT);
         let token = this.Expect(TokenType::IDENTIFIER);
         if token._type == TokenType::UNKNOWN { return null; }
@@ -1382,10 +1382,10 @@ class Parser {
             _type = this.arena.New<ASTArrayType>(_type, size, token);
         }
 
-        return this.arena.New<ASTParameter>(token.value, _type, mutable, token);
+        return this.arena.New<ASTParameterDeclaration>(token.value, _type, mutable, token);
     }
 
-    fn ParseClassDeclaration(&mut this, attributes: &Vector<Pair<String, Vector<*ASTNode>>>) -> *ASTNode {
+    fn ParseClassDeclaration(&mut this, attributes: &Vector<Pair<String, Vector<*ASTNode>>>) -> *ASTClassDeclaration {
         let token = this.Expect(TokenType::CLASS);
         if token._type == TokenType::UNKNOWN { return null; }
 
@@ -1453,7 +1453,7 @@ class Parser {
                 let public = this.Match(TokenType::PUBLIC);
                 let field = this.ParseField();
                 if field == null { this.types = types; return null; }
-                class_node->fields.PushBack(Pair<bool, *ASTField>(public, field));
+                class_node->fields.PushBack(Pair<bool, *ASTFieldDeclaration>(public, field));
 
                 if !this.Match(TokenType::COMMA) {
                     break;
@@ -1470,9 +1470,9 @@ class Parser {
                 if function == null { this.types = types; return null; }
 
                 if token._type == TokenType::FUNCTION {
-                    class_node->methods.PushBack(Pair<bool, *ASTFunctionDeclaration>(public, function as *ASTFunctionDeclaration));
+                    class_node->methods.PushBack(Pair<bool, *ASTFunctionDeclaration>(public, function));
                 } else if token._type != TokenType::TILDE {
-                    class_node->constructors.PushBack(function as *ASTFunctionDeclaration);
+                    class_node->constructors.PushBack(function);
                 } else {
                     if class_node->destructor != null {
                         Logger::Log("Multiple destructor declarations are not allowed.", token, LogSeverity::Error);
@@ -1480,7 +1480,7 @@ class Parser {
                         return null;
                     }
 
-                    class_node->destructor = function as *ASTFunctionDeclaration;
+                    class_node->destructor = function;
                 }
             }
         }
@@ -1490,7 +1490,7 @@ class Parser {
         return class_node;
     }
 
-    fn ParseStructureDeclaration(&mut this, attributes: &Vector<Pair<String, Vector<*ASTNode>>>) -> *ASTNode {
+    fn ParseStructureDeclaration(&mut this, attributes: &Vector<Pair<String, Vector<*ASTNode>>>) -> *ASTStructureDeclaration {
         let token = this.Expect(TokenType::STRUCTURE);
         if token._type == TokenType::UNKNOWN { return null; }
 
@@ -1546,7 +1546,7 @@ class Parser {
                 let public = this.Match(TokenType::PUBLIC);
                 let field = this.ParseField();
                 if field == null { this.types = types; return null; }
-                struct_node->fields.PushBack(Pair<bool, *ASTField>(public, field));
+                struct_node->fields.PushBack(Pair<bool, *ASTFieldDeclaration>(public, field));
 
                 if !this.Match(TokenType::COMMA) {
                     break;
@@ -1560,7 +1560,7 @@ class Parser {
                 let public = this.Match(TokenType::PUBLIC);
                 let function = this.ParseFunctionDeclaration(attributes, false);
                 if function == null { this.types = types; return null; }
-                struct_node->methods.PushBack(Pair<bool, *ASTFunctionDeclaration>(public, function as *ASTFunctionDeclaration));
+                struct_node->methods.PushBack(Pair<bool, *ASTFunctionDeclaration>(public, function));
             }
         }
 
@@ -1569,7 +1569,7 @@ class Parser {
         return struct_node;
     }
 
-    fn ParseField(&mut this) -> *ASTField {
+    fn ParseField(&mut this) -> *ASTFieldDeclaration {
         let token = this.Expect(TokenType::IDENTIFIER);
         if token._type == TokenType::UNKNOWN { return null; }
         let mut sizes = Vector<*ASTNode>();
@@ -1598,10 +1598,10 @@ class Parser {
             if initializer == null { return null; }
         }
 
-        return this.arena.New<ASTField>(token.value, _type, initializer, token);
+        return this.arena.New<ASTFieldDeclaration>(token.value, _type, initializer, token);
     }
 
-    fn ParseEnumerationDeclaration(&mut this, attributes: &Vector<Pair<String, Vector<*ASTNode>>>) -> *ASTNode {
+    fn ParseEnumerationDeclaration(&mut this, attributes: &Vector<Pair<String, Vector<*ASTNode>>>) -> *ASTEnumerationDeclaration {
         let token = this.Expect(TokenType::ENUMERATION);
         if token._type == TokenType::UNKNOWN { return null; }
 
@@ -1723,7 +1723,7 @@ class Parser {
                 let public = this.Match(TokenType::PUBLIC);
                 let function = this.ParseFunctionDeclaration(attributes, false);
                 if function == null { this.types = types; return null; }
-                enum_node->methods.PushBack(Pair<bool, *ASTFunctionDeclaration>(public, function as *ASTFunctionDeclaration));
+                enum_node->methods.PushBack(Pair<bool, *ASTFunctionDeclaration>(public, function));
             }
         }
 
@@ -1732,12 +1732,12 @@ class Parser {
         return enum_node;
     }
 
-    fn ParseExternDeclaration(&mut this) -> *ASTNode {
+    fn ParseExternDeclaration(&mut this) -> *ASTExternDeclaration {
         let extern_token = this.Expect(TokenType::EXTERN);
         if extern_token._type == TokenType::UNKNOWN { return null; }
         let linkage_token = this.Expect(TokenType::STRING);
         if linkage_token._type == TokenType::UNKNOWN { return null; }
-        let extern_block = this.arena.New<ASTExtern>(linkage_token.value, extern_token);
+        let extern_block = this.arena.New<ASTExternDeclaration>(linkage_token.value, extern_token);
         if !this.ExpectSuccess(TokenType::LBRACE) { return null; }
 
         while this.Current()._type != TokenType::RBRACE && this.Current()._type != TokenType::EOF {
@@ -1751,7 +1751,7 @@ class Parser {
                     continue;
                 }
 
-                extern_block->declarations.PushBack(function);
+                extern_block->declarations.PushBack(function as *ASTDeclaration);
             } else if this.Current()._type == TokenType::STATIC {
                 let _static = this.ParseStaticDeclaration(attributes);
 
@@ -1760,7 +1760,7 @@ class Parser {
                     continue;
                 }
 
-                extern_block->declarations.PushBack(_static);
+                extern_block->declarations.PushBack(_static as *ASTDeclaration);
             } else {
                 Logger::Log("Only function and static declarations allowed in extern block.", this.Current(), LogSeverity::Error);
                 this.Advance();
@@ -1772,7 +1772,7 @@ class Parser {
         return extern_block;
     }
 
-    fn ParseConstantDeclaration(&mut this) -> *ASTNode {
+    fn ParseConstantDeclaration(&mut this) -> *ASTConstantDeclaration {
         let token = this.Expect(TokenType::CONST);
         if token._type == TokenType::UNKNOWN { return null; }
         let identifier = this.Expect(TokenType::IDENTIFIER);
@@ -1803,7 +1803,7 @@ class Parser {
         return this.arena.New<ASTConstantDeclaration>(identifier.value, _type, initializer, token);
     }
 
-    fn ParseStaticDeclaration(&mut this, attributes: &Vector<Pair<String, Vector<*ASTNode>>>) -> *ASTNode {
+    fn ParseStaticDeclaration(&mut this, attributes: &Vector<Pair<String, Vector<*ASTNode>>>) -> *ASTStaticDeclaration {
         let token = this.Expect(TokenType::STATIC);
         if token._type == TokenType::UNKNOWN { return null; }
         let mut alignment = null;
@@ -1865,7 +1865,7 @@ class Parser {
         return _static;
     }
 
-    fn ParseTypeDeclaration(&mut this) -> *ASTNode {
+    fn ParseTypeDeclaration(&mut this) -> *ASTTypeDeclaration {
         let token = this.Expect(TokenType::TYPE);
         if token._type == TokenType::UNKNOWN { return null; }
         let identifier = this.Expect(TokenType::IDENTIFIER);
@@ -1876,6 +1876,14 @@ class Parser {
         let type_definition = this.arena.New<ASTTypeDeclaration>(identifier.value, _type, token);
         if !this.ExpectSuccess(TokenType::SEMICOLON) { return null; }
         return type_definition;
+    }
+
+    fn ParseAssemblyDeclaration(&mut this) -> *ASTAssemblyDeclaration {
+        let token = this.Expect(TokenType::ASSEMBLY);
+        if token._type == TokenType::UNKNOWN { return null; }
+        let code = this.Expect(TokenType::ASSEMBLY_CODE);
+        if code._type == TokenType::UNKNOWN { return null; }
+        return this.arena.New<ASTAssemblyDeclaration>(code.value, token);
     }
 
     pub fn Parse(&mut this, tokens: &Vector<Token>) -> *ASTRoot {

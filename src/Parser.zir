@@ -386,7 +386,7 @@ class Parser {
         } return expression;
     }
 
-    fn ParseUnary(&mut this) -> *Node {
+    fn ParseUnaryExpression(&mut this) -> *Node {
         let token = this.Current();
         let mut mutable = false;
 
@@ -397,7 +397,7 @@ class Parser {
                 mutable = this.Match(TokenType::MUT);
             }
 
-            let expression = this.ParseUnary();
+            let expression = this.ParseUnaryExpression();
             if expression == null { return null; }
             return this.arena.New<UnaryNode>(expression, token._type, mutable, token);
         } else if token._type == TokenType::NEW {
@@ -440,7 +440,7 @@ class Parser {
             return _delete;
         } else if token._type == TokenType::AWAIT {
             this.Advance();
-            let expression = this.ParseUnary();
+            let expression = this.ParseUnaryExpression();
             if expression == null { return null; }
             return this.arena.New<AwaitNode>(expression, token);
         } else {
@@ -448,8 +448,8 @@ class Parser {
         }
     }
 
-    fn ParseBinary(&mut this, min_precedence: i32) -> *Node {
-        let mut left = this.ParseUnary();
+    fn ParseBinaryExpression(&mut this, min_precedence: i32) -> *Node {
+        let mut left = this.ParseUnaryExpression();
         if left == null { return null; }
 
         loop {
@@ -476,7 +476,7 @@ class Parser {
                 if _type == null { return null; }
                 left = this.arena.New<CastNode>(left, _type, token);
             } else {
-                let right = this.ParseBinary(precedence + 1);
+                let right = this.ParseBinaryExpression(precedence + 1);
                 if right == null { return null; }
                 left = this.arena.New<BinaryNode>(left, right, token._type, token);
             }
@@ -484,7 +484,7 @@ class Parser {
     }
 
     fn ParseExpression(&mut this) -> *Node {
-        let mut expression = this.ParseBinary(0);
+        let mut expression = this.ParseBinaryExpression(0);
         if expression == null { return null; }
         let token = this.Current();
 
@@ -608,27 +608,27 @@ class Parser {
         let token = this.Current();
 
         if token._type == TokenType::LET && !expression {
-            return this.ParseVariable();
+            return this.ParseVariableStatement();
         } else if token._type == TokenType::IF && !expression {
-            return this.ParseIf();
+            return this.ParseIfStatement();
         } else if token._type == TokenType::WHILE && !expression {
-            return this.ParseWhile();
+            return this.ParseWhileStatement();
         } else if token._type == TokenType::FOR && !expression {
-            return this.ParseFor();
+            return this.ParseForStatement();
         } else if token._type == TokenType::LOOP && !expression {
-            return this.ParseLoop();
+            return this.ParseLoopStatement();
         } else if token._type == TokenType::MATCH && !expression {
-            return this.ParseMatch();
+            return this.ParseMatchStatement();
         } else if token._type == TokenType::UNSAFE && !expression {
-            return this.ParseUnsafe();
+            return this.ParseUnsafeStatement();
         } else if (token._type == TokenType::ASSEMBLY || token._type == TokenType::VOLATILE) && !expression {
             return this.ParseAssembly();
         } else if token._type == TokenType::RETURN {
-            return this.ParseReturn(expression);
+            return this.ParseReturnStatement(expression);
         } else if token._type == TokenType::BREAK {
-            return this.ParseBreak(expression);
+            return this.ParseBreakStatement(expression);
         } else if token._type == TokenType::CONTINUE {
-            return this.ParseContinue(expression);
+            return this.ParseContinueStatement(expression);
         } else {
             let index = this.index;
 
@@ -692,7 +692,7 @@ class Parser {
         }
     }
 
-    fn ParseVariable(&mut this) -> *Node {
+    fn ParseVariableStatement(&mut this) -> *Node {
         let token = this.Expect(TokenType::LET);
         if token._type == TokenType::UNKNOWN { return null; }
         let multiple = this.Match(TokenType::LPAREN);
@@ -777,7 +777,7 @@ class Parser {
         return root;
     }
 
-    fn ParseIf(&mut this) -> *Node {
+    fn ParseIfStatement(&mut this) -> *Node {
         let token = this.Expect(TokenType::IF);
         if token._type == TokenType::UNKNOWN { return null; }
 
@@ -787,37 +787,37 @@ class Parser {
             if pattern == null || !this.ExpectSuccess(TokenType::ASSIGN) { return null; }
             let expression = this.ParseExpression();
             if expression == null { return null; }
-            let then = this.ParseBlock();
+            let then = this.ParseBlockStatement();
             if then == null { return null; }
             let if_let = this.arena.New<IfLetNode>(pattern, expression, then, token);
 
             if this.Match(TokenType::ELSE) {
                 if this.Current()._type == TokenType::IF {
-                    if_let->_else = this.ParseIf();
+                    if_let->_else = this.ParseIfStatement();
                 } else {
-                    if_let->_else = this.ParseBlock();
+                    if_let->_else = this.ParseBlockStatement();
                 }
             } return if_let;
         }
 
         let condition = this.ParseExpression();
         if condition == null { return null; }
-        let then = this.ParseBlock();
+        let then = this.ParseBlockStatement();
         if then == null { return null; }
         let mut _else = null;
 
         if this.Match(TokenType::ELSE) {
             if this.Current()._type == TokenType::IF {
-                _else = this.ParseIf();
+                _else = this.ParseIfStatement();
             } else {
-                _else = this.ParseBlock();
+                _else = this.ParseBlockStatement();
             }
         }
 
         return this.arena.New<IfNode>(condition, then, _else, token);
     }
 
-    fn ParseWhile(&mut this) -> *Node {
+    fn ParseWhileStatement(&mut this) -> *Node {
         let token = this.Expect(TokenType::WHILE);
         if token._type == TokenType::UNKNOWN { return null; }
 
@@ -827,25 +827,25 @@ class Parser {
             if pattern == null || !this.ExpectSuccess(TokenType::ASSIGN) { return null; }
             let expression = this.ParseExpression();
             if expression == null { return null; }
-            let _loop = this.ParseBlock();
+            let _loop = this.ParseBlockStatement();
             if _loop == null { return null; }
             return this.arena.New<WhileLetNode>(pattern, expression, _loop, token);
         }
 
         let expression = this.ParseExpression();
         if expression == null { return null; }
-        let _loop = this.ParseBlock();
+        let _loop = this.ParseBlockStatement();
         if _loop == null { return null; }
         let mut _else = null;
 
         if this.Match(TokenType::ELSE) {
-            _else = this.ParseBlock();
+            _else = this.ParseBlockStatement();
         }
 
         return this.arena.New<WhileNode>(expression, _loop, _else, token);
     }
 
-    fn ParseFor(&mut this) -> *Node {
+    fn ParseForStatement(&mut this) -> *Node {
         let token = this.Expect(TokenType::FOR);
         if token._type == TokenType::UNKNOWN { return null; }
         let name = this.Expect(TokenType::IDENTIFIER);
@@ -853,19 +853,19 @@ class Parser {
         if !this.ExpectSuccess(TokenType::IN) { return null; }
         let iterable = this.ParseForIterable();
         if iterable == null { return null; }
-        let _loop = this.ParseBlock();
+        let _loop = this.ParseBlockStatement();
         if _loop == null { return null; }
         return this.arena.New<ForNode>(name.value, iterable, _loop, token);
     }
 
     fn ParseForIterable(&mut this) -> *Node {
-        let left = this.ParseBinary(0);
+        let left = this.ParseBinaryExpression(0);
         if left == null { return null; }
 
         if this.Current()._type == TokenType::TWO_DOT {
             let token = this.Advance();
             let inclusive = this.Match(TokenType::ASSIGN);
-            let right = this.ParseBinary(0);
+            let right = this.ParseBinaryExpression(0);
             if right == null { return null; }
             let range = this.arena.New<RangeNode>(left, right, token);
             range->inclusive = inclusive;
@@ -873,10 +873,10 @@ class Parser {
         } return left;
     }
 
-    fn ParseLoop(&mut this) -> *Node {
+    fn ParseLoopStatement(&mut this) -> *Node {
         let token = this.Expect(TokenType::LOOP);
         if token._type == TokenType::UNKNOWN { return null; }
-        let _loop = this.ParseBlock();
+        let _loop = this.ParseBlockStatement();
         if _loop == null { return null; }
         return this.arena.New<LoopNode>(_loop, token);
     }
@@ -933,7 +933,7 @@ class Parser {
         } return expression;
     }
 
-    fn ParseMatch(&mut this) -> *Node {
+    fn ParseMatchStatement(&mut this) -> *Node {
         let token = this.Expect(TokenType::MATCH);
         if token._type == TokenType::UNKNOWN { return null; }
         let expression = this.ParseExpression();
@@ -963,7 +963,7 @@ class Parser {
             let mut body = null;
 
             if this.Current()._type == TokenType::LBRACE {
-                body = this.ParseBlock();
+                body = this.ParseBlockStatement();
                 if body == null { return null; }
             } else {
                 body = this.ParseStatement(true);
@@ -985,10 +985,10 @@ class Parser {
         return match_node;
     }
 
-    fn ParseUnsafe(&mut this) -> *Node {
+    fn ParseUnsafeStatement(&mut this) -> *Node {
         let token = this.Expect(TokenType::UNSAFE);
         if token._type == TokenType::UNKNOWN { return null; }
-        let body = this.ParseBlock();
+        let body = this.ParseBlockStatement();
         if body == null { return null; }
         return this.arena.New<UnsafeNode>(body as *BlockNode, token);
     }
@@ -1038,7 +1038,7 @@ class Parser {
         return node;
     }
 
-    fn ParseReturn(&mut this, expression: bool) -> *Node {
+    fn ParseReturnStatement(&mut this, expression: bool) -> *Node {
         let token = this.Expect(TokenType::RETURN);
         if token._type == TokenType::UNKNOWN { return null; }
         let mut value = null;
@@ -1055,7 +1055,7 @@ class Parser {
         return this.arena.New<ReturnNode>(value, token);
     }
 
-    fn ParseBreak(&mut this, expression: bool) -> *Node {
+    fn ParseBreakStatement(&mut this, expression: bool) -> *Node {
         let token = this.Expect(TokenType::BREAK);
         if token._type == TokenType::UNKNOWN { return null; }
 
@@ -1066,7 +1066,7 @@ class Parser {
         return this.arena.New<BreakNode>(token);
     }
 
-    fn ParseContinue(&mut this, expression: bool) -> *Node {
+    fn ParseContinueStatement(&mut this, expression: bool) -> *Node {
         let token = this.Expect(TokenType::CONTINUE);
         if token._type == TokenType::UNKNOWN { return null; }
 
@@ -1077,7 +1077,7 @@ class Parser {
         return this.arena.New<ContinueNode>(token);
     }
 
-    fn ParseBlock(&mut this) -> *Node {
+    fn ParseBlockStatement(&mut this) -> *Node {
         let token = this.Expect(TokenType::LBRACE);
         if token._type == TokenType::UNKNOWN { return null; }
         let block = this.arena.New<BlockNode>(token);
@@ -1155,21 +1155,21 @@ class Parser {
         let token = this.Current();
 
         if token._type == TokenType::FUNCTION {
-            return this.ParseFunction(attributes, false);
+            return this.ParseFunctionDeclaration(attributes, false);
         } else if token._type == TokenType::CLASS {
-            return this.ParseClass(attributes);
+            return this.ParseClassDeclaration(attributes);
         } else if token._type == TokenType::STRUCTURE {
-            return this.ParseStructure(attributes);
+            return this.ParseStructureDeclaration(attributes);
         } else if token._type == TokenType::ENUMERATION {
-            return this.ParseEnumeration(attributes);
+            return this.ParseEnumerationDeclaration(attributes);
         } else if token._type == TokenType::EXTERN {
-            return this.ParseExtern();
+            return this.ParseExternDeclaration();
         } else if token._type == TokenType::CONST {
-            return this.ParseConstant();
+            return this.ParseConstantDeclaration();
         } else if token._type == TokenType::STATIC {
-            return this.ParseStatic(attributes);
+            return this.ParseStaticDeclaration(attributes);
         } else if token._type == TokenType::TYPE {
-            return this.ParseTypeDefinition();
+            return this.ParseTypeDeclaration();
         } else if token._type == TokenType::ASSEMBLY || token._type == TokenType::VOLATILE {
             return this.ParseAssembly();
         } else {
@@ -1179,7 +1179,7 @@ class Parser {
         }
     }
 
-    fn ParseFunction(&mut this, attributes: &Vector<Pair<String, Vector<*Node>>>, _class: bool) -> *Node {
+    fn ParseFunctionDeclaration(&mut this, attributes: &Vector<Pair<String, Vector<*Node>>>, _class: bool) -> *Node {
         let token = this.Current();
         let mut no_mangle = false;
 
@@ -1348,7 +1348,7 @@ class Parser {
         }
 
         if this.Current()._type == TokenType::LBRACE {
-            let body = this.ParseBlock();
+            let body = this.ParseBlockStatement();
             this.types = types;
             if body == null { return null; }
             function->body = body as *BlockNode;
@@ -1385,7 +1385,7 @@ class Parser {
         return this.arena.New<ParameterNode>(token.value, _type, mutable, token);
     }
 
-    fn ParseClass(&mut this, attributes: &Vector<Pair<String, Vector<*Node>>>) -> *Node {
+    fn ParseClassDeclaration(&mut this, attributes: &Vector<Pair<String, Vector<*Node>>>) -> *Node {
         let token = this.Expect(TokenType::CLASS);
         if token._type == TokenType::UNKNOWN { return null; }
 
@@ -1466,7 +1466,7 @@ class Parser {
                 let attributes = this.ParseAttributes();
                 let public = this.Match(TokenType::PUBLIC);
                 let token = this.Current();
-                let function = this.ParseFunction(attributes, true);
+                let function = this.ParseFunctionDeclaration(attributes, true);
                 if function == null { this.types = types; return null; }
 
                 if token._type == TokenType::FUNCTION {
@@ -1490,7 +1490,7 @@ class Parser {
         return class_node;
     }
 
-    fn ParseStructure(&mut this, attributes: &Vector<Pair<String, Vector<*Node>>>) -> *Node {
+    fn ParseStructureDeclaration(&mut this, attributes: &Vector<Pair<String, Vector<*Node>>>) -> *Node {
         let token = this.Expect(TokenType::STRUCTURE);
         if token._type == TokenType::UNKNOWN { return null; }
 
@@ -1558,7 +1558,7 @@ class Parser {
             while this.Current()._type != TokenType::RBRACE && this.Current()._type != TokenType::EOF {
                 let attributes = this.ParseAttributes();
                 let public = this.Match(TokenType::PUBLIC);
-                let function = this.ParseFunction(attributes, false);
+                let function = this.ParseFunctionDeclaration(attributes, false);
                 if function == null { this.types = types; return null; }
                 struct_node->methods.PushBack(Pair<bool, *FunctionNode>(public, function as *FunctionNode));
             }
@@ -1601,7 +1601,7 @@ class Parser {
         return this.arena.New<FieldNode>(token.value, _type, initializer, token);
     }
 
-    fn ParseEnumeration(&mut this, attributes: &Vector<Pair<String, Vector<*Node>>>) -> *Node {
+    fn ParseEnumerationDeclaration(&mut this, attributes: &Vector<Pair<String, Vector<*Node>>>) -> *Node {
         let token = this.Expect(TokenType::ENUMERATION);
         if token._type == TokenType::UNKNOWN { return null; }
 
@@ -1721,7 +1721,7 @@ class Parser {
             while this.Current()._type != TokenType::RBRACE && this.Current()._type != TokenType::EOF {
                 let attributes = this.ParseAttributes();
                 let public = this.Match(TokenType::PUBLIC);
-                let function = this.ParseFunction(attributes, false);
+                let function = this.ParseFunctionDeclaration(attributes, false);
                 if function == null { this.types = types; return null; }
                 enum_node->methods.PushBack(Pair<bool, *FunctionNode>(public, function as *FunctionNode));
             }
@@ -1732,7 +1732,7 @@ class Parser {
         return enum_node;
     }
 
-    fn ParseExtern(&mut this) -> *Node {
+    fn ParseExternDeclaration(&mut this) -> *Node {
         let extern_token = this.Expect(TokenType::EXTERN);
         if extern_token._type == TokenType::UNKNOWN { return null; }
         let linkage_token = this.Expect(TokenType::STRING);
@@ -1744,7 +1744,7 @@ class Parser {
             let attributes = this.ParseAttributes();
 
             if this.Current()._type == TokenType::FUNCTION {
-                let function = this.ParseFunction(attributes, false);
+                let function = this.ParseFunctionDeclaration(attributes, false);
 
                 if function == null {
                     this.SynchronizeDeclaration();
@@ -1753,7 +1753,7 @@ class Parser {
 
                 extern_block->declarations.PushBack(function);
             } else if this.Current()._type == TokenType::STATIC {
-                let _static = this.ParseStatic(attributes);
+                let _static = this.ParseStaticDeclaration(attributes);
 
                 if _static == null {
                     this.SynchronizeDeclaration();
@@ -1772,7 +1772,7 @@ class Parser {
         return extern_block;
     }
 
-    fn ParseConstant(&mut this) -> *Node {
+    fn ParseConstantDeclaration(&mut this) -> *Node {
         let token = this.Expect(TokenType::CONST);
         if token._type == TokenType::UNKNOWN { return null; }
         let identifier = this.Expect(TokenType::IDENTIFIER);
@@ -1803,7 +1803,7 @@ class Parser {
         return this.arena.New<ConstantNode>(identifier.value, _type, initializer, token);
     }
 
-    fn ParseStatic(&mut this, attributes: &Vector<Pair<String, Vector<*Node>>>) -> *Node {
+    fn ParseStaticDeclaration(&mut this, attributes: &Vector<Pair<String, Vector<*Node>>>) -> *Node {
         let token = this.Expect(TokenType::STATIC);
         if token._type == TokenType::UNKNOWN { return null; }
         let mut alignment = null;
@@ -1865,7 +1865,7 @@ class Parser {
         return _static;
     }
 
-    fn ParseTypeDefinition(&mut this) -> *Node {
+    fn ParseTypeDeclaration(&mut this) -> *Node {
         let token = this.Expect(TokenType::TYPE);
         if token._type == TokenType::UNKNOWN { return null; }
         let identifier = this.Expect(TokenType::IDENTIFIER);
@@ -1873,7 +1873,7 @@ class Parser {
         if !this.ExpectSuccess(TokenType::ASSIGN) { return null; }
         let _type = this.ParseType();
         if _type == null { return null; }
-        let type_definition = this.arena.New<TypeDefinitionNode>(identifier.value, _type, token);
+        let type_definition = this.arena.New<TypeDeclarationNode>(identifier.value, _type, token);
         if !this.ExpectSuccess(TokenType::SEMICOLON) { return null; }
         return type_definition;
     }

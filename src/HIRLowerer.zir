@@ -81,7 +81,7 @@ class HIRLowerer {
         let initializer = this.LowerConstantExpression(constant->initializer);
         if initializer == null { return; }
 
-        let lowered = this.arena.New<MIRConstant>(declaration->name, declaration->_type, initializer);
+        let lowered = this.arena.New<MIRConstantDecl>(declaration->name, declaration->_type, initializer);
         this.module->declarations.PushBack(lowered);
         this.declarations[declaration] = lowered;
     }
@@ -323,7 +323,7 @@ class HIRLowerer {
 
     fn LowerConstantExpression(&mut this, expression: *HIRExpression) -> *MIRValue {
         if expression->kind == HIRExpressionKind::StringLiteral {
-            return this.arena.New<MIRStringLiteral>((expression as *HIRStringLiteral)->value, expression->_type) as *MIRLiteral;
+            return this.arena.New<MIRConstantString>((expression as *HIRStringLiteral)->value, expression->_type) as *MIRConstant;
         } else {
             return this.LowerExpression(expression);
         }
@@ -360,13 +360,13 @@ class HIRLowerer {
 
     fn LowerExpression(&mut this, expression: *HIRExpression) -> *MIRValue {
         if expression->kind == HIRExpressionKind::BooleanLiteral {
-            return this.arena.New<MIRBooleanLiteral>((expression as *HIRBooleanLiteral)->value, expression->_type) as *MIRLiteral;
+            return this.arena.New<MIRConstantBoolean>((expression as *HIRBooleanLiteral)->value, expression->_type) as *MIRConstant;
         } else if expression->kind == HIRExpressionKind::CharacterLiteral {
-            return this.arena.New<MIRCharacterLiteral>((expression as *HIRCharacterLiteral)->value, expression->_type) as *MIRLiteral;
+            return this.arena.New<MIRConstantCharacter>((expression as *HIRCharacterLiteral)->value, expression->_type) as *MIRConstant;
         } else if expression->kind == HIRExpressionKind::IntegerLiteral {
-            return this.arena.New<MIRIntegerLiteral>((expression as *HIRIntegerLiteral)->value, expression->_type) as *MIRLiteral;
+            return this.arena.New<MIRConstantInteger>((expression as *HIRIntegerLiteral)->value, expression->_type) as *MIRConstant;
         } else if expression->kind == HIRExpressionKind::FloatLiteral {
-            return this.arena.New<MIRFloatLiteral>((expression as *HIRFloatLiteral)->value, expression->_type) as *MIRLiteral;
+            return this.arena.New<MIRConstantFloat>((expression as *HIRFloatLiteral)->value, expression->_type) as *MIRConstant;
         } else if expression->kind == HIRExpressionKind::StringLiteral {
             let value = (expression as *HIRStringLiteral)->value;
             let mut _static: *MIRStatic = null;
@@ -375,16 +375,16 @@ class HIRLowerer {
                 _static = this.strings[value];
             } else {
                 let name = "string." + String::FromInteger(this.strings.Size() as u64);
-                let initializer = this.arena.New<MIRStringLiteral>(value, expression->_type);
+                let initializer = this.arena.New<MIRConstantString>(value, expression->_type);
                 let _type = analyzer->type_manager.Array(analyzer->type_manager.Integer(8, false), value->Length() + 1);
-                _static = this.arena.New<MIRStatic>(name, _type, false, initializer as *MIRLiteral, MIRDeclarationLinkage::Internal);
+                _static = this.arena.New<MIRStatic>(name, _type, false, initializer as *MIRConstant, MIRDeclarationLinkage::Internal);
                 this.module->declarations.PushBack(_static as *MIRLinkableDeclaration);
                 this.strings[value] = _static;
             }
 
             return this.arena.New<MIRGlobalRef>(_static as *MIRLinkableDeclaration);
         } else if expression->kind == HIRExpressionKind::NullLiteral {
-            return this.arena.New<MIRNullLiteral>(expression->_type) as *MIRLiteral;
+            return this.arena.New<MIRConstantNull>(expression->_type) as *MIRConstant;
         } else if expression->kind == HIRExpressionKind::Intrinsic {
             return this.LowerIntrinsic(expression as *HIRIntrinsic);
         } else if expression->kind == HIRExpressionKind::Assignment {
@@ -419,7 +419,7 @@ class HIRLowerer {
 
     fn LowerIntrinsic(&mut this, intrinsic: *HIRIntrinsic) -> *MIRValue {
         let value = intrinsic->kind == HIRIntrinsicKind::SizeOf ? intrinsic->_type->Size() : intrinsic->_type->Alignment();
-        return this.arena.New<MIRIntegerLiteral>(value as u64, (intrinsic as *HIRExpression)->_type) as *MIRLiteral;
+        return this.arena.New<MIRConstantInteger>(value as u64, (intrinsic as *HIRExpression)->_type) as *MIRConstant;
     }
 
     fn LowerAssignment(&mut this, assignment: *HIRAssignment) -> *MIRValue {
@@ -475,7 +475,7 @@ class HIRLowerer {
         let size_type = analyzer->type_manager.IntegerPointer(false);
         parameters.PushBack(size_type);
         let malloc = this.LowerRuntimeFunction("malloc".ToString(), analyzer->type_manager.Function(parameters, analyzer->type_manager.Pointer(analyzer->type_manager.Void(), true)));
-        let mut allocation_size = (this.arena.New<MIRIntegerLiteral>(_new->_type->Size() as u64, size_type) as *MIRLiteral) as *MIRValue;
+        let mut allocation_size = (this.arena.New<MIRConstantInteger>(_new->_type->Size() as u64, size_type) as *MIRConstant) as *MIRValue;
 
         if _new->size != null {
             let size = this.LowerExpression(_new->size);
@@ -506,9 +506,161 @@ class HIRLowerer {
     }
 
     fn LowerCast(&mut this, cast: *HIRCast) -> *MIRValue {
-        let value = this.LowerExpression(cast->value);
+        let mut lowered: *MIRInstruction = null;
+        let expression = cast as *HIRExpression;
+        let target_type = expression->_type;
+
+        let value_type = cast->value->_type;
+        let mut value = this.LowerExpression(cast->value);
         if value == null { return null; }
-        return null;
+
+        if value_type->IsBoolean() {
+            if target_type->IsInteger() {
+                let cast = this.arena.New<MIRCast>("cast".ToString(), MIRCastKind::ZExt, value, target_type);
+                this.current_block->instructions.PushBack(cast);
+                return cast as *MIRInstruction;
+            }
+        } else if value_type->IsCharacter() {
+            if target_type->IsInteger() {
+                if value_type->Width() < target_type->Width() {
+                    let cast = this.arena.New<MIRCast>("cast".ToString(), MIRCastKind::ZExt, value, target_type);
+                    this.current_block->instructions.PushBack(cast);
+                    return cast as *MIRInstruction;
+                } else if value_type->Width() > target_type->Width() {
+                    let cast = this.arena.New<MIRCast>("cast".ToString(), MIRCastKind::Trunc, value, target_type);
+                    this.current_block->instructions.PushBack(cast);
+                    return cast as *MIRInstruction;
+                }
+            }
+        } else if value_type->IsInteger() {
+            if target_type->IsCharacter() {
+                if value_type->Width() == 8 && !value_type->IsSigned() {
+                    let cast = this.arena.New<MIRCast>("cast".ToString(), MIRCastKind::ZExt, value, target_type);
+                    this.current_block->instructions.PushBack(cast);
+                    return cast as *MIRInstruction;
+                }
+            }
+
+            if target_type->IsInteger() || target_type->IsEnumeration() {
+                if value_type->Width() < target_type->Width() {
+                    if value_type->IsSigned() {
+                        let cast = this.arena.New<MIRCast>("cast".ToString(), MIRCastKind::SExt, value, target_type);
+                        this.current_block->instructions.PushBack(cast);
+                        return cast as *MIRInstruction;
+                    } else {
+                        let cast = this.arena.New<MIRCast>("cast".ToString(), MIRCastKind::ZExt, value, target_type);
+                        this.current_block->instructions.PushBack(cast);
+                        return cast as *MIRInstruction;
+                    }
+                } else if value_type->Width() > target_type->Width() {
+                    let cast = this.arena.New<MIRCast>("cast".ToString(), MIRCastKind::Trunc, value, target_type);
+                    this.current_block->instructions.PushBack(cast);
+                    return cast as *MIRInstruction;
+                }
+            }
+
+            if target_type->IsFloat() {
+                if value_type->IsSigned() {
+                    let cast = this.arena.New<MIRCast>("cast".ToString(), MIRCastKind::SIToFP, value, target_type);
+                    this.current_block->instructions.PushBack(cast);
+                    return cast as *MIRInstruction;
+                } else {
+                    let cast = this.arena.New<MIRCast>("cast".ToString(), MIRCastKind::UIToFP, value, target_type);
+                    this.current_block->instructions.PushBack(cast);
+                    return cast as *MIRInstruction;
+                }
+            }
+
+            if target_type->IsPointer() {
+                let cast = this.arena.New<MIRCast>("cast".ToString(), MIRCastKind::IntToPtr, value, target_type);
+                this.current_block->instructions.PushBack(cast);
+                return cast as *MIRInstruction;
+            }
+        } else if value_type->IsFloat() {
+            if target_type->IsInteger() {
+                if target_type->IsSigned() {
+                    let cast = this.arena.New<MIRCast>("cast".ToString(), MIRCastKind::FPToSI, value, target_type);
+                    this.current_block->instructions.PushBack(cast);
+                    return cast as *MIRInstruction;
+                } else {
+                    let cast = this.arena.New<MIRCast>("cast".ToString(), MIRCastKind::FPToUI, value, target_type);
+                    this.current_block->instructions.PushBack(cast);
+                    return cast as *MIRInstruction;
+                }
+            }
+
+            if target_type->IsFloat() {
+                if value_type->Width() < target_type->Width() {
+                    let cast = this.arena.New<MIRCast>("cast".ToString(), MIRCastKind::FPExt, value, target_type);
+                    this.current_block->instructions.PushBack(cast);
+                    return cast as *MIRInstruction;
+                } else if value_type->Width() > target_type->Width() {
+                    let cast = this.arena.New<MIRCast>("cast".ToString(), MIRCastKind::FPTrunc, value, target_type);
+                    this.current_block->instructions.PushBack(cast);
+                    return cast as *MIRInstruction;
+                }
+            }
+        } else if value_type->IsPointer() {
+            if target_type->IsInteger() {
+                let cast = this.arena.New<MIRCast>("cast".ToString(), MIRCastKind::PtrToInt, value, target_type);
+                this.current_block->instructions.PushBack(cast);
+                return cast as *MIRInstruction;
+            }
+
+            if target_type->IsPointer() {
+                if value_type->Pointee().IsClass() && target_type->Pointee().IsClass() {
+                    let (source_class, target_class) = (value_type->Pointee(), target_type->Pointee());
+                    let (source_fields, target_fields) = (source_class->Fields(), target_class->Fields());
+                    let (mut related, mut index: u32) = (false, 0);
+
+                    for i in 0..source_fields.Size() {
+                        if source_fields[i].left == target_class->name {
+                            (related, index) = (true, i as u32);
+                            break;
+                        }
+                    }
+
+                    if !related {
+                        for i in 0..target_fields.Size() {
+                            if target_fields[i].left == source_class->name {
+                                (related, index) = (true, -(i as isize) as u32);
+                                break;
+                            }
+                        }
+                    }
+
+                    if index != 0 {
+                        let gep = this.arena.New<MIRStructGEP>("cast.base".ToString(), value, index, target_type);
+                        this.current_block->instructions.PushBack(gep);
+                        value = gep as *MIRInstruction;
+                    } else if !related {
+                        return null;
+                    }
+                }
+
+                let cast = this.arena.New<MIRCast>("cast".ToString(), MIRCastKind::Bitcast, value, target_type);
+                this.current_block->instructions.PushBack(cast);
+                return cast as *MIRInstruction;
+            }
+        } else if value_type->IsEnumeration() {
+            if target_type->IsInteger() {
+                if value_type->Width() < target_type->Width() {
+                    if value_type->IsSigned() {
+                        let cast = this.arena.New<MIRCast>("cast".ToString(), MIRCastKind::SExt, value, target_type);
+                        this.current_block->instructions.PushBack(cast);
+                        return cast as *MIRInstruction;
+                    } else {
+                        let cast = this.arena.New<MIRCast>("cast".ToString(), MIRCastKind::ZExt, value, target_type);
+                        this.current_block->instructions.PushBack(cast);
+                        return cast as *MIRInstruction;
+                    }
+                } else if value_type->Width() > target_type->Width() {
+                    let cast = this.arena.New<MIRCast>("cast".ToString(), MIRCastKind::Trunc, value, target_type);
+                    this.current_block->instructions.PushBack(cast);
+                    return cast as *MIRInstruction;
+                }
+            }
+        } return value;
     }
 
     fn LowerIndexAccess(&mut this, index_access: *HIRIndexAccess) -> *MIRValue {

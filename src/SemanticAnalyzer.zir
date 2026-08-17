@@ -23,13 +23,13 @@ class SemanticForward {
     pub generic: *Generic = null,
     pub types: Vector<*SemanticType>,
     pub node: *FunctionNode,
-    pub function: *mut HIRFunction;
+    pub function: *mut HIRFunctionDeclaration;
 
-    SemanticForward(&mut this, _class: *SemanticType, node: *FunctionNode, function: *mut HIRFunction) {
+    SemanticForward(&mut this, _class: *SemanticType, node: *FunctionNode, function: *mut HIRFunctionDeclaration) {
         (this._class, this.node, this.function) = (_class, node, function);
     }
 
-    SemanticForward(&mut this, _class: *SemanticType, generic: *Generic, types: &Vector<*SemanticType>, node: *FunctionNode, function: *mut HIRFunction) {
+    SemanticForward(&mut this, _class: *SemanticType, generic: *Generic, types: &Vector<*SemanticType>, node: *FunctionNode, function: *mut HIRFunctionDeclaration) {
         (this._class, this.generic, this.types, this.node, this.function) = (_class, generic, types, node, function);
     }
 }
@@ -42,9 +42,9 @@ class SemanticAnalyzer {
     pub scope_manager: ScopeManager,
 
     forwards: Vector<SemanticForward>,
-    class_data: Map<*Node, Pair<*mut HIRClass, *mut Scope>>,
-    structure_data: Map<*Node, Pair<*mut HIRStructure, *mut Scope>>,
-    variant_data: Map<*Node, Pair<*mut HIRVariant, *mut Scope>>,
+    class_data: Map<*Node, Pair<*mut HIRClassDeclaration, *mut Scope>>,
+    structure_data: Map<*Node, Pair<*mut HIRStructureDeclaration, *mut Scope>>,
+    variant_data: Map<*Node, Pair<*mut HIRVariantDeclaration, *mut Scope>>,
     loop_scopes: Vector<*mut Scope>,
 
     pub abi: HIRDeclarationABI = HIRDeclarationABI::Native,
@@ -55,7 +55,7 @@ class SemanticAnalyzer {
     pub current_generic: *mut Generic = null,
     pub current_class: *SemanticType = null,
     pub current_function: *SemanticType = null,
-    pub current_block: *mut HIRBlock = null;
+    pub current_block: *mut HIRBlockStatement = null;
 
     SemanticAnalyzer(&mut this) {
         if analyzer != null {
@@ -130,17 +130,17 @@ class SemanticAnalyzer {
 
             for j in 0..params.Size() {
                 if offset > j {
-                    let parameter = this.arena.New<HIRParameter>("this".ToString(), params[j], false);
+                    let parameter = this.arena.New<HIRParameterDeclaration>("this".ToString(), params[j], false);
                     this.scope_manager.Set("this".ToString(), parameter, false, forward.node);
                     forward.function->parameters.PushBack(parameter);
                 } else {
                     let node: *ParameterNode = forward.node->_type->parameters[j - offset];
-                    let parameter = this.arena.New<HIRParameter>(node->name, params[j], node->mutable);
+                    let parameter = this.arena.New<HIRParameterDeclaration>(node->name, params[j], node->mutable);
                     this.scope_manager.Set(node->name, parameter, false, node);
                     forward.function->parameters.PushBack(parameter);
 
                     if params[j]->IsClass() {
-                        this.scope_manager.RegisterInstance(this.arena.New<HIRDeclarationRef>(parameter, false));
+                        this.scope_manager.RegisterInstance(this.arena.New<HIRDeclarationReference>(parameter, false));
                     }
                 }
             }
@@ -337,23 +337,23 @@ class SemanticAnalyzer {
     fn ImplicitDereference(&mut this, expression: *HIRExpression) -> *HIRExpression {
         if expression != null && expression->_type->IsReference() {
             if expression->kind == HIRExpressionKind::AddressOf {
-                return (expression as *HIRAddressOf)->operand;
+                return (expression as *HIRAddressOfExpression)->operand;
             }
 
-            return this.arena.New<HIRDereference>(expression);
+            return this.arena.New<HIRDereferenceExpression>(expression);
         } return expression;
     }
 
     fn ImplicitAddressOf(&mut this, expression: *HIRExpression) -> *HIRExpression {
         if expression != null {
             if expression->category != HIRExpressionCategory::Place {
-                return this.arena.New<HIRAddressOf>(this.arena.New<HIRTemporary>(expression), expression->mutable);
+                return this.arena.New<HIRAddressOfExpression>(this.arena.New<HIRTemporaryExpression>(expression), expression->mutable);
             } else {
                 if expression->kind == HIRExpressionKind::Dereference {
-                    return (expression as *HIRDereference)->operand;
+                    return (expression as *HIRDereferenceExpression)->operand;
                 }
 
-                return this.arena.New<HIRAddressOf>(expression, expression->mutable);
+                return this.arena.New<HIRAddressOfExpression>(expression, expression->mutable);
             }
         } return expression;
     }
@@ -363,7 +363,7 @@ class SemanticAnalyzer {
             if target.Pointee().IsClass() && expression->_type->Pointee().IsClass() {
                 for field in expression->_type->Pointee().Fields() {
                     if field.left == target.Pointee().name {
-                        return this.arena.New<HIRCast>(expression, target);
+                        return this.arena.New<HIRCastExpression>(expression, target);
                     }
                 }
             }
@@ -379,7 +379,7 @@ class SemanticAnalyzer {
             initializer = this.Materialize(this.AnalyzeExpression(constant->initializer), _type);
         }
 
-        let declaration = this.arena.New<HIRConstant>(constant->name, _type, initializer);
+        let declaration = this.arena.New<HIRConstantDeclaration>(constant->name, _type, initializer);
         this.scope_manager.Set(constant->name, declaration, false, constant);
         this.module->declarations.PushBack(declaration);
     }
@@ -405,12 +405,12 @@ class SemanticAnalyzer {
             }
         }
 
-        let declaration = this.arena.New<HIRStatic>(_static->name, _type, initializer, alignment, _static->mutable, this.linkage);
+        let declaration = this.arena.New<HIRStaticDeclaration>(_static->name, _type, initializer, alignment, _static->mutable, this.linkage);
         this.scope_manager.Set(_static->name, declaration, false, _static);
         this.module->declarations.PushBack(declaration);
     }
 
-    pub fn AnalyzeFunction(&mut this, function: *FunctionNode, generic: *mut Generic) -> *HIRFunction {
+    pub fn AnalyzeFunction(&mut this, function: *FunctionNode, generic: *mut Generic) -> *HIRFunctionDeclaration {
         if function->generic && generic == null {
             let _generic = new Generic(function);
             this.scope_manager.Set(function->name, _generic, function);
@@ -447,7 +447,7 @@ class SemanticAnalyzer {
             return null;
         }
 
-        let declaration = this.arena.New<HIRFunction>(function->name, this.type_manager.Function(param_types, return_type), function->no_mangle, this.abi);
+        let declaration = this.arena.New<HIRFunctionDeclaration>(function->name, this.type_manager.Function(param_types, return_type), function->no_mangle, this.abi);
 
         if generic != null {
             generic->Set(declaration);
@@ -464,15 +464,15 @@ class SemanticAnalyzer {
         } return declaration;
     }
 
-    fn AnalyzeClassFirstPass(&mut this, _class: *ClassNode, generic: *mut Generic) -> Pair<*mut HIRClass, *mut Scope> {
+    fn AnalyzeClassFirstPass(&mut this, _class: *ClassNode, generic: *mut Generic) -> Pair<*mut HIRClassDeclaration, *mut Scope> {
         if _class->generic && generic == null {
             let _generic = new Generic(_class);
             let symbol = this.scope_manager.Set(_class->name, _generic, _class);
-            return Pair<*mut HIRClass, *mut Scope>(null, null);
+            return Pair<*mut HIRClassDeclaration, *mut Scope>(null, null);
         }
 
         let _type = this.type_manager.Class(_class->name);
-        let declaration = this.arena.New<HIRClass>(_class->name, _type);
+        let declaration = this.arena.New<HIRClassDeclaration>(_class->name, _type);
         this.module->declarations.PushBack(declaration);
 
         if generic != null {
@@ -485,10 +485,10 @@ class SemanticAnalyzer {
 
         let scope = this.scope_manager.current;
         this.scope_manager.PopScope();
-        return Pair<*mut HIRClass, *mut Scope>(declaration, scope);
+        return Pair<*mut HIRClassDeclaration, *mut Scope>(declaration, scope);
     }
 
-    fn AnalyzeClassSecondPass(&mut this, declaration: *mut HIRClass, _class: *ClassNode, scope: *mut Scope) {
+    fn AnalyzeClassSecondPass(&mut this, declaration: *mut HIRClassDeclaration, _class: *ClassNode, scope: *mut Scope) {
         unsafe {
             let _type = (declaration as *HIRDeclaration)->_type as *mut SemanticType;
         }
@@ -514,7 +514,7 @@ class SemanticAnalyzer {
         (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
     }
 
-    fn AnalyzeClassThirdPass(&mut this, declaration: *mut HIRClass, _class: *ClassNode, scope: *mut Scope) {
+    fn AnalyzeClassThirdPass(&mut this, declaration: *mut HIRClassDeclaration, _class: *ClassNode, scope: *mut Scope) {
         unsafe {
             let _type = (declaration as *HIRDeclaration)->_type as *mut SemanticType;
         }
@@ -554,7 +554,7 @@ class SemanticAnalyzer {
         (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
     }
 
-    pub fn AnalyzeClass(&mut this, _class: *ClassNode, generic: *mut Generic) -> *HIRClass {
+    pub fn AnalyzeClass(&mut this, _class: *ClassNode, generic: *mut Generic) -> *HIRClassDeclaration {
         let cache = this.AnalyzeClassFirstPass(_class, generic);
 
         if cache.left != null {
@@ -563,15 +563,15 @@ class SemanticAnalyzer {
         } return cache.left;
     }
 
-    fn AnalyzeStructureFirstPass(&mut this, structure: *StructureNode, generic: *mut Generic) -> Pair<*mut HIRStructure, *mut Scope> {
+    fn AnalyzeStructureFirstPass(&mut this, structure: *StructureNode, generic: *mut Generic) -> Pair<*mut HIRStructureDeclaration, *mut Scope> {
         if structure->generic && generic == null {
             let _generic = new Generic(structure);
             this.scope_manager.Set(structure->name, _generic, structure);
-            return Pair<*mut HIRStructure, *mut Scope>(null, null);
+            return Pair<*mut HIRStructureDeclaration, *mut Scope>(null, null);
         }
 
         let _type = this.type_manager.Structure(structure->name);
-        let declaration = this.arena.New<HIRStructure>(structure->name, _type);
+        let declaration = this.arena.New<HIRStructureDeclaration>(structure->name, _type);
         this.module->declarations.PushBack(declaration);
 
         if generic != null {
@@ -584,10 +584,10 @@ class SemanticAnalyzer {
 
         let scope = this.scope_manager.current;
         this.scope_manager.PopScope();
-        return Pair<*mut HIRStructure, *mut Scope>(declaration, scope);
+        return Pair<*mut HIRStructureDeclaration, *mut Scope>(declaration, scope);
     }
 
-    fn AnalyzeStructureSecondPass(&mut this, declaration: *mut HIRStructure, structure: *StructureNode, scope: *mut Scope) {
+    fn AnalyzeStructureSecondPass(&mut this, declaration: *mut HIRStructureDeclaration, structure: *StructureNode, scope: *mut Scope) {
         unsafe {
             let _type = (declaration as *HIRDeclaration)->_type as *mut SemanticType;
         }
@@ -606,7 +606,7 @@ class SemanticAnalyzer {
         (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
     }
 
-    fn AnalyzeStructureThirdPass(&mut this, declaration: *mut HIRStructure, structure: *StructureNode, scope: *mut Scope) {
+    fn AnalyzeStructureThirdPass(&mut this, declaration: *mut HIRStructureDeclaration, structure: *StructureNode, scope: *mut Scope) {
         unsafe {
             let _type = (declaration as *HIRDeclaration)->_type as *mut SemanticType;
         }
@@ -628,7 +628,7 @@ class SemanticAnalyzer {
         (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
     }
 
-    pub fn AnalyzeStructure(&mut this, structure: *StructureNode, generic: *mut Generic) -> *HIRStructure {
+    pub fn AnalyzeStructure(&mut this, structure: *StructureNode, generic: *mut Generic) -> *HIRStructureDeclaration {
         let cache = this.AnalyzeStructureFirstPass(structure, generic);
 
         if cache.left != null {
@@ -647,7 +647,7 @@ class SemanticAnalyzer {
         }
 
         let _type = this.type_manager.Enumeration(enumeration->name, underlying_type);
-        let declaration = this.arena.New<HIREnumeration>(enumeration->name, _type);
+        let declaration = this.arena.New<HIREnumerationDeclaration>(enumeration->name, _type);
         this.module->declarations.PushBack(declaration);
 
         this.scope_manager.Set(enumeration->name, declaration, false, enumeration);
@@ -660,15 +660,15 @@ class SemanticAnalyzer {
         this.scope_manager.PopScope();
     }
 
-    fn AnalyzeVariantFirstPass(&mut this, enumeration: *EnumerationNode, generic: *mut Generic) -> Pair<*mut HIRVariant, *mut Scope> {
+    fn AnalyzeVariantFirstPass(&mut this, enumeration: *EnumerationNode, generic: *mut Generic) -> Pair<*mut HIRVariantDeclaration, *mut Scope> {
         if enumeration->generic && generic == null {
             let _generic = new Generic(enumeration);
             this.scope_manager.Set(enumeration->name, _generic, enumeration);
-            return Pair<*mut HIRVariant, *mut Scope>(null, null);
+            return Pair<*mut HIRVariantDeclaration, *mut Scope>(null, null);
         }
 
         let _type = this.type_manager.Variant(enumeration->name);
-        let declaration = this.arena.New<HIRVariant>(enumeration->name, _type);
+        let declaration = this.arena.New<HIRVariantDeclaration>(enumeration->name, _type);
         this.module->declarations.PushBack(declaration);
 
         if generic != null {
@@ -681,10 +681,10 @@ class SemanticAnalyzer {
 
         let scope = this.scope_manager.current;
         this.scope_manager.PopScope();
-        return Pair<*mut HIRVariant, *mut Scope>(declaration, scope);
+        return Pair<*mut HIRVariantDeclaration, *mut Scope>(declaration, scope);
     }
 
-    fn AnalyzeVariantSecondPass(&mut this, declaration: *mut HIRVariant, enumeration: *EnumerationNode, scope: *mut Scope) {
+    fn AnalyzeVariantSecondPass(&mut this, declaration: *mut HIRVariantDeclaration, enumeration: *EnumerationNode, scope: *mut Scope) {
         unsafe {
             let _type = (declaration as *HIRDeclaration)->_type as *mut SemanticType;
         }
@@ -710,7 +710,7 @@ class SemanticAnalyzer {
         (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
     }
 
-    fn AnalyzeVariantThirdPass(&mut this, declaration: *mut HIRVariant, enumeration: *EnumerationNode, scope: *mut Scope) {
+    fn AnalyzeVariantThirdPass(&mut this, declaration: *mut HIRVariantDeclaration, enumeration: *EnumerationNode, scope: *mut Scope) {
         unsafe {
             let _type = (declaration as *HIRDeclaration)->_type as *mut SemanticType;
         }
@@ -732,7 +732,7 @@ class SemanticAnalyzer {
         (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
     }
 
-    pub fn AnalyzeVariant(&mut this, enumeration: *EnumerationNode, generic: *mut Generic) -> *HIRVariant {
+    pub fn AnalyzeVariant(&mut this, enumeration: *EnumerationNode, generic: *mut Generic) -> *HIRVariantDeclaration {
         let cache = this.AnalyzeVariantFirstPass(enumeration, generic);
 
         if cache.left != null {
@@ -840,7 +840,7 @@ class SemanticAnalyzer {
         }
 
         this.AnalyzeDestructors(null);
-        this.current_block->statements.PushBack(this.arena.New<HIRReturn>(value));
+        this.current_block->statements.PushBack(this.arena.New<HIRReturnStatement>(value));
     }
 
     fn AnalyzeIf(&mut this, _if: *IfNode) {
@@ -851,7 +851,7 @@ class SemanticAnalyzer {
         }
 
         this.scope_manager.PushScope(String("then"), false);
-        let (then_body, mut else_body: *HIRBlock) = (this.AnalyzeBlock(_if->body as *BlockNode), null);
+        let (then_body, mut else_body: *HIRBlockStatement) = (this.AnalyzeBlock(_if->body as *BlockNode), null);
         this.scope_manager.PopScope();
 
         if _if->_else != null {
@@ -861,7 +861,7 @@ class SemanticAnalyzer {
                 else_body = this.AnalyzeBlock(_if->_else as *BlockNode);
             } else {
                 let prev_block = this.current_block;
-                let else_block = this.arena.New<HIRBlock>();
+                let else_block = this.arena.New<HIRBlockStatement>();
                 this.current_block = else_block;
                 this.AnalyzeStatement(_if->_else);
                 this.current_block = prev_block;
@@ -871,7 +871,7 @@ class SemanticAnalyzer {
             this.scope_manager.PopScope();
         }
 
-        this.current_block->statements.PushBack(this.arena.New<HIRIf>(condition, then_body, else_body));
+        this.current_block->statements.PushBack(this.arena.New<HIRIfStatement>(condition, then_body, else_body));
     }
 
     fn AnalyzeIfLet(&mut this, if_let: *IfLetNode) {
@@ -879,7 +879,7 @@ class SemanticAnalyzer {
         if expression == null { return; }
 
         this.scope_manager.PushScope(String("then"), false);
-        let (then_body, mut else_body: *HIRBlock) = (this.AnalyzeBlock(if_let->body as *BlockNode), null);
+        let (then_body, mut else_body: *HIRBlockStatement) = (this.AnalyzeBlock(if_let->body as *BlockNode), null);
         this.scope_manager.PopScope();
 
         if if_let->_else != null {
@@ -889,7 +889,7 @@ class SemanticAnalyzer {
                 else_body = this.AnalyzeBlock(if_let->_else as *BlockNode);
             } else {
                 let prev_block = this.current_block;
-                let else_block = this.arena.New<HIRBlock>();
+                let else_block = this.arena.New<HIRBlockStatement>();
                 this.current_block = else_block;
                 this.AnalyzeStatement(if_let->_else);
                 this.current_block = prev_block;
@@ -909,7 +909,7 @@ class SemanticAnalyzer {
 
         this.scope_manager.PushScope(String("while"), false);
         this.loop_scopes.PushBack(this.scope_manager.current);
-        let (while_body, mut else_body: *HIRBlock) = (this.AnalyzeBlock(_while->body as *BlockNode), null);
+        let (while_body, mut else_body: *HIRBlockStatement) = (this.AnalyzeBlock(_while->body as *BlockNode), null);
         this.loop_scopes.PopBack();
         this.scope_manager.PopScope();
 
@@ -919,7 +919,7 @@ class SemanticAnalyzer {
             this.scope_manager.PopScope();
         }
 
-        this.current_block->statements.PushBack(this.arena.New<HIRWhile>(condition, while_body, else_body));
+        this.current_block->statements.PushBack(this.arena.New<HIRWhileStatement>(condition, while_body, else_body));
     }
 
     fn AnalyzeWhileLet(&mut this, while_let: *WhileLetNode) {
@@ -951,8 +951,8 @@ class SemanticAnalyzer {
 
             let mut values = Vector<*HIRExpression>();
             values.PushBack(this.ImplicitAddressOf(iterable));
-            let mut begin_function: *HIRFunction = null;
-            let mut end_function: *HIRFunction = null;
+            let mut begin_function: *HIRFunctionDeclaration = null;
+            let mut end_function: *HIRFunctionDeclaration = null;
 
             if iterable->_type->HasMethods() {
                 let begin_candidates = iterable->_type->GetCandidates("Begin".ToString(), _for, true);
@@ -989,10 +989,10 @@ class SemanticAnalyzer {
             return;
         }
 
-        let iterator = this.arena.New<HIRVariable>("iterator".ToString(), iterator_type, start, true);
-        let iterator_ref = this.arena.New<HIRVariableRef>(iterator);
+        let iterator = this.arena.New<HIRVariableStatement>("iterator".ToString(), iterator_type, start, true);
+        let iterator_ref = this.arena.New<HIRVariableReference>(iterator);
 
-        let mut variable: *HIRVariable = null;
+        let mut variable: *HIRVariableStatement = null;
         let mut condition: *HIRExpression = null;
         let mut step: *HIRExpression = null;
 
@@ -1006,16 +1006,16 @@ class SemanticAnalyzer {
             }
 
             let _operator = inclusive ? TokenType::LESS_EQUAL : TokenType::LESS;
-            condition = this.arena.New<HIRBinary>(_operator, iterator_ref, end, this.type_manager.Boolean());
-            let next = this.arena.New<HIRBinary>(TokenType::PLUS, iterator_ref, one, iterator_type);
-            step = this.arena.New<HIRAssignment>(iterator_ref, next);
-            variable = this.arena.New<HIRVariable>(_for->variable, iterator_type, iterator_ref, false);
+            condition = this.arena.New<HIRBinaryExpression>(_operator, iterator_ref, end, this.type_manager.Boolean());
+            let next = this.arena.New<HIRBinaryExpression>(TokenType::PLUS, iterator_ref, one, iterator_type);
+            step = this.arena.New<HIRAssignmentExpression>(iterator_ref, next);
+            variable = this.arena.New<HIRVariableStatement>(_for->variable, iterator_type, iterator_ref, false);
         } else if iterator_type->IsPointer() {
-            condition = this.arena.New<HIRBinary>(TokenType::NOT_EQUAL, iterator_ref, end, this.type_manager.Boolean());
-            let step_value = this.arena.New<HIRBinary>(TokenType::PLUS, iterator_ref, this.arena.New<HIRIntegerLiteral>(1u64, this.type_manager.IntegerPointer(false)), iterator_type);
-            step = this.arena.New<HIRAssignment>(iterator_ref, step_value);
-            let value = this.arena.New<HIRDereference>(iterator_ref);
-            variable = this.arena.New<HIRVariable>(_for->variable, iterator_type->Pointee(), value, false);
+            condition = this.arena.New<HIRBinaryExpression>(TokenType::NOT_EQUAL, iterator_ref, end, this.type_manager.Boolean());
+            let step_value = this.arena.New<HIRBinaryExpression>(TokenType::PLUS, iterator_ref, this.arena.New<HIRIntegerLiteral>(1u64, this.type_manager.IntegerPointer(false)), iterator_type);
+            step = this.arena.New<HIRAssignmentExpression>(iterator_ref, step_value);
+            let value = this.arena.New<HIRDereferenceExpression>(iterator_ref);
+            variable = this.arena.New<HIRVariableStatement>(_for->variable, iterator_type->Pointee(), value, false);
         } else {
             let mut values = Vector<*HIRExpression>();
             values.PushBack(iterator_ref);
@@ -1036,7 +1036,7 @@ class SemanticAnalyzer {
             let dereference_candidates = iterator_type->GetCandidates("operator*".ToString(), _for, false);
             let value = this.AnalyzeResolvedCall(dereference_candidates, values, _for);
             if value == null { return; }
-            variable = this.arena.New<HIRVariable>(_for->variable, value->_type, value, false);
+            variable = this.arena.New<HIRVariableStatement>(_for->variable, value->_type, value, false);
         }
 
         this.scope_manager.PushScope(String("for"), false);
@@ -1046,7 +1046,7 @@ class SemanticAnalyzer {
         this.loop_scopes.PopBack();
         this.scope_manager.PopScope();
 
-        this.current_block->statements.PushBack(this.arena.New<HIRFor>(iterator, variable, condition, step, body));
+        this.current_block->statements.PushBack(this.arena.New<HIRForStatement>(iterator, variable, condition, step, body));
     }
 
     fn AnalyzeLoop(&mut this, _loop: *LoopNode) {
@@ -1056,7 +1056,7 @@ class SemanticAnalyzer {
         this.loop_scopes.PopBack();
         this.scope_manager.PopScope();
 
-        this.current_block->statements.PushBack(this.arena.New<HIRLoop>(body));
+        this.current_block->statements.PushBack(this.arena.New<HIRLoopStatement>(body));
     }
 
     fn AnalyzeDestructors(&mut this, target: *mut Scope) {
@@ -1069,7 +1069,7 @@ class SemanticAnalyzer {
                 if candidates.Empty() { continue; }
                 let mut values = Vector<*HIRExpression>();
                 values.PushBack(instance);
-                let expression = this.arena.New<HIRDestruct>(this.AnalyzeResolvedCall(candidates, values, null) as *HIRCall);
+                let expression = this.arena.New<HIRDestructorExpression>(this.AnalyzeResolvedCall(candidates, values, null) as *HIRCallExpression);
                 this.current_block->statements.PushBack(this.arena.New<HIRExpressionStatement>(expression));
             }
 
@@ -1085,7 +1085,7 @@ class SemanticAnalyzer {
         }
 
         this.AnalyzeDestructors(this.loop_scopes.Back());
-        this.current_block->statements.PushBack(this.arena.New<HIRContinue>());
+        this.current_block->statements.PushBack(this.arena.New<HIRContinueStatement>());
     }
 
     fn AnalyzeBreak(&mut this, _break: *BreakNode) {
@@ -1095,7 +1095,7 @@ class SemanticAnalyzer {
         }
 
         this.AnalyzeDestructors(this.loop_scopes.Back());
-        this.current_block->statements.PushBack(this.arena.New<HIRBreak>());
+        this.current_block->statements.PushBack(this.arena.New<HIRBreakStatement>());
     }
 
     fn AnalyzeMatch(&mut this, _match: *MatchNode) {
@@ -1113,9 +1113,9 @@ class SemanticAnalyzer {
         this._unsafe = false;
     }
 
-    fn AnalyzeBlock(&mut this, block: *BlockNode) -> *HIRBlock {
+    fn AnalyzeBlock(&mut this, block: *BlockNode) -> *HIRBlockStatement {
         let prev_block = this.current_block;
-        let statement = this.arena.New<HIRBlock>();
+        let statement = this.arena.New<HIRBlockStatement>();
         this.current_block = statement;
 
         for statement in block->statements {
@@ -1145,12 +1145,12 @@ class SemanticAnalyzer {
         }
 
         if _type != null {
-            let statement = this.arena.New<HIRVariable>(variable->name, _type, initializer, variable->mutable);
+            let statement = this.arena.New<HIRVariableStatement>(variable->name, _type, initializer, variable->mutable);
             this.scope_manager.Set(variable->name, statement, variable);
             this.current_block->statements.PushBack(statement);
 
             if _type->IsClass() {
-                this.scope_manager.RegisterInstance(this.arena.New<HIRVariableRef>(statement));
+                this.scope_manager.RegisterInstance(this.arena.New<HIRVariableReference>(statement));
             }
         }
 
@@ -1223,7 +1223,7 @@ class SemanticAnalyzer {
             if right == null { return null; }
         }
 
-        return this.arena.New<HIRAssignment>(left, right);
+        return this.arena.New<HIRAssignmentExpression>(left, right);
     }
 
     fn IsDeferrableExpression(&mut this, node: *Node) -> *SemanticType {
@@ -1307,7 +1307,7 @@ class SemanticAnalyzer {
                 let statement = symbol->statement;
 
                 if statement->kind == HIRStatementKind::Variable {
-                    return this.arena.New<HIRVariableRef>(statement as *HIRVariable);
+                    return this.arena.New<HIRVariableReference>(statement as *HIRVariableStatement);
                 } else {
                     Logger::Log("Cannot use statement as an expression.", expression, LogSeverity::Error);
                     return null;
@@ -1316,11 +1316,11 @@ class SemanticAnalyzer {
                 let declaration = symbol->declaration;
 
                 if declaration->kind == HIRDeclarationKind::Constant || declaration->kind == HIRDeclarationKind::Function {
-                    return this.arena.New<HIRDeclarationRef>(declaration, false);
+                    return this.arena.New<HIRDeclarationReference>(declaration, false);
                 } else if declaration->kind == HIRDeclarationKind::Static {
-                    return this.arena.New<HIRDeclarationRef>(declaration, (declaration as *HIRStatic)->mutable);
+                    return this.arena.New<HIRDeclarationReference>(declaration, (declaration as *HIRStaticDeclaration)->mutable);
                 } else if declaration->kind == HIRDeclarationKind::Parameter {
-                    return this.arena.New<HIRDeclarationRef>(declaration, (declaration as *HIRParameter)->mutable);
+                    return this.arena.New<HIRDeclarationReference>(declaration, (declaration as *HIRParameterDeclaration)->mutable);
                 } else {
                     Logger::Log("Cannot use declaration '" + declaration->name + "' as an expression.", expression, LogSeverity::Error);
                     return null;
@@ -1461,7 +1461,7 @@ class SemanticAnalyzer {
                         let statement = symbol->statement;
 
                         if statement->kind == HIRStatementKind::Variable {
-                            _type = (statement as *HIRVariable)->_type;
+                            _type = (statement as *HIRVariableStatement)->_type;
                         } else {
                             Logger::Log("Cannot use statement as a type.", call, LogSeverity::Error);
                             return null;
@@ -1475,7 +1475,7 @@ class SemanticAnalyzer {
                     _type = this.ResolveType(argument);
                 }
 
-                return this.arena.New<HIRIntrinsic>(identifier->name == "sizeof" ? HIRIntrinsicKind::SizeOf : HIRIntrinsicKind::AlignOf, _type);
+                return this.arena.New<HIRIntrinsicExpression>(identifier->name == "sizeof" ? HIRIntrinsicKind::SizeOf : HIRIntrinsicKind::AlignOf, _type);
             }
         }
 
@@ -1530,7 +1530,7 @@ class SemanticAnalyzer {
                         return null;
                     }
 
-                    let target = this.arena.New<HIRMemberAccess>(instance, field._type, index as usize);
+                    let target = this.arena.New<HIRMemberAccessExpression>(instance, field._type, index as usize);
                     return this.AnalyzeResolvedCall(target, values, call);
                 } else {
                     values.Insert(0, this.ImplicitAddressOf(instance));
@@ -1562,7 +1562,7 @@ class SemanticAnalyzer {
                                 return null;
                             }
 
-                            return this.AnalyzeResolvedCall(declaration as *HIRFunction, values, call);
+                            return this.AnalyzeResolvedCall(declaration as *HIRFunctionDeclaration, values, call);
                         }
                     } else {
                         if this.scope_manager.Has(primitive_type->name) {
@@ -1584,7 +1584,7 @@ class SemanticAnalyzer {
                         return null;
                     }
 
-                    return this.AnalyzeResolvedCall(declaration as *HIRFunction, values, call);
+                    return this.AnalyzeResolvedCall(declaration as *HIRFunctionDeclaration, values, call);
                 }
             }
 
@@ -1596,11 +1596,11 @@ class SemanticAnalyzer {
                 return null;
             }
 
-            let instance = this.arena.New<HIRConstruct>(_class);
+            let instance = this.arena.New<HIRConstructorExpression>(_class);
             values.Insert(0, this.ImplicitAddressOf(instance));
 
             let candidates = _class->GetCandidates(_class->name, call, false);
-            instance->call = this.AnalyzeResolvedCall(candidates, values, call) as *HIRCall;
+            instance->call = this.AnalyzeResolvedCall(candidates, values, call) as *HIRCallExpression;
             return instance;
         } else {
             let candidates = this.scope_manager.ResolveCandidates(call->expression, true);
@@ -1619,12 +1619,12 @@ class SemanticAnalyzer {
         }
     }
 
-    fn ResolveOverload(&mut this, candidates: &Vector<*HIRFunction>, values: &Vector<*HIRExpression>, node: *Node, test: bool) -> *HIRFunction {
+    fn ResolveOverload(&mut this, candidates: &Vector<*HIRFunctionDeclaration>, values: &Vector<*HIRExpression>, node: *Node, test: bool) -> *HIRFunctionDeclaration {
         let mut index: usize = 0;
         let mut best: u64 = 0;
 
         for i in 0..candidates.Size() {
-            let function: *HIRFunction = candidates[i];
+            let function: *HIRFunctionDeclaration = candidates[i];
             let params = (function as *HIRDeclaration)->_type->Parameters();
             if values.Size() != params.Size() { continue; }
             let (mut _match, mut score: u64) = (true, 1);
@@ -1649,20 +1649,20 @@ class SemanticAnalyzer {
             return candidates[index];
         } else {
             if !test {
-                let candidate: *HIRFunction = candidates[0];
+                let candidate: *HIRFunctionDeclaration = candidates[0];
                 Logger::Log("Invalid arguments for: '" + (candidate as *HIRDeclaration)->name + "'.", node, LogSeverity::Error);
             } return null;
         }
     }
 
-    fn AnalyzeResolvedCall(&mut this, candidates: &Vector<*HIRFunction>, values: &Vector<*HIRExpression>, node: *Node) -> *HIRExpression {
+    fn AnalyzeResolvedCall(&mut this, candidates: &Vector<*HIRFunctionDeclaration>, values: &Vector<*HIRExpression>, node: *Node) -> *HIRExpression {
         let function = this.ResolveOverload(candidates, values, node, false);
         if function == null { return null; }
         return this.AnalyzeResolvedCall(function, values, node);
     }
 
-    fn AnalyzeResolvedCall(&mut this, function: *HIRFunction, values: &Vector<*HIRExpression>, node: *Node) -> *HIRExpression {
-        let expression = this.arena.New<HIRDeclarationRef>(function as *HIRDeclaration, false);
+    fn AnalyzeResolvedCall(&mut this, function: *HIRFunctionDeclaration, values: &Vector<*HIRExpression>, node: *Node) -> *HIRExpression {
+        let expression = this.arena.New<HIRDeclarationReference>(function as *HIRDeclaration, false);
         return this.AnalyzeResolvedCall(expression, values, node);
     }
 
@@ -1699,7 +1699,7 @@ class SemanticAnalyzer {
             values[i] = this.MakeCompatible(value, param_type);
         }
 
-        return this.arena.New<HIRCall>(function, values);
+        return this.arena.New<HIRCallExpression>(function, values);
     }
 
     fn AnalyzeNew(&mut this, _new: *NewNode) -> *HIRExpression {
@@ -1723,7 +1723,7 @@ class SemanticAnalyzer {
             }
         }
 
-        return this.arena.New<HIRNew>(_type, size);
+        return this.arena.New<HIRNewExpression>(_type, size);
     }
 
     fn AnalyzeDelete(&mut this, _delete: *DeleteNode) -> *HIRExpression {
@@ -1738,7 +1738,7 @@ class SemanticAnalyzer {
             return null;
         }
 
-        return this.arena.New<HIRDelete>(pointer);
+        return this.arena.New<HIRDeleteExpression>(pointer);
     }
 
     fn LiteralNeedsExplicitType(&mut this, expression: *Node, target: *SemanticType) -> bool {
@@ -1792,7 +1792,7 @@ class SemanticAnalyzer {
                 Logger::Log("Redundant cast. ('" + value->_type->ToString() + "' to '" + target.ToString() + "')", node, LogSeverity::Warning);
             } else {
                 if !failed || this._unsafe {
-                    return this.arena.New<HIRCast>(value, target);
+                    return this.arena.New<HIRCastExpression>(value, target);
                 } else {
                     Logger::Log("Cannot cast immutable pointer to mutable pointer.", node, LogSeverity::Error);
                     return null;
@@ -1802,31 +1802,31 @@ class SemanticAnalyzer {
 
         if value->_type->IsBoolean() {
             if target.IsInteger() {
-                return this.arena.New<HIRCast>(value, target);
+                return this.arena.New<HIRCastExpression>(value, target);
             }
         } else if value->_type->IsCharacter() {
             if target.IsInteger() {
-                return this.arena.New<HIRCast>(value, target);
+                return this.arena.New<HIRCastExpression>(value, target);
             }
         } else if value->_type->IsInteger() {
             if target.IsPointer() || target.IsInteger() || target.IsFloat() || target.IsEnumeration() {
-                return this.arena.New<HIRCast>(value, target);
+                return this.arena.New<HIRCastExpression>(value, target);
             } else if target.IsCharacter() {
                 if value->_type->Width() == 8 && !value->_type->IsSigned() {
-                    return this.arena.New<HIRCast>(value, target);
+                    return this.arena.New<HIRCastExpression>(value, target);
                 }
             }
         } else if value->_type->IsFloat() {
             if target.IsInteger() || target.IsFloat() {
-                return this.arena.New<HIRCast>(value, target);
+                return this.arena.New<HIRCastExpression>(value, target);
             }
         } else if value->_type->IsPointer() {
             if target.IsInteger() {
-                return this.arena.New<HIRCast>(value, target);
+                return this.arena.New<HIRCastExpression>(value, target);
             }
         } else if value->_type->IsEnumeration() {
             if target.IsInteger() {
-                return this.arena.New<HIRCast>(value, target);
+                return this.arena.New<HIRCastExpression>(value, target);
             }
         }
 
@@ -1856,7 +1856,7 @@ class SemanticAnalyzer {
                 }
             }
 
-            return this.arena.New<HIRCast>(value, target);
+            return this.arena.New<HIRCastExpression>(value, target);
         } else {
             Logger::Log("Cannot cast '" + value->_type->ToString() + "' to '" + target.ToString() + "'.", node, LogSeverity::Error);
             return null;
@@ -1897,7 +1897,7 @@ class SemanticAnalyzer {
             return null;
         }
 
-        return this.arena.New<HIRIndexAccess>(value, index);
+        return this.arena.New<HIRIndexAccessExpression>(value, index);
     }
 
     fn AnalyzeMemberAccess(&mut this, member_access: *MemberAccessNode) -> *HIRExpression {
@@ -1939,7 +1939,7 @@ class SemanticAnalyzer {
                 return null;
             }
 
-            return this.arena.New<HIRMemberAccess>(instance, field._type, index as usize);
+            return this.arena.New<HIRMemberAccessExpression>(instance, field._type, index as usize);
         } else {
             Logger::Log("Field '" + member_access->member + "' not found in type '" + instance->_type->ToString() + "'.", member_access, LogSeverity::Error);
             return null;
@@ -1982,14 +1982,14 @@ class SemanticAnalyzer {
                 return null;
             }
 
-            return this.arena.New<HIRAddressOf>(raw, unary->mutable);
+            return this.arena.New<HIRAddressOfExpression>(raw, unary->mutable);
         } else if unary->_operator == TokenType::MUL {
             if !raw->_type->IsPointer() {
                 Logger::Log("Cannot dereference non-pointer type '" + raw->_type->ToString() + "'.", unary, LogSeverity::Error);
                 return null;
             }
 
-            return this.arena.New<HIRDereference>(raw);
+            return this.arena.New<HIRDereferenceExpression>(raw);
         } else {
             let mut operand_target: *SemanticType = null;
 
@@ -2016,14 +2016,14 @@ class SemanticAnalyzer {
                         return null;
                     }
 
-                    return this.arena.New<HIRUnary>(unary->_operator, value);
+                    return this.arena.New<HIRUnaryExpression>(unary->_operator, value);
                 } else {
                     Logger::Log("Cannot negate type '" + value->_type->ToString() + "'.", unary, LogSeverity::Error);
                     return null;
                 }
             } else if unary->_operator == TokenType::NOT {
                 if value->_type->IsInteger() || value->_type->IsBoolean() {
-                    return this.arena.New<HIRUnary>(unary->_operator, value);
+                    return this.arena.New<HIRUnaryExpression>(unary->_operator, value);
                 } else {
                     Logger::Log("Cannot invert type '" + value->_type->ToString() + "'.", unary, LogSeverity::Error);
                     return null;
@@ -2070,7 +2070,7 @@ class SemanticAnalyzer {
                 return null;
             }
 
-            return this.arena.New<HIRBinary>(binary->_operator, left, right, left->_type);
+            return this.arena.New<HIRBinaryExpression>(binary->_operator, left, right, left->_type);
         }
 
         let mut right = this.AnalyzeExpression(binary->right);
@@ -2120,7 +2120,7 @@ class SemanticAnalyzer {
                     return null;
                 }
 
-                return this.arena.New<HIRBinary>(_operator, left, right, this.type_manager.Boolean());
+                return this.arena.New<HIRBinaryExpression>(_operator, left, right, this.type_manager.Boolean());
             } else {
                 Logger::Log("Incompatible binary operation types. ('" + left->_type->ToString() + "' != '" + right->_type->ToString() + "').", node, LogSeverity::Error);
                 return null;
@@ -2137,16 +2137,16 @@ class SemanticAnalyzer {
 
         if left->_type->IsBoolean() && right->_type->IsBoolean() {
             if _operator == TokenType::EQUAL || _operator == TokenType::NOT_EQUAL {
-                return this.arena.New<HIRBinary>(_operator, left, right, this.type_manager.Boolean());
+                return this.arena.New<HIRBinaryExpression>(_operator, left, right, this.type_manager.Boolean());
             } else if _operator == TokenType::AND || _operator == TokenType::BITWISE_AND || _operator == TokenType::OR || _operator == TokenType::BITWISE_OR || _operator == TokenType::BITWISE_XOR {
-                return this.arena.New<HIRBinary>(_operator, left, right, left->_type);
+                return this.arena.New<HIRBinaryExpression>(_operator, left, right, left->_type);
             } else {
                 Logger::Log("Invalid binary operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
                 return null;
             }
         } else if left->_type->IsCharacter() && right->_type->IsCharacter() {
             if _operator == TokenType::EQUAL || _operator == TokenType::NOT_EQUAL || _operator == TokenType::GREATER || _operator == TokenType::GREATER_EQUAL || _operator == TokenType::LESS || _operator == TokenType::LESS_EQUAL {
-                return this.arena.New<HIRBinary>(_operator, left, right, this.type_manager.Boolean());
+                return this.arena.New<HIRBinaryExpression>(_operator, left, right, this.type_manager.Boolean());
             } else {
                 Logger::Log("Invalid binary operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
                 return null;
@@ -2158,11 +2158,11 @@ class SemanticAnalyzer {
             }
 
             if _operator == TokenType::PLUS || _operator == TokenType::MINUS || _operator == TokenType::MUL || _operator == TokenType::DIV || _operator == TokenType::MOD {
-                return this.arena.New<HIRBinary>(_operator, left, right, left->_type);
+                return this.arena.New<HIRBinaryExpression>(_operator, left, right, left->_type);
             } else if _operator == TokenType::EQUAL || _operator == TokenType::NOT_EQUAL || _operator == TokenType::GREATER || _operator == TokenType::GREATER_EQUAL || _operator == TokenType::LESS || _operator == TokenType::LESS_EQUAL {
-                return this.arena.New<HIRBinary>(_operator, left, right, this.type_manager.Boolean());
+                return this.arena.New<HIRBinaryExpression>(_operator, left, right, this.type_manager.Boolean());
             } else if _operator == TokenType::BITWISE_AND || _operator == TokenType::BITWISE_OR || _operator == TokenType::BITWISE_XOR || _operator == TokenType::LSHIFT || _operator == TokenType::RSHIFT {
-                return this.arena.New<HIRBinary>(_operator, left, right, left->_type);
+                return this.arena.New<HIRBinaryExpression>(_operator, left, right, left->_type);
             } else {
                 Logger::Log("Invalid binary operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
                 return null;
@@ -2174,9 +2174,9 @@ class SemanticAnalyzer {
             }
 
             if _operator == TokenType::PLUS || _operator == TokenType::MINUS || _operator == TokenType::MUL || _operator == TokenType::DIV || _operator == TokenType::MOD {
-                return this.arena.New<HIRBinary>(_operator, left, right, left->_type);
+                return this.arena.New<HIRBinaryExpression>(_operator, left, right, left->_type);
             } else if _operator == TokenType::EQUAL || _operator == TokenType::NOT_EQUAL || _operator == TokenType::GREATER || _operator == TokenType::GREATER_EQUAL || _operator == TokenType::LESS || _operator == TokenType::LESS_EQUAL {
-                return this.arena.New<HIRBinary>(_operator, left, right, this.type_manager.Boolean());
+                return this.arena.New<HIRBinaryExpression>(_operator, left, right, this.type_manager.Boolean());
             } else {
                 Logger::Log("Invalid binary operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
                 return null;
@@ -2188,9 +2188,9 @@ class SemanticAnalyzer {
             }
 
             if _operator == TokenType::MINUS {
-                return this.arena.New<HIRBinary>(_operator, left, right, this.type_manager.IntegerPointer(false));
+                return this.arena.New<HIRBinaryExpression>(_operator, left, right, this.type_manager.IntegerPointer(false));
             } else if _operator == TokenType::EQUAL || _operator == TokenType::NOT_EQUAL || _operator == TokenType::GREATER || _operator == TokenType::GREATER_EQUAL || _operator == TokenType::LESS || _operator == TokenType::LESS_EQUAL {
-                return this.arena.New<HIRBinary>(_operator, left, right, this.type_manager.Boolean());
+                return this.arena.New<HIRBinaryExpression>(_operator, left, right, this.type_manager.Boolean());
             } else {
                 Logger::Log("Invalid pointer binary operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
                 return null;
@@ -2205,14 +2205,14 @@ class SemanticAnalyzer {
             }
 
             if _operator == TokenType::PLUS {
-                return this.arena.New<HIRBinary>(_operator, left, right, pointer->_type);
+                return this.arena.New<HIRBinaryExpression>(_operator, left, right, pointer->_type);
             } else if _operator == TokenType::MINUS {
                 if left->_type->IsInteger() {
                     Logger::Log("Cannot subtract a pointer from an integer.", node, LogSeverity::Error);
                     return null;
                 }
 
-                return this.arena.New<HIRBinary>(_operator, left, right, pointer->_type);
+                return this.arena.New<HIRBinaryExpression>(_operator, left, right, pointer->_type);
             } else {
                 Logger::Log("Invalid pointer binary operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
                 return null;
@@ -2224,9 +2224,9 @@ class SemanticAnalyzer {
             }
 
             if _operator == TokenType::BITWISE_AND || _operator == TokenType::BITWISE_OR || _operator == TokenType::BITWISE_XOR {
-                return this.arena.New<HIRBinary>(_operator, left, right, left->_type);
+                return this.arena.New<HIRBinaryExpression>(_operator, left, right, left->_type);
             } else if _operator == TokenType::EQUAL || _operator == TokenType::NOT_EQUAL || _operator == TokenType::GREATER || _operator == TokenType::GREATER_EQUAL || _operator == TokenType::LESS || _operator == TokenType::LESS_EQUAL {
-                return this.arena.New<HIRBinary>(_operator, left, right, this.type_manager.Boolean());
+                return this.arena.New<HIRBinaryExpression>(_operator, left, right, this.type_manager.Boolean());
             } else {
                 Logger::Log("Invalid binary operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
                 return null;
@@ -2256,7 +2256,7 @@ class SemanticAnalyzer {
         let mutable = then_value->mutable && else_value->mutable ? true : false;
         let category = (then_value->category == HIRExpressionCategory::Place && else_value->category == HIRExpressionCategory::Place)
             ? HIRExpressionCategory::Place : HIRExpressionCategory::Value;
-        return this.arena.New<HIRTernary>(condition, then_value, else_value, category, mutable);
+        return this.arena.New<HIRTernaryExpression>(condition, then_value, else_value, category, mutable);
     }
 
     fn AnalyzeStructureInitializer(&mut this, node: *StructureInitializerNode) -> *HIRExpression {
@@ -2268,7 +2268,7 @@ class SemanticAnalyzer {
             return null;
         }
 
-        let structure = symbol->declaration as *HIRStructure;
+        let structure = symbol->declaration as *HIRStructureDeclaration;
         let mut values = Vector<*HIRExpression>();
 
         for field_value in node->field_values {
@@ -2277,7 +2277,7 @@ class SemanticAnalyzer {
             values.PushBack(value);
         }
 
-        return this.arena.New<HIRStructureInitializer>(structure, values);
+        return this.arena.New<HIRStructureLiteral>(structure, values);
     }
 
     pub fn ResolveType(&mut this, _type: *Node) -> *SemanticType {

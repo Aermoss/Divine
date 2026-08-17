@@ -19,7 +19,7 @@
 class HIRLowerer {
     arena: Arena,
     strings: Map<String, *MIRStaticDeclaration>,
-    variables: Map<*HIRVariable, *mut MIRValue>,
+    variables: Map<*HIRVariableStatement, *mut MIRValue>,
     declarations: Map<*HIRDeclaration, *mut MIRDeclaration>,
     runtime_functions: Map<String, *MIRFunctionDeclaration>,
     break_blocks: Vector<*mut MIRBlock>,
@@ -58,25 +58,25 @@ class HIRLowerer {
 
     fn LowerDeclarationSecondPass(&mut this, declaration: *HIRDeclaration) {
         if declaration->kind == HIRDeclarationKind::Constant {
-            this.LowerConstant(declaration as *HIRConstant);
+            this.LowerConstant(declaration as *HIRConstantDeclaration);
         }
     }
 
     fn LowerDeclarationThirdPass(&mut this, declaration: *HIRDeclaration) {
         if declaration->kind == HIRDeclarationKind::Static {
-            this.LowerStatic(declaration as *HIRStatic);
+            this.LowerStatic(declaration as *HIRStaticDeclaration);
         } else if declaration->kind == HIRDeclarationKind::Function {
-            this.LowerFunctionFirstPass(declaration as *HIRFunction);
+            this.LowerFunctionFirstPass(declaration as *HIRFunctionDeclaration);
         }
     }
 
     fn LowerDeclarationFourthPass(&mut this, declaration: *HIRDeclaration) {
         if declaration->kind == HIRDeclarationKind::Function {
-            this.LowerFunctionSecondPass(declaration as *HIRFunction);
+            this.LowerFunctionSecondPass(declaration as *HIRFunctionDeclaration);
         }
     }
 
-    fn LowerConstant(&mut this, constant: *HIRConstant) {
+    fn LowerConstant(&mut this, constant: *HIRConstantDeclaration) {
         let declaration = constant as *HIRDeclaration;
         let initializer = this.LowerConstantExpression(constant->initializer);
         if initializer == null { return; }
@@ -94,7 +94,7 @@ class HIRLowerer {
         }
     }
 
-    fn LowerStatic(&mut this, _static: *HIRStatic) {
+    fn LowerStatic(&mut this, _static: *HIRStaticDeclaration) {
         let declaration = _static as *HIRDeclaration;
         let mut initializer: *MIRValue = null;
 
@@ -108,21 +108,21 @@ class HIRLowerer {
         this.declarations[declaration] = lowered as *mut MIRLinkableDeclaration;
     }
 
-    fn LowerFunctionFirstPass(&mut this, function: *HIRFunction) {
+    fn LowerFunctionFirstPass(&mut this, function: *HIRFunctionDeclaration) {
         let declaration = function as *HIRDeclaration;
         let lowered = this.arena.New<MIRFunctionDeclaration>(declaration->name, declaration->_type, this.LowerLinkage(declaration->linkage));
         this.module->declarations.PushBack(lowered as *MIRLinkableDeclaration);
         this.declarations[declaration] = lowered as *mut MIRLinkableDeclaration;
 
         for i in 0..function->parameters.Size() {
-            let parameter: *HIRParameter = function->parameters[i];
+            let parameter: *HIRParameterDeclaration = function->parameters[i];
             let parameter_declaration = parameter as *HIRDeclaration;
             let lowered_parameter = this.arena.New<MIRParameter>(parameter_declaration->name, i as u32, parameter_declaration->_type);
             lowered->parameters.PushBack(lowered_parameter);
         }
     }
 
-    fn LowerFunctionSecondPass(&mut this, function: *HIRFunction) {
+    fn LowerFunctionSecondPass(&mut this, function: *HIRFunctionDeclaration) {
         if function->body == null { return; }
         let declaration = function as *HIRDeclaration;
         let lowered_declaration: *mut MIRDeclaration = this.declarations[declaration];
@@ -132,7 +132,7 @@ class HIRLowerer {
         this.LowerBlock(function->body);
     }
 
-    fn LowerBlock(&mut this, block: *HIRBlock) {
+    fn LowerBlock(&mut this, block: *HIRBlockStatement) {
         for statement in block->statements {
             this.LowerStatement(statement);
         }
@@ -140,34 +140,34 @@ class HIRLowerer {
 
     fn LowerStatement(&mut this, statement: *HIRStatement) {
         if statement->kind == HIRStatementKind::Block {
-            this.LowerBlock(statement as *HIRBlock);
+            this.LowerBlock(statement as *HIRBlockStatement);
         } else if statement->kind == HIRStatementKind::Variable {
-            this.LowerVariable(statement as *HIRVariable);
+            this.LowerVariable(statement as *HIRVariableStatement);
         } else if statement->kind == HIRStatementKind::Expression {
             this.LowerExpression((statement as *HIRExpressionStatement)->expression);
         } else if statement->kind == HIRStatementKind::If {
-            this.LowerIf(statement as *HIRIf);
+            this.LowerIf(statement as *HIRIfStatement);
         } else if statement->kind == HIRStatementKind::While {
-            this.LowerWhile(statement as *HIRWhile);
+            this.LowerWhile(statement as *HIRWhileStatement);
         } else if statement->kind == HIRStatementKind::Loop {
-            this.LowerLoop(statement as *HIRLoop);
+            this.LowerLoop(statement as *HIRLoopStatement);
         } else if statement->kind == HIRStatementKind::For {
-            this.LowerFor(statement as *HIRFor);
+            this.LowerFor(statement as *HIRForStatement);
         } else if statement->kind == HIRStatementKind::Break {
-            this.LowerBreak(statement as *HIRBreak);
+            this.LowerBreak(statement as *HIRBreakStatement);
         } else if statement->kind == HIRStatementKind::Continue {
-            this.LowerContinue(statement as *HIRContinue);
+            this.LowerContinue(statement as *HIRContinueStatement);
         }
     }
 
-    fn LowerBlock(&mut this, block: *HIRBlock) {
+    fn LowerBlock(&mut this, block: *HIRBlockStatement) {
         for statement in block->statements {
             if this.current_block->terminator != null { break; }
             this.LowerStatement(statement);
         }
     }
 
-    fn LowerVariable(&mut this, variable: *HIRVariable) {
+    fn LowerVariable(&mut this, variable: *HIRVariableStatement) {
         let alloca = this.arena.New<MIRAllocaInstruction>(variable->name, variable->_type);
         this.variables[variable] = (alloca as *mut MIRInstruction) as *mut MIRValue;
         this.current_block->instructions.PushBack(alloca);
@@ -180,7 +180,7 @@ class HIRLowerer {
         }
     }
 
-    fn LowerIf(&mut this, _if: *HIRIf) {
+    fn LowerIf(&mut this, _if: *HIRIfStatement) {
         let condition = this.LowerExpression(_if->condition);
         if condition == null { return; }
 
@@ -213,7 +213,7 @@ class HIRLowerer {
         this.current_block = merge_block;
     }
 
-    fn LowerWhile(&mut this, _while: *HIRWhile) {
+    fn LowerWhile(&mut this, _while: *HIRWhileStatement) {
         let condition_block = this.arena.New<MIRBlock>("while.cond".ToString());
         let body_block = this.arena.New<MIRBlock>("while.body".ToString());
         let end_block = this.arena.New<MIRBlock>("while.end".ToString());
@@ -241,7 +241,7 @@ class HIRLowerer {
         this.current_block = end_block;
     }
 
-    fn LowerLoop(&mut this, _loop: *HIRLoop) {
+    fn LowerLoop(&mut this, _loop: *HIRLoopStatement) {
         let body_block = this.arena.New<MIRBlock>("loop.body".ToString());
         let end_block = this.arena.New<MIRBlock>("loop.end".ToString());
         this.current_block->terminator = this.arena.New<MIRBranchInstruction>(body_block);
@@ -262,7 +262,7 @@ class HIRLowerer {
         this.current_block = end_block;
     }
 
-    fn LowerFor(&mut this, _for: *HIRFor) {
+    fn LowerFor(&mut this, _for: *HIRForStatement) {
         this.LowerVariable(_for->iterator);
         let alloca = this.arena.New<MIRAllocaInstruction>(_for->variable->name, _for->variable->_type);
         this.variables[_for->variable] = (alloca as *mut MIRInstruction) as *mut MIRValue;
@@ -309,13 +309,13 @@ class HIRLowerer {
         this.current_block = end_block;
     }
 
-    fn LowerBreak(&mut this, _break: *HIRBreak) {
+    fn LowerBreak(&mut this, _break: *HIRBreakStatement) {
         if !this.break_blocks.Empty() {
             this.current_block->terminator = this.arena.New<MIRBranchInstruction>(this.break_blocks.Back());
         }
     }
 
-    fn LowerContinue(&mut this, _continue: *HIRContinue) {
+    fn LowerContinue(&mut this, _continue: *HIRContinueStatement) {
         if !this.continue_blocks.Empty() {
             this.current_block->terminator = this.arena.New<MIRBranchInstruction>(this.continue_blocks.Back());
         }
@@ -330,14 +330,14 @@ class HIRLowerer {
     }
 
     fn LowerPlaceExpression(&mut this, expression: *HIRExpression) -> *MIRValue {
-        if expression->kind == HIRExpressionKind::VariableRef {
-            let variable = (expression as *HIRVariableRef)->variable;
+        if expression->kind == HIRExpressionKind::VariableReference {
+            let variable = (expression as *HIRVariableReference)->variable;
 
             if this.variables.Has(variable) {
                 return this.variables[variable];
             } return null;
-        } else if expression->kind == HIRExpressionKind::DeclarationRef {
-            let declaration = (expression as *HIRDeclarationRef)->declaration;
+        } else if expression->kind == HIRExpressionKind::DeclarationReference {
+            let declaration = (expression as *HIRDeclarationReference)->declaration;
 
             if this.declarations.Has(declaration) {
                 return this.arena.New<MIRGlobalRef>(this.declarations[declaration]);
@@ -345,14 +345,14 @@ class HIRLowerer {
         } else if expression->kind == HIRExpressionKind::Temporary {
             let alloca = this.arena.New<MIRAllocaInstruction>("temporary".ToString(), expression->_type);
             this.current_block->instructions.PushBack(alloca);
-            let initializer = this.LowerExpression((expression as *HIRTemporary)->initializer);
+            let initializer = this.LowerExpression((expression as *HIRTemporaryExpression)->initializer);
             if initializer == null { return null; }
             this.current_block->instructions.PushBack(this.arena.New<MIRStoreInstruction>(alloca as *MIRInstruction, initializer));
             return alloca as *MIRInstruction;
         } else if expression->kind == HIRExpressionKind::MemberAccess {
-            return this.LowerMemberAccess(expression as *HIRMemberAccess);
+            return this.LowerMemberAccess(expression as *HIRMemberAccessExpression);
         } else if expression->kind == HIRExpressionKind::Dereference {
-            return this.LowerExpression((expression as *HIRDereference)->operand);
+            return this.LowerExpression((expression as *HIRDereferenceExpression)->operand);
         } else {
             return null;
         }
@@ -386,27 +386,27 @@ class HIRLowerer {
         } else if expression->kind == HIRExpressionKind::NullLiteral {
             return this.arena.New<MIRConstantNull>(expression->_type) as *MIRConstant;
         } else if expression->kind == HIRExpressionKind::Intrinsic {
-            return this.LowerIntrinsic(expression as *HIRIntrinsic);
+            return this.LowerIntrinsic(expression as *HIRIntrinsicExpression);
         } else if expression->kind == HIRExpressionKind::Assignment {
-            return this.LowerAssignment(expression as *HIRAssignment);
+            return this.LowerAssignment(expression as *HIRAssignmentExpression);
         } else if expression->kind == HIRExpressionKind::Call {
-            return this.LowerCall(expression as *HIRCall);
+            return this.LowerCall(expression as *HIRCallExpression);
         } else if expression->kind == HIRExpressionKind::New {
-            return this.LowerNew(expression as *HIRNew);
+            return this.LowerNew(expression as *HIRNewExpression);
         } else if expression->kind == HIRExpressionKind::Delete {
-            return this.LowerDelete(expression as *HIRDelete);
+            return this.LowerDelete(expression as *HIRDeleteExpression);
         } else if expression->kind == HIRExpressionKind::Cast {
-            return this.LowerCast(expression as *HIRCast);
+            return this.LowerCast(expression as *HIRCastExpression);
         } else if expression->kind == HIRExpressionKind::IndexAccess {
-            return this.LowerIndexAccess(expression as *HIRIndexAccess);
+            return this.LowerIndexAccess(expression as *HIRIndexAccessExpression);
         } else if expression->kind == HIRExpressionKind::Unary {
-            return this.LowerUnary(expression as *HIRUnary);
+            return this.LowerUnary(expression as *HIRUnaryExpression);
         } else if expression->kind == HIRExpressionKind::Binary {
-            return this.LowerBinary(expression as *HIRBinary);
+            return this.LowerBinary(expression as *HIRBinaryExpression);
         } else if expression->kind == HIRExpressionKind::Ternary {
-            return this.LowerTernary(expression as *HIRTernary);
+            return this.LowerTernary(expression as *HIRTernaryExpression);
         } else if expression->kind == HIRExpressionKind::AddressOf {
-            return this.LowerPlaceExpression((expression as *HIRAddressOf)->operand);
+            return this.LowerPlaceExpression((expression as *HIRAddressOfExpression)->operand);
         } else {
             let place = this.LowerPlaceExpression(expression);
             if place == null { return null; }
@@ -417,12 +417,12 @@ class HIRLowerer {
         }
     }
 
-    fn LowerIntrinsic(&mut this, intrinsic: *HIRIntrinsic) -> *MIRValue {
+    fn LowerIntrinsic(&mut this, intrinsic: *HIRIntrinsicExpression) -> *MIRValue {
         let value = intrinsic->kind == HIRIntrinsicKind::SizeOf ? intrinsic->_type->Size() : intrinsic->_type->Alignment();
         return this.arena.New<MIRConstantInteger>(value as u64, (intrinsic as *HIRExpression)->_type) as *MIRConstant;
     }
 
-    fn LowerAssignment(&mut this, assignment: *HIRAssignment) -> *MIRValue {
+    fn LowerAssignment(&mut this, assignment: *HIRAssignmentExpression) -> *MIRValue {
         let place = this.LowerPlaceExpression(assignment->left);
         let value = this.LowerExpression(assignment->right);
         if place == null || value == null { return null; }
@@ -431,7 +431,7 @@ class HIRLowerer {
         return value;
     }
 
-    fn LowerCall(&mut this, call: *HIRCall) -> *MIRValue {
+    fn LowerCall(&mut this, call: *HIRCallExpression) -> *MIRValue {
         let callee = this.LowerExpression(call->function);
         if callee == null { return null; }
         let mut arguments = Vector<*MIRValue>();
@@ -470,7 +470,7 @@ class HIRLowerer {
         } return function;
     }
 
-    fn LowerNew(&mut this, _new: *HIRNew) -> *MIRValue {
+    fn LowerNew(&mut this, _new: *HIRNewExpression) -> *MIRValue {
         let mut parameters = Vector<*SemanticType>();
         let size_type = analyzer->type_manager.IntegerPointer(false);
         parameters.PushBack(size_type);
@@ -492,7 +492,7 @@ class HIRLowerer {
         return call as *MIRInstruction;
     }
 
-    fn LowerDelete(&mut this, _delete: *HIRDelete) -> *MIRValue {
+    fn LowerDelete(&mut this, _delete: *HIRDeleteExpression) -> *MIRValue {
         let pointer = this.LowerExpression(_delete->value);
         if pointer == null { return null; }
         let mut parameters = Vector<*SemanticType>();
@@ -505,7 +505,7 @@ class HIRLowerer {
         return null;
     }
 
-    fn LowerCast(&mut this, cast: *HIRCast) -> *MIRValue {
+    fn LowerCast(&mut this, cast: *HIRCastExpression) -> *MIRValue {
         let mut lowered: *MIRInstruction = null;
         let expression = cast as *HIRExpression;
         let target_type = expression->_type;
@@ -663,7 +663,7 @@ class HIRLowerer {
         } return value;
     }
 
-    fn LowerIndexAccess(&mut this, index_access: *HIRIndexAccess) -> *MIRValue {
+    fn LowerIndexAccess(&mut this, index_access: *HIRIndexAccessExpression) -> *MIRValue {
         let value = this.LowerExpression(index_access->value);
         let index = this.LowerExpression(index_access->index);
         if value == null || index == null { return null; }
@@ -672,7 +672,7 @@ class HIRLowerer {
         return gep as *MIRInstruction;
     }
 
-    fn LowerMemberAccess(&mut this, member_access: *HIRMemberAccess) -> *MIRValue {
+    fn LowerMemberAccess(&mut this, member_access: *HIRMemberAccessExpression) -> *MIRValue {
         let expression = member_access as *HIRExpression;
         let instance = this.LowerPlaceExpression(member_access->instance);
         if instance == null { return null; }
@@ -682,7 +682,7 @@ class HIRLowerer {
         return gep as *MIRInstruction;
     }
 
-    fn LowerUnary(&mut this, unary: *HIRUnary) -> *MIRValue {
+    fn LowerUnary(&mut this, unary: *HIRUnaryExpression) -> *MIRValue {
         let mut lowered: *MIRInstruction = null;
         let operand = this.LowerExpression(unary->operand);
         if operand == null { return null; }
@@ -701,7 +701,7 @@ class HIRLowerer {
         return lowered;
     }
 
-    fn LowerBinary(&mut this, binary: *HIRBinary) -> *MIRValue {
+    fn LowerBinary(&mut this, binary: *HIRBinaryExpression) -> *MIRValue {
         let mut lowered: *MIRInstruction = null;
         let expression = binary as *HIRExpression;
         let result_type = expression->_type;
@@ -834,7 +834,7 @@ class HIRLowerer {
         return lowered;
     }
 
-    fn LowerTernary(&mut this, ternary: *HIRTernary) -> *MIRValue {
+    fn LowerTernary(&mut this, ternary: *HIRTernaryExpression) -> *MIRValue {
         let expression = ternary as *HIRExpression;
         let condition = this.LowerExpression(ternary->condition);
         if condition == null { return null; }

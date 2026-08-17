@@ -17,9 +17,13 @@
 #[include "std/str", "std/vec", "src/Tokens.zir", "src/Types.zir" : *]
 
 enum HIRExpressionKind: u8 {
-    IntegerLiteral, FloatLiteral, BooleanLiteral, CharacterLiteral, StringLiteral, NullLiteral,
-    VariableRef, DeclarationRef, Call, Unary, Binary, Ternary, Assignment, Cast, IndexAccess, MemberAccess,
-    New, Delete, Construct, Destruct, StructureInitializer, Intrinsic, Deferred, Dereference, AddressOf, Temporary
+    BooleanLiteral, CharacterLiteral, IntegerLiteral, FloatLiteral, 
+    StringLiteral, ArrayLiteral, StructureLiteral, NullLiteral,
+    VariableReference, DeclarationReference,
+    Dereference, AddressOf, Assignment, Unary, Binary, Ternary,
+    Call, Cast, IndexAccess, MemberAccess,
+    New, Delete, Construct, Destruct,
+    Intrinsic, Temporary, Deferred
 }
 
 enum HIRExpressionCategory: u8 {
@@ -60,18 +64,18 @@ class HIRExpression {
             result += '"' + (this as *HIRStringLiteral)->value.Escape() + '"';
         } else if this.kind == HIRExpressionKind::NullLiteral {
             result += "null";
-        } else if this.kind == HIRExpressionKind::VariableRef {
-            result += '%' + (this as *HIRVariableRef)->variable->name;
-        } else if this.kind == HIRExpressionKind::DeclarationRef {
-            if (this as *HIRDeclarationRef)->declaration->kind == HIRDeclarationKind::Parameter {
-                result += '%' + (this as *HIRDeclarationRef)->declaration->name;
-            } else if (this as *HIRDeclarationRef)->declaration->kind == HIRDeclarationKind::Function {
-                result += "@\"" + (this as *HIRDeclarationRef)->declaration->name + '"';
+        } else if this.kind == HIRExpressionKind::VariableReference {
+            result += '%' + (this as *HIRVariableReference)->variable->name;
+        } else if this.kind == HIRExpressionKind::DeclarationReference {
+            if (this as *HIRDeclarationReference)->declaration->kind == HIRDeclarationKind::Parameter {
+                result += '%' + (this as *HIRDeclarationReference)->declaration->name;
+            } else if (this as *HIRDeclarationReference)->declaration->kind == HIRDeclarationKind::Function {
+                result += "@\"" + (this as *HIRDeclarationReference)->declaration->name + '"';
             } else {
-                result += '@' + (this as *HIRDeclarationRef)->declaration->name;
+                result += '@' + (this as *HIRDeclarationReference)->declaration->name;
             }
         } else if this.kind == HIRExpressionKind::Call {
-            let call = this as *HIRCall;
+            let call = this as *HIRCallExpression;
             result += "call " + call->function->ToString() + '(';
 
             for i in 0..call->arguments.Size() {
@@ -79,31 +83,31 @@ class HIRExpression {
                 result += call->arguments[i]->ToString();
             } result += ')';
         } else if this.kind == HIRExpressionKind::Unary {
-            let unary = this as *HIRUnary;
+            let unary = this as *HIRUnaryExpression;
             result += ToUnaryOperatorString(unary->_operator) + '(' + unary->operand->ToString() + ')';
         } else if this.kind == HIRExpressionKind::Binary {
-            let binary = this as *HIRBinary;
+            let binary = this as *HIRBinaryExpression;
             result += '(' + binary->left->ToString() + ' ' + ToBinaryOperatorString(binary->_operator) + ' ' + binary->right->ToString() + ')';
         } else if this.kind == HIRExpressionKind::Ternary {
-            let ternary = this as *HIRTernary;
+            let ternary = this as *HIRTernaryExpression;
             result += '(' + ternary->condition->ToString() + " ? " + ternary->then->ToString() + " : " + ternary->_else->ToString() + ')';
         } else if this.kind == HIRExpressionKind::Assignment {
-            let assignment = this as *HIRAssignment;
+            let assignment = this as *HIRAssignmentExpression;
             result += assignment->left->ToString() + " = " + assignment->right->ToString();
         } else if this.kind == HIRExpressionKind::Cast {
-            result += (this as *HIRCast)->value->ToString() + " as " + this._type->ToString();
+            result += (this as *HIRCastExpression)->value->ToString() + " as " + this._type->ToString();
         } else if this.kind == HIRExpressionKind::IndexAccess {
-            let access = this as *HIRIndexAccess;
+            let access = this as *HIRIndexAccessExpression;
             result += access->value->ToString() + '[' + access->index->ToString() + ']';
         } else if this.kind == HIRExpressionKind::MemberAccess {
-            let access = this as *HIRMemberAccess;
+            let access = this as *HIRMemberAccessExpression;
             result += "(member " + access->instance->ToString() + ", " + String::FromInteger(access->index as u64) + ')';
         } else if this.kind == HIRExpressionKind::Dereference {
-            result += "*(" + (this as *HIRDereference)->operand->ToString() + ')';
+            result += "*(" + (this as *HIRDereferenceExpression)->operand->ToString() + ')';
         } else if this.kind == HIRExpressionKind::AddressOf {
-            result += "&(" + (this as *HIRAddressOf)->operand->ToString() + ')';
+            result += "&(" + (this as *HIRAddressOfExpression)->operand->ToString() + ')';
         } else if this.kind == HIRExpressionKind::Temporary {
-            result += "(temporary " + (this as *HIRTemporary)->initializer->ToString() + ')';
+            result += "(temporary " + (this as *HIRTemporaryExpression)->initializer->ToString() + ')';
         } else {
             result += "<invalid expression>";
         } return result;
@@ -150,146 +154,163 @@ class HIRStringLiteral : HIRExpression {
     }
 }
 
+class HIRArrayLiteral : HIRExpression {
+    pub values: Vector<*HIRExpression>;
+
+    HIRArrayLiteral(&mut this, values: Vector<*HIRExpression>, _type: *SemanticType) : HIRExpression(HIRExpressionKind::ArrayLiteral, _type) {
+        this.values = values;
+    }
+}
+
+class HIRStructureLiteral : HIRExpression {
+    pub _structure: *HIRStructureDeclaration,
+    pub values: Vector<*HIRExpression>;
+
+    HIRStructureLiteral(&mut this, _structure: *HIRStructureDeclaration, values: Vector<*HIRExpression>) : HIRExpression(HIRExpressionKind::StructureLiteral, (_structure as *HIRDeclaration)->_type) {
+        (this._structure, this.values) = (_structure, values);
+    }
+}
+
 class HIRNullLiteral : HIRExpression {
     HIRNullLiteral(&mut this, _type: *SemanticType) : HIRExpression(HIRExpressionKind::NullLiteral, _type) {}
 }
 
-class HIRDereference : HIRExpression {
-    pub operand: *HIRExpression;
+class HIRVariableReference : HIRExpression {
+    pub variable: *HIRVariableStatement;
 
-    HIRDereference(&mut this, operand: *HIRExpression) : HIRExpression(HIRExpressionKind::Dereference, operand->_type->Pointee(), HIRExpressionCategory::Place, operand->_type->IsMutable()) {
-        this.operand = operand;
-    }
-}
-
-class HIRAddressOf : HIRExpression {
-    pub operand: *HIRExpression;
-
-    HIRAddressOf(&mut this, operand: *HIRExpression, mutable: bool) : HIRExpression(HIRExpressionKind::AddressOf, analyzer->type_manager.Reference(operand->_type, mutable)) {
-        this.operand = operand;
-    }
-}
-
-class HIRTemporary : HIRExpression {
-    pub initializer: *HIRExpression;
-
-    HIRTemporary(&mut this, initializer: *HIRExpression) : HIRExpression(HIRExpressionKind::Temporary, initializer->_type, HIRExpressionCategory::Place, true) {
-        this.initializer = initializer;
-    }
-}
-
-class HIRVariableRef : HIRExpression {
-    pub variable: *HIRVariable;
-
-    HIRVariableRef(&mut this, variable: *HIRVariable) : HIRExpression(HIRExpressionKind::VariableRef, variable->_type, HIRExpressionCategory::Place, variable->mutable) {
+    HIRVariableReference(&mut this, variable: *HIRVariableStatement) : HIRExpression(HIRExpressionKind::VariableReference, variable->_type, HIRExpressionCategory::Place, variable->mutable) {
         this.variable = variable;
     }
 }
 
-class HIRDeclarationRef : HIRExpression {
+class HIRDeclarationReference : HIRExpression {
     pub declaration: *HIRDeclaration;
 
-    HIRDeclarationRef(&mut this, declaration: *HIRDeclaration, mutable: bool) : HIRExpression(HIRExpressionKind::DeclarationRef, declaration->_type, HIRExpressionCategory::Place, mutable) {
+    HIRDeclarationReference(&mut this, declaration: *HIRDeclaration, mutable: bool) : HIRExpression(HIRExpressionKind::DeclarationReference, declaration->_type, HIRExpressionCategory::Place, mutable) {
         this.declaration = declaration;
     }
 }
 
-class HIRCall : HIRExpression {
-    pub function: *HIRExpression,
-    pub arguments: Vector<*HIRExpression>;
-
-    HIRCall(&mut this, function: *HIRExpression, arguments: &Vector<*HIRExpression>) : HIRExpression(HIRExpressionKind::Call, function->_type->Return()) {
-        (this.function, this.arguments) = (function, arguments);
-    }
-}
-
-class HIRUnary : HIRExpression {
-    pub _operator: TokenType,
+class HIRDereferenceExpression : HIRExpression {
     pub operand: *HIRExpression;
 
-    HIRUnary(&mut this, _operator: TokenType, operand: *HIRExpression) : HIRExpression(HIRExpressionKind::Unary, operand->_type) {
-        (this._operator, this.operand) = (_operator, operand);
+    HIRDereferenceExpression(&mut this, operand: *HIRExpression) : HIRExpression(HIRExpressionKind::Dereference, operand->_type->Pointee(), HIRExpressionCategory::Place, operand->_type->IsMutable()) {
+        this.operand = operand;
     }
 }
 
-class HIRBinary : HIRExpression {
-    pub _operator: TokenType,
-    pub left: *HIRExpression,
-    pub right: *HIRExpression;
+class HIRAddressOfExpression : HIRExpression {
+    pub operand: *HIRExpression;
 
-    HIRBinary(&mut this, _operator: TokenType, left: *HIRExpression, right: *HIRExpression, _type: *SemanticType) : HIRExpression(HIRExpressionKind::Binary, _type) {
-        (this._operator, this.left, this.right) = (_operator, left, right);
+    HIRAddressOfExpression(&mut this, operand: *HIRExpression, mutable: bool) : HIRExpression(HIRExpressionKind::AddressOf, analyzer->type_manager.Reference(operand->_type, mutable)) {
+        this.operand = operand;
     }
 }
 
-class HIRAssignment : HIRExpression {
+class HIRAssignmentExpression : HIRExpression {
     pub left: *HIRExpression,
     pub right: *HIRExpression;
 
-    HIRAssignment(&mut this, left: *HIRExpression, right: *HIRExpression) : HIRExpression(HIRExpressionKind::Assignment, analyzer->type_manager.Void()) {
+    HIRAssignmentExpression(&mut this, left: *HIRExpression, right: *HIRExpression) : HIRExpression(HIRExpressionKind::Assignment, analyzer->type_manager.Void()) {
         (this.left, this.right) = (left, right);
     }
 }
 
-class HIRTernary : HIRExpression {
+class HIRUnaryExpression : HIRExpression {
+    pub _operator: TokenType,
+    pub operand: *HIRExpression;
+
+    HIRUnaryExpression(&mut this, _operator: TokenType, operand: *HIRExpression) : HIRExpression(HIRExpressionKind::Unary, operand->_type) {
+        (this._operator, this.operand) = (_operator, operand);
+    }
+}
+
+class HIRBinaryExpression : HIRExpression {
+    pub _operator: TokenType,
+    pub left: *HIRExpression,
+    pub right: *HIRExpression;
+
+    HIRBinaryExpression(&mut this, _operator: TokenType, left: *HIRExpression, right: *HIRExpression, _type: *SemanticType) : HIRExpression(HIRExpressionKind::Binary, _type) {
+        (this._operator, this.left, this.right) = (_operator, left, right);
+    }
+}
+
+class HIRTernaryExpression : HIRExpression {
     pub condition: *HIRExpression,
     pub then: *HIRExpression,
     pub _else: *HIRExpression;
 
-    HIRTernary(&mut this, condition: *HIRExpression, then: *HIRExpression, _else: *HIRExpression, category: HIRExpressionCategory, mutable: bool) : HIRExpression(HIRExpressionKind::Ternary, then->_type, category, mutable) {
+    HIRTernaryExpression(&mut this, condition: *HIRExpression, then: *HIRExpression, _else: *HIRExpression, category: HIRExpressionCategory, mutable: bool) : HIRExpression(HIRExpressionKind::Ternary, then->_type, category, mutable) {
         (this.condition, this.then, this._else) = (condition, then, _else);
     }
 }
 
-class HIRCast : HIRExpression {
+class HIRCallExpression : HIRExpression {
+    pub function: *HIRExpression,
+    pub arguments: Vector<*HIRExpression>;
+
+    HIRCallExpression(&mut this, function: *HIRExpression, arguments: &Vector<*HIRExpression>) : HIRExpression(HIRExpressionKind::Call, function->_type->Return()) {
+        (this.function, this.arguments) = (function, arguments);
+    }
+}
+
+class HIRCastExpression : HIRExpression {
     pub value: *HIRExpression;
 
-    HIRCast(&mut this, value: *HIRExpression, _type: *SemanticType) : HIRExpression(HIRExpressionKind::Cast, _type) {
+    HIRCastExpression(&mut this, value: *HIRExpression, _type: *SemanticType) : HIRExpression(HIRExpressionKind::Cast, _type) {
         this.value = value;
     }
 }
 
-class HIRIndexAccess : HIRExpression {
+class HIRIndexAccessExpression : HIRExpression {
     pub value: *HIRExpression,
     pub index: *HIRExpression;
 
-    HIRIndexAccess(&mut this, value: *HIRExpression, index: *HIRExpression) : HIRExpression(HIRExpressionKind::IndexAccess, value->_type->AsReference()) {
+    HIRIndexAccessExpression(&mut this, value: *HIRExpression, index: *HIRExpression) : HIRExpression(HIRExpressionKind::IndexAccess, value->_type->AsReference()) {
         (this.value, this.index) = (value, index);
     }
 }
 
-class HIRMemberAccess : HIRExpression {
+class HIRMemberAccessExpression : HIRExpression {
     pub instance: *HIRExpression,
     pub index: usize;
 
-    HIRMemberAccess(&mut this, instance: *HIRExpression, _type: *SemanticType, index: usize) : HIRExpression(HIRExpressionKind::MemberAccess, _type, instance->category, instance->mutable) {
+    HIRMemberAccessExpression(&mut this, instance: *HIRExpression, _type: *SemanticType, index: usize) : HIRExpression(HIRExpressionKind::MemberAccess, _type, instance->category, instance->mutable) {
         (this.instance, this.index) = (instance, index);
     }
 }
 
-class HIRNew : HIRExpression {
+class HIRNewExpression : HIRExpression {
     pub _type: *SemanticType,
     pub size: *HIRExpression;
 
-    HIRNew(&mut this, _type: *SemanticType, size: *HIRExpression) : HIRExpression(HIRExpressionKind::New, analyzer->type_manager.Pointer(_type, true)) {
+    HIRNewExpression(&mut this, _type: *SemanticType, size: *HIRExpression) : HIRExpression(HIRExpressionKind::New, analyzer->type_manager.Pointer(_type, true)) {
         (this._type, this.size) = (_type, size);
     }
 }
 
-class HIRDelete : HIRExpression {
+class HIRDeleteExpression : HIRExpression {
     pub value: *HIRExpression;
 
-    HIRDelete(&mut this, value: *HIRExpression) : HIRExpression(HIRExpressionKind::Delete, analyzer->type_manager.Void()) {
+    HIRDeleteExpression(&mut this, value: *HIRExpression) : HIRExpression(HIRExpressionKind::Delete, analyzer->type_manager.Void()) {
         this.value = value;
     }
 }
 
-class HIRStructureInitializer : HIRExpression {
-    pub _structure: *HIRStructure,
-    pub values: Vector<*HIRExpression>;
+class HIRConstructorExpression : HIRExpression {
+    pub _type: *SemanticType,
+    pub call: *HIRCallExpression = null;
 
-    HIRStructureInitializer(&mut this, _structure: *HIRStructure, values: Vector<*HIRExpression>) : HIRExpression(HIRExpressionKind::StructureInitializer, (_structure as *HIRDeclaration)->_type) {
-        (this._structure, this.values) = (_structure, values);
+    HIRConstructorExpression(&mut this, _type: *SemanticType) : HIRExpression(HIRExpressionKind::Construct, _type, HIRExpressionCategory::Place, true) {
+        this._type = _type;
+    }
+}
+
+class HIRDestructorExpression : HIRExpression {
+    pub call: *HIRCallExpression;
+
+    HIRDestructorExpression(&mut this, call: *HIRCallExpression) : HIRExpression(HIRExpressionKind::Destruct, analyzer->type_manager.Void()) {
+        this.call = call;
     }
 }
 
@@ -297,29 +318,20 @@ enum HIRIntrinsicKind: u8 {
     SizeOf, AlignOf
 }
 
-class HIRIntrinsic : HIRExpression {
+class HIRIntrinsicExpression : HIRExpression {
     pub kind: HIRIntrinsicKind,
     pub _type: *SemanticType;
 
-    HIRIntrinsic(&mut this, kind: HIRIntrinsicKind, _type: *SemanticType) : HIRExpression(HIRExpressionKind::Intrinsic, analyzer->type_manager.IntegerPointer(false)) {
+    HIRIntrinsicExpression(&mut this, kind: HIRIntrinsicKind, _type: *SemanticType) : HIRExpression(HIRExpressionKind::Intrinsic, analyzer->type_manager.IntegerPointer(false)) {
         (this.kind, this._type) = (kind, _type);
     }
 }
 
-class HIRConstruct : HIRExpression {
-    pub _type: *SemanticType,
-    pub call: *HIRCall = null;
+class HIRTemporaryExpression : HIRExpression {
+    pub initializer: *HIRExpression;
 
-    HIRConstruct(&mut this, _type: *SemanticType) : HIRExpression(HIRExpressionKind::Construct, _type, HIRExpressionCategory::Place, true) {
-        this._type = _type;
-    }
-}
-
-class HIRDestruct : HIRExpression {
-    pub call: *HIRCall;
-
-    HIRDestruct(&mut this, call: *HIRCall) : HIRExpression(HIRExpressionKind::Destruct, analyzer->type_manager.Void()) {
-        this.call = call;
+    HIRTemporaryExpression(&mut this, initializer: *HIRExpression) : HIRExpression(HIRExpressionKind::Temporary, initializer->_type, HIRExpressionCategory::Place, true) {
+        this.initializer = initializer;
     }
 }
 
@@ -346,14 +358,14 @@ class HIRStatement {
         let mut result = String();
 
         if this.kind == HIRStatementKind::Block {
-            let block = this as *HIRBlock;
+            let block = this as *HIRBlockStatement;
             result += "{\n";
 
             for i in 0..block->statements.Size() {
                 result += block->statements[i]->ToString(indent + 1) + '\n';
             } result += (' ' * indent * 4) + '}';
         } else if this.kind == HIRStatementKind::Variable {
-            let variable = this as *HIRVariable;
+            let variable = this as *HIRVariableStatement;
             result += (' ' * indent * 4) + "let %" + variable->name + ": " + variable->_type->ToString();
 
             if variable->initializer != null {
@@ -362,26 +374,26 @@ class HIRStatement {
         } else if this.kind == HIRStatementKind::Expression {
             result += (' ' * indent * 4) + (this as *HIRExpressionStatement)->expression->ToString();
         } else if this.kind == HIRStatementKind::Return {
-            let return_statement = this as *HIRReturn;
+            let return_statement = this as *HIRReturnStatement;
             result += (' ' * indent * 4) + "return";
 
             if return_statement->expression != null {
                 result += ' ' + return_statement->expression->ToString();
             }
         } else if this.kind == HIRStatementKind::If {
-            let _if = this as *HIRIf;
+            let _if = this as *HIRIfStatement;
             result += (' ' * indent * 4) + "if " + _if->condition->ToString() + ' ' + (_if->then_body as *HIRStatement)->ToString(indent);
 
             if _if->else_body != null {
                 result += " else " + (_if->else_body as *HIRStatement)->ToString(indent);
             }
         } else if this.kind == HIRStatementKind::While {
-            let _while = this as *HIRWhile;
+            let _while = this as *HIRWhileStatement;
             result += (' ' * indent * 4) + "while " + _while->condition->ToString() + ' ' + (_while->while_body as *HIRStatement)->ToString(indent);
         } else if this.kind == HIRStatementKind::Loop {
-            result += (' ' * indent * 4) + "loop " + ((this as *HIRLoop)->body as *HIRStatement)->ToString(indent);
+            result += (' ' * indent * 4) + "loop " + ((this as *HIRLoopStatement)->body as *HIRStatement)->ToString(indent);
         } else if this.kind == HIRStatementKind::For {
-            let _for = this as *HIRFor;
+            let _for = this as *HIRForStatement;
             result += (' ' * indent * 4) + "for " + (_for->iterator as *HIRStatement)->ToString() + ", " + _for->condition->ToString() + ", " + _for->step->ToString() + ' ' + (_for->body as *HIRStatement)->ToString(indent);
         } else {
             result += (' ' * indent * 4) + "<invalid statement>";
@@ -389,19 +401,19 @@ class HIRStatement {
     }
 }
 
-class HIRBlock : HIRStatement {
+class HIRBlockStatement : HIRStatement {
     pub statements: Vector<*HIRStatement>;
 
-    HIRBlock(&mut this) : HIRStatement(HIRStatementKind::Block) {}
+    HIRBlockStatement(&mut this) : HIRStatement(HIRStatementKind::Block) {}
 }
 
-class HIRVariable : HIRStatement {
+class HIRVariableStatement : HIRStatement {
     pub name: String,
     pub _type: *SemanticType,
     pub initializer: *HIRExpression,
     pub mutable: bool;
 
-    HIRVariable(&mut this, name: String, _type: *SemanticType, initializer: *HIRExpression, mutable: bool) : HIRStatement(HIRStatementKind::Variable) {
+    HIRVariableStatement(&mut this, name: String, _type: *SemanticType, initializer: *HIRExpression, mutable: bool) : HIRStatement(HIRStatementKind::Variable) {
         (this.name, this._type, this.initializer, this.mutable) = (name, _type, initializer, mutable);
     }
 }
@@ -414,58 +426,58 @@ class HIRExpressionStatement : HIRStatement {
     }
 }
 
-class HIRReturn : HIRStatement {
+class HIRReturnStatement : HIRStatement {
     pub expression: *HIRExpression;
 
-    HIRReturn(&mut this, expression: *HIRExpression) : HIRStatement(HIRStatementKind::Return) {
+    HIRReturnStatement(&mut this, expression: *HIRExpression) : HIRStatement(HIRStatementKind::Return) {
         this.expression = expression;
     }
 }
 
-class HIRBreak : HIRStatement {
-    HIRBreak(&mut this) : HIRStatement(HIRStatementKind::Break) {}
+class HIRBreakStatement : HIRStatement {
+    HIRBreakStatement(&mut this) : HIRStatement(HIRStatementKind::Break) {}
 }
 
-class HIRContinue : HIRStatement {
-    HIRContinue(&mut this) : HIRStatement(HIRStatementKind::Continue) {}
+class HIRContinueStatement : HIRStatement {
+    HIRContinueStatement(&mut this) : HIRStatement(HIRStatementKind::Continue) {}
 }
 
-class HIRIf : HIRStatement {
+class HIRIfStatement : HIRStatement {
     pub condition: *HIRExpression,
-    pub then_body: *HIRBlock,
-    pub else_body: *HIRBlock;
+    pub then_body: *HIRBlockStatement,
+    pub else_body: *HIRBlockStatement;
 
-    HIRIf(&mut this, condition: *HIRExpression, then_body: *HIRBlock, else_body: *HIRBlock) : HIRStatement(HIRStatementKind::If) {
+    HIRIfStatement(&mut this, condition: *HIRExpression, then_body: *HIRBlockStatement, else_body: *HIRBlockStatement) : HIRStatement(HIRStatementKind::If) {
         (this.condition, this.then_body, this.else_body) = (condition, then_body, else_body);
     }
 }
 
-class HIRWhile : HIRStatement {
+class HIRWhileStatement : HIRStatement {
     pub condition: *HIRExpression,
-    pub while_body: *HIRBlock,
-    pub else_body: *HIRBlock;
+    pub while_body: *HIRBlockStatement,
+    pub else_body: *HIRBlockStatement;
 
-    HIRWhile(&mut this, condition: *HIRExpression, while_body: *HIRBlock, else_body: *HIRBlock) : HIRStatement(HIRStatementKind::While) {
+    HIRWhileStatement(&mut this, condition: *HIRExpression, while_body: *HIRBlockStatement, else_body: *HIRBlockStatement) : HIRStatement(HIRStatementKind::While) {
         (this.condition, this.while_body, this.else_body) = (condition, while_body, else_body);
     }
 }
 
-class HIRLoop : HIRStatement {
-    pub body: *HIRBlock;
+class HIRLoopStatement : HIRStatement {
+    pub body: *HIRBlockStatement;
 
-    HIRLoop(&mut this, body: *HIRBlock) : HIRStatement(HIRStatementKind::Loop) {
+    HIRLoopStatement(&mut this, body: *HIRBlockStatement) : HIRStatement(HIRStatementKind::Loop) {
         this.body = body;
     }
 }
 
-class HIRFor : HIRStatement {
-    pub iterator: *HIRVariable,
-    pub variable: *HIRVariable,
+class HIRForStatement : HIRStatement {
+    pub iterator: *HIRVariableStatement,
+    pub variable: *HIRVariableStatement,
     pub condition: *HIRExpression,
     pub step: *HIRExpression,
-    pub body: *HIRBlock;
+    pub body: *HIRBlockStatement;
 
-    HIRFor(&mut this, iterator: *HIRVariable, variable: *HIRVariable, condition: *HIRExpression, step: *HIRExpression, body: *HIRBlock) : HIRStatement(HIRStatementKind::For) {
+    HIRForStatement(&mut this, iterator: *HIRVariableStatement, variable: *HIRVariableStatement, condition: *HIRExpression, step: *HIRExpression, body: *HIRBlockStatement) : HIRStatement(HIRStatementKind::For) {
         (this.iterator, this.variable, this.condition, this.step, this.body) = (iterator, variable, condition, step, body);
     }
 }
@@ -505,12 +517,12 @@ class HIRDeclaration {
         let mut result = String();
 
         if this->kind == HIRDeclarationKind::Function {
-            let function = this as *HIRFunction;
+            let function = this as *HIRFunctionDeclaration;
             result += "fn @\"" + this.name + "\"(";
 
             for i in 0..function->parameters.Size() {
                 if i != 0 { result += ", "; }
-                let parameter: *HIRParameter = function->parameters[i];
+                let parameter: *HIRParameterDeclaration = function->parameters[i];
                 let declaration = parameter as *HIRDeclaration;
                 result += '%' + declaration->name + ": " + declaration->_type->ToString();
             } result += ')';
@@ -523,10 +535,10 @@ class HIRDeclaration {
                 result += ' ' + (function->body as *HIRStatement)->ToString();
             }
         } else if this->kind == HIRDeclarationKind::Constant {
-            let constant = this as *HIRConstant;
+            let constant = this as *HIRConstantDeclaration;
             result += "const @" + this.name + ": " + this._type->ToString() + " = " + constant->initializer->ToString();
         } else if this->kind == HIRDeclarationKind::Static {
-            let _static = this as *HIRStatic;
+            let _static = this as *HIRStaticDeclaration;
             result += "static @" + this.name + ": " + this._type->ToString();
 
             if _static->initializer != null {
@@ -538,64 +550,64 @@ class HIRDeclaration {
     }
 }
 
-class HIRParameter : HIRDeclaration {
+class HIRParameterDeclaration : HIRDeclaration {
     pub mutable: bool;
 
-    HIRParameter(&mut this, name: String, _type: *SemanticType, mutable: bool) : HIRDeclaration(HIRDeclarationKind::Parameter, name, _type) {
+    HIRParameterDeclaration(&mut this, name: String, _type: *SemanticType, mutable: bool) : HIRDeclaration(HIRDeclarationKind::Parameter, name, _type) {
         this.mutable = mutable;
     }
 }
 
-class HIRFunction : HIRDeclaration {
+class HIRFunctionDeclaration : HIRDeclaration {
     pub no_mangle: bool = false,
-    pub parameters: Vector<*HIRParameter>,
-    pub body: *HIRBlock = null;
+    pub parameters: Vector<*HIRParameterDeclaration>,
+    pub body: *HIRBlockStatement = null;
 
-    HIRFunction(&mut this, name: String, _type: *SemanticType, no_mangle: bool, abi: HIRDeclarationABI) : HIRDeclaration(HIRDeclarationKind::Function, abi, name, _type) {
+    HIRFunctionDeclaration(&mut this, name: String, _type: *SemanticType, no_mangle: bool, abi: HIRDeclarationABI) : HIRDeclaration(HIRDeclarationKind::Function, abi, name, _type) {
         this.no_mangle = no_mangle;
     }
 }
 
-class HIRClass : HIRDeclaration {
+class HIRClassDeclaration : HIRDeclaration {
     pub fields: Vector<*SemanticType>,
-    pub constructors: Vector<*HIRFunction>,
-    pub destructor: *HIRFunction = null,
-    pub methods: Vector<*HIRFunction>;
+    pub constructors: Vector<*HIRFunctionDeclaration>,
+    pub destructor: *HIRFunctionDeclaration = null,
+    pub methods: Vector<*HIRFunctionDeclaration>;
 
-    HIRClass(&mut this, name: String, _type: *SemanticType) : HIRDeclaration(HIRDeclarationKind::Class, name, _type) {}
+    HIRClassDeclaration(&mut this, name: String, _type: *SemanticType) : HIRDeclaration(HIRDeclarationKind::Class, name, _type) {}
 }
 
-class HIRStructure : HIRDeclaration {
+class HIRStructureDeclaration : HIRDeclaration {
     pub fields: Vector<*SemanticType>,
-    pub methods: Vector<*HIRFunction>;
+    pub methods: Vector<*HIRFunctionDeclaration>;
 
-    HIRStructure(&mut this, name: String, _type: *SemanticType) : HIRDeclaration(HIRDeclarationKind::Structure, name, _type) {}
+    HIRStructureDeclaration(&mut this, name: String, _type: *SemanticType) : HIRDeclaration(HIRDeclarationKind::Structure, name, _type) {}
 }
 
-class HIREnumeration : HIRDeclaration {
-    HIREnumeration(&mut this, name: String, _type: *SemanticType) : HIRDeclaration(HIRDeclarationKind::Enumeration, name, _type) {}
+class HIREnumerationDeclaration : HIRDeclaration {
+    HIREnumerationDeclaration(&mut this, name: String, _type: *SemanticType) : HIRDeclaration(HIRDeclarationKind::Enumeration, name, _type) {}
 }
 
-class HIRVariant : HIRDeclaration {
-    pub methods: Vector<*HIRFunction>;
+class HIRVariantDeclaration : HIRDeclaration {
+    pub methods: Vector<*HIRFunctionDeclaration>;
 
-    HIRVariant(&mut this, name: String, _type: *SemanticType) : HIRDeclaration(HIRDeclarationKind::Variant, name, _type) {}
+    HIRVariantDeclaration(&mut this, name: String, _type: *SemanticType) : HIRDeclaration(HIRDeclarationKind::Variant, name, _type) {}
 }
 
-class HIRConstant : HIRDeclaration {
+class HIRConstantDeclaration : HIRDeclaration {
     pub initializer: *HIRExpression;
 
-    HIRConstant(&mut this, name: String, _type: *SemanticType, initializer: *HIRExpression) : HIRDeclaration(HIRDeclarationKind::Constant, name, _type) {
+    HIRConstantDeclaration(&mut this, name: String, _type: *SemanticType, initializer: *HIRExpression) : HIRDeclaration(HIRDeclarationKind::Constant, name, _type) {
         this.initializer = initializer;
     }
 }
 
-class HIRStatic : HIRDeclaration {
+class HIRStaticDeclaration : HIRDeclaration {
     pub initializer: *HIRExpression,
     pub alignment: *HIRExpression,
     pub mutable: bool;
 
-    HIRStatic(&mut this, name: String, _type: *SemanticType, initializer: *HIRExpression, alignment: *HIRExpression, mutable: bool, linkage: HIRDeclarationLinkage) : HIRDeclaration(HIRDeclarationKind::Static, linkage, name, _type) {
+    HIRStaticDeclaration(&mut this, name: String, _type: *SemanticType, initializer: *HIRExpression, alignment: *HIRExpression, mutable: bool, linkage: HIRDeclarationLinkage) : HIRDeclaration(HIRDeclarationKind::Static, linkage, name, _type) {
         (this.initializer, this.alignment, this.mutable) = (initializer, alignment, mutable);
     }
 }

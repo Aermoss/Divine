@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#[include "std/str", "std/vec", "src/Scope.zir", "src/Symbol.zir", "src/Types.zir", "src/Nodes.zir", "src/HIR.zir" : *]
+#[include "std/str", "std/vec", "src/Scope.zir", "src/Symbol.zir", "src/Types.zir", "src/AST.zir", "src/HIR.zir" : *]
 
 class ScopeManager {
     pub scopes: Vector<*Scope>,
@@ -82,19 +82,19 @@ class ScopeManager {
         } return false;
     }
 
-    pub fn Set(&mut this, name: &String, _type: *SemanticType, node: *Node) -> *Symbol {
+    pub fn Set(&mut this, name: &String, _type: *SemanticType, node: *ASTNode) -> *Symbol {
         return this.current->Set(name, _type, node);
     }
 
-    pub fn Set(&mut this, name: &String, statement: *HIRStatement, node: *Node) -> *Symbol {
+    pub fn Set(&mut this, name: &String, statement: *HIRStatement, node: *ASTNode) -> *Symbol {
         return this.current->Set(name, statement, node);
     }
 
-    pub fn Set(&mut this, name: &String, declaration: *HIRDeclaration, overload: bool, node: *Node) -> *Symbol {
+    pub fn Set(&mut this, name: &String, declaration: *HIRDeclaration, overload: bool, node: *ASTNode) -> *Symbol {
         return this.current->Set(name, declaration, overload, node);
     }
 
-    pub fn Set(&mut this, name: &String, generic: *mut Generic, node: *Node) -> *Symbol {
+    pub fn Set(&mut this, name: &String, generic: *mut Generic, node: *ASTNode) -> *Symbol {
         return this.current->Set(name, generic, node);
     }
 
@@ -163,7 +163,7 @@ class ScopeManager {
         } return result.Reverse();
     }
 
-    pub fn ResolveChild(&this, scope: *Scope, identifier: *IdentifierNode, test: bool) -> *Scope {
+    pub fn ResolveChild(&this, scope: *Scope, identifier: *ASTIdentifier, test: bool) -> *Scope {
         for child in scope->children {
             if child->name == identifier->name {
                 return child;
@@ -175,7 +175,7 @@ class ScopeManager {
         } return null;
     }
 
-    pub fn ResolveChild(&this, scope: *Scope, primitive_type: *PrimitiveTypeNode, test: bool) -> *Scope {
+    pub fn ResolveChild(&this, scope: *Scope, primitive_type: *ASTPrimitiveType, test: bool) -> *Scope {
         for child in scope->children {
             if child->name == primitive_type->name {
                 return child;
@@ -187,7 +187,7 @@ class ScopeManager {
         } return null;
     }
 
-    pub fn ResolveScopeHalf(&this, resolution: *ScopeResolutionNode, test: bool) -> *Scope {
+    pub fn ResolveScopeHalf(&this, resolution: *ASTScopeResolution, test: bool) -> *Scope {
         let mut scope: *Scope = this.current;
 
         while !scope->global {
@@ -195,22 +195,22 @@ class ScopeManager {
         }
 
         if resolution->scope != null {
-            if resolution->scope->_type == NodeType::SCOPE_RESOLUTION {
-                scope = this.ResolveScopeFull(resolution->scope as *ScopeResolutionNode, test);
-            } else if resolution->scope->_type == NodeType::IDENTIFIER {
-                scope = this.ResolveChild(scope, resolution->scope as *IdentifierNode, test);
-            } else if resolution->scope->_type == NodeType::PRIMITIVE_TYPE {
-                scope = this.ResolveChild(scope, resolution->scope as *PrimitiveTypeNode, test);
-            } else if resolution->scope->_type == NodeType::TYPE_APPLICATION {
-                let type_application = resolution->scope as *TypeApplicationNode;
+            if resolution->scope->kind == ASTNodeKind::SCOPE_RESOLUTION {
+                scope = this.ResolveScopeFull(resolution->scope as *ASTScopeResolution, test);
+            } else if resolution->scope->kind == ASTNodeKind::IDENTIFIER {
+                scope = this.ResolveChild(scope, resolution->scope as *ASTIdentifier, test);
+            } else if resolution->scope->kind == ASTNodeKind::PRIMITIVE_TYPE {
+                scope = this.ResolveChild(scope, resolution->scope as *ASTPrimitiveType, test);
+            } else if resolution->scope->kind == ASTNodeKind::TYPE_APPLICATION {
+                let type_application = resolution->scope as *ASTTypeApplication;
                 let mut types = Vector<*SemanticType>();
 
                 for _type in type_application->types {
                     types.PushBack(analyzer->ResolveType(_type));
                 }
 
-                if type_application->expression->_type == NodeType::PRIMITIVE_TYPE {
-                    let primitive_type = type_application->expression as *PrimitiveTypeNode;
+                if type_application->expression->kind == ASTNodeKind::PRIMITIVE_TYPE {
+                    let primitive_type = type_application->expression as *ASTPrimitiveType;
                     let symbol = this.Resolve(primitive_type->name, primitive_type, test);
 
                     if symbol != null && symbol->kind == SymbolKind::Generic {
@@ -226,12 +226,12 @@ class ScopeManager {
                     }
                 } else {
                     if !test {
-                        Logger::Log("Unknown resolution '" + resolution->scope->_type.ToString() + "'.", resolution->scope, LogSeverity::Error);
+                        Logger::Log("Unknown resolution '" + resolution->scope->kind.ToString() + "'.", resolution->scope, LogSeverity::Error);
                     } return null;
                 }
             } else {
                 if !test {
-                    Logger::Log("Unknown resolution '" + resolution->scope->_type.ToString() + "'.", resolution->scope, LogSeverity::Error);
+                    Logger::Log("Unknown resolution '" + resolution->scope->kind.ToString() + "'.", resolution->scope, LogSeverity::Error);
                 } return null;
             }
         } else {
@@ -241,11 +241,11 @@ class ScopeManager {
         } return scope;
     }
 
-    pub fn ResolveScopeFull(&this, resolution: *ScopeResolutionNode, test: bool) -> *Scope {
+    pub fn ResolveScopeFull(&this, resolution: *ASTScopeResolution, test: bool) -> *Scope {
         return this.ResolveChild(this.ResolveScopeHalf(resolution, test), resolution->identifier, test);
     }
 
-    pub fn Resolve(&this, resolution: *ScopeResolutionNode, test: bool) -> *Symbol {
+    pub fn Resolve(&this, resolution: *ASTScopeResolution, test: bool) -> *Symbol {
         let scope = this.ResolveScopeHalf(resolution, test);
 
         if scope == null {
@@ -261,7 +261,7 @@ class ScopeManager {
         }
     }
 
-    pub fn Resolve(&this, identifier: *IdentifierNode, test: bool) -> *Symbol {
+    pub fn Resolve(&this, identifier: *ASTIdentifier, test: bool) -> *Symbol {
         if this.Has(identifier->name) {
             return this.Get(identifier->name);
         } else {
@@ -271,7 +271,7 @@ class ScopeManager {
         }
     }
 
-    pub fn Resolve(&this, primitive_type: *PrimitiveTypeNode, test: bool) -> *Symbol {
+    pub fn Resolve(&this, primitive_type: *ASTPrimitiveType, test: bool) -> *Symbol {
         if this.Has(primitive_type->name) {
             return this.Get(primitive_type->name);
         } else {
@@ -281,21 +281,21 @@ class ScopeManager {
         }
     }
 
-    pub fn Resolve(&this, node: *Node, test: bool) -> *Symbol {
-        if node->_type == NodeType::SCOPE_RESOLUTION {
-            return this.Resolve(node as *ScopeResolutionNode, test);
-        } else if node->_type == NodeType::IDENTIFIER {
-            return this.Resolve(node as *IdentifierNode, test);
-        } else if node->_type == NodeType::PRIMITIVE_TYPE {
-            return this.Resolve(node as *PrimitiveTypeNode, test);
+    pub fn Resolve(&this, node: *ASTNode, test: bool) -> *Symbol {
+        if node->kind == ASTNodeKind::SCOPE_RESOLUTION {
+            return this.Resolve(node as *ASTScopeResolution, test);
+        } else if node->kind == ASTNodeKind::IDENTIFIER {
+            return this.Resolve(node as *ASTIdentifier, test);
+        } else if node->kind == ASTNodeKind::PRIMITIVE_TYPE {
+            return this.Resolve(node as *ASTPrimitiveType, test);
         } else {
             if !test {
-                Logger::Log("Unknown resolution '" + node->_type.ToString() + "'.", node, LogSeverity::Error);
+                Logger::Log("Unknown resolution '" + node->kind.ToString() + "'.", node, LogSeverity::Error);
             } return null;
         }
     }
 
-    pub fn Resolve(&this, name: &String, node: *Node, test: bool) -> *Symbol {
+    pub fn Resolve(&this, name: &String, node: *ASTNode, test: bool) -> *Symbol {
         if this.Has(name) {
             return this.Get(name);
         } else {
@@ -305,7 +305,7 @@ class ScopeManager {
         }
     }
 
-    pub fn ResolveCandidates(&this, resolution: *ScopeResolutionNode, test: bool) -> Vector<*HIRFunctionDeclaration> {
+    pub fn ResolveCandidates(&this, resolution: *ASTScopeResolution, test: bool) -> Vector<*HIRFunctionDeclaration> {
         let result = Vector<*HIRFunctionDeclaration>();
         let scope = this.ResolveScopeHalf(resolution, test);
 
@@ -320,7 +320,7 @@ class ScopeManager {
         } return result;
     }
 
-    pub fn ResolveCandidates(&this, identifier: *IdentifierNode, test: bool) -> Vector<*HIRFunctionDeclaration> {
+    pub fn ResolveCandidates(&this, identifier: *ASTIdentifier, test: bool) -> Vector<*HIRFunctionDeclaration> {
         let result = Vector<*HIRFunctionDeclaration>();
 
         if this.Has(identifier->name, SymbolKind::Declaration) {
@@ -334,19 +334,19 @@ class ScopeManager {
         } return result;
     }
 
-    pub fn ResolveCandidates(&this, node: *Node, test: bool) -> Vector<*HIRFunctionDeclaration> {
-        if node->_type == NodeType::SCOPE_RESOLUTION {
-            return this.ResolveCandidates(node as *ScopeResolutionNode, test);
-        } else if node->_type == NodeType::IDENTIFIER {
-            return this.ResolveCandidates(node as *IdentifierNode, test);
+    pub fn ResolveCandidates(&this, node: *ASTNode, test: bool) -> Vector<*HIRFunctionDeclaration> {
+        if node->kind == ASTNodeKind::SCOPE_RESOLUTION {
+            return this.ResolveCandidates(node as *ASTScopeResolution, test);
+        } else if node->kind == ASTNodeKind::IDENTIFIER {
+            return this.ResolveCandidates(node as *ASTIdentifier, test);
         } else {
             if !test {
-                Logger::Log("Unknown resolution '" + node->_type.ToString() + "'.", node, LogSeverity::Error);
+                Logger::Log("Unknown resolution '" + node->kind.ToString() + "'.", node, LogSeverity::Error);
             } return Vector<*HIRFunctionDeclaration>();
         }
     }
 
-    pub fn ResolveCandidates(&this, name: &String, node: *Node, test: bool) -> Vector<*HIRFunctionDeclaration> {
+    pub fn ResolveCandidates(&this, name: &String, node: *ASTNode, test: bool) -> Vector<*HIRFunctionDeclaration> {
         let result = Vector<*HIRFunctionDeclaration>();
 
         if this.Has(name, SymbolKind::Declaration) {

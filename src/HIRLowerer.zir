@@ -18,6 +18,7 @@
 
 class HIRLowerer {
     arena: Arena,
+    namespaces: Vector<String>,
     strings: Map<String, *MIRStaticDeclaration>,
     variables: Map<*HIRVariableStatement, *mut MIRValue>,
     declarations: Map<*HIRDeclaration, *mut MIRDeclaration>,
@@ -54,24 +55,42 @@ class HIRLowerer {
         }
     }
 
-    fn LowerDeclarationFirstPass(&mut this, declaration: *HIRDeclaration) {}
+    fn LowerDeclarationFirstPass(&mut this, declaration: *HIRDeclaration) {
+        if declaration->kind == HIRDeclarationKind::Class {
+            this.LowerClassDeclarationFirstPass(declaration as *HIRClassDeclaration);
+        } else if declaration->kind == HIRDeclarationKind::Structure {
+            this.LowerStructureDeclarationFirstPass(declaration as *HIRStructureDeclaration);
+        }
+    }
 
     fn LowerDeclarationSecondPass(&mut this, declaration: *HIRDeclaration) {
         if declaration->kind == HIRDeclarationKind::Constant {
             this.LowerConstant(declaration as *HIRConstantDeclaration);
+        } else if declaration->kind == HIRDeclarationKind::Class {
+            this.LowerClassDeclarationSecondPass(declaration as *HIRClassDeclaration);
+        } else if declaration->kind == HIRDeclarationKind::Structure {
+            this.LowerStructureDeclarationSecondPass(declaration as *HIRStructureDeclaration);
         }
     }
 
     fn LowerDeclarationThirdPass(&mut this, declaration: *HIRDeclaration) {
         if declaration->kind == HIRDeclarationKind::Static {
             this.LowerStaticDeclaration(declaration as *HIRStaticDeclaration);
+        } else if declaration->kind == HIRDeclarationKind::Class {
+            this.LowerClassDeclarationThirdPass(declaration as *HIRClassDeclaration);
+        } else if declaration->kind == HIRDeclarationKind::Structure {
+            this.LowerStructureDeclarationThirdPass(declaration as *HIRStructureDeclaration);
         } else if declaration->kind == HIRDeclarationKind::Function {
             this.LowerFunctionFirstPass(declaration as *HIRFunctionDeclaration);
         }
     }
 
     fn LowerDeclarationFourthPass(&mut this, declaration: *HIRDeclaration) {
-        if declaration->kind == HIRDeclarationKind::Function {
+        if declaration->kind == HIRDeclarationKind::Structure {
+            this.LowerStructureFourthPass(declaration as *HIRStructureDeclaration);
+        } else if declaration->kind == HIRDeclarationKind::Class {
+            this.LowerClassFourthPass(declaration as *HIRClassDeclaration);
+        } else if declaration->kind == HIRDeclarationKind::Function {
             this.LowerFunctionSecondPass(declaration as *HIRFunctionDeclaration);
         }
     }
@@ -110,7 +129,13 @@ class HIRLowerer {
 
     fn LowerFunctionFirstPass(&mut this, function: *HIRFunctionDeclaration) {
         let declaration = function as *HIRDeclaration;
-        let lowered = this.arena.New<MIRFunctionDeclaration>(declaration->name, declaration->_type, this.LowerLinkage(declaration->linkage));
+        let mut name = declaration->name;
+
+        if declaration->abi == HIRDeclarationABI::Native && !function->no_mangle {
+            name = Mangler::MangleFunction(name, declaration->_type, Vector<*SemanticType>(), this.namespaces);
+        }
+
+        let lowered = this.arena.New<MIRFunctionDeclaration>(name, declaration->_type, this.LowerLinkage(declaration->linkage));
         this.module->declarations.PushBack(lowered as *MIRLinkableDeclaration);
         this.declarations[declaration] = lowered as *mut MIRLinkableDeclaration;
 
@@ -132,15 +157,79 @@ class HIRLowerer {
         this.LowerBlockStatement(function->body);
     }
 
-    fn LowerBlockStatement(&mut this, block: *HIRBlockStatement) {
-        for statement in block->statements {
-            this.LowerStatement(statement);
+    fn LowerClassDeclarationFirstPass(&mut this, _class: *HIRClassDeclaration) {
+        let declaration = _class as *HIRDeclaration;
+        let lowered = this.arena.New<MIRTypeDeclaration>(declaration->name, declaration->_type);
+        this.module->declarations.PushBack(lowered);
+        this.declarations[declaration] = lowered;
+        lowered->types = _class->fields;
+    }
+
+    fn LowerClassDeclarationSecondPass(&mut this, _class: *HIRClassDeclaration) {}
+
+    fn LowerClassDeclarationThirdPass(&mut this, _class: *HIRClassDeclaration) {
+        this.namespaces.PushBack((_class as *HIRDeclaration)->name);
+
+        for constructor in _class->constructors {
+            this.LowerFunctionFirstPass(constructor);
+        }
+
+        if _class->destructor != null {
+            this.LowerFunctionFirstPass(_class->destructor);
+        }
+
+        for method in _class->methods {
+            this.LowerFunctionFirstPass(method);
+        }
+
+        this.namespaces.PopBack();
+    }
+
+    fn LowerClassFourthPass(&mut this, _class: *HIRClassDeclaration) {
+        for constructor in _class->constructors {
+            this.LowerFunctionSecondPass(constructor);
+        }
+
+        if _class->destructor != null {
+            this.LowerFunctionSecondPass(_class->destructor);
+        }
+
+        for method in _class->methods {
+            this.LowerFunctionSecondPass(method);
+        }
+    }
+
+    fn LowerStructureDeclarationFirstPass(&mut this, structure: *HIRStructureDeclaration) {
+        let declaration = structure as *HIRDeclaration;
+        let lowered = this.arena.New<MIRTypeDeclaration>(declaration->name, declaration->_type);
+        this.module->declarations.PushBack(lowered);
+        this.declarations[declaration] = lowered;
+        lowered->types = structure->fields;
+    }
+
+    fn LowerStructureDeclarationSecondPass(&mut this, structure: *HIRStructureDeclaration) {}
+
+    fn LowerStructureDeclarationThirdPass(&mut this, structure: *HIRStructureDeclaration) {
+        this.namespaces.PushBack((structure as *HIRDeclaration)->name);
+
+        for method in structure->methods {
+            this.LowerFunctionFirstPass(method);
+        }
+
+        this.namespaces.PopBack();
+    }
+
+    fn LowerStructureFourthPass(&mut this, structure: *HIRStructureDeclaration) {
+        for method in structure->methods {
+            this.LowerFunctionSecondPass(method);
         }
     }
 
     fn LowerStatement(&mut this, statement: *HIRStatement) {
         if statement->kind == HIRStatementKind::Block {
             this.LowerBlockStatement(statement as *HIRBlockStatement);
+        } else if statement->kind == HIRStatementKind::Return {
+            this.LowerReturnStatement(statement as *HIRReturnStatement);
         } else if statement->kind == HIRStatementKind::Variable {
             this.LowerVariableStatement(statement as *HIRVariableStatement);
         } else if statement->kind == HIRStatementKind::Expression {
@@ -165,6 +254,17 @@ class HIRLowerer {
             if this.current_block->terminator != null { break; }
             this.LowerStatement(statement);
         }
+    }
+
+    fn LowerReturnStatement(&mut this, _return: *HIRReturnStatement) {
+        let mut value: *MIRValue = null;
+
+        if _return->expression != null {
+            value = this.LowerExpression(_return->expression);
+            if value == null { return; }
+        }
+
+        this.current_block->terminator = this.arena.New<MIRReturnInstruction>(value);
     }
 
     fn LowerVariableStatement(&mut this, variable: *HIRVariableStatement) {

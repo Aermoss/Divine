@@ -17,52 +17,16 @@
 #[include "std/str", "std/vec", "std/map", "std/pair", "src/Tokens.zir" : *]
 
 enum ASTNodeKind: i32 {
-    ROOT, ASSEMBLY, UNSAFE,
-
-    Declaration, VARIANT,
-
-    Statement, CASE, DEFAULT,
-
-    UNARY, BINARY, TERNARY, ASSIGNMENT, CALL, INTRINSIC, CONSTRUCTOR, CAST, NEW, DELETE,
-    LITERAL, IDENTIFIER, SCOPE_RESOLUTION, PACK_SPLAT, MEMBER_ACCESS, INDEX_ACCESS,
-    RANGE, AWAIT, TUPLE, INITIALIZER_LIST, STRUCTURE_INITIALIZER, OR_PATTERN, TYPE_APPLICATION,
-
-    Type
+    Path, Declaration, Statement, Expression, Type
 }
 
 fn ToString(kind: ASTNodeKind) -> String {
-    if kind == ASTNodeKind::ROOT { return "ROOT".ToString(); }
-    else if kind == ASTNodeKind::ASSEMBLY { return "ASSEMBLY".ToString(); }
-    else if kind == ASTNodeKind::UNSAFE { return "UNSAFE".ToString(); }
+    if kind == ASTNodeKind::Path { return "Path".ToString(); }
     else if kind == ASTNodeKind::Declaration { return "Declaration".ToString(); }
     else if kind == ASTNodeKind::Statement { return "Statement".ToString(); }
-    else if kind == ASTNodeKind::CASE { return "CASE".ToString(); }
-    else if kind == ASTNodeKind::DEFAULT { return "DEFAULT".ToString(); }
-    else if kind == ASTNodeKind::UNARY { return "UNARY".ToString(); }
-    else if kind == ASTNodeKind::BINARY { return "BINARY".ToString(); }
-    else if kind == ASTNodeKind::TERNARY { return "TERNARY".ToString(); }
-    else if kind == ASTNodeKind::ASSIGNMENT { return "ASSIGNMENT".ToString(); }
-    else if kind == ASTNodeKind::CALL { return "CALL".ToString(); }
-    else if kind == ASTNodeKind::INTRINSIC { return "INTRINSIC".ToString(); }
-    else if kind == ASTNodeKind::CONSTRUCTOR { return "CONSTRUCTOR".ToString(); }
-    else if kind == ASTNodeKind::CAST { return "CAST".ToString(); }
-    else if kind == ASTNodeKind::NEW { return "NEW".ToString(); }
-    else if kind == ASTNodeKind::DELETE { return "DELETE".ToString(); }
-    else if kind == ASTNodeKind::LITERAL { return "LITERAL".ToString(); }
-    else if kind == ASTNodeKind::IDENTIFIER { return "IDENTIFIER".ToString(); }
-    else if kind == ASTNodeKind::SCOPE_RESOLUTION { return "SCOPE_RESOLUTION".ToString(); }
-    else if kind == ASTNodeKind::PACK_SPLAT { return "PACK_SPLAT".ToString(); }
-    else if kind == ASTNodeKind::MEMBER_ACCESS { return "MEMBER_ACCESS".ToString(); }
-    else if kind == ASTNodeKind::INDEX_ACCESS { return "INDEX_ACCESS".ToString(); }
-    else if kind == ASTNodeKind::RANGE { return "RANGE".ToString(); }
-    else if kind == ASTNodeKind::AWAIT { return "AWAIT".ToString(); }
-    else if kind == ASTNodeKind::TUPLE { return "TUPLE".ToString(); }
-    else if kind == ASTNodeKind::INITIALIZER_LIST { return "INITIALIZER_LIST".ToString(); }
-    else if kind == ASTNodeKind::STRUCTURE_INITIALIZER { return "STRUCTURE_INITIALIZER".ToString(); }
-    else if kind == ASTNodeKind::OR_PATTERN { return "OR_PATTERN".ToString(); }
-    else if kind == ASTNodeKind::TYPE_APPLICATION { return "TYPE_APPLICATION".ToString(); }
+    else if kind == ASTNodeKind::Expression { return "Expression".ToString(); }
     else if kind == ASTNodeKind::Type { return "Type".ToString(); }
-    else { return "UNKNOWN".ToString(); }
+    else { return "Unknown".ToString(); }
 }
 
 class ASTNode {
@@ -84,18 +48,25 @@ class ASTPathSegment {
     }
 }
 
+class ASTPath : ASTNode {
+    pub segments: Vector<ASTPathSegment>,
+    pub absolute: bool;
+
+    ASTPath(&mut this, absolute: bool, start: Token) : ASTNode(ASTNodeKind::Path, start) {
+        this.absolute = absolute;
+    }
+}
+
 enum ASTTypeKind: u8 {
-    Primitive, Pointer, Reference, Array, Function, Generic, Path
+    Path, Pointer, Reference, Array, Function
 }
 
 fn ToString(kind: ASTTypeKind) -> String {
-    if kind == ASTTypeKind::Primitive { return "Primitive".ToString(); }
+    if kind == ASTTypeKind::Path { return "Path".ToString(); }
     else if kind == ASTTypeKind::Pointer { return "Pointer".ToString(); }
     else if kind == ASTTypeKind::Reference { return "Reference".ToString(); }
     else if kind == ASTTypeKind::Array { return "Array".ToString(); }
     else if kind == ASTTypeKind::Function { return "Function".ToString(); }
-    else if kind == ASTTypeKind::Generic { return "Generic".ToString(); }
-    else if kind == ASTTypeKind::Path { return "Path".ToString(); }
     else { return "Unknown".ToString(); }
 }
 
@@ -107,11 +78,11 @@ class ASTType : ASTNode {
     }
 }
 
-class ASTPrimitiveType : ASTType {
-    pub name: String;
+class ASTPathType : ASTType {
+    pub path: *ASTPath;
 
-    ASTPrimitiveType(&mut this, name: String, start: Token) : ASTType(ASTTypeKind::Primitive, start) {
-        this.name = name;
+    ASTPrimitiveType(&mut this, path: *ASTPath, start: Token) : ASTType(ASTTypeKind::Path, start) {
+        this.path = path;
     }
 }
 
@@ -155,265 +126,187 @@ class ASTFunctionType : ASTType {
     ASTFunctionType(&mut this, start: Token) : ASTType(ASTTypeKind::Function, start) {}
 }
 
-class ASTGenericType : ASTType {
-    pub _type: *ASTType,
-    pub types: Vector<*ASTType>;
-
-    ASTGenericType(&mut this, _type: *ASTType, start: Token) : ASTType(ASTTypeKind::Generic, start) {
-        this._type = _type;
-    }
+enum ASTExpressionKind: u8 {
+    Literal, InitializerList, StructureInitializer, Path, Unary, Binary, Ternary, Call,
+    PackSplat, MemberAccess, IndexAccess, Cast, New, Delete, Assignment, Await, Tuple, Range
 }
 
-class ASTPathType : ASTType {
-    pub segments: Vector<ASTPathSegment>;
+class ASTExpression : ASTNode {
+    pub kind: ASTExpressionKind;
 
-    ASTPathType(&mut this, start: Token) : ASTType(ASTTypeKind::Path, start) {}
-}
-
-class ASTLiteral : ASTNode {
-    pub value: String,
-    pub _type: TokenType;
-
-    ASTLiteral(&mut this, value: String, _type: TokenType, start: Token) : ASTNode(ASTNodeKind::LITERAL, start) {
-        (this.value, this._type) = (value, _type);
-    }
-}
-
-class ASTIdentifier : ASTNode {
-    pub name: String;
-
-    ASTIdentifier(&mut this, name: String, start: Token) : ASTNode(ASTNodeKind::IDENTIFIER, start) {
-        this.name = name;
-    }
-}
-
-class ASTScopeResolution : ASTNode {
-    pub scope: *ASTNode,
-    pub identifier: *ASTIdentifier;
-
-    ASTScopeResolution(&mut this, scope: *ASTNode, identifier: *ASTIdentifier, start: Token) : ASTNode(ASTNodeKind::SCOPE_RESOLUTION, start) {
-        (this.scope, this.identifier) = (scope, identifier);
-    }
-}
-
-class ASTUnary : ASTNode {
-    pub operand: *ASTNode,
-    pub _operator: TokenType,
-    pub mutable: bool;
-
-    ASTUnary(&mut this, operand: *ASTNode, _operator: TokenType, mutable: bool, start: Token) : ASTNode(ASTNodeKind::UNARY, start) {
-        (this.operand, this._operator, this.mutable) = (operand, _operator, mutable);
-    }
-}
-
-class ASTBinary : ASTNode {
-    pub left: *ASTNode,
-    pub right: *ASTNode,
-    pub _operator: TokenType;
-
-    ASTBinary(&mut this, left: *ASTNode, right: *ASTNode, _operator: TokenType, start: Token) : ASTNode(ASTNodeKind::BINARY, start) {
-        (this.left, this.right, this._operator) = (left, right, _operator);
-    }
-}
-
-class ASTTernary : ASTNode {
-    pub condition: *ASTNode,
-    pub then: *ASTNode,
-    pub _else: *ASTNode;
-
-    ASTTernary(&mut this, condition: *ASTNode, then: *ASTNode, _else: *ASTNode, start: Token) : ASTNode(ASTNodeKind::TERNARY, start) {
-        (this.condition, this.then, this._else) = (condition, then, _else);
-    }
-}
-
-class ASTCall : ASTNode {
-    pub expression: *ASTNode,
-    pub arguments: Vector<*ASTNode>;
-
-    ASTCall(&mut this, expression: *ASTNode, start: Token) : ASTNode(ASTNodeKind::CALL, start) {
-        this.expression = expression;
-    }
-}
-
-enum ASTIntrinsicKind: u8 {
-    SizeOf, AlignOf
-}
-
-fn ToString(kind: ASTIntrinsicKind) -> String {
-    if kind == ASTIntrinsicKind::SizeOf { return "sizeof".ToString(); }
-    else { return "alignof".ToString(); }
-}
-
-class ASTIntrinsic : ASTNode {
-    pub kind: ASTIntrinsicKind,
-    pub arguments: Vector<*ASTNode>;
-
-    ASTIntrinsic(&mut this, kind: ASTIntrinsicKind, start: Token) : ASTNode(ASTNodeKind::INTRINSIC, start) {
+    ASTExpression(&mut this, kind: ASTExpressionKind, start: Token) : ASTNode(ASTNodeKind::Expression, start) {
         this.kind = kind;
     }
 }
 
-class ASTConstructor : ASTNode {
-    pub _type: *ASTType,
-    pub arguments: Vector<*ASTNode>;
+class ASTLiteral : ASTExpression {
+    pub value: String,
+    pub _type: TokenType;
 
-    ASTConstructor(&mut this, _type: *ASTType, start: Token) : ASTNode(ASTNodeKind::CONSTRUCTOR, start) {
-        this._type = _type;
+    ASTLiteral(&mut this, value: String, _type: TokenType, start: Token) : ASTExpression(ASTExpressionKind::Literal, start) {
+        (this.value, this._type) = (value, _type);
     }
 }
 
-class ASTPackSplat : ASTNode {
-    pub expression: *ASTNode;
+class ASTInitializerList : ASTExpression {
+    pub expressions: Vector<*ASTNode>;
 
-    ASTPackSplat(&mut this, expression: *ASTNode, start: Token) : ASTNode(ASTNodeKind::PACK_SPLAT, start) {
+    ASTInitializerList(&mut this, start: Token) : ASTExpression(ASTExpressionKind::InitializerList, start) {}
+}
+
+class ASTStructureInitializer : ASTExpression {
+    pub expression: *ASTNode,
+    pub fields: Map<String, *ASTNode>;
+
+    ASTStructureInitializer(&mut this, expression: *ASTNode, start: Token) : ASTExpression(ASTExpressionKind::StructureInitializer, start) {
         this.expression = expression;
     }
 }
 
-class ASTMemberAccess : ASTNode {
+class ASTPathExpression : ASTExpression {
+    pub path: *ASTPath;
+
+    ASTPathExpression(&mut this, path: *ASTPath, start: Token) : ASTExpression(ASTExpressionKind::Path, start) {
+        this.path = path;
+    }
+}
+
+class ASTUnary : ASTExpression {
+    pub operand: *ASTNode,
+    pub _operator: TokenType,
+    pub mutable: bool;
+
+    ASTUnary(&mut this, operand: *ASTNode, _operator: TokenType, mutable: bool, start: Token) : ASTExpression(ASTExpressionKind::Unary, start) {
+        (this.operand, this._operator, this.mutable) = (operand, _operator, mutable);
+    }
+}
+
+class ASTBinary : ASTExpression {
+    pub left: *ASTNode,
+    pub right: *ASTNode,
+    pub _operator: TokenType;
+
+    ASTBinary(&mut this, left: *ASTNode, right: *ASTNode, _operator: TokenType, start: Token) : ASTExpression(ASTExpressionKind::Binary, start) {
+        (this.left, this.right, this._operator) = (left, right, _operator);
+    }
+}
+
+class ASTTernary : ASTExpression {
+    pub condition: *ASTNode,
+    pub then: *ASTNode,
+    pub _else: *ASTNode;
+
+    ASTTernary(&mut this, condition: *ASTNode, then: *ASTNode, _else: *ASTNode, start: Token) : ASTExpression(ASTExpressionKind::Ternary, start) {
+        (this.condition, this.then, this._else) = (condition, then, _else);
+    }
+}
+
+class ASTCall : ASTExpression {
+    pub expression: *ASTNode,
+    pub arguments: Vector<*ASTNode>;
+
+    ASTCall(&mut this, expression: *ASTNode, start: Token) : ASTExpression(ASTExpressionKind::Call, start) {
+        this.expression = expression;
+    }
+}
+
+class ASTPackSplat : ASTExpression {
+    pub expression: *ASTNode;
+
+    ASTPackSplat(&mut this, expression: *ASTNode, start: Token) : ASTExpression(ASTExpressionKind::PackSplat, start) {
+        this.expression = expression;
+    }
+}
+
+class ASTMemberAccess : ASTExpression {
     pub expression: *ASTNode,
     pub member: String, pub arrow: bool;
 
-    ASTMemberAccess(&mut this, expression: *ASTNode, arrow: bool, start: Token) : ASTNode(ASTNodeKind::MEMBER_ACCESS, start) {
+    ASTMemberAccess(&mut this, expression: *ASTNode, arrow: bool, start: Token) : ASTExpression(ASTExpressionKind::MemberAccess, start) {
         (this.expression, this.arrow) = (expression, arrow);
     }
 }
 
-class ASTIndexAccess : ASTNode {
+class ASTIndexAccess : ASTExpression {
     pub expression: *ASTNode,
     pub index: *ASTNode;
 
-    ASTIndexAccess(&mut this, expression: *ASTNode, index: *ASTNode, start: Token) : ASTNode(ASTNodeKind::INDEX_ACCESS, start) {
+    ASTIndexAccess(&mut this, expression: *ASTNode, index: *ASTNode, start: Token) : ASTExpression(ASTExpressionKind::IndexAccess, start) {
         (this.expression, this.index) = (expression, index);
     }
 }
 
-class ASTTypeApplication : ASTNode {
-    pub expression: *ASTNode,
-    pub types: Vector<*ASTType>;
-
-    ASTTypeApplication(&mut this, expression: *ASTNode, start: Token) : ASTNode(ASTNodeKind::TYPE_APPLICATION, start) {
-        this.expression = expression;
-    }
-}
-
-class ASTCast : ASTNode {
+class ASTCast : ASTExpression {
     pub expression: *ASTNode,
     pub target_type: *ASTType;
 
-    ASTCast(&mut this, expression: *ASTNode, target_type: *ASTType, start: Token) : ASTNode(ASTNodeKind::CAST, start) {
+    ASTCast(&mut this, expression: *ASTNode, target_type: *ASTType, start: Token) : ASTExpression(ASTExpressionKind::Cast, start) {
         (this.expression, this.target_type) = (expression, target_type);
     }
 }
 
-class ASTInitializerList : ASTNode {
-    pub expressions: Vector<*ASTNode>;
-
-    ASTInitializerList(&mut this, start: Token) : ASTNode(ASTNodeKind::INITIALIZER_LIST, start) {}
-}
-
-class ASTNew : ASTNode {
+class ASTNew : ASTExpression {
     pub _type: *ASTType,
     pub arguments: Vector<*ASTNode>,
     pub size: *ASTNode = null,
     pub initialized: bool = false;
 
-    ASTNew(&mut this, _type: *ASTType, start: Token) : ASTNode(ASTNodeKind::NEW, start) {
+    ASTNew(&mut this, _type: *ASTType, start: Token) : ASTExpression(ASTExpressionKind::New, start) {
         this._type = _type;
     }
 }
 
-class ASTDelete : ASTNode {
+class ASTDelete : ASTExpression {
     pub expression: *ASTNode,
     pub array: bool = false;
 
-    ASTDelete(&mut this, start: Token) : ASTNode(ASTNodeKind::DELETE, start) {}
+    ASTDelete(&mut this, start: Token) : ASTExpression(ASTExpressionKind::Delete, start) {}
 }
 
-class ASTAssignment : ASTNode {
+class ASTAssignment : ASTExpression {
     pub left: *ASTNode, pub right: *ASTNode,
     pub _operator: TokenType, pub next: *mut ASTAssignment = null;
 
-    ASTAssignment(&mut this, left: *ASTNode, right: *ASTNode, _operator: TokenType, start: Token) : ASTNode(ASTNodeKind::ASSIGNMENT, start) {
+    ASTAssignment(&mut this, left: *ASTNode, right: *ASTNode, _operator: TokenType, start: Token) : ASTExpression(ASTExpressionKind::Assignment, start) {
         (this.left, this.right, this._operator) = (left, right, _operator);
     }
 }
 
-class ASTAwait : ASTNode {
+class ASTAwait : ASTExpression {
     pub expression: *ASTNode;
 
-    ASTAwait(&mut this, expression: *ASTNode, start: Token) : ASTNode(ASTNodeKind::AWAIT, start) {
+    ASTAwait(&mut this, expression: *ASTNode, start: Token) : ASTExpression(ASTExpressionKind::Await, start) {
         this.expression = expression;
     }
 }
 
-class ASTTuple : ASTNode {
+class ASTTuple : ASTExpression {
     pub values: Vector<*ASTNode>;
 
-    ASTTuple(&mut this, start: Token) : ASTNode(ASTNodeKind::TUPLE, start) {}
+    ASTTuple(&mut this, start: Token) : ASTExpression(ASTExpressionKind::Tuple, start) {}
 }
 
-class ASTRange : ASTNode {
+class ASTRange : ASTExpression {
     pub start: *ASTNode,
     pub end: *ASTNode,
     pub inclusive: bool = false;
 
-    ASTRange(&mut this, start: *ASTNode, end: *ASTNode, _start: Token) : ASTNode(ASTNodeKind::RANGE, _start) {
+    ASTRange(&mut this, start: *ASTNode, end: *ASTNode, _start: Token) : ASTExpression(ASTExpressionKind::Range, _start) {
         (this.start, this.end) = (start, end);
     }
 }
 
-class ASTCase : ASTNode {
-    pub pattern: *ASTNode,
-    pub body: *ASTNode,
-    pub guard: *ASTNode;
-
-    ASTCase(&mut this, pattern: *ASTNode, body: *ASTNode, guard: *ASTNode, start: Token) : ASTNode(ASTNodeKind::CASE, start) {
-        (this.pattern, this.body, this.guard) = (pattern, body, guard);
-    }
-}
-
-class ASTDefault : ASTNode {
-    pub body: *ASTNode;
-
-    ASTDefault(&mut this, body: *ASTNode, start: Token) : ASTNode(ASTNodeKind::DEFAULT, start) {
-        this.body = body;
-    }
-}
-
-class ASTOrPattern : ASTNode {
-    pub left: *ASTNode,
-    pub right: *ASTNode;
-
-    ASTOrPattern(&mut this, left: *ASTNode, right: *ASTNode, start: Token) : ASTNode(ASTNodeKind::OR_PATTERN, start) {
-        (this.left, this.right) = (left, right);
-    }
-}
-
-class ASTStructureInitializer : ASTNode {
-    pub expression: *ASTNode,
-    pub field_names: Vector<String>,
-    pub field_values: Vector<*ASTNode>;
-
-    ASTStructureInitializer(&mut this, expression: *ASTNode, start: Token) : ASTNode(ASTNodeKind::STRUCTURE_INITIALIZER, start) {
-        this.expression = expression;
-    }
-}
-
 enum ASTStatementKind: u8 {
-    Variable, Expression, If, IfLet, While, WhileLet, Loop, For, Match, Return, Break, Continue, Block, Unsafe, Assembly
+    Variable, Expression, If, While, Loop, For, Return, Break, Continue, Block, Unsafe, Assembly
 }
 
 fn ToString(kind: ASTStatementKind) -> String {
     if kind == ASTStatementKind::Variable { return "Variable".ToString(); }
     else if kind == ASTStatementKind::Expression { return "Expression".ToString(); }
     else if kind == ASTStatementKind::If { return "If".ToString(); }
-    else if kind == ASTStatementKind::IfLet { return "IfLet".ToString(); }
     else if kind == ASTStatementKind::While { return "While".ToString(); }
-    else if kind == ASTStatementKind::WhileLet { return "WhileLet".ToString(); }
     else if kind == ASTStatementKind::Loop { return "Loop".ToString(); }
     else if kind == ASTStatementKind::For { return "For".ToString(); }
-    else if kind == ASTStatementKind::Match { return "Match".ToString(); }
     else if kind == ASTStatementKind::Return { return "Return".ToString(); }
     else if kind == ASTStatementKind::Break { return "Break".ToString(); }
     else if kind == ASTStatementKind::Continue { return "Continue".ToString(); }
@@ -459,17 +352,6 @@ class ASTIfStatement : ASTStatement {
     }
 }
 
-class ASTIfLetStatement : ASTStatement {
-    pub pattern: *ASTNode,
-    pub expression: *ASTNode,
-    pub body: *ASTBlockStatement,
-    pub _else: *ASTStatement = null;
-
-    ASTIfLetStatement(&mut this, pattern: *ASTNode, expression: *ASTNode, body: *ASTBlockStatement, start: Token) : ASTStatement(ASTStatementKind::IfLet, start) {
-        (this.pattern, this.expression, this.body) = (pattern, expression, body);
-    }
-}
-
 class ASTWhileStatement : ASTStatement {
     pub condition: *ASTNode,
     pub body: *ASTBlockStatement,
@@ -477,16 +359,6 @@ class ASTWhileStatement : ASTStatement {
 
     ASTWhileStatement(&mut this, condition: *ASTNode, body: *ASTBlockStatement, _else: *ASTBlockStatement, start: Token) : ASTStatement(ASTStatementKind::While, start) {
         (this.condition, this.body, this._else) = (condition, body, _else);
-    }
-}
-
-class ASTWhileLetStatement : ASTStatement {
-    pub pattern: *ASTNode,
-    pub expression: *ASTNode,
-    pub body: *ASTBlockStatement;
-
-    ASTWhileLetStatement(&mut this, pattern: *ASTNode, expression: *ASTNode, body: *ASTBlockStatement, start: Token) : ASTStatement(ASTStatementKind::WhileLet, start) {
-        (this.pattern, this.expression, this.body) = (pattern, expression, body);
     }
 }
 
@@ -505,16 +377,6 @@ class ASTForStatement : ASTStatement {
 
     ASTForStatement(&mut this, variable: String, iterable: *ASTNode, body: *ASTBlockStatement, start: Token) : ASTStatement(ASTStatementKind::For, start) {
         (this.variable, this.iterable, this.body) = (variable, iterable, body);
-    }
-}
-
-class ASTMatchStatement : ASTStatement {
-    pub expression: *ASTNode,
-    pub cases: Vector<*ASTCase>,
-    pub default: *ASTDefault;
-
-    ASTMatchStatement(&mut this, expression: *ASTNode, start: Token) : ASTStatement(ASTStatementKind::Match, start) {
-        (this.expression, this.default) = (expression, null);
     }
 }
 
@@ -632,7 +494,7 @@ class ASTParameterDeclaration : ASTDeclaration {
 class ASTFunctionDeclaration : ASTDeclaration {
     pub name: String, pub _type: *ASTFunctionType,
     pub body: *ASTBlockStatement = null, pub _async: bool = false,
-    pub constructors: Vector<*ASTConstructor>, pub no_mangle: bool,
+    pub constructors: Vector<*ASTCall>, pub no_mangle: bool,
     pub types: Vector<String>, pub generic: bool = false;
 
     ASTFunctionDeclaration(&mut this, name: String, _type: *ASTFunctionType, no_mangle: bool, start: Token) : ASTDeclaration(ASTDeclarationKind::Function, start) {
@@ -675,22 +537,18 @@ class ASTStructureDeclaration : ASTDeclaration {
     }
 }
 
-class ASTVariantDeclaration : ASTNode {
+class ASTEnumerationMember {
     pub name: String,
-    pub types: Vector<*ASTType>,
-    pub field_names: Vector<String>,
     pub value: *ASTNode = null;
 
-    ASTVariantDeclaration(&mut this, name: String, start: Token) : ASTNode(ASTNodeKind::VARIANT, start) {
+    ASTEnumerationMember(&mut this, name: String) {
         this.name = name;
     }
 }
 
 class ASTEnumerationDeclaration : ASTDeclaration {
     pub name: String, pub underlying_type: *ASTType = null,
-    pub variants: Vector<*ASTVariantDeclaration>, pub variant: bool = false,
-    pub methods: Vector<Pair<bool, *ASTFunctionDeclaration>>,
-    pub types: Vector<String>, pub generic: bool = false;
+    pub members: Vector<ASTEnumerationMember>;
 
     ASTEnumerationDeclaration(&mut this, name: String, start: Token) : ASTDeclaration(ASTDeclarationKind::Enumeration, start) {
         this.name = name;

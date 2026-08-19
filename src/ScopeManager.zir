@@ -16,6 +16,18 @@
 
 #[include "std/str", "std/vec", "src/Scope.zir", "src/Symbol.zir", "src/Types.zir", "src/AST.zir", "src/HIR.zir" : *]
 
+class LookupResult {
+    pub symbol: *Symbol,
+    pub scope: *Scope,
+    pub declaration: *HIRDeclaration,
+    pub found: bool,
+    pub valid: bool;
+
+    LookupResult(&mut this, symbol: *Symbol, scope: *Scope, declaration: *HIRDeclaration, found: bool, valid: bool) {
+        (this.symbol, this.scope, this.declaration, this.found, this.valid) = (symbol, scope, declaration, found, valid);
+    }
+}
+
 class ScopeManager {
     pub scopes: Vector<*Scope>,
     pub current: *mut Scope = null;
@@ -163,199 +175,306 @@ class ScopeManager {
         } return result.Reverse();
     }
 
-    pub fn ResolveChild(&this, scope: *Scope, identifier: *ASTIdentifier, test: bool) -> *Scope {
-        for child in scope->children {
-            if child->name == identifier->name {
-                return child;
+    fn LookupInScope(&this, scope: *Scope, segment: ASTPathSegment, path: *ASTPath, scope_required: bool, test: bool) -> LookupResult {
+        if scope == null {
+            return LookupResult(null, null, null, false, false);
+        }
+
+        let mut child: *Scope = null;
+
+        for candidate in scope->children {
+            if candidate->name == segment.name {
+                child = candidate;
+                break;
             }
         }
 
-        if !test {
-            Logger::Log("Scope '" + identifier->name + "' not found.", identifier, LogSeverity::Error);
-        } return null;
-    }
+        let has_symbol = scope->Has(segment.name);
 
-    pub fn ResolveChild(&this, scope: *Scope, primitive_type: *ASTPrimitiveType, test: bool) -> *Scope {
-        for child in scope->children {
-            if child->name == primitive_type->name {
-                return child;
-            }
+        if scope_required && child != null {
+            if !segment.types.Empty() {
+                return LookupResult(null, null, null, true, false);
+            } return LookupResult(null, child, null, true, true);
         }
 
-        if !test {
-            Logger::Log("Scope '" + primitive_type->name + "' not found.", primitive_type as *ASTType, LogSeverity::Error);
-        } return null;
-    }
+        if has_symbol {
+            let symbol = scope->Get(segment.name);
 
-    pub fn ResolveScopeHalf(&this, resolution: *ASTScopeResolution, test: bool) -> *Scope {
-        let mut scope: *Scope = this.current;
+            if symbol->kind == SymbolKind::Generic {
+                if segment.types.Empty() {
+                    return LookupResult(null, null, null, true, false);
+                }
 
-        while !scope->global {
-            scope = scope->parent;
-        }
-
-        if resolution->scope != null {
-            if resolution->scope->kind == ASTNodeKind::SCOPE_RESOLUTION {
-                scope = this.ResolveScopeFull(resolution->scope as *ASTScopeResolution, test);
-            } else if resolution->scope->kind == ASTNodeKind::IDENTIFIER {
-                scope = this.ResolveChild(scope, resolution->scope as *ASTIdentifier, test);
-            } else if resolution->scope->kind == ASTNodeKind::Type && (resolution->scope as *ASTType)->kind == ASTTypeKind::Primitive {
-                scope = this.ResolveChild(scope, (resolution->scope as *ASTType) as *ASTPrimitiveType, test);
-            } else if resolution->scope->kind == ASTNodeKind::TYPE_APPLICATION {
-                let type_application = resolution->scope as *ASTTypeApplication;
                 let mut types = Vector<*SemanticType>();
 
-                for _type in type_application->types {
-                    types.PushBack(analyzer->ResolveType(_type));
+                for _type in segment.types {
+                    let resolved = analyzer->ResolveType(_type);
+                    if resolved == null {
+                        return LookupResult(null, null, null, true, false);
+                    } types.PushBack(resolved);
                 }
 
-                if type_application->expression->kind == ASTNodeKind::Type && (type_application->expression as *ASTType)->kind == ASTTypeKind::Primitive {
-                    let primitive_type = (type_application->expression as *ASTType) as *ASTPrimitiveType;
-                    let symbol = this.Resolve(primitive_type->name, primitive_type as *ASTType, test);
-
-                    if symbol != null && symbol->kind == SymbolKind::Generic {
-                        scope = symbol->generic->Get(types).right;
-                    } else {
-                        if !test {
-                            if symbol != null {
-                                Logger::Log("Type '" + primitive_type->name + "' is not generic.", primitive_type as *ASTType, LogSeverity::Error);
-                            } else {
-                                Logger::Log("Type '" + primitive_type->name + "' not found.", primitive_type as *ASTType, LogSeverity::Error);
-                            }
-                        } return null;
-                    }
-                } else {
-                    if !test {
-                        Logger::Log("Unknown resolution '" + resolution->scope->kind.ToString() + "'.", resolution->scope, LogSeverity::Error);
-                    } return null;
-                }
-            } else {
-                if !test {
-                    Logger::Log("Unknown resolution '" + resolution->scope->kind.ToString() + "'.", resolution->scope, LogSeverity::Error);
-                } return null;
+                let result = symbol->generic->Get(types);
+                if result.left == null || result.right == null {
+                    return LookupResult(null, null, null, true, false);
+                } return LookupResult(null, result.right, result.left, true, true);
             }
-        } else {
-            while scope->parent != null {
+
+            if !segment.types.Empty() {
+                return LookupResult(null, null, null, true, false);
+            } return LookupResult(symbol, null, null, true, true);
+        }
+
+        if child != null {
+            if !segment.types.Empty() {
+                return LookupResult(null, null, null, true, false);
+            } return LookupResult(null, child, null, true, true);
+        } return LookupResult(null, null, null, false, false);
+    }
+
+    pub fn Resolve(&this, path: *ASTPath, test: bool) -> *Symbol {
+        if path == null || path->segments.Empty() {
+            if !test && path != null {
+                Logger::Log("Cannot resolve an empty path.", path, LogSeverity::Error);
+            } return null;
+        }
+
+        let mut step: LookupResult;
+
+        if path->absolute {
+            let mut scope = this.current;
+
+            while scope != null && scope->parent != null {
                 scope = scope->parent;
             }
-        } return scope;
-    }
 
-    pub fn ResolveScopeFull(&this, resolution: *ASTScopeResolution, test: bool) -> *Scope {
-        return this.ResolveChild(this.ResolveScopeHalf(resolution, test), resolution->identifier, test);
-    }
+            step = this.LookupInScope(scope, path->segments[0], path, path->segments.Size() > 1, test);
+        } else {
+            let mut scope = this.current;
+            let mut found = false;
 
-    pub fn Resolve(&this, resolution: *ASTScopeResolution, test: bool) -> *Symbol {
-        let scope = this.ResolveScopeHalf(resolution, test);
+            while scope != null {
+                let candidate = this.LookupInScope(scope, path->segments[0], path, path->segments.Size() > 1, true);
 
-        if scope == null {
-            return null;
+                if candidate.found {
+                    step = candidate;
+                    found = true;
+                    break;
+                }
+
+                scope = scope->parent;
+            }
+
+            if !found {
+                if !test {
+                    Logger::Log("Symbol '" + path->segments[0].name + "' not found.", path, LogSeverity::Error);
+                } return null;
+            }
         }
 
-        if scope->Has(resolution->identifier->name) {
-            return scope->Get(resolution->identifier->name);
+        if !step.found {
+            if !test {
+                Logger::Log("Symbol '" + path->segments[0].name + "' not found.", path, LogSeverity::Error);
+            } return null;
+        }
+
+        if !step.valid {
+            if !test {
+                Logger::Log("Invalid path segment '" + path->segments[0].name + "'.", path, LogSeverity::Error);
+            } return null;
+        }
+
+        for i in 1..path->segments.Size() {
+            if step.scope == null {
+                if !test {
+                    Logger::Log("'" + path->segments[i - 1].name + "' is not a scope.", path, LogSeverity::Error);
+                } return null;
+            }
+
+            step = this.LookupInScope(step.scope, path->segments[i], path, i + 1 < path->segments.Size(), test);
+            if !step.found {
+                if !test {
+                    Logger::Log("Symbol '" + path->segments[i].name + "' not found.", path, LogSeverity::Error);
+                } return null;
+            }
+
+            if !step.valid {
+                if !test {
+                    Logger::Log("Invalid path segment '" + path->segments[i].name + "'.", path, LogSeverity::Error);
+                } return null;
+            }
+        }
+
+        if step.symbol != null {
+            return step.symbol;
+        } else if step.declaration != null {
+            return new Symbol(step.declaration);
         } else {
             if !test {
-                Logger::Log("Symbol '" + resolution->identifier->name + "' not found.", resolution, LogSeverity::Error);
+                Logger::Log("Path does not resolve to a symbol.", path, LogSeverity::Error);
             } return null;
         }
     }
 
-    pub fn Resolve(&this, identifier: *ASTIdentifier, test: bool) -> *Symbol {
-        if this.Has(identifier->name) {
-            return this.Get(identifier->name);
-        } else {
-            if !test {
-                Logger::Log("Symbol '" + identifier->name + "' not found.", identifier, LogSeverity::Error);
-            } return null;
-        }
-    }
-
-    pub fn Resolve(&this, primitive_type: *ASTPrimitiveType, test: bool) -> *Symbol {
-        if this.Has(primitive_type->name) {
-            return this.Get(primitive_type->name);
-        } else {
-            if !test {
-                Logger::Log("Symbol '" + primitive_type->name + "' not found.", primitive_type as *ASTType, LogSeverity::Error);
-            } return null;
-        }
-    }
-
-    pub fn Resolve(&this, node: *ASTNode, test: bool) -> *Symbol {
-        if node->kind == ASTNodeKind::SCOPE_RESOLUTION {
-            return this.Resolve(node as *ASTScopeResolution, test);
-        } else if node->kind == ASTNodeKind::IDENTIFIER {
-            return this.Resolve(node as *ASTIdentifier, test);
-        } else if node->kind == ASTNodeKind::Type && (node as *ASTType)->kind == ASTTypeKind::Primitive {
-            return this.Resolve((node as *ASTType) as *ASTPrimitiveType, test);
-        } else {
-            if !test {
-                Logger::Log("Unknown resolution '" + node->kind.ToString() + "'.", node, LogSeverity::Error);
-            } return null;
-        }
-    }
-
-    pub fn Resolve(&this, name: &String, node: *ASTNode, test: bool) -> *Symbol {
-        if this.Has(name) {
-            return this.Get(name);
-        } else {
-            if !test {
-                Logger::Log("Symbol '" + name + "' not found.", node, LogSeverity::Error);
-            } return null;
-        }
-    }
-
-    pub fn ResolveCandidates(&this, resolution: *ASTScopeResolution, test: bool) -> Vector<*HIRFunctionDeclaration> {
+    pub fn ResolveCandidates(&this, path: *ASTPath, test: bool) -> Vector<*HIRFunctionDeclaration> {
         let result = Vector<*HIRFunctionDeclaration>();
-        let scope = this.ResolveScopeHalf(resolution, test);
 
-        if scope->Has(resolution->identifier->name, SymbolKind::Declaration) {
-            for symbol in scope->GetAll(resolution->identifier->name, SymbolKind::Declaration) {
+        if path == null || path->segments.Empty() {
+            if !test && path != null {
+                Logger::Log("Cannot resolve an empty path.", path, LogSeverity::Error);
+            } return result;
+        }
+
+        let last = path->segments.Size() - 1;
+        let mut scope: *Scope = null;
+        let mut step: LookupResult;
+
+        if last == 0 {
+            scope = this.current;
+
+            if path->absolute {
+                while scope != null && scope->parent != null {
+                    scope = scope->parent;
+                }
+            } else {
+                while scope != null {
+                    step = this.LookupInScope(scope, path->segments[0], path, false, true);
+                    if step.found { break; }
+                    scope = scope->parent;
+                }
+            }
+
+            if scope == null {
+                if !test {
+                    Logger::Log("Symbol '" + path->segments[0].name + "' not found.", path, LogSeverity::Error);
+                } return result;
+            }
+
+            step = this.LookupInScope(scope, path->segments[0], path, false, test);
+        } else {
+            if path->absolute {
+                scope = this.current;
+                while scope != null && scope->parent != null {
+                    scope = scope->parent;
+                }
+                step = this.LookupInScope(scope, path->segments[0], path, true, test);
+            } else {
+                let mut search = this.current;
+                let mut found = false;
+
+                while search != null {
+                    let candidate = this.LookupInScope(search, path->segments[0], path, true, true);
+                    if candidate.found {
+                        step = candidate;
+                        found = true;
+                        break;
+                    }
+
+                    search = search->parent;
+                }
+
+                if !found {
+                    if !test {
+                        Logger::Log("Symbol '" + path->segments[0].name + "' not found.", path, LogSeverity::Error);
+                    } return result;
+                }
+            }
+
+            if !step.found {
+                if !test {
+                    Logger::Log("Symbol '" + path->segments[0].name + "' not found.", path, LogSeverity::Error);
+                } return result;
+            }
+
+            if !step.valid {
+                if !test {
+                    Logger::Log("Invalid path segment '" + path->segments[0].name + "'.", path, LogSeverity::Error);
+                } return result;
+            }
+
+            if step.scope == null {
+                if !test {
+                    Logger::Log("'" + path->segments[0].name + "' is not a scope.", path, LogSeverity::Error);
+                } return result;
+            }
+
+            scope = step.scope;
+
+            for i in 1..last {
+                step = this.LookupInScope(scope, path->segments[i], path, true, test);
+
+                if !step.found {
+                    if !test {
+                        Logger::Log("Symbol '" + path->segments[i].name + "' not found.", path, LogSeverity::Error);
+                    } return result;
+                }
+
+                if !step.valid {
+                    if !test {
+                        Logger::Log("Invalid path segment '" + path->segments[i].name + "'.", path, LogSeverity::Error);
+                    } return result;
+                }
+
+                if step.scope == null {
+                    if !test {
+                        Logger::Log("'" + path->segments[i].name + "' is not a scope.", path, LogSeverity::Error);
+                    } return result;
+                }
+
+                scope = step.scope;
+            }
+
+            step = this.LookupInScope(scope, path->segments[last], path, false, test);
+        }
+
+        if !step.found {
+            if !test {
+                Logger::Log("Symbol '" + path->segments[last].name + "' not found.", path, LogSeverity::Error);
+            } return result;
+        }
+
+        if !step.valid {
+            if !test {
+                Logger::Log("Invalid path segment '" + path->segments[last].name + "'.", path, LogSeverity::Error);
+            } return result;
+        }
+
+        if step.declaration != null {
+            if step.declaration->kind == HIRDeclarationKind::Function {
+                result.PushBack(step.declaration as *HIRFunctionDeclaration);
+            } return result;
+        }
+
+        if step.symbol != null && step.symbol->kind == SymbolKind::Declaration {
+            for symbol in scope->GetAll(path->segments[last].name, SymbolKind::Declaration) {
                 if symbol->declaration->kind == HIRDeclarationKind::Function {
                     result.PushBack(symbol->declaration as *HIRFunctionDeclaration);
                 }
             }
-        } else if !test {
-            Logger::Log("Symbol '" + resolution->identifier->name + "' not found.", resolution, LogSeverity::Error);
         } return result;
-    }
-
-    pub fn ResolveCandidates(&this, identifier: *ASTIdentifier, test: bool) -> Vector<*HIRFunctionDeclaration> {
-        let result = Vector<*HIRFunctionDeclaration>();
-
-        if this.Has(identifier->name, SymbolKind::Declaration) {
-            for symbol in this.GetAll(identifier->name, SymbolKind::Declaration) {
-                if symbol->declaration->kind == HIRDeclarationKind::Function {
-                    result.PushBack(symbol->declaration as *HIRFunctionDeclaration);
-                }
-            }
-        } else if !test {
-            Logger::Log("Symbol '" + identifier->name + "' not found.", identifier, LogSeverity::Error);
-        } return result;
-    }
-
-    pub fn ResolveCandidates(&this, node: *ASTNode, test: bool) -> Vector<*HIRFunctionDeclaration> {
-        if node->kind == ASTNodeKind::SCOPE_RESOLUTION {
-            return this.ResolveCandidates(node as *ASTScopeResolution, test);
-        } else if node->kind == ASTNodeKind::IDENTIFIER {
-            return this.ResolveCandidates(node as *ASTIdentifier, test);
-        } else {
-            if !test {
-                Logger::Log("Unknown resolution '" + node->kind.ToString() + "'.", node, LogSeverity::Error);
-            } return Vector<*HIRFunctionDeclaration>();
-        }
     }
 
     pub fn ResolveCandidates(&this, name: &String, node: *ASTNode, test: bool) -> Vector<*HIRFunctionDeclaration> {
         let result = Vector<*HIRFunctionDeclaration>();
+        let mut scope = this.current;
 
-        if this.Has(name, SymbolKind::Declaration) {
-            for symbol in this.GetAll(name, SymbolKind::Declaration) {
-                if symbol->declaration->kind == HIRDeclarationKind::Function {
-                    result.PushBack(symbol->declaration as *HIRFunctionDeclaration);
-                }
+        while scope != null {
+            if scope->Has(name) {
+                if scope->Has(name, SymbolKind::Declaration) {
+                    for symbol in scope->GetAll(name, SymbolKind::Declaration) {
+                        if symbol->declaration->kind == HIRDeclarationKind::Function {
+                            result.PushBack(symbol->declaration as *HIRFunctionDeclaration);
+                        }
+                    }
+                } else if !test {
+                    Logger::Log("Symbol '" + name + "' is not a function.", node, LogSeverity::Error);
+                } return result;
             }
-        } else if !test {
+
+            scope = scope->parent;
+        }
+
+        if !test {
             Logger::Log("Symbol '" + name + "' not found.", node, LogSeverity::Error);
         } return result;
     }

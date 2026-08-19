@@ -44,7 +44,6 @@ class SemanticAnalyzer {
     forwards: Vector<SemanticForward>,
     class_data: Map<*ASTNode, Pair<*mut HIRClassDeclaration, *mut Scope>>,
     structure_data: Map<*ASTNode, Pair<*mut HIRStructureDeclaration, *mut Scope>>,
-    variant_data: Map<*ASTNode, Pair<*mut HIRVariantDeclaration, *mut Scope>>,
     loop_scopes: Vector<*mut Scope>,
 
     pub abi: HIRDeclarationABI = HIRDeclarationABI::Native,
@@ -91,7 +90,6 @@ class SemanticAnalyzer {
 
         this.class_data.Clear();
         this.structure_data.Clear();
-        this.variant_data.Clear();
         this.AnalyzeForwardDeclarations();
         this.forwards.Clear();
 
@@ -146,14 +144,11 @@ class SemanticAnalyzer {
             }
 
             for constructor in forward.node->constructors {
-                let _class = this.ResolveType(constructor->_type);
+                let symbol = this.scope_manager.Resolve((constructor->expression as *ASTPathExpression)->path, false);
+                if symbol == null { continue; }
 
-                if _class == null {
-                    continue;
-                }
-
-                if !_class->IsClass() {
-                    Logger::Log("Constructor type must be a class.", constructor, LogSeverity::Error);
+                if symbol->kind != SymbolKind::Type || !symbol->_type->IsClass() {
+                    Logger::Log("Constructor type must be a class.", constructor as *ASTExpression, LogSeverity::Error);
                     continue;
                 }
 
@@ -198,16 +193,6 @@ class SemanticAnalyzer {
             if !structure->generic && pair.left != null && pair.right != null {
                 this.structure_data[declaration] = pair;
             }
-        } else if declaration->kind == ASTDeclarationKind::Enumeration {
-            let enumeration = declaration as *ASTEnumerationDeclaration;
-
-            if enumeration->variant {
-                let pair = this.AnalyzeVariantDeclarationFirstPass(enumeration, null);
-
-                if !enumeration->generic && pair.left != null && pair.right != null {
-                    this.variant_data[declaration] = pair;
-                }
-            }
         } else {
             return false;
         } return true;
@@ -231,16 +216,7 @@ class SemanticAnalyzer {
                 this.AnalyzeStructureDeclarationSecondPass(cache.left, structure, cache.right);
             }
         } else if declaration->kind == ASTDeclarationKind::Enumeration {
-            let enumeration = declaration as *ASTEnumerationDeclaration;
-
-            if enumeration->variant {
-                if !enumeration->generic {
-                    let cache = this.variant_data[declaration];
-                    this.AnalyzeVariantDeclarationSecondPass(cache.left, enumeration, cache.right);
-                }
-            } else {
-                this.AnalyzeEnumerationDeclaration(enumeration);
-            }
+            this.AnalyzeEnumerationDeclaration(declaration as *ASTEnumerationDeclaration);
         } else if declaration->kind == ASTDeclarationKind::Type {
             this.AnalyzeTypeDeclaration(declaration as *ASTTypeDeclaration);
         } else {
@@ -271,13 +247,6 @@ class SemanticAnalyzer {
             if !structure->generic {
                 let cache = this.structure_data[declaration];
                 this.AnalyzeStructureDeclarationThirdPass(cache.left, structure, cache.right);
-            }
-        } else if declaration->kind == ASTDeclarationKind::Enumeration {
-            let enumeration = declaration as *ASTEnumerationDeclaration;
-
-            if enumeration->variant && !enumeration->generic {
-                let cache = this.variant_data[declaration];
-                this.AnalyzeVariantDeclarationThirdPass(cache.left, enumeration, cache.right);
             }
         } else if declaration->kind == ASTDeclarationKind::Extern {
             this.AnalyzeExternDeclaration(declaration as *ASTExternDeclaration);
@@ -653,92 +622,11 @@ class SemanticAnalyzer {
         this.scope_manager.Set(enumeration->name, declaration, false, enumeration as *ASTDeclaration);
         this.scope_manager.PushScope(enumeration->name, true);
 
-        for variant in enumeration->variants {
-            this.scope_manager.Set(variant->name, _type, enumeration as *ASTDeclaration);
+        for member in enumeration->members {
+            this.scope_manager.Set(member.name, _type, enumeration as *ASTDeclaration);
         }
 
         this.scope_manager.PopScope();
-    }
-
-    fn AnalyzeVariantDeclarationFirstPass(&mut this, enumeration: *ASTEnumerationDeclaration, generic: *mut Generic) -> Pair<*mut HIRVariantDeclaration, *mut Scope> {
-        if enumeration->generic && generic == null {
-            let _generic = new Generic(enumeration);
-            this.scope_manager.Set(enumeration->name, _generic, enumeration as *ASTDeclaration);
-            return Pair<*mut HIRVariantDeclaration, *mut Scope>(null, null);
-        }
-
-        let _type = this.type_manager.Variant(enumeration->name);
-        let declaration = this.arena.New<HIRVariantDeclaration>(enumeration->name, _type);
-        this.module->declarations.PushBack(declaration);
-
-        if generic != null {
-            this.scope_manager.PushScope(generic->current, true);
-            generic->Set(declaration);
-        } else {
-            this.scope_manager.Set(enumeration->name, declaration, false, enumeration as *ASTDeclaration);
-            this.scope_manager.PushScope(enumeration->name, true);
-        }
-
-        let scope = this.scope_manager.current;
-        this.scope_manager.PopScope();
-        return Pair<*mut HIRVariantDeclaration, *mut Scope>(declaration, scope);
-    }
-
-    fn AnalyzeVariantDeclarationSecondPass(&mut this, declaration: *mut HIRVariantDeclaration, enumeration: *ASTEnumerationDeclaration, scope: *mut Scope) {
-        unsafe {
-            let _type = (declaration as *HIRDeclaration)->_type as *mut SemanticType;
-        }
-
-        let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
-        (this.current_class, this.scope_manager.current) = (_type, scope);
-
-        for variant in enumeration->variants {
-            let mut types = Vector<*SemanticType>();
-
-            for _type in variant->types {
-                types.PushBack(this.ResolveType(_type));
-            }
-
-            _type->variants.PushBack(Pair<String, Vector<*SemanticType>>(variant->name, types));
-            this.scope_manager.Set(variant->name, _type, variant);
-        }
-
-        for variant in enumeration->variants {
-            _type->variant_field_names.PushBack(variant->field_names);
-        }
-
-        (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
-    }
-
-    fn AnalyzeVariantDeclarationThirdPass(&mut this, declaration: *mut HIRVariantDeclaration, enumeration: *ASTEnumerationDeclaration, scope: *mut Scope) {
-        unsafe {
-            let _type = (declaration as *HIRDeclaration)->_type as *mut SemanticType;
-        }
-
-        let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
-        (this.current_class, this.scope_manager.current) = (_type, scope);
-
-        for method in enumeration->methods {
-            let function = this.AnalyzeFunctionDeclaration(method.right, null);
-            let _static = method.right->_type->instance_kind == ASTInstanceKind::None;
-            if function == null { continue; }
-
-            if !method.right->generic {
-                _type->methods.PushBack(Method(method.right->name, function, _static, method.left));
-                declaration->methods.PushBack(function);
-            }
-        }
-
-        (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
-    }
-
-    pub fn AnalyzeVariantDeclaration(&mut this, enumeration: *ASTEnumerationDeclaration, generic: *mut Generic) -> *HIRVariantDeclaration {
-        let cache = this.AnalyzeVariantDeclarationFirstPass(enumeration, generic);
-
-        if cache.left != null {
-            this.AnalyzeVariantDeclarationSecondPass(cache.left, enumeration, cache.right);
-            this.AnalyzeVariantDeclarationThirdPass(cache.left, enumeration, cache.right);
-        } return cache.left;
     }
 
     fn AnalyzeExternDeclaration(&mut this, _extern: *ASTExternDeclaration) {
@@ -770,7 +658,7 @@ class SemanticAnalyzer {
         } else if statement->kind == ASTStatementKind::Expression {
             let expression = (statement as *ASTExpressionStatement)->expression;
 
-            if expression->kind == ASTNodeKind::ASSIGNMENT {
+            if expression->kind == ASTExpressionKind::Assignment {
                 let mut assignment = expression as *ASTAssignment;
 
                 while assignment != null {
@@ -882,7 +770,7 @@ class SemanticAnalyzer {
         let (mut start: *HIRExpression, mut end: *HIRExpression);
         let (mut is_range, mut inclusive) = (false, false);
 
-        if _for->iterable->kind == ASTNodeKind::RANGE {
+        if _for->iterable->kind == ASTExpressionKind::Range {
             let range = _for->iterable as *ASTRange;
             (is_range, inclusive) = (true, range->inclusive);
             start = this.AnalyzeExpression(range->start);
@@ -1141,41 +1029,41 @@ class SemanticAnalyzer {
             values.PushBack(right_raw);
 
             let name = "operator" + _operator.ToAssignmentOperatorString();
-            let candidates = left->_type->GetCandidates(name, assignment, true);
-            let function = this.ResolveOverload(candidates, values, assignment, true);
+            let candidates = left->_type->GetCandidates(name, assignment as *ASTExpression, true);
+            let function = this.ResolveOverload(candidates, values, assignment as *ASTExpression, true);
 
             if function != null {
-                this.AnalyzeResolvedCallExpression(function, values, assignment);
+                this.AnalyzeResolvedCallExpression(function, values, assignment as *ASTExpression);
             } else if left->_type == right->_type {
                 if _operator != TokenType::ASSIGN {
-                    Logger::Log("Invalid class assignment operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", assignment, LogSeverity::Error);
+                    Logger::Log("Invalid class assignment operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", assignment as *ASTExpression, LogSeverity::Error);
                 }
             } else {
-                Logger::Log("Incompatible class assignment types. ('" + left->_type->ToString() + "' != '" + right->_type->ToString() + "').", assignment, LogSeverity::Error);
+                Logger::Log("Incompatible class assignment types. ('" + left->_type->ToString() + "' != '" + right->_type->ToString() + "').", assignment as *ASTExpression, LogSeverity::Error);
             } return null;
         }
 
         if left->category != HIRExpressionCategory::Place {
-            Logger::Log("Cannot assign to non-place value.", assignment, LogSeverity::Error);
+            Logger::Log("Cannot assign to non-place value.", assignment as *ASTExpression, LogSeverity::Error);
             return null;
         }
 
         if !left->mutable {
-            Logger::Log("Cannot assign to immutable value.", assignment, LogSeverity::Error);
+            Logger::Log("Cannot assign to immutable value.", assignment as *ASTExpression, LogSeverity::Error);
             return null;
         }
 
         if _operator != TokenType::ASSIGN {
-            right = this.AnalyzeResolvedBinaryExpression(left, right, this.AssignmentToBinaryOperator(_operator), assignment);
+            right = this.AnalyzeResolvedBinaryExpression(left, right, this.AssignmentToBinaryOperator(_operator), assignment as *ASTExpression);
             if right == null { return null; }
         }
 
         return this.arena.New<HIRAssignmentExpression>(left, right);
     }
 
-    fn IsDeferrableExpression(&mut this, node: *ASTNode) -> *SemanticType {
-        if node->kind == ASTNodeKind::LITERAL {
-            let literal = node as *ASTLiteral;
+    fn IsDeferrableExpression(&mut this, expression: *ASTExpression) -> *SemanticType {
+        if expression->kind == ASTExpressionKind::Literal {
+            let literal = expression as *ASTLiteral;
 
             if literal->_type == TokenType::INTEGER && !literal->value.Contains('u') && !literal->value.Contains('i') {
                 return this.type_manager.IntegerLiteral();
@@ -1184,8 +1072,8 @@ class SemanticAnalyzer {
             } else {
                 return null;
             }
-        } else if node->kind == ASTNodeKind::TERNARY {
-            let ternary = node as *ASTTernary;
+        } else if expression->kind == ASTExpressionKind::Ternary {
+            let ternary = expression as *ASTTernary;
             let then_type = this.IsDeferrableExpression(ternary->then);
             if then_type == null { return null; }
             let else_type = this.IsDeferrableExpression(ternary->_else);
@@ -1196,8 +1084,8 @@ class SemanticAnalyzer {
             } else {
                 return null;
             }
-        } else if node->kind == ASTNodeKind::BINARY {
-            let binary = node as *ASTBinary;
+        } else if expression->kind == ASTExpressionKind::Binary {
+            let binary = expression as *ASTBinary;
 
             if binary->_operator == TokenType::EQUAL || binary->_operator == TokenType::NOT_EQUAL || binary->_operator == TokenType::GREATER || binary->_operator == TokenType::LESS || binary->_operator == TokenType::GREATER_EQUAL || binary->_operator == TokenType::LESS_EQUAL || binary->_operator == TokenType::AND || binary->_operator == TokenType::OR {
                 return null;
@@ -1213,8 +1101,8 @@ class SemanticAnalyzer {
             } else {
                 return null;
             }
-        } else if node->kind == ASTNodeKind::UNARY {
-            let unary = node as *ASTUnary;
+        } else if expression->kind == ASTExpressionKind::Unary {
+            let unary = expression as *ASTUnary;
 
             if unary->_operator == TokenType::MINUS || unary->_operator == TokenType::NOT {
                 return this.IsDeferrableExpression(unary->operand);
@@ -1226,8 +1114,8 @@ class SemanticAnalyzer {
         }
     }
 
-    fn AnalyzeExpression(&mut this, expression: *ASTNode) -> *HIRExpression {
-        if expression->kind == ASTNodeKind::UNARY || expression->kind == ASTNodeKind::BINARY || expression->kind == ASTNodeKind::TERNARY {
+    fn AnalyzeExpression(&mut this, expression: *ASTExpression) -> *HIRExpression {
+        if expression->kind == ASTExpressionKind::Unary || expression->kind == ASTExpressionKind::Binary || expression->kind == ASTExpressionKind::Ternary {
             let _type = this.IsDeferrableExpression(expression);
 
             if _type != null {
@@ -1242,7 +1130,7 @@ class SemanticAnalyzer {
         if expression->kind == ASTExpressionKind::Literal {
             return this.AnalyzeLiteral(expression as *ASTLiteral);
         } else if expression->kind == ASTExpressionKind::Path {
-            let symbol = this.scope_manager.Resolve(expression, false);
+            let symbol = this.scope_manager.Resolve((expression as *ASTPathExpression)->path, false);
 
             if symbol == null {
                 return null;
@@ -1278,7 +1166,7 @@ class SemanticAnalyzer {
             return this.AnalyzeAssignmentExpression(expression as *ASTAssignment);
         } else if expression->kind == ASTExpressionKind::New {
             return this.AnalyzeNewExpression(expression as *ASTNew);
-        } else if expression->kind == ASTExpressionKind::DELETE {
+        } else if expression->kind == ASTExpressionKind::Delete {
             return this.AnalyzeDeleteExpression(expression as *ASTDelete);
         } else if expression->kind == ASTExpressionKind::Call {
             return this.AnalyzeCallExpression(expression as *ASTCall);
@@ -1337,7 +1225,7 @@ class SemanticAnalyzer {
                     if width == 128 || width == 64 || width == 32 || width == 16 || width == 8 {
                         _type = this.type_manager.Integer(width, signed);
                     } else {
-                        Logger::Log("Invalid integer suffix '" + (signed ? 'u' : 'i').ToString() + suffix +  "'.", literal, LogSeverity::Error);
+                        Logger::Log("Invalid integer suffix '" + (signed ? 'u' : 'i').ToString() + suffix +  "'.", literal as *ASTExpression, LogSeverity::Error);
                         return null;
                     }
                 }
@@ -1363,7 +1251,7 @@ class SemanticAnalyzer {
                 if width == 64 || width == 32 {
                     _type = this.type_manager.Float(width);
                 } else {
-                    Logger::Log("Invalid float suffix 'f" + suffix +  "'.", literal, LogSeverity::Error);
+                    Logger::Log("Invalid float suffix 'f" + suffix +  "'.", literal as *ASTExpression, LogSeverity::Error);
                     return null;
                 }
             }
@@ -1376,7 +1264,7 @@ class SemanticAnalyzer {
                 let character: i8 = literal->value[0];
                 return this.arena.New<HIRCharacterLiteral>(character as u32, this.type_manager.Integer(8, true));
             } else {
-                Logger::Log("Invalid character literal '" + literal->value + "'.", literal, LogSeverity::Error);
+                Logger::Log("Invalid character literal '" + literal->value + "'.", literal as *ASTExpression, LogSeverity::Error);
                 return null;
             }
         } else if literal->_type == TokenType::STRING {
@@ -1384,18 +1272,18 @@ class SemanticAnalyzer {
         } else if literal->_type == TokenType::NULL {
             return this.arena.New<HIRNullLiteral>(this.type_manager.NullPointer());
         } else {
-            Logger::Log("Unknown literal type '" + literal->_type.ToString() + "'.", literal, LogSeverity::Error);
+            Logger::Log("Unknown literal type '" + literal->_type.ToString() + "'.", literal as *ASTExpression, LogSeverity::Error);
             return null;
         }
     }
 
     fn AnalyzeCallExpression(&mut this, call: *ASTCall) -> *HIRExpression {
-        if call->exprsesion->kind == ASTExpressionKind::Path {
+        if call->expression->kind == ASTExpressionKind::Path {
             let path = (call->expression as *ASTPathExpression)->path;
 
-            if !path.absolute && path.segments.Size() == 1 && (path.segments[0].name == "sizeof" || path.segments[0].name == "alignof") {
+            if !path->absolute && path->segments.Size() == 1 && (path->segments[0].name == "sizeof" || path->segments[0].name == "alignof") {
                 if call->arguments.Size() != 1 {
-                    Logger::Log("Invalid number of arguments for intrinsic '" + path.segments[0].name + "'.", call, LogSeverity::Error);
+                    Logger::Log("Invalid number of arguments for intrinsic '" + path->segments[0].name + "'.", call as *ASTExpression, LogSeverity::Error);
                     return null;
                 }
 
@@ -1403,7 +1291,7 @@ class SemanticAnalyzer {
                 let argument: *ASTExpression = call->arguments[0];
 
                 if argument->kind == ASTExpressionKind::Path {
-                    let symbol = this.scope_manager.Resolve(argument, false);
+                    let symbol = this.scope_manager.Resolve((argument as *ASTPathExpression)->path, false);
                     if symbol == null { return null; }
 
                     if symbol->kind == SymbolKind::Statement {
@@ -1412,7 +1300,7 @@ class SemanticAnalyzer {
                         if statement->kind == HIRStatementKind::Variable {
                             _type = (statement as *HIRVariableStatement)->_type;
                         } else {
-                            Logger::Log("Cannot use statement as a type.", call, LogSeverity::Error);
+                            Logger::Log("Cannot use statement as a type.", call as *ASTExpression, LogSeverity::Error);
                             return null;
                         }
                     } else if symbol->kind == SymbolKind::Declaration {
@@ -1421,11 +1309,11 @@ class SemanticAnalyzer {
                         _type = symbol->_type;
                     }
                 } else {
-                    Logger::Log("Invalid argument kind '" + argument->kind.ToString() + "' for intrinsic '" + path.segments[0].name + "'.", call, LogSeverity::Error);
+                    Logger::Log("Invalid argument kind '" + argument->kind.ToString() + "' for intrinsic '" + path->segments[0].name + "'.", call as *ASTExpression, LogSeverity::Error);
                     return null;
                 }
 
-                return this.arena.New<HIRIntrinsicExpression>(path.segments[0].name == "sizeof" ? HIRIntrinsicKind::SizeOf : HIRIntrinsicKind::AlignOf, _type);
+                return this.arena.New<HIRIntrinsicExpression>(path->segments[0].name == "sizeof" ? HIRIntrinsicKind::SizeOf : HIRIntrinsicKind::AlignOf, _type);
             }
         }
 
@@ -1437,7 +1325,7 @@ class SemanticAnalyzer {
             values.PushBack(value);
         }
 
-        if call->expression->kind == ASTNodeKind::MEMBER_ACCESS {
+        if call->expression->kind == ASTExpressionKind::MemberAccess {
             let member_access = call->expression as *ASTMemberAccess;
             let mut instance = this.ImplicitDereference(this.AnalyzeExpression(member_access->expression));
             if instance == null { return null; }
@@ -1447,28 +1335,28 @@ class SemanticAnalyzer {
                     let values = Vector<*HIRExpression>();
                     values.PushBack(this.ImplicitAddressOf(instance));
 
-                    let candidates = instance->_type->GetCandidates("operator->".ToString(), member_access, false);
+                    let candidates = instance->_type->GetCandidates("operator->".ToString(), member_access as *ASTExpression, false);
                     if candidates.Empty() { return null; }
 
-                    instance = this.ImplicitDereference(this.AnalyzeResolvedCallExpression(candidates, values, member_access));
+                    instance = this.ImplicitDereference(this.AnalyzeResolvedCallExpression(candidates, values, member_access as *ASTExpression));
                 } else if instance->_type->IsPointer() {
                     instance = this.ImplicitDereference(instance);
                 } else {
-                    Logger::Log("Expected a pointer type for arrow operator.", member_access, LogSeverity::Error);
+                    Logger::Log("Expected a pointer type for arrow operator.", member_access as *ASTExpression, LogSeverity::Error);
                     return null;
                 }
             }
 
             if !instance->_type->HasFields() && !instance->_type->HasMethods() {
                 if member_access->arrow {
-                    Logger::Log("Expected a dot operator.", call, LogSeverity::Error);
+                    Logger::Log("Expected a dot operator.", call as *ASTExpression, LogSeverity::Error);
                     return null;
                 }
 
                 values.Insert(0, this.ImplicitAddressOf(instance));
-                let candidates = this.scope_manager.ResolveCandidates(member_access->member, call, false);
+                let candidates = this.scope_manager.ResolveCandidates(member_access->member, call as *ASTExpression, false);
                 if candidates.Empty() { return null; }
-                return this.AnalyzeResolvedCallExpression(candidates, values, call);
+                return this.AnalyzeResolvedCallExpression(candidates, values, call as *ASTExpression);
             } else {
                 let index = instance->_type->HasFields() ? instance->_type->Index(member_access->member) : -1;
 
@@ -1476,47 +1364,50 @@ class SemanticAnalyzer {
                     let field = instance->_type->Fields()[member_access->member];
 
                     if !field.public && (this.current_class != null && *this.current_class != *instance->_type) {
-                        Logger::Log("Field '" + member_access->member + "' is private.", call, LogSeverity::Error);
+                        Logger::Log("Field '" + member_access->member + "' is private.", call as *ASTExpression, LogSeverity::Error);
                         return null;
                     }
 
                     let target = this.arena.New<HIRMemberAccessExpression>(instance, field._type, index as usize);
-                    return this.AnalyzeResolvedCallExpression(target, values, call);
+                    return this.AnalyzeResolvedCallExpression(target, values, call as *ASTExpression);
                 } else {
                     values.Insert(0, this.ImplicitAddressOf(instance));
-                    let candidates = instance->_type->GetCandidates(member_access->member, call, false);
+                    let candidates = instance->_type->GetCandidates(member_access->member, call as *ASTExpression, false);
                     if candidates.Empty() { return null; }
-                    return this.AnalyzeResolvedCallExpression(candidates, values, call);
+                    return this.AnalyzeResolvedCallExpression(candidates, values, call as *ASTExpression);
                 }
             }
         } else {
-            let symbol = this.Resolve(call->expression, true);
+            if call->expression->kind == ASTExpressionKind::Path {
+                let path = (call->expression as *ASTPathExpression)->path;
+                let symbol = this.scope_manager.Resolve(path, true);
 
-            if symbol != null && symbol->kind == Type {
-                if !symbol->_type->IsClass() {
-                    Logger::Log("Only class types can be constructed with a call expression.", constructor, LogSeverity::Error);
-                    return null;
+                if symbol != null && symbol->kind == SymbolKind::Type {
+                    if !symbol->_type->IsClass() {
+                        Logger::Log("Only class types can be constructed with a call expression.", call as *ASTExpression, LogSeverity::Error);
+                        return null;
+                    }
+
+                    let _class = symbol->_type;
+                    let instance = this.arena.New<HIRConstructorExpression>(_class);
+                    values.Insert(0, this.ImplicitAddressOf(instance));
+
+                    let candidates = _class->GetCandidates(_class->name, call as *ASTExpression, false);
+                    instance->call = this.AnalyzeResolvedCallExpression(candidates, values, call as *ASTExpression) as *HIRCallExpression;
+                    return instance;
                 }
 
-                let _class = symbol->_type;
-                let instance = this.arena.New<HIRConstructorExpression>(_class);
-                values.Insert(0, this.ImplicitAddressOf(instance));
+                let candidates = this.scope_manager.ResolveCandidates(path, true);
 
-                let candidates = _class->GetCandidates(_class->name, constructor, false);
-                instance->call = this.AnalyzeResolvedCallExpression(candidates, values, constructor) as *HIRCallExpression;
-                return instance;
-            }
-
-            let candidates = this.scope_manager.ResolveCandidates(call->expression, true);
-
-            if !candidates.Empty() {
-                return this.AnalyzeResolvedCallExpression(candidates, values, call);
+                if !candidates.Empty() {
+                    return this.AnalyzeResolvedCallExpression(candidates, values, call as *ASTExpression);
+                }
             }
 
             let value = this.AnalyzeExpression(call->expression);
 
             if value != null {
-                return this.AnalyzeResolvedCallExpression(value, values, call);
+                return this.AnalyzeResolvedCallExpression(value, values, call as *ASTExpression);
             } else {
                 return null;
             }
@@ -1622,7 +1513,7 @@ class SemanticAnalyzer {
             }
 
             if !size->_type->IsIntegerPointer() || size->_type->IsSigned() {
-                Logger::Log("Array size must be of type 'usize'.", _new, LogSeverity::Error);
+                Logger::Log("Array size must be of type 'usize'.", _new as *ASTExpression, LogSeverity::Error);
                 return null;
             }
         }
@@ -1638,14 +1529,14 @@ class SemanticAnalyzer {
         }
 
         if !pointer->_type->IsPointer() {
-            Logger::Log("Delete value must be a pointer.", _delete, LogSeverity::Error);
+            Logger::Log("Delete value must be a pointer.", _delete as *ASTExpression, LogSeverity::Error);
             return null;
         }
 
         return this.arena.New<HIRDeleteExpression>(pointer);
     }
 
-    fn LiteralNeedsExplicitType(&mut this, expression: *ASTNode, target: *SemanticType) -> bool {
+    fn LiteralNeedsExplicitType(&mut this, expression: *ASTExpression, target: *SemanticType) -> bool {
         let _type = this.IsDeferrableExpression(expression);
 
         if _type == null {
@@ -1670,7 +1561,7 @@ class SemanticAnalyzer {
             return value;
         }
 
-        return this.AnalyzeResolvedCastExpression(value, target, cast);
+        return this.AnalyzeResolvedCastExpression(value, target, cast as *ASTExpression);
     }
 
     fn AnalyzeResolvedCastExpression(&mut this, mut value: *HIRExpression, target: &SemanticType, node: *ASTNode) -> *HIRExpression {
@@ -1785,19 +1676,19 @@ class SemanticAnalyzer {
             values.PushBack(this.ImplicitAddressOf(value));
             values.PushBack(index);
 
-            let candidates = value->_type->GetCandidates("operator[]".ToString(), index_access, false);
+            let candidates = value->_type->GetCandidates("operator[]".ToString(), index_access as *ASTExpression, false);
             if candidates.Empty() { return null; }
 
-            return this.AnalyzeResolvedCallExpression(candidates, values, index_access);
+            return this.AnalyzeResolvedCallExpression(candidates, values, index_access as *ASTExpression);
         }
 
         if !value->_type->IsPointer() {
-            Logger::Log("Indexed value must be a pointer.", index_access, LogSeverity::Error);
+            Logger::Log("Indexed value must be a pointer.", index_access as *ASTExpression, LogSeverity::Error);
             return null;
         }
 
         if !index->_type->IsIntegerPointer() || index->_type->IsSigned() {
-            Logger::Log("Index must be of type 'usize'.", index_access, LogSeverity::Error);
+            Logger::Log("Index must be of type 'usize'.", index_access as *ASTExpression, LogSeverity::Error);
             return null;
         }
 
@@ -1816,20 +1707,20 @@ class SemanticAnalyzer {
                 let values = Vector<*HIRExpression>();
                 values.PushBack(this.ImplicitAddressOf(instance));
 
-                let candidates = instance->_type->GetCandidates("operator->".ToString(), member_access, false);
+                let candidates = instance->_type->GetCandidates("operator->".ToString(), member_access as *ASTExpression, false);
                 if candidates.Empty() { return null; }
 
-                instance = this.ImplicitDereference(this.AnalyzeResolvedCallExpression(candidates, values, member_access));
+                instance = this.ImplicitDereference(this.AnalyzeResolvedCallExpression(candidates, values, member_access as *ASTExpression));
             } else if instance->_type->IsPointer() {
                 instance = this.ImplicitDereference(instance);
             } else {
-                Logger::Log("Expected a pointer type for arrow operator.", member_access, LogSeverity::Error);
+                Logger::Log("Expected a pointer type for arrow operator.", member_access as *ASTExpression, LogSeverity::Error);
                 return null;
             }
         }
 
         if !instance->_type->HasFields() {
-            Logger::Log("Cannot access field '" + member_access->member + "' of type '" + instance->_type->ToString() + "'.", member_access, LogSeverity::Error);
+            Logger::Log("Cannot access field '" + member_access->member + "' of type '" + instance->_type->ToString() + "'.", member_access as *ASTExpression, LogSeverity::Error);
             return null;
         }
 
@@ -1839,13 +1730,13 @@ class SemanticAnalyzer {
             let field = instance->_type->Fields()[index as usize].right;
 
             if !field.public && (this.current_class != null && *this.current_class != *instance->_type) {
-                Logger::Log("Field '" + member_access->member + "' is private.", member_access, LogSeverity::Error);
+                Logger::Log("Field '" + member_access->member + "' is private.", member_access as *ASTExpression, LogSeverity::Error);
                 return null;
             }
 
             return this.arena.New<HIRMemberAccessExpression>(instance, field._type, index as usize);
         } else {
-            Logger::Log("Field '" + member_access->member + "' not found in type '" + instance->_type->ToString() + "'.", member_access, LogSeverity::Error);
+            Logger::Log("Field '" + member_access->member + "' not found in type '" + instance->_type->ToString() + "'.", member_access as *ASTExpression, LogSeverity::Error);
             return null;
         }
     }
@@ -1859,37 +1750,37 @@ class SemanticAnalyzer {
         values.PushBack(this.ImplicitAddressOf(value));
 
         let name = "operator" + unary->_operator.ToUnaryOperatorString();
-        let candidates = this.scope_manager.ResolveCandidates(name, unary, true);
-        let function = this.ResolveOverload(candidates, values, unary, true);
+        let candidates = this.scope_manager.ResolveCandidates(name, unary as *ASTExpression, true);
+        let function = this.ResolveOverload(candidates, values, unary as *ASTExpression, true);
 
         if function != null {
-            return this.AnalyzeResolvedCallExpression(function, values, unary);
+            return this.AnalyzeResolvedCallExpression(function, values, unary as *ASTExpression);
         }
 
         if value->_type->HasMethods() {
-            let candidates = value->_type->GetCandidates(name, unary, true);
-            let function = this.ResolveOverload(candidates, values, unary, true);
+            let candidates = value->_type->GetCandidates(name, unary as *ASTExpression, true);
+            let function = this.ResolveOverload(candidates, values, unary as *ASTExpression, true);
 
             if function != null {
-                return this.AnalyzeResolvedCallExpression(function, values, unary);
+                return this.AnalyzeResolvedCallExpression(function, values, unary as *ASTExpression);
             }
         }
 
         if unary->_operator == TokenType::BITWISE_AND {
             if raw->category != HIRExpressionCategory::Place {
-                Logger::Log("Cannot take reference to non-place value.", unary, LogSeverity::Error);
+                Logger::Log("Cannot take reference to non-place value.", unary as *ASTExpression, LogSeverity::Error);
                 return null;
             }
 
             if unary->mutable && !raw->mutable {
-                Logger::Log("Cannot take mutable reference to immutable value.", unary, LogSeverity::Error);
+                Logger::Log("Cannot take mutable reference to immutable value.", unary as *ASTExpression, LogSeverity::Error);
                 return null;
             }
 
             return this.arena.New<HIRAddressOfExpression>(raw, unary->mutable);
         } else if unary->_operator == TokenType::MUL {
             if !raw->_type->IsPointer() {
-                Logger::Log("Cannot dereference non-pointer type '" + raw->_type->ToString() + "'.", unary, LogSeverity::Error);
+                Logger::Log("Cannot dereference non-pointer type '" + raw->_type->ToString() + "'.", unary as *ASTExpression, LogSeverity::Error);
                 return null;
             }
 
@@ -1916,24 +1807,24 @@ class SemanticAnalyzer {
             if unary->_operator == TokenType::MINUS {
                 if value->_type->IsInteger() || value->_type->IsFloat() {
                     if value->_type->IsInteger() && !value->_type->IsSigned() {
-                        Logger::Log("Cannot negate unsigned type '" + value->_type->ToString() + "'.", unary, LogSeverity::Error);
+                        Logger::Log("Cannot negate unsigned type '" + value->_type->ToString() + "'.", unary as *ASTExpression, LogSeverity::Error);
                         return null;
                     }
 
                     return this.arena.New<HIRUnaryExpression>(unary->_operator, value);
                 } else {
-                    Logger::Log("Cannot negate type '" + value->_type->ToString() + "'.", unary, LogSeverity::Error);
+                    Logger::Log("Cannot negate type '" + value->_type->ToString() + "'.", unary as *ASTExpression, LogSeverity::Error);
                     return null;
                 }
             } else if unary->_operator == TokenType::NOT {
                 if value->_type->IsInteger() || value->_type->IsBoolean() {
                     return this.arena.New<HIRUnaryExpression>(unary->_operator, value);
                 } else {
-                    Logger::Log("Cannot invert type '" + value->_type->ToString() + "'.", unary, LogSeverity::Error);
+                    Logger::Log("Cannot invert type '" + value->_type->ToString() + "'.", unary as *ASTExpression, LogSeverity::Error);
                     return null;
                 }
             } else {
-                Logger::Log("Invalid unary operation '" + unary->_operator.ToString() + "'.", unary, LogSeverity::Error);
+                Logger::Log("Invalid unary operation '" + unary->_operator.ToString() + "'.", unary as *ASTExpression, LogSeverity::Error);
                 return null;
             }
         }
@@ -1957,7 +1848,7 @@ class SemanticAnalyzer {
 
         if binary->_operator == TokenType::AND || binary->_operator == TokenType::OR {
             if !left->_type->IsBoolean() {
-                Logger::Log("Invalid type '" + left->_type->ToString() + "' for binary operation '" + binary->_operator.ToString() + "'.", binary, LogSeverity::Error);
+                Logger::Log("Invalid type '" + left->_type->ToString() + "' for binary operation '" + binary->_operator.ToString() + "'.", binary as *ASTExpression, LogSeverity::Error);
                 return null;
             }
 
@@ -1970,7 +1861,7 @@ class SemanticAnalyzer {
             }
 
             if !right->_type->IsBoolean() {
-                Logger::Log("Invalid type '" + right->_type->ToString() + "' for binary operation '" + binary->_operator.ToString() + "'.", binary, LogSeverity::Error);
+                Logger::Log("Invalid type '" + right->_type->ToString() + "' for binary operation '" + binary->_operator.ToString() + "'.", binary as *ASTExpression, LogSeverity::Error);
                 return null;
             }
 
@@ -1984,7 +1875,7 @@ class SemanticAnalyzer {
             right = this.Materialize(right, operand_target);
         }
 
-        return this.AnalyzeResolvedBinaryExpression(left, right, binary->_operator, binary);
+        return this.AnalyzeResolvedBinaryExpression(left, right, binary->_operator, binary as *ASTExpression);
     }
 
     fn AnalyzeResolvedBinaryExpression(&mut this, mut left: *HIRExpression, mut right: *HIRExpression, _operator: TokenType, node: *ASTNode) -> *HIRExpression {
@@ -2164,19 +2055,24 @@ class SemanticAnalyzer {
     }
 
     fn AnalyzeStructureInitializer(&mut this, node: *ASTStructureInitializer) -> *HIRExpression {
-        let symbol = this.scope_manager.Resolve(node->expression, false);
+        if node->expression->kind != ASTExpressionKind::Path {
+            Logger::Log("Structure target must be a path.", node as *ASTExpression, LogSeverity::Error);
+            return null;
+        }
+
+        let symbol = this.scope_manager.Resolve((node->expression as *ASTPathExpression)->path, false);
         if symbol == null { return null; }
 
         if symbol->kind != SymbolKind::Declaration || symbol->declaration->kind != HIRDeclarationKind::Structure {
-            Logger::Log("Cannot initialize non-structure type.", node, LogSeverity::Error);
+            Logger::Log("Cannot initialize non-structure type.", node as *ASTExpression, LogSeverity::Error);
             return null;
         }
 
         let structure = symbol->declaration as *HIRStructureDeclaration;
         let mut values = Vector<*HIRExpression>();
 
-        for field_value in node->field_values {
-            let value = this.AnalyzeExpression(field_value);
+        for field in node->fields {
+            let value = this.AnalyzeExpression(field.right);
             if value == null { return null; }
             values.PushBack(value);
         }
@@ -2189,92 +2085,63 @@ class SemanticAnalyzer {
             return this.type_manager.Void();
         }
 
-        if _type->kind == ASTTypeKind::Primitive {
-            let primitive_type = _type as *ASTPrimitiveType;
+        if _type->kind == ASTTypeKind::Path {
+            let path = (_type as *ASTPathType)->path;
 
-            if primitive_type->name == "void" {
-                return this.type_manager.Void();
-            } else if primitive_type->name == "bool" {
-                return this.type_manager.Boolean();
-            } else if primitive_type->name == "char" {
-                return this.type_manager.Character();
-            } else if primitive_type->name.StartsWith('i') || primitive_type->name.StartsWith('u') {
-                let specifier = primitive_type->name.SubString(1);
-                let signed = primitive_type->name[0] != 'u';
+            if !path->absolute && path->segments.Size() == 1 && path->segments[0].types.Empty() {
+                let name = path->segments[0].name;
 
-                if specifier == "size" {
-                    return this.type_manager.IntegerPointer(signed);
-                } else {
-                    let width = specifier.ToUnsignedInteger() as u32;
+                if name == "void" {
+                    return this.type_manager.Void();
+                } else if name == "bool" {
+                    return this.type_manager.Boolean();
+                } else if name == "char" {
+                    return this.type_manager.Character();
+                } else if name.StartsWith('i') || name.StartsWith('u') {
+                    let specifier = name.SubString(1);
+                    let signed = name[0] != 'u';
 
-                    if width != 8 && width != 16 && width != 32 && width != 64 && width != 128 {
-                        Logger::Log("Invalid integer type '" + primitive_type->name + "'.", _type, LogSeverity::Error);
-                        return null;
-                    }
+                    if specifier == "size" {
+                        return this.type_manager.IntegerPointer(signed);
+                    } else {
+                        let width = specifier.ToUnsignedInteger() as u32;
 
-                    return this.type_manager.Integer(width, signed);
-                }
-            } else if primitive_type->name.StartsWith('f') {
-                let width = primitive_type->name.SubString(1).ToUnsignedInteger() as u32;
-
-                if width != 32 && width != 64 {
-                    Logger::Log("Invalid float type '" + primitive_type->name + "'.", _type, LogSeverity::Error);
-                    return null;
-                }
-
-                return this.type_manager.Float(width);
-            } else {
-                if this.scope_manager.Has(primitive_type->name, SymbolKind::Type) {
-                    return this.scope_manager.Get(primitive_type->name, SymbolKind::Type)->_type;
-                } else if this.scope_manager.Has(primitive_type->name, SymbolKind::Declaration) {
-                    for symbol in this.scope_manager.GetAll(primitive_type->name, SymbolKind::Declaration) {
-                        let declaration = symbol->declaration;
-
-                        if declaration->kind == HIRDeclarationKind::Class || declaration->kind == HIRDeclarationKind::Structure || declaration->kind == HIRDeclarationKind::Variant {
-                            return declaration->_type;
+                        if width != 8 && width != 16 && width != 32 && width != 64 && width != 128 {
+                            Logger::Log("Invalid integer type '" + name + "'.", _type, LogSeverity::Error);
+                            return null;
                         }
+
+                        return this.type_manager.Integer(width, signed);
                     }
-                } else if this.scope_manager.Has(primitive_type->name, SymbolKind::Generic) {
-                    Logger::Log("Generic type '" + primitive_type->name + "' requires parameters.", _type, LogSeverity::Error);
-                    return null;
-                }
+                } else if name.StartsWith('f') {
+                    let width = name.SubString(1).ToUnsignedInteger() as u32;
 
-                Logger::Log("Type '" + primitive_type->name + "' not found.", _type, LogSeverity::Error);
-                return null;
-            }
-        } else if _type->kind == ASTTypeKind::Generic {
-            let generic = _type as *ASTGenericType;
-            let mut types = Vector<*SemanticType>();
-
-            for type_ in generic->types {
-                let resolved = this.ResolveType(type_);
-                if resolved == null { return null; }
-                types.PushBack(resolved);
-            }
-
-            if generic->_type->kind == ASTTypeKind::Primitive {
-                let primitive_type = generic->_type as *ASTPrimitiveType;
-
-                if this.scope_manager.Has(primitive_type->name, SymbolKind::Generic) {
-                    let declaration = this.scope_manager.Get(primitive_type->name, SymbolKind::Generic)->generic->Get(types).left;
-
-                    if declaration->kind == HIRDeclarationKind::Class || declaration->kind == HIRDeclarationKind::Structure || declaration->kind == HIRDeclarationKind::Variant {
-                        return declaration->_type;
-                    } else {
-                        Logger::Log("Generic '" + primitive_type->name + "' is not a type.", _type, LogSeverity::Error);
+                    if width != 32 && width != 64 {
+                        Logger::Log("Invalid float type '" + name + "'.", _type, LogSeverity::Error);
                         return null;
                     }
+
+                    return this.type_manager.Float(width);
                 } else {
-                    if this.scope_manager.Has(primitive_type->name) {
-                        Logger::Log("Type '" + primitive_type->name + "' is not a generic.", _type, LogSeverity::Error);
-                    } else {
-                        Logger::Log("Type '" + primitive_type->name + "' not found.", _type, LogSeverity::Error);
-                    } return null;
+                    if this.scope_manager.Has(name, SymbolKind::Type) {
+                        return this.scope_manager.Get(name, SymbolKind::Type)->_type;
+                    } else if this.scope_manager.Has(name, SymbolKind::Declaration) {
+                        for symbol in this.scope_manager.GetAll(name, SymbolKind::Declaration) {
+                            let declaration = symbol->declaration;
+
+                            if declaration->kind == HIRDeclarationKind::Class || declaration->kind == HIRDeclarationKind::Structure || declaration->kind == HIRDeclarationKind::Variant {
+                                return declaration->_type;
+                            }
+                        }
+                    } else if this.scope_manager.Has(name, SymbolKind::Generic) {
+                        Logger::Log("Generic type '" + name + "' requires parameters.", _type, LogSeverity::Error);
+                        return null;
+                    }
+
+                    Logger::Log("Type '" + name + "' not found.", _type, LogSeverity::Error);
+                    return null;
                 }
-            } else {
-                Logger::Log("Invalid type application.", _type, LogSeverity::Error);
-                return null;
-            }
+            } return null;
         } else if _type->kind == ASTTypeKind::Pointer {
             let pointer_type = _type as *ASTPointerType;
             let base_type = this.ResolveType(pointer_type->base_type);

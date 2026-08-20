@@ -144,11 +144,11 @@ class SemanticAnalyzer {
             }
 
             for constructor in forward.node->constructors {
-                let symbol = this.scope_manager.Resolve((constructor->expression as *ASTPathExpression)->path, false);
-                if symbol == null { continue; }
+                let _type = this.ResolveType((constructor->expression as *ASTPathExpression)->path);
+                if _type == null { continue; }
 
-                if symbol->kind != SymbolKind::Type || !symbol->_type->IsClass() {
-                    Logger::Log("Constructor type must be a class.", constructor as *ASTExpression, LogSeverity::Error);
+                if !_type->IsClass() {
+                    Logger::Log("Constructor target must be a class.", constructor as *ASTExpression, LogSeverity::Error);
                     continue;
                 }
 
@@ -1133,38 +1133,32 @@ class SemanticAnalyzer {
         if expression->kind == ASTExpressionKind::Literal {
             return this.AnalyzeLiteral(expression as *ASTLiteral);
         } else if expression->kind == ASTExpressionKind::Path {
-            let symbol = this.scope_manager.Resolve((expression as *ASTPathExpression)->path, false);
+            let path = (expression as *ASTPathExpression)->path;
+            let symbols = this.scope_manager.Resolve(path, false);
+            if symbols.Empty() { return null; }
 
-            if symbol == null {
-                return null;
+            for symbol in symbols {
+                if symbol->kind == SymbolKind::Statement {
+                    let statement = symbol->statement;
+
+                    if statement->kind == HIRStatementKind::Variable {
+                        return this.arena.New<HIRVariableReference>(statement as *HIRVariableStatement);
+                    }
+                } else if symbol->kind == SymbolKind::Declaration {
+                    let declaration = symbol->declaration;
+
+                    if declaration->kind == HIRDeclarationKind::Constant || declaration->kind == HIRDeclarationKind::Function {
+                        return this.arena.New<HIRDeclarationReference>(declaration, false);
+                    } else if declaration->kind == HIRDeclarationKind::Static {
+                        return this.arena.New<HIRDeclarationReference>(declaration, (declaration as *HIRStaticDeclaration)->mutable);
+                    } else if declaration->kind == HIRDeclarationKind::Parameter {
+                        return this.arena.New<HIRDeclarationReference>(declaration, (declaration as *HIRParameterDeclaration)->mutable);
+                    }
+                }
             }
 
-            if symbol->kind == SymbolKind::Statement {
-                let statement = symbol->statement;
-
-                if statement->kind == HIRStatementKind::Variable {
-                    return this.arena.New<HIRVariableReference>(statement as *HIRVariableStatement);
-                } else {
-                    Logger::Log("Cannot use statement as an expression.", expression, LogSeverity::Error);
-                    return null;
-                }
-            } else if symbol->kind == SymbolKind::Declaration {
-                let declaration = symbol->declaration;
-
-                if declaration->kind == HIRDeclarationKind::Constant || declaration->kind == HIRDeclarationKind::Function {
-                    return this.arena.New<HIRDeclarationReference>(declaration, false);
-                } else if declaration->kind == HIRDeclarationKind::Static {
-                    return this.arena.New<HIRDeclarationReference>(declaration, (declaration as *HIRStaticDeclaration)->mutable);
-                } else if declaration->kind == HIRDeclarationKind::Parameter {
-                    return this.arena.New<HIRDeclarationReference>(declaration, (declaration as *HIRParameterDeclaration)->mutable);
-                } else {
-                    Logger::Log("Cannot use declaration '" + declaration->name + "' as an expression.", expression, LogSeverity::Error);
-                    return null;
-                }
-            } else {
-                Logger::Log("Cannot use a type as an expression.", expression, LogSeverity::Error);
-                return null;
-            }
+            Logger::Log("Symbol '" + path->ToString() + "' cannot be used as an expression.", expression, LogSeverity::Error);
+            return null;
         } else if expression->kind == ASTExpressionKind::Assignment {
             return this.AnalyzeAssignmentExpression(expression as *ASTAssignmentExpression);
         } else if expression->kind == ASTExpressionKind::New {
@@ -1284,7 +1278,7 @@ class SemanticAnalyzer {
         if call->expression->kind == ASTExpressionKind::Path {
             let path = (call->expression as *ASTPathExpression)->path;
 
-            if !path->absolute && path->segments.Size() == 1 && (path->segments[0].name == "sizeof" || path->segments[0].name == "alignof") {
+            if !path->absolute && path->segments.Size() == 1 && (path->segments[0].name == "sizeof" || path->segments[0].name == "alignof") && path->segments[0].types.Empty() {
                 if call->arguments.Size() != 1 {
                     Logger::Log("Invalid number of arguments for intrinsic '" + path->segments[0].name + "'.", call as *ASTExpression, LogSeverity::Error);
                     return null;
@@ -1294,22 +1288,30 @@ class SemanticAnalyzer {
                 let argument: *ASTExpression = call->arguments[0];
 
                 if argument->kind == ASTExpressionKind::Path {
-                    let symbol = this.scope_manager.Resolve((argument as *ASTPathExpression)->path, false);
-                    if symbol == null { return null; }
+                    let path = (argument as *ASTPathExpression)->path;
+                    let symbols = this.scope_manager.Resolve(path, false);
+                    if symbols.Empty() { return null; }
 
-                    if symbol->kind == SymbolKind::Statement {
-                        let statement = symbol->statement;
+                    for symbol in symbols {
+                        if symbol->kind == SymbolKind::Statement {
+                            let statement = symbol->statement;
 
-                        if statement->kind == HIRStatementKind::Variable {
-                            _type = (statement as *HIRVariableStatement)->_type;
+                            if statement->kind == HIRStatementKind::Variable {
+                                _type = (statement as *HIRVariableStatement)->_type;
+                                break;
+                            }
+                        } else if symbol->kind == SymbolKind::Declaration {
+                            _type = symbol->declaration->_type;
+                            break;
                         } else {
-                            Logger::Log("Cannot use statement as a type.", call as *ASTExpression, LogSeverity::Error);
-                            return null;
+                            _type = symbol->_type;
+                            break;
                         }
-                    } else if symbol->kind == SymbolKind::Declaration {
-                        _type = symbol->declaration->_type;
-                    } else {
-                        _type = symbol->_type;
+                    }
+
+                    if _type == null {
+                        Logger::Log("Symbol '" + path->ToString() + "' cannot be used as a type.", path, LogSeverity::Error);
+                        return null;
                     }
                 } else {
                     Logger::Log("Invalid argument kind '" + argument->kind.ToString() + "' for intrinsic '" + path->segments[0].name + "'.", call as *ASTExpression, LogSeverity::Error);
@@ -1383,16 +1385,17 @@ class SemanticAnalyzer {
         } else {
             if call->expression->kind == ASTExpressionKind::Path {
                 let path = (call->expression as *ASTPathExpression)->path;
-                let symbol = this.scope_manager.Resolve(path, true);
 
-                if symbol != null && symbol->kind == SymbolKind::Declaration && symbol->declaration->kind == HIRDeclarationKind::Class {
-                    let _class = symbol->declaration->_type;
-                    let instance = this.arena.New<HIRConstructorExpression>(_class);
-                    values.Insert(0, this.ImplicitAddressOf(instance));
+                for symbol in this.scope_manager.Resolve(path, true) {
+                    if symbol->kind == SymbolKind::Declaration && symbol->declaration->kind == HIRDeclarationKind::Class {
+                        let _class = symbol->declaration->_type;
+                        let instance = this.arena.New<HIRConstructorExpression>(_class);
+                        values.Insert(0, this.ImplicitAddressOf(instance));
 
-                    let candidates = _class->GetCandidates(_class->name, call as *ASTExpression, false);
-                    instance->call = this.AnalyzeResolvedCallExpression(candidates, values, call as *ASTExpression) as *HIRCallExpression;
-                    return instance;
+                        let candidates = _class->GetCandidates(_class->name, call as *ASTExpression, false);
+                        instance->call = this.AnalyzeResolvedCallExpression(candidates, values, call as *ASTExpression) as *HIRCallExpression;
+                        return instance;
+                    }
                 }
 
                 let candidates = this.scope_manager.ResolveCandidates(path, true);
@@ -2054,19 +2057,18 @@ class SemanticAnalyzer {
 
     fn AnalyzeStructureInitializer(&mut this, node: *ASTStructureInitializer) -> *HIRExpression {
         if node->expression->kind != ASTExpressionKind::Path {
-            Logger::Log("Structure target must be a path.", node as *ASTExpression, LogSeverity::Error);
+            Logger::Log("Structure initializer target must be a path.", node as *ASTExpression, LogSeverity::Error);
             return null;
         }
 
-        let symbol = this.scope_manager.Resolve((node->expression as *ASTPathExpression)->path, false);
-        if symbol == null { return null; }
+        let _type = this.ResolveType((node->expression as *ASTPathExpression)->path);
+        if _type == null { return null; }
 
-        if symbol->kind != SymbolKind::Declaration || symbol->declaration->kind != HIRDeclarationKind::Structure {
-            Logger::Log("Cannot initialize non-structure type.", node as *ASTExpression, LogSeverity::Error);
+        if !_type->IsStructure() {
+            Logger::Log("Structure initializer target must be a structure.", node as *ASTExpression, LogSeverity::Error);
             return null;
         }
 
-        let structure = symbol->declaration as *HIRStructureDeclaration;
         let mut values = Vector<*HIRExpression>();
 
         for field in node->fields {
@@ -2075,7 +2077,74 @@ class SemanticAnalyzer {
             values.PushBack(value);
         }
 
-        return this.arena.New<HIRStructureLiteral>(structure, values);
+        return this.arena.New<HIRStructureLiteral>(values, _type);
+    }
+
+    pub fn ResolveType(&mut this, path: *ASTPath) -> *SemanticType {
+        if path == null {
+            return this.type_manager.Void();
+        }
+
+        if !path->absolute && path->segments.Size() == 1 && path->segments[0].types.Empty() {
+            let name = path->segments[0].name;
+
+            if name == "void" {
+                return this.type_manager.Void();
+            } else if name == "bool" {
+                return this.type_manager.Boolean();
+            } else if name == "char" {
+                return this.type_manager.Character();
+            } else if name.StartsWith('i') || name.StartsWith('u') {
+                let specifier = name.SubString(1);
+                let signed = name[0] != 'u';
+
+                if specifier == "size" {
+                    return this.type_manager.IntegerPointer(signed);
+                } else {
+                    let width = specifier.ToUnsignedInteger() as u32;
+
+                    if width != 8 && width != 16 && width != 32 && width != 64 && width != 128 {
+                        Logger::Log("Invalid integer type '" + name + "'.", path, LogSeverity::Error);
+                        return null;
+                    }
+
+                    return this.type_manager.Integer(width, signed);
+                }
+            } else if name.StartsWith('f') {
+                let width = name.SubString(1).ToUnsignedInteger() as u32;
+
+                if width != 32 && width != 64 {
+                    Logger::Log("Invalid float type '" + name + "'.", path, LogSeverity::Error);
+                    return null;
+                }
+
+                return this.type_manager.Float(width);
+            }
+        }
+
+        let mut generic = false;
+        let symbols = this.scope_manager.Resolve(path, false);
+        if symbols.Empty() { return null; }
+
+        for symbol in symbols {
+            if symbol->kind == SymbolKind::Type {
+                return symbol->_type;
+            } else if symbol->kind == SymbolKind::Declaration {
+                let kind = symbol->declaration->kind;
+
+                if kind == HIRDeclarationKind::Structure || kind == HIRDeclarationKind::Class || kind == HIRDeclarationKind::Enumeration {
+                    return symbol->declaration->_type;
+                }
+            } else if symbol->kind == SymbolKind::Generic {
+                generic = true;
+            }
+        }
+
+        if generic {
+            Logger::Log("Generic '" + path->ToString() + "' requires type arguments.", path, LogSeverity::Error);
+        } else {
+            Logger::Log("Symbol '" + path->ToString() + "' cannot be used as a type.", path, LogSeverity::Error);
+        } return null;
     }
 
     pub fn ResolveType(&mut this, _type: *ASTType) -> *SemanticType {
@@ -2084,59 +2153,7 @@ class SemanticAnalyzer {
         }
 
         if _type->kind == ASTTypeKind::Path {
-            let path = (_type as *ASTPathType)->path;
-
-            if !path->absolute && path->segments.Size() == 1 && path->segments[0].types.Empty() {
-                let name = path->segments[0].name;
-
-                if name == "void" {
-                    return this.type_manager.Void();
-                } else if name == "bool" {
-                    return this.type_manager.Boolean();
-                } else if name == "char" {
-                    return this.type_manager.Character();
-                } else if name.StartsWith('i') || name.StartsWith('u') {
-                    let specifier = name.SubString(1);
-                    let signed = name[0] != 'u';
-
-                    if specifier == "size" {
-                        return this.type_manager.IntegerPointer(signed);
-                    } else {
-                        let width = specifier.ToUnsignedInteger() as u32;
-
-                        if width != 8 && width != 16 && width != 32 && width != 64 && width != 128 {
-                            Logger::Log("Invalid integer type '" + name + "'.", _type, LogSeverity::Error);
-                            return null;
-                        }
-
-                        return this.type_manager.Integer(width, signed);
-                    }
-                } else if name.StartsWith('f') {
-                    let width = name.SubString(1).ToUnsignedInteger() as u32;
-
-                    if width != 32 && width != 64 {
-                        Logger::Log("Invalid float type '" + name + "'.", _type, LogSeverity::Error);
-                        return null;
-                    }
-
-                    return this.type_manager.Float(width);
-                }
-            }
-
-            let symbol = this.scope_manager.Resolve(path, false);
-            if symbol == null { return null; }
-
-            if symbol->kind == SymbolKind::Type {
-                return symbol->_type;
-            } else if symbol->kind == SymbolKind::Declaration {
-                return symbol->declaration->_type;
-            } else if symbol->kind == SymbolKind::Generic {
-                Logger::Log("Generic type '" + path->ToString() + "' requires parameters.", _type, LogSeverity::Error);
-                return null;
-            } else {
-                Logger::Log("Symbol '" + path->ToString() + "' is not a type.", _type, LogSeverity::Error);
-                return null;
-            }
+            return this.ResolveType((_type as *ASTPathType)->path);
         } else if _type->kind == ASTTypeKind::Pointer {
             let pointer_type = _type as *ASTPointerType;
             let base_type = this.ResolveType(pointer_type->base_type);

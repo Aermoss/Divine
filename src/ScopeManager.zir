@@ -17,23 +17,15 @@
 #[include "std/str", "std/vec", "src/Scope.zir", "src/Symbol.zir", "src/Types.zir", "src/AST.zir", "src/HIR.zir" : *]
 
 class ScopeManager {
-    pub scopes: Vector<*Scope>,
+    pub arena: Arena,
     pub current: *mut Scope = null;
 
     ScopeManager(&mut this) {
         this.PushScope(String("global"), true);
     }
 
-    ~ScopeManager(&mut this) {
-        this.PopScope();
-    }
-
     pub fn PushScope(&mut this, name: &String, global: bool) {
-        let scope = new Scope(this.current, name, global);
-
-        if global {
-            this.scopes.PushBack(scope);
-        }
+        let scope = this.arena.New<Scope>(this.current, name, global);
 
         if this.current != null {
             this.current->children.PushBack(scope);
@@ -45,17 +37,9 @@ class ScopeManager {
             Logger::Log("ScopeManager", "No scope to pop!", LogSeverity::Fatal);
         }
 
-        let temp = this.current;
-        this.current = this.current->parent;
-
-        if this.current == null {
-            for scope in this.scopes {
-                delete scope;
-            }
-        } else if !temp->global {
-            this.current->children.Remove(temp);
-            delete temp;
-        }
+        if !this.current->global {
+            this.current->parent->children.Remove(this.current);
+        } this.current = this.current->parent;
     }
 
     fn LookupScope(&this, scope: *Scope, segment: ASTPathSegment) -> *Scope {

@@ -16,20 +16,6 @@
 
 #[include "std/str", "std/vec", "src/Scope.zir", "src/Symbol.zir", "src/Types.zir", "src/AST.zir", "src/HIR.zir" : *]
 
-enum LookupStatus: u8 {
-    NotFound, Found, Invalid
-}
-
-class LookupResult {
-    pub symbols: Vector<*Symbol>,
-    pub scope: *Scope,
-    pub status: LookupStatus;
-
-    LookupResult(&mut this, symbols: Vector<*Symbol>, scope: *Scope, status: LookupStatus) {
-        (this.symbols, this.scope, this.status) = (symbols, scope, status);
-    }
-}
-
 class ScopeManager {
     pub scopes: Vector<*Scope>,
     pub current: *mut Scope = null;
@@ -72,30 +58,6 @@ class ScopeManager {
         }
     }
 
-    pub fn Has(&this, name: &String) -> bool {
-        let mut scope = this.current;
-
-        while scope != null {
-            if scope->Has(name) {
-                return true;
-            } else {
-                scope = scope->parent;
-            }
-        } return false;
-    }
-
-    pub fn Has(&this, name: &String, kind: SymbolKind) -> bool {
-        let mut scope = this.current;
-
-        while scope != null {
-            if scope->Has(name, kind) {
-                return true;
-            } else {
-                scope = scope->parent;
-            }
-        } return false;
-    }
-
     pub fn Set(&mut this, name: &String, _type: *SemanticType, node: *ASTNode) -> *Symbol {
         return this.current->Set(name, _type, node);
     }
@@ -120,344 +82,200 @@ class ScopeManager {
         this.current->instances.PushBack(instance);
     }
 
-    pub fn Get(&this, name: &String) -> *Symbol {
-        let mut scope = this.current;
+    fn LookupScope(&this, scope: *Scope, segment: ASTPathSegment) -> *Scope {
+        if scope == null { return null; }
+        let mut types = Vector<*SemanticType>();
 
-        while scope != null {
-            if scope->Has(name) {
-                return scope->Get(name);
-            } else {
-                scope = scope->parent;
-            }
-        } return null;
-    }
-
-    pub fn Get(&this, name: &String, kind: SymbolKind) -> *Symbol {
-        let mut scope = this.current;
-
-        while scope != null {
-            if scope->Has(name, kind) {
-                return scope->Get(name, kind);
-            } else {
-                scope = scope->parent;
-            }
-        } return null;
-    }
-
-    pub fn GetAll(&this, name: &String) -> Vector<*Symbol> {
-        let mut result = Vector<*Symbol>();
-        let mut scope = this.current;
-
-        while scope != null {
-            if scope->Has(name) {
-                result += scope->GetAll(name);
-            } scope = scope->parent;
-        } return result;
-    }
-
-    pub fn GetAll(&this, name: &String, kind: SymbolKind) -> Vector<*Symbol> {
-        let mut result = Vector<*Symbol>();
-        let mut scope = this.current;
-
-        while scope != null {
-            if scope->Has(name, kind) {
-                result += scope->GetAll(name, kind);
-            } scope = scope->parent;
-        } return result;
-    }
-
-    fn LookupInScope(&this, scope: *Scope, segment: ASTPathSegment, path: *ASTPath, scope_required: bool, test: bool) -> LookupResult {
-        if scope == null {
-            return LookupResult(Vector<*Symbol>(), null, LookupStatus::Invalid);
+        for _type in segment.types {
+            let resolved = analyzer->ResolveType(_type);
+            if resolved == null { return null; }
+            types.PushBack(resolved);
         }
 
-        let mut child: *Scope = null;
+        if !types.Empty() {
+            let symbol = scope->Get(segment.name, SymbolKind::Generic);
 
-        for candidate in scope->children {
-            if candidate->name == segment.name {
-                child = candidate;
-                break;
+            if symbol != null {
+                return symbol->generic->Get(types).right;
             }
+        } else {
+            for child in scope->children {
+                if child->name == segment.name {
+                    return child;
+                }
+            }
+        } return null;
+    }
+
+    fn LookupSymbol(&this, scope: *Scope, segment: ASTPathSegment) -> Vector<*Symbol> {
+        if scope == null { return Vector<*Symbol>(); }
+        let mut types = Vector<*SemanticType>();
+
+        for _type in segment.types {
+            let resolved = analyzer->ResolveType(_type);
+            if resolved == null { return Vector<*Symbol>(); }
+            types.PushBack(resolved);
         }
 
         let symbols = Vector<*Symbol>();
 
         for symbol in scope->GetAll(segment.name) {
-            if symbol->kind == SymbolKind::Generic {
-                if segment.types.Empty() { continue; }
-                let mut types = Vector<*SemanticType>();
-
-                for _type in segment.types {
-                    let resolved = analyzer->ResolveType(_type);
-
-                    if resolved == null {
-                        return LookupResult(Vector<*Symbol>(), null, LookupStatus::Invalid);
-                    } types.PushBack(resolved);
-                }
-
+            if !types.Empty() {
+                if symbol->kind != SymbolKind::Generic { continue; }
                 let result = symbol->generic->Get(types);
-
-                if scope_required {
-                    if result.right != null {
-                        return LookupResult(symbols, result.right, LookupStatus::Found);
-                    } return LookupResult(Vector<*Symbol>(), null, LookupStatus::Invalid);
-                }
-
+                if result.left == null { continue; }
                 symbols.PushBack(result.left);
             } else {
                 symbols.PushBack(symbol);
             }
+        } return symbols;
+    }
 
-            if !scope_required {
-                if !segment.types.Empty() {
-                    return LookupResult(Vector<*Symbol>(), null, LookupStatus::Invalid);
-                } return LookupResult(symbols, null, LookupStatus::Found);
+    pub fn ResolveScope(&this, path: *ASTPath) -> *Scope {
+        let mut scope: *Scope = null;
+
+        if path->absolute {
+            let mut root = this.current;
+            while root->parent != null { root = root->parent; }
+            if path->segments.Size() == 1 { return root; }
+            scope = this.LookupScope(root, path->segments[0]);
+        } else {
+            if path->segments.Size() == 1 { return null; }
+            let mut cursor = this.current;
+
+            while cursor != null {
+                scope = this.LookupScope(cursor, path->segments[0]);
+                if scope != null { break; }
+                cursor = cursor->parent;
             }
         }
 
-        if child != null {
-            if !segment.types.Empty() {
-                return LookupResult(Vector<*Symbol>(), null, LookupStatus::Invalid);
-            } return LookupResult(Vector<*Symbol>(), child, LookupStatus::Found);
-        } return LookupResult(Vector<*Symbol>(), null, LookupStatus::NotFound);
+        for i in 1..(path->segments.Size() - 1) {
+            if scope == null { break; }
+            scope = this.LookupScope(scope, path->segments[i]);
+        } return scope;
     }
 
     pub fn Resolve(&this, path: *ASTPath, test: bool) -> *Symbol {
         if path == null || path->segments.Empty() {
-            if !test && path != null {
-                Logger::Log("Cannot resolve an empty path.", path, LogSeverity::Error);
-            } return null;
+            return null;
         }
 
-        let mut step: LookupResult;
+        if path->segments.Size() == 1 && !path->absolute {
+            let mut cursor = this.current;
 
-        if path->absolute {
-            let mut scope = this.current;
-
-            while scope != null && scope->parent != null {
-                scope = scope->parent;
+            while cursor != null {
+                let symbols = this.LookupSymbol(cursor, path->segments.Back());
+                if !symbols.Empty() { return symbols[0]; }
+                cursor = cursor->parent;
             }
-
-            step = this.LookupInScope(scope, path->segments[0], path, path->segments.Size() > 1, test);
         } else {
-            let mut scope = this.current;
-            let mut found = false;
+            let scope = this.ResolveScope(path);
 
-            while scope != null {
-                step = this.LookupInScope(scope, path->segments[0], path, path->segments.Size() > 1, true);
-
-                if step.status == LookupStatus::Found {
-                    found = true;
-                    break;
-                }
-
-                scope = scope->parent;
-            }
-
-            if !found {
-                if !test {
-                    Logger::Log("Symbol '" + path->segments[0].name + "' not found.", path, LogSeverity::Error);
-                } return null;
+            if scope != null {
+                let symbols = this.LookupSymbol(scope, path->segments.Back());
+                if !symbols.Empty() { return symbols[0]; }
             }
         }
 
-        if step.status == LookupStatus::NotFound {
-            if !test {
-                Logger::Log("Symbol '" + path->segments[0].name + "' not found.", path, LogSeverity::Error);
-            } return null;
-        }
-
-        if step.status == LookupStatus::Invalid {
-            if !test {
-                Logger::Log("Invalid path segment '" + path->segments[0].name + "'.", path, LogSeverity::Error);
-            } return null;
-        }
-
-        for i in 1..path->segments.Size() {
-            if step.scope == null {
-                if !test {
-                    Logger::Log("'" + path->segments[i - 1].name + "' is not a scope.", path, LogSeverity::Error);
-                } return null;
-            }
-
-            step = this.LookupInScope(step.scope, path->segments[i], path, i + 1 < path->segments.Size(), test);
-
-            if step.status == LookupStatus::NotFound {
-                if !test {
-                    Logger::Log("Symbol '" + path->segments[i].name + "' not found.", path, LogSeverity::Error);
-                } return null;
-            }
-
-            if step.status == LookupStatus::Invalid {
-                if !test {
-                    Logger::Log("Invalid path segment '" + path->segments[i].name + "'.", path, LogSeverity::Error);
-                } return null;
-            }
-        }
-
-        if !step.symbols.Empty() {
-            return step.symbols[0];
-        } else {
-            if !test {
-                Logger::Log("Path does not resolve to a symbol.", path, LogSeverity::Error);
-            } return null;
-        }
+        if !test {
+            Logger::Log("Symbol '" + path->segments.Back().name + "' not found.", path, LogSeverity::Error);
+        } return null;
     }
 
     pub fn ResolveCandidates(&this, path: *ASTPath, test: bool) -> Vector<*HIRFunctionDeclaration> {
         let result = Vector<*HIRFunctionDeclaration>();
+        if path == null || path->segments.Empty() { return result; }
+        let mut symbols = Vector<*Symbol>();
 
-        if path == null || path->segments.Empty() {
-            if !test && path != null {
-                Logger::Log("Cannot resolve an empty path.", path, LogSeverity::Error);
-            } return result;
-        }
+        if path->segments.Size() == 1 && !path->absolute {
+            let mut cursor = this.current;
 
-        let last = path->segments.Size() - 1;
-        let mut scope: *Scope = null;
-        let mut step: LookupResult;
-
-        if last == 0 {
-            scope = this.current;
-
-            if path->absolute {
-                while scope != null && scope->parent != null {
-                    scope = scope->parent;
-                }
-            } else {
-                while scope != null {
-                    step = this.LookupInScope(scope, path->segments[0], path, false, true);
-                    if step.status == LookupStatus::Found { break; }
-                    scope = scope->parent;
-                }
+            while cursor != null {
+                symbols = this.LookupSymbol(cursor, path->segments.Back());
+                if !symbols.Empty() { break; }
+                cursor = cursor->parent;
             }
-
-            if scope == null {
-                if !test {
-                    Logger::Log("Symbol '" + path->segments[0].name + "' not found.", path, LogSeverity::Error);
-                } return result;
-            }
-
-            step = this.LookupInScope(scope, path->segments[0], path, false, test);
         } else {
-            if path->absolute {
-                scope = this.current;
+            let scope = this.ResolveScope(path);
 
-                while scope != null && scope->parent != null {
-                    scope = scope->parent;
-                }
-
-                step = this.LookupInScope(scope, path->segments[0], path, true, test);
-            } else {
-                let mut search = this.current;
-                let mut found = false;
-
-                while search != null {
-                    step = this.LookupInScope(search, path->segments[0], path, true, true);
-
-                    if step.status == LookupStatus::Found {
-                        found = true;
-                        break;
-                    }
-
-                    search = search->parent;
-                }
-
-                if !found {
-                    if !test {
-                        Logger::Log("Symbol '" + path->segments[0].name + "' not found.", path, LogSeverity::Error);
-                    } return result;
-                }
+            if scope != null {
+                symbols = this.LookupSymbol(scope, path->segments.Back());
             }
-
-            if step.status == LookupStatus::NotFound {
-                if !test {
-                    Logger::Log("Symbol '" + path->segments[0].name + "' not found.", path, LogSeverity::Error);
-                } return result;
-            }
-
-            if step.status == LookupStatus::Invalid {
-                if !test {
-                    Logger::Log("Invalid path segment '" + path->segments[0].name + "'.", path, LogSeverity::Error);
-                } return result;
-            }
-
-            if step.scope == null {
-                if !test {
-                    Logger::Log("'" + path->segments[0].name + "' is not a scope.", path, LogSeverity::Error);
-                } return result;
-            }
-
-            scope = step.scope;
-
-            for i in 1..last {
-                step = this.LookupInScope(scope, path->segments[i], path, true, test);
-
-                if step.status == LookupStatus::NotFound {
-                    if !test {
-                        Logger::Log("Symbol '" + path->segments[i].name + "' not found.", path, LogSeverity::Error);
-                    } return result;
-                }
-
-                if step.status == LookupStatus::Invalid {
-                    if !test {
-                        Logger::Log("Invalid path segment '" + path->segments[i].name + "'.", path, LogSeverity::Error);
-                    } return result;
-                }
-
-                if step.scope == null {
-                    if !test {
-                        Logger::Log("'" + path->segments[i].name + "' is not a scope.", path, LogSeverity::Error);
-                    } return result;
-                }
-
-                scope = step.scope;
-            }
-
-            step = this.LookupInScope(scope, path->segments[last], path, false, test);
         }
 
-        if step.status == LookupStatus::NotFound {
-            if !test {
-                Logger::Log("Symbol '" + path->segments[last].name + "' not found.", path, LogSeverity::Error);
-            } return result;
-        }
-
-        if step.status == LookupStatus::Invalid {
-            if !test {
-                Logger::Log("Invalid path segment '" + path->segments[last].name + "'.", path, LogSeverity::Error);
-            } return result;
-        }
-
-        for symbol in step.symbols {
+        for symbol in symbols {
             if symbol->kind == SymbolKind::Declaration && symbol->declaration->kind == HIRDeclarationKind::Function {
                 result.PushBack(symbol->declaration as *HIRFunctionDeclaration);
+            }
+        }
+
+        if result.Empty() && !test {
+            Logger::Log("Symbol '" + path->segments.Back().name + "' not found.", path, LogSeverity::Error);
+        } return result;
+    }
+
+    pub fn ResolveCandidates(&this, path: *ASTPath, test: bool) -> Vector<*HIRFunctionDeclaration> {
+        let result = Vector<*HIRFunctionDeclaration>();
+        if path == null || path->segments.Empty() { return result; }
+        let mut symbols = Vector<*Symbol>();
+
+        if path->segments.Size() == 1 && !path->absolute {
+            let mut cursor = this.current;
+
+            while cursor != null {
+                symbols = this.LookupSymbol(cursor, path->segments.Back());
+                if !symbols.Empty() { break; }
+                cursor = cursor->parent;
+            }
+        } else {
+            let scope = this.ResolveScope(path);
+
+            if scope != null {
+                symbols = this.LookupSymbol(scope, path->segments.Back());
+            }
+        }
+
+        for symbol in symbols {
+            if symbol->kind == SymbolKind::Declaration && symbol->declaration->kind == HIRDeclarationKind::Function {
+                result.PushBack(symbol->declaration as *HIRFunctionDeclaration);
+            }
+        }
+
+        if result.Empty() && !test {
+            if !symbols.Empty() {
+                Logger::Log("Symbol '" + path->segments.Back().name + "' is not a function.", path, LogSeverity::Error);
+            } else {
+                Logger::Log("Symbol '" + path->segments.Back().name + "' not found.", path, LogSeverity::Error);
             }
         } return result;
     }
 
     pub fn ResolveCandidates(&this, name: &String, node: *ASTNode, test: bool) -> Vector<*HIRFunctionDeclaration> {
+        let (mut scope, mut found) = (this.current, false);
         let result = Vector<*HIRFunctionDeclaration>();
-        let mut scope = this.current;
 
         while scope != null {
             if scope->Has(name) {
-                if scope->Has(name, SymbolKind::Declaration) {
-                    for symbol in scope->GetAll(name, SymbolKind::Declaration) {
-                        if symbol->declaration->kind == HIRDeclarationKind::Function {
-                            result.PushBack(symbol->declaration as *HIRFunctionDeclaration);
-                        }
+                for symbol in scope->GetAll(name, SymbolKind::Declaration) {
+                    if symbol->declaration->kind == HIRDeclarationKind::Function {
+                        result.PushBack(symbol->declaration as *HIRFunctionDeclaration);
                     }
-                } else if !test {
-                    Logger::Log("Symbol '" + name + "' is not a function.", node, LogSeverity::Error);
-                } return result;
+                }
+                
+                found = true;
+                break;
             }
 
             scope = scope->parent;
         }
 
-        if !test {
-            Logger::Log("Symbol '" + name + "' not found.", node, LogSeverity::Error);
+        if result.Empty() && !test {
+            if found {
+                Logger::Log("Symbol '" + name + "' is not a function.", node, LogSeverity::Error);
+            } else {
+                Logger::Log("Symbol '" + name + "' not found.", node, LogSeverity::Error);
+            }
         } return result;
     }
 }

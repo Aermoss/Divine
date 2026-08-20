@@ -93,9 +93,7 @@ class ScopeManager {
         }
 
         if !types.Empty() {
-            let symbol = scope->Get(segment.name, SymbolKind::Generic);
-
-            if symbol != null {
+            for symbol in scope->Get(segment.name, SymbolKind::Generic) {
                 return symbol->generic->Get(types).right;
             }
         } else {
@@ -119,7 +117,7 @@ class ScopeManager {
 
         let symbols = Vector<*Symbol>();
 
-        for symbol in scope->GetAll(segment.name) {
+        for symbol in scope->Get(segment.name) {
             if !types.Empty() {
                 if symbol->kind != SymbolKind::Generic { continue; }
                 let result = symbol->generic->Get(types);
@@ -252,26 +250,27 @@ class ScopeManager {
     }
 
     pub fn ResolveCandidates(&this, name: &String, node: *ASTNode, test: bool) -> Vector<*HIRFunctionDeclaration> {
-        let (mut scope, mut found) = (this.current, false);
-        let result = Vector<*HIRFunctionDeclaration>();
+        let mut symbols = Vector<*Symbol>();
+        let mut result = Vector<*HIRFunctionDeclaration>();
+        let mut cursor = this.current;
 
-        while scope != null {
-            if scope->Has(name) {
-                for symbol in scope->GetAll(name, SymbolKind::Declaration) {
-                    if symbol->declaration->kind == HIRDeclarationKind::Function {
-                        result.PushBack(symbol->declaration as *HIRFunctionDeclaration);
-                    }
-                }
-                
-                found = true;
+        while cursor != null {
+            if !cursor->Has(name) {
+                cursor = cursor->parent;
+            } else {
+                symbols = cursor->Get(name);
                 break;
             }
+        }
 
-            scope = scope->parent;
+        for symbol in symbols {
+            if symbol->kind == SymbolKind::Declaration && symbol->declaration->kind == HIRDeclarationKind::Function {
+                result.PushBack(symbol->declaration as *HIRFunctionDeclaration);
+            }
         }
 
         if result.Empty() && !test {
-            if found {
+            if !symbols.Empty() {
                 Logger::Log("Symbol '" + name + "' is not a function.", node, LogSeverity::Error);
             } else {
                 Logger::Log("Symbol '" + name + "' not found.", node, LogSeverity::Error);

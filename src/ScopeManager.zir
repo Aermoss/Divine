@@ -19,12 +19,11 @@
 class LookupResult {
     pub symbol: *Symbol,
     pub scope: *Scope,
-    pub declaration: *HIRDeclaration,
     pub found: bool,
     pub valid: bool;
 
-    LookupResult(&mut this, symbol: *Symbol, scope: *Scope, declaration: *HIRDeclaration, found: bool, valid: bool) {
-        (this.symbol, this.scope, this.declaration, this.found, this.valid) = (symbol, scope, declaration, found, valid);
+    LookupResult(&mut this, symbol: *Symbol, scope: *Scope, found: bool, valid: bool) {
+        (this.symbol, this.scope, this.found, this.valid) = (symbol, scope, found, valid);
     }
 }
 
@@ -177,7 +176,7 @@ class ScopeManager {
 
     fn LookupInScope(&this, scope: *Scope, segment: ASTPathSegment, path: *ASTPath, scope_required: bool, test: bool) -> LookupResult {
         if scope == null {
-            return LookupResult(null, null, null, false, false);
+            return LookupResult(null, null, false, false);
         }
 
         let mut child: *Scope = null;
@@ -193,8 +192,8 @@ class ScopeManager {
 
         if scope_required && child != null {
             if !segment.types.Empty() {
-                return LookupResult(null, null, null, true, false);
-            } return LookupResult(null, child, null, true, true);
+                return LookupResult(null, null, true, false);
+            } return LookupResult(null, child, true, true);
         }
 
         if has_symbol {
@@ -202,7 +201,7 @@ class ScopeManager {
 
             if symbol->kind == SymbolKind::Generic {
                 if segment.types.Empty() {
-                    return LookupResult(null, null, null, true, false);
+                    return LookupResult(null, null, true, false);
                 }
 
                 let mut types = Vector<*SemanticType>();
@@ -210,26 +209,27 @@ class ScopeManager {
                 for _type in segment.types {
                     let resolved = analyzer->ResolveType(_type);
                     if resolved == null {
-                        return LookupResult(null, null, null, true, false);
+                        return LookupResult(null, null, true, false);
                     } types.PushBack(resolved);
                 }
 
                 let result = symbol->generic->Get(types);
+
                 if result.left == null || result.right == null {
-                    return LookupResult(null, null, null, true, false);
-                } return LookupResult(null, result.right, result.left, true, true);
+                    return LookupResult(null, null, true, false);
+                } return LookupResult(result.left, result.right, true, true);
             }
 
             if !segment.types.Empty() {
-                return LookupResult(null, null, null, true, false);
-            } return LookupResult(symbol, null, null, true, true);
+                return LookupResult(null, null, true, false);
+            } return LookupResult(symbol, null, true, true);
         }
 
         if child != null {
             if !segment.types.Empty() {
-                return LookupResult(null, null, null, true, false);
-            } return LookupResult(null, child, null, true, true);
-        } return LookupResult(null, null, null, false, false);
+                return LookupResult(null, null, true, false);
+            } return LookupResult(null, child, true, true);
+        } return LookupResult(null, null, false, false);
     }
 
     pub fn Resolve(&this, path: *ASTPath, test: bool) -> *Symbol {
@@ -307,8 +307,6 @@ class ScopeManager {
 
         if step.symbol != null {
             return step.symbol;
-        } else if step.declaration != null {
-            return new Symbol(step.declaration);
         } else {
             if !test {
                 Logger::Log("Path does not resolve to a symbol.", path, LogSeverity::Error);
@@ -354,9 +352,11 @@ class ScopeManager {
         } else {
             if path->absolute {
                 scope = this.current;
+
                 while scope != null && scope->parent != null {
                     scope = scope->parent;
                 }
+
                 step = this.LookupInScope(scope, path->segments[0], path, true, test);
             } else {
                 let mut search = this.current;
@@ -364,6 +364,7 @@ class ScopeManager {
 
                 while search != null {
                     let candidate = this.LookupInScope(search, path->segments[0], path, true, true);
+
                     if candidate.found {
                         step = candidate;
                         found = true;
@@ -436,12 +437,6 @@ class ScopeManager {
         if !step.valid {
             if !test {
                 Logger::Log("Invalid path segment '" + path->segments[last].name + "'.", path, LogSeverity::Error);
-            } return result;
-        }
-
-        if step.declaration != null {
-            if step.declaration->kind == HIRDeclarationKind::Function {
-                result.PushBack(step.declaration as *HIRFunctionDeclaration);
             } return result;
         }
 

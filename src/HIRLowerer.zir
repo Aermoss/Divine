@@ -18,6 +18,7 @@
 
 class HIRLowerer {
     arena: Arena,
+    builder: MIRBuilder,
     namespaces: Vector<String>,
     strings: Map<String, *MIRStaticDeclaration>,
     variables: Map<*HIRVariableStatement, *mut MIRValue>,
@@ -25,14 +26,11 @@ class HIRLowerer {
     runtime_functions: Map<String, *MIRFunctionDeclaration>,
     break_blocks: Vector<*mut MIRBlock>,
     continue_blocks: Vector<*mut MIRBlock>,
-    current_function: *mut MIRFunctionDeclaration = null,
-    current_block: *mut MIRBlock = null,
     module: *mut MIRModule = null;
-
-    HIRLowerer(&mut this) {}
 
     pub fn Lower(&mut this, module: *HIRModule) -> *MIRModule {
         this.module = this.arena.New<MIRModule>();
+        this.builder = MIRBuilder(this.module);
         this.LowerModule(module);
         return this.module;
     }
@@ -100,8 +98,7 @@ class HIRLowerer {
         let initializer = this.LowerConstantExpression(constant->initializer);
         if initializer == null { return; }
 
-        let lowered = this.arena.New<MIRConstantDeclaration>(declaration->name, declaration->_type, initializer);
-        this.module->declarations.PushBack(lowered);
+        let lowered = this.builder.BuildConstant(declaration->name, declaration->_type, initializer);
         this.declarations[declaration] = lowered;
     }
 
@@ -122,8 +119,7 @@ class HIRLowerer {
             if initializer == null { return; }
         }
 
-        let lowered = this.arena.New<MIRStaticDeclaration>(declaration->name, declaration->_type, _static->mutable, initializer, this.LowerLinkage(declaration->linkage));
-        this.module->declarations.PushBack(lowered as *MIRLinkableDeclaration);
+        let lowered = this.builder.BuildStatic(declaration->name, declaration->_type, _static->mutable, initializer, this.LowerLinkage(declaration->linkage));
         this.declarations[declaration] = lowered as *mut MIRLinkableDeclaration;
     }
 
@@ -135,32 +131,29 @@ class HIRLowerer {
             name = Mangler::MangleFunction(name, declaration->_type, Vector<*SemanticType>(), this.namespaces);
         }
 
-        let lowered = this.arena.New<MIRFunctionDeclaration>(name, declaration->_type, this.LowerLinkage(declaration->linkage));
-        this.module->declarations.PushBack(lowered as *MIRLinkableDeclaration);
-        this.declarations[declaration] = lowered as *mut MIRLinkableDeclaration;
+        let mut parameters = Vector<*MIRParameter>();
 
         for i in 0..function->parameters.Size() {
             let parameter: *HIRParameterDeclaration = function->parameters[i];
-            let parameter_declaration = parameter as *HIRDeclaration;
-            let lowered_parameter = this.arena.New<MIRParameter>(parameter_declaration->name, i as u32, parameter_declaration->_type);
-            lowered->parameters.PushBack(lowered_parameter);
+            let lowered = this.builder.BuildParameter((parameter as *HIRDeclaration)->name, i as u32, (parameter as *HIRDeclaration)->_type);
+            parameters.PushBack(lowered);
         }
+
+        let lowered = this.builder.BuildFunction(name, parameters, declaration->_type, this.LowerLinkage(declaration->linkage));
+        this.declarations[declaration] = lowered as *mut MIRLinkableDeclaration;
     }
 
     fn LowerFunctionSecondPass(&mut this, function: *HIRFunctionDeclaration) {
         if function->body == null { return; }
-        let declaration = function as *HIRDeclaration;
-        let lowered_declaration: *mut MIRDeclaration = this.declarations[declaration];
-        this.current_function = (lowered_declaration as *mut MIRLinkableDeclaration) as *mut MIRFunctionDeclaration;
-        this.current_block = this.arena.New<MIRBlock>("entry".ToString());
-        this.current_function->blocks.PushBack(this.current_block);
+        let declaration: *mut MIRDeclaration = this.declarations[function as *HIRDeclaration];
+        this.builder.SetCurrentFunction((declaration as *mut MIRLinkableDeclaration) as *mut MIRFunctionDeclaration);
+        this.builder.SetCurrentBlock(this.builder.BuildBlock("entry".ToString()));
         this.LowerBlockStatement(function->body);
     }
 
     fn LowerClassDeclarationFirstPass(&mut this, _class: *HIRClassDeclaration) {
         let declaration = _class as *HIRDeclaration;
-        let lowered = this.arena.New<MIRTypeDeclaration>(declaration->name, declaration->_type);
-        this.module->declarations.PushBack(lowered);
+        let lowered = this.builder.BuildType(declaration->name, declaration->_type);
         this.declarations[declaration] = lowered;
         lowered->types = _class->fields;
     }
@@ -201,8 +194,7 @@ class HIRLowerer {
 
     fn LowerStructureDeclarationFirstPass(&mut this, structure: *HIRStructureDeclaration) {
         let declaration = structure as *HIRDeclaration;
-        let lowered = this.arena.New<MIRTypeDeclaration>(declaration->name, declaration->_type);
-        this.module->declarations.PushBack(lowered);
+        let lowered = this.builder.BuildType(declaration->name, declaration->_type);
         this.declarations[declaration] = lowered;
         lowered->types = structure->fields;
     }
@@ -251,7 +243,7 @@ class HIRLowerer {
 
     fn LowerBlockStatement(&mut this, block: *HIRBlockStatement) {
         for statement in block->statements {
-            if this.current_block->terminator != null { break; }
+            if this.builder.GetCurrentBlock()->HasTerminator() { break; }
             this.LowerStatement(statement);
         }
     }
@@ -264,19 +256,17 @@ class HIRLowerer {
             if value == null { return; }
         }
 
-        this.current_block->terminator = this.arena.New<MIRReturnInstruction>(value);
+        this.builder.BuildReturn(value);
     }
 
     fn LowerVariableStatement(&mut this, variable: *HIRVariableStatement) {
-        let alloca = this.arena.New<MIRAllocaInstruction>(variable->name, variable->_type);
+        let alloca = this.builder.BuildAlloca(variable->name, variable->_type);
         this.variables[variable] = (alloca as *mut MIRInstruction) as *mut MIRValue;
-        this.current_block->instructions.PushBack(alloca);
 
         if variable->initializer != null {
             let value = this.LowerExpression(variable->initializer);
             if value == null { return; }
-            let store = this.arena.New<MIRStoreInstruction>(alloca as *MIRInstruction, value);
-            this.current_block->instructions.PushBack(store);
+            this.builder.BuildStore(alloca as *MIRInstruction, value);
         }
     }
 
@@ -284,108 +274,96 @@ class HIRLowerer {
         let condition = this.LowerExpression(_if->condition);
         if condition == null { return; }
 
-        let then_block = this.arena.New<MIRBlock>("if.then".ToString());
-        let merge_block = this.arena.New<MIRBlock>("if.merge".ToString());
+        let then_block = this.builder.BuildBlock("if.then".ToString());
+        let merge_block = this.builder.BuildBlock("if.merge".ToString());
 
         if _if->else_body == null {
-            this.current_block->terminator = this.arena.New<MIRConditionalBranchInstruction>(condition, then_block, merge_block);
+            this.builder.BuildConditionalBranch(condition, then_block, merge_block);
         } else {
-            let else_block = this.arena.New<MIRBlock>("if.else".ToString());
-            this.current_block->terminator = this.arena.New<MIRConditionalBranchInstruction>(condition, then_block, else_block);
-            this.current_block = else_block;
-            this.current_function->blocks.PushBack(else_block);
+            let else_block = this.builder.BuildBlock("if.else".ToString());
+            this.builder.BuildConditionalBranch(condition, then_block, else_block);
+            this.builder.SetCurrentBlock(else_block);
             this.LowerBlockStatement(_if->else_body);
 
-            if this.current_block->terminator == null {
-                this.current_block->terminator = this.arena.New<MIRBranchInstruction>(merge_block);
+            if !this.builder.GetCurrentBlock()->HasTerminator() {
+                this.builder.BuildBranch(merge_block);
             }
         }
 
-        this.current_block = then_block;
-        this.current_function->blocks.PushBack(then_block);
+        this.builder.SetCurrentBlock(then_block);
         this.LowerBlockStatement(_if->then_body);
 
-        if this.current_block->terminator == null {
-            this.current_block->terminator = this.arena.New<MIRBranchInstruction>(merge_block);
+        if !this.builder.GetCurrentBlock()->HasTerminator() {
+            this.builder.BuildBranch(merge_block);
         }
 
-        this.current_function->blocks.PushBack(merge_block);
-        this.current_block = merge_block;
+        this.builder.SetCurrentBlock(merge_block);
     }
 
     fn LowerWhileStatement(&mut this, _while: *HIRWhileStatement) {
-        let condition_block = this.arena.New<MIRBlock>("while.cond".ToString());
-        let body_block = this.arena.New<MIRBlock>("while.body".ToString());
-        let end_block = this.arena.New<MIRBlock>("while.end".ToString());
-        this.current_block->terminator = this.arena.New<MIRBranchInstruction>(condition_block);
+        let condition_block = this.builder.BuildBlock("while.cond".ToString());
+        let body_block = this.builder.BuildBlock("while.body".ToString());
+        let end_block = this.builder.BuildBlock("while.end".ToString());
+        this.builder.BuildBranch(condition_block);
 
-        this.current_block = condition_block;
-        this.current_function->blocks.PushBack(condition_block);
+        this.builder.SetCurrentBlock(condition_block);
         let condition = this.LowerExpression(_while->condition);
         if condition == null { return; }
-        this.current_block->terminator = this.arena.New<MIRConditionalBranchInstruction>(condition, body_block, end_block);
+        this.builder.BuildConditionalBranch(condition, body_block, end_block);
 
-        this.current_block = body_block;
-        this.current_function->blocks.PushBack(body_block);
+        this.builder.SetCurrentBlock(body_block);
         this.break_blocks.PushBack(end_block);
         this.continue_blocks.PushBack(condition_block);
         this.LowerBlockStatement(_while->while_body);
         this.continue_blocks.PopBack();
         this.break_blocks.PopBack();
 
-        if this.current_block->terminator == null {
-            this.current_block->terminator = this.arena.New<MIRBranchInstruction>(condition_block);
+        if !this.builder.GetCurrentBlock()->HasTerminator() {
+            this.builder.BuildBranch(condition_block);
         }
 
-        this.current_function->blocks.PushBack(end_block);
-        this.current_block = end_block;
+        this.builder.SetCurrentBlock(end_block);
     }
 
     fn LowerLoopStatement(&mut this, _loop: *HIRLoopStatement) {
-        let body_block = this.arena.New<MIRBlock>("loop.body".ToString());
-        let end_block = this.arena.New<MIRBlock>("loop.end".ToString());
-        this.current_block->terminator = this.arena.New<MIRBranchInstruction>(body_block);
+        let body_block = this.builder.BuildBlock("loop.body".ToString());
+        let end_block = this.builder.BuildBlock("loop.end".ToString());
+        this.builder.BuildBranch(body_block);
 
-        this.current_block = body_block;
-        this.current_function->blocks.PushBack(body_block);
+        this.builder.SetCurrentBlock(body_block);
         this.break_blocks.PushBack(end_block);
         this.continue_blocks.PushBack(body_block);
         this.LowerBlockStatement(_loop->body);
         this.continue_blocks.PopBack();
         this.break_blocks.PopBack();
 
-        if this.current_block->terminator == null {
-            this.current_block->terminator = this.arena.New<MIRBranchInstruction>(body_block);
+        if !this.builder.GetCurrentBlock()->HasTerminator() {
+            this.builder.BuildBranch(body_block);
         }
 
-        this.current_function->blocks.PushBack(end_block);
-        this.current_block = end_block;
+        this.builder.SetCurrentBlock(end_block);
     }
 
     fn LowerForStatement(&mut this, _for: *HIRForStatement) {
         this.LowerVariableStatement(_for->iterator);
-        let alloca = this.arena.New<MIRAllocaInstruction>(_for->variable->name, _for->variable->_type);
+        let alloca = this.builder.BuildAlloca(_for->variable->name, _for->variable->_type);
         this.variables[_for->variable] = (alloca as *mut MIRInstruction) as *mut MIRValue;
-        this.current_block->instructions.PushBack(alloca);
 
-        let condition_block = this.arena.New<MIRBlock>("for.cond".ToString());
-        let body_block = this.arena.New<MIRBlock>("for.body".ToString());
-        let step_block = this.arena.New<MIRBlock>("for.step".ToString());
-        let end_block = this.arena.New<MIRBlock>("for.end".ToString());
-        this.current_block->terminator = this.arena.New<MIRBranchInstruction>(condition_block);
+        let condition_block = this.builder.BuildBlock("for.cond".ToString());
+        let body_block = this.builder.BuildBlock("for.body".ToString());
+        let step_block = this.builder.BuildBlock("for.step".ToString());
+        let end_block = this.builder.BuildBlock("for.end".ToString());
+        this.builder.BuildBranch(condition_block);
 
-        this.current_block = condition_block;
-        this.current_function->blocks.PushBack(condition_block);
+        this.builder.SetCurrentBlock(condition_block);
         let condition = this.LowerExpression(_for->condition);
         if condition == null { return; }
-        this.current_block->terminator = this.arena.New<MIRConditionalBranchInstruction>(condition, body_block, end_block);
+        this.builder.BuildConditionalBranch(condition, body_block, end_block);
 
-        this.current_block = body_block;
-        this.current_function->blocks.PushBack(body_block);
+        this.builder.SetCurrentBlock(body_block);
         let value = this.LowerExpression(_for->variable->initializer);
         if value == null { return; }
-        let store = this.arena.New<MIRStoreInstruction>(alloca as *MIRInstruction, value);
-        this.current_block->instructions.PushBack(store);
+        this.builder.BuildStore(alloca as *MIRInstruction, value);
 
         this.break_blocks.PushBack(end_block);
         this.continue_blocks.PushBack(step_block);
@@ -393,31 +371,29 @@ class HIRLowerer {
         this.continue_blocks.PopBack();
         this.break_blocks.PopBack();
 
-        if this.current_block->terminator == null {
-            this.current_block->terminator = this.arena.New<MIRBranchInstruction>(step_block);
+        if !this.builder.GetCurrentBlock()->HasTerminator() {
+            this.builder.BuildBranch(step_block);
         }
 
-        this.current_block = step_block;
-        this.current_function->blocks.PushBack(step_block);
+        this.builder.SetCurrentBlock(step_block);
         this.LowerExpression(_for->step);
 
-        if this.current_block->terminator == null {
-            this.current_block->terminator = this.arena.New<MIRBranchInstruction>(condition_block);
+        if !this.builder.GetCurrentBlock()->HasTerminator() {
+            this.builder.BuildBranch(condition_block);
         }
 
-        this.current_function->blocks.PushBack(end_block);
-        this.current_block = end_block;
+        this.builder.SetCurrentBlock(end_block);
     }
 
     fn LowerBreakStatement(&mut this, _break: *HIRBreakStatement) {
         if !this.break_blocks.Empty() {
-            this.current_block->terminator = this.arena.New<MIRBranchInstruction>(this.break_blocks.Back());
+            this.builder.BuildBranch(this.break_blocks.Back());
         }
     }
 
     fn LowerContinueStatement(&mut this, _continue: *HIRContinueStatement) {
         if !this.continue_blocks.Empty() {
-            this.current_block->terminator = this.arena.New<MIRBranchInstruction>(this.continue_blocks.Back());
+            this.builder.BuildBranch(this.continue_blocks.Back());
         }
     }
 
@@ -443,11 +419,10 @@ class HIRLowerer {
                 return this.arena.New<MIRDeclarationReference>(this.declarations[declaration]);
             } return null;
         } else if expression->kind == HIRExpressionKind::Temporary {
-            let alloca = this.arena.New<MIRAllocaInstruction>("temporary".ToString(), expression->_type);
-            this.current_block->instructions.PushBack(alloca);
+            let alloca = this.builder.BuildAlloca("temporary".ToString(), expression->_type);
             let initializer = this.LowerExpression((expression as *HIRTemporaryExpression)->initializer);
             if initializer == null { return null; }
-            this.current_block->instructions.PushBack(this.arena.New<MIRStoreInstruction>(alloca as *MIRInstruction, initializer));
+            this.builder.BuildStore(alloca as *MIRInstruction, initializer);
             return alloca as *MIRInstruction;
         } else if expression->kind == HIRExpressionKind::MemberAccess {
             return this.LowerMemberAccessExpression(expression as *HIRMemberAccessExpression);
@@ -477,8 +452,7 @@ class HIRLowerer {
                 let name = "string." + String::FromInteger(this.strings.Size() as u64);
                 let initializer = this.arena.New<MIRConstantString>(value, expression->_type);
                 let _type = analyzer->type_manager.Array(analyzer->type_manager.Integer(8, false), value->Length() + 1);
-                _static = this.arena.New<MIRStaticDeclaration>(name, _type, false, initializer as *MIRConstant, MIRDeclarationLinkage::Internal);
-                this.module->declarations.PushBack(_static as *MIRLinkableDeclaration);
+                _static = this.builder.BuildStatic(name, _type, false, initializer as *MIRConstant, MIRDeclarationLinkage::Internal);
                 this.strings[value] = _static;
             }
 
@@ -511,9 +485,7 @@ class HIRLowerer {
             let place = this.LowerPlaceExpression(expression);
             if place == null { return null; }
             if place->_type->IsFunction() { return place; }
-            let load = this.arena.New<MIRLoadInstruction>("load".ToString(), place);
-            this.current_block->instructions.PushBack(load);
-            return load as *MIRInstruction;
+            return this.builder.BuildLoad("load".ToString(), place) as *MIRInstruction;
         }
     }
 
@@ -526,8 +498,7 @@ class HIRLowerer {
         let place = this.LowerPlaceExpression(assignment->left);
         let value = this.LowerExpression(assignment->right);
         if place == null || value == null { return null; }
-        let store = this.arena.New<MIRStoreInstruction>(place as *MIRInstruction, value);
-        this.current_block->instructions.PushBack(store);
+        let store = this.builder.BuildStore(place, value);
         return value;
     }
 
@@ -542,9 +513,7 @@ class HIRLowerer {
             arguments.PushBack(lowered);
         }
 
-        let lowered = this.arena.New<MIRCallInstruction>("call".ToString(), callee, arguments);
-        this.current_block->instructions.PushBack(lowered);
-        return lowered as *MIRInstruction;
+        return this.builder.BuildCall("call".ToString(), callee, arguments) as *MIRInstruction;
     }
 
     fn LowerRuntimeFunction(&mut this, name: String, _type: *SemanticType) -> *MIRFunctionDeclaration {
@@ -558,16 +527,16 @@ class HIRLowerer {
             return this.runtime_functions[name];
         }
 
-        let parameters = _type->Parameters();
-        let function = this.arena.New<MIRFunctionDeclaration>(name, _type, MIRDeclarationLinkage::External);
-        this.module->declarations.PushBack(function as *MIRLinkableDeclaration);
-        this.runtime_functions[name] = function;
+        let parameter_types = _type->Parameters();
+        let mut parameters = Vector<*MIRParameter>();
 
-        for i in 0..parameters.Size() {
-            let parameter: *SemanticType = parameters[i];
-            let lowered_parameter = this.arena.New<MIRParameter>("".ToString(), i as u32, parameter);
-            function->parameters.PushBack(lowered_parameter);
-        } return function;
+        for i in 0..parameter_types.Size() {
+            parameters.PushBack(this.builder.BuildParameter("".ToString(), i as u32, parameter_types[i]));
+        }
+
+        let function = this.builder.BuildFunction(name, parameters, _type, MIRDeclarationLinkage::External);
+        this.runtime_functions[name] = function;
+        return function;
     }
 
     fn LowerNewExpression(&mut this, _new: *HIRNewExpression) -> *MIRValue {
@@ -580,16 +549,13 @@ class HIRLowerer {
         if _new->size != null {
             let size = this.LowerExpression(_new->size);
             if size == null { return null; }
-            let total_size = this.arena.New<MIRBinaryInstruction>("new.size".ToString(), MIRBinaryKind::Mul, size, allocation_size, size_type);
-            this.current_block->instructions.PushBack(total_size);
-            allocation_size = total_size as *MIRInstruction;
+            allocation_size = this.builder.BuildBinary("new.size".ToString(), MIRBinaryKind::Mul, size, allocation_size, size_type) as *MIRInstruction;
         }
 
         let mut arguments = Vector<*MIRValue>();
         arguments.PushBack(allocation_size);
-        let call = this.arena.New<MIRCallInstruction>("new".ToString(), this.arena.New<MIRDeclarationReference>(malloc as *MIRLinkableDeclaration), arguments);
-        this.current_block->instructions.PushBack(call);
-        return call as *MIRInstruction;
+        let callee = this.arena.New<MIRDeclarationReference>(malloc as *MIRLinkableDeclaration);
+        return this.builder.BuildCall("new".ToString(), callee, arguments) as *MIRInstruction;
     }
 
     fn LowerDeleteExpression(&mut this, _delete: *HIRDeleteExpression) -> *MIRValue {
@@ -600,8 +566,8 @@ class HIRLowerer {
         let free = this.LowerRuntimeFunction("free".ToString(), analyzer->type_manager.Function(parameters, analyzer->type_manager.Void()));
         let mut arguments = Vector<*MIRValue>();
         arguments.PushBack(pointer);
-        let call = this.arena.New<MIRCallInstruction>("delete".ToString(), this.arena.New<MIRDeclarationReference>(free as *MIRLinkableDeclaration), arguments);
-        this.current_block->instructions.PushBack(call);
+        let callee = this.arena.New<MIRDeclarationReference>(free as *MIRLinkableDeclaration);
+        this.builder.BuildCall("delete".ToString(), callee, arguments);
         return null;
     }
 
@@ -616,95 +582,65 @@ class HIRLowerer {
 
         if value_type->IsBoolean() {
             if target_type->IsInteger() {
-                let cast = this.arena.New<MIRCastInstruction>("cast".ToString(), MIRCastKind::ZExt, value, target_type);
-                this.current_block->instructions.PushBack(cast);
-                return cast as *MIRInstruction;
+                return this.builder.BuildCast("cast".ToString(), MIRCastKind::ZExt, value, target_type) as *MIRInstruction;
             }
         } else if value_type->IsCharacter() {
             if target_type->IsInteger() {
                 if value_type->Width() < target_type->Width() {
-                    let cast = this.arena.New<MIRCastInstruction>("cast".ToString(), MIRCastKind::ZExt, value, target_type);
-                    this.current_block->instructions.PushBack(cast);
-                    return cast as *MIRInstruction;
+                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::ZExt, value, target_type) as *MIRInstruction;
                 } else if value_type->Width() > target_type->Width() {
-                    let cast = this.arena.New<MIRCastInstruction>("cast".ToString(), MIRCastKind::Trunc, value, target_type);
-                    this.current_block->instructions.PushBack(cast);
-                    return cast as *MIRInstruction;
+                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::Trunc, value, target_type) as *MIRInstruction;
                 }
             }
         } else if value_type->IsInteger() {
             if target_type->IsCharacter() {
                 if value_type->Width() == 8 && !value_type->IsSigned() {
-                    let cast = this.arena.New<MIRCastInstruction>("cast".ToString(), MIRCastKind::ZExt, value, target_type);
-                    this.current_block->instructions.PushBack(cast);
-                    return cast as *MIRInstruction;
+                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::ZExt, value, target_type) as *MIRInstruction;
                 }
             }
 
             if target_type->IsInteger() || target_type->IsEnumeration() {
                 if value_type->Width() < target_type->Width() {
                     if value_type->IsSigned() {
-                        let cast = this.arena.New<MIRCastInstruction>("cast".ToString(), MIRCastKind::SExt, value, target_type);
-                        this.current_block->instructions.PushBack(cast);
-                        return cast as *MIRInstruction;
+                        return this.builder.BuildCast("cast".ToString(), MIRCastKind::SExt, value, target_type) as *MIRInstruction;
                     } else {
-                        let cast = this.arena.New<MIRCastInstruction>("cast".ToString(), MIRCastKind::ZExt, value, target_type);
-                        this.current_block->instructions.PushBack(cast);
-                        return cast as *MIRInstruction;
+                        return this.builder.BuildCast("cast".ToString(), MIRCastKind::ZExt, value, target_type) as *MIRInstruction;
                     }
                 } else if value_type->Width() > target_type->Width() {
-                    let cast = this.arena.New<MIRCastInstruction>("cast".ToString(), MIRCastKind::Trunc, value, target_type);
-                    this.current_block->instructions.PushBack(cast);
-                    return cast as *MIRInstruction;
+                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::Trunc, value, target_type) as *MIRInstruction;
                 }
             }
 
             if target_type->IsFloat() {
                 if value_type->IsSigned() {
-                    let cast = this.arena.New<MIRCastInstruction>("cast".ToString(), MIRCastKind::SIToFP, value, target_type);
-                    this.current_block->instructions.PushBack(cast);
-                    return cast as *MIRInstruction;
+                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::SIToFP, value, target_type) as *MIRInstruction;
                 } else {
-                    let cast = this.arena.New<MIRCastInstruction>("cast".ToString(), MIRCastKind::UIToFP, value, target_type);
-                    this.current_block->instructions.PushBack(cast);
-                    return cast as *MIRInstruction;
+                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::UIToFP, value, target_type) as *MIRInstruction;
                 }
             }
 
             if target_type->IsPointer() {
-                let cast = this.arena.New<MIRCastInstruction>("cast".ToString(), MIRCastKind::IntToPtr, value, target_type);
-                this.current_block->instructions.PushBack(cast);
-                return cast as *MIRInstruction;
+                return this.builder.BuildCast("cast".ToString(), MIRCastKind::IntToPtr, value, target_type) as *MIRInstruction;
             }
         } else if value_type->IsFloat() {
             if target_type->IsInteger() {
                 if target_type->IsSigned() {
-                    let cast = this.arena.New<MIRCastInstruction>("cast".ToString(), MIRCastKind::FPToSI, value, target_type);
-                    this.current_block->instructions.PushBack(cast);
-                    return cast as *MIRInstruction;
+                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::FPToSI, value, target_type) as *MIRInstruction;
                 } else {
-                    let cast = this.arena.New<MIRCastInstruction>("cast".ToString(), MIRCastKind::FPToUI, value, target_type);
-                    this.current_block->instructions.PushBack(cast);
-                    return cast as *MIRInstruction;
+                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::FPToUI, value, target_type) as *MIRInstruction;
                 }
             }
 
             if target_type->IsFloat() {
                 if value_type->Width() < target_type->Width() {
-                    let cast = this.arena.New<MIRCastInstruction>("cast".ToString(), MIRCastKind::FPExt, value, target_type);
-                    this.current_block->instructions.PushBack(cast);
-                    return cast as *MIRInstruction;
+                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::FPExt, value, target_type) as *MIRInstruction;
                 } else if value_type->Width() > target_type->Width() {
-                    let cast = this.arena.New<MIRCastInstruction>("cast".ToString(), MIRCastKind::FPTrunc, value, target_type);
-                    this.current_block->instructions.PushBack(cast);
-                    return cast as *MIRInstruction;
+                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::FPTrunc, value, target_type) as *MIRInstruction;
                 }
             }
         } else if value_type->IsPointer() {
             if target_type->IsInteger() {
-                let cast = this.arena.New<MIRCastInstruction>("cast".ToString(), MIRCastKind::PtrToInt, value, target_type);
-                this.current_block->instructions.PushBack(cast);
-                return cast as *MIRInstruction;
+                return this.builder.BuildCast("cast".ToString(), MIRCastKind::PtrToInt, value, target_type) as *MIRInstruction;
             }
 
             if target_type->IsPointer() {
@@ -730,34 +666,24 @@ class HIRLowerer {
                     }
 
                     if index != 0 {
-                        let gep = this.arena.New<MIRStructGEPInstruction>("cast.base".ToString(), value, index, target_type);
-                        this.current_block->instructions.PushBack(gep);
-                        value = gep as *MIRInstruction;
+                        value = this.builder.BuildStructGEP("cast.base".ToString(), value, index, target_type) as *MIRInstruction;
                     } else if !related {
                         return null;
                     }
                 }
 
-                let cast = this.arena.New<MIRCastInstruction>("cast".ToString(), MIRCastKind::Bitcast, value, target_type);
-                this.current_block->instructions.PushBack(cast);
-                return cast as *MIRInstruction;
+                return this.builder.BuildCast("cast".ToString(), MIRCastKind::Bitcast, value, target_type) as *MIRInstruction;
             }
         } else if value_type->IsEnumeration() {
             if target_type->IsInteger() {
                 if value_type->Width() < target_type->Width() {
                     if value_type->IsSigned() {
-                        let cast = this.arena.New<MIRCastInstruction>("cast".ToString(), MIRCastKind::SExt, value, target_type);
-                        this.current_block->instructions.PushBack(cast);
-                        return cast as *MIRInstruction;
+                        return this.builder.BuildCast("cast".ToString(), MIRCastKind::SExt, value, target_type) as *MIRInstruction;
                     } else {
-                        let cast = this.arena.New<MIRCastInstruction>("cast".ToString(), MIRCastKind::ZExt, value, target_type);
-                        this.current_block->instructions.PushBack(cast);
-                        return cast as *MIRInstruction;
+                        return this.builder.BuildCast("cast".ToString(), MIRCastKind::ZExt, value, target_type) as *MIRInstruction;
                     }
                 } else if value_type->Width() > target_type->Width() {
-                    let cast = this.arena.New<MIRCastInstruction>("cast".ToString(), MIRCastKind::Trunc, value, target_type);
-                    this.current_block->instructions.PushBack(cast);
-                    return cast as *MIRInstruction;
+                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::Trunc, value, target_type) as *MIRInstruction;
                 }
             }
         } return value;
@@ -767,9 +693,7 @@ class HIRLowerer {
         let value = this.LowerExpression(index_access->value);
         let index = this.LowerExpression(index_access->index);
         if value == null || index == null { return null; }
-        let gep = this.arena.New<MIRArrayGEPInstruction>("index.access".ToString(), value, index);
-        this.current_block->instructions.PushBack(gep);
-        return gep as *MIRInstruction;
+        return this.builder.BuildArrayGEP("index.access".ToString(), value, index) as *MIRInstruction;
     }
 
     fn LowerMemberAccessExpression(&mut this, member_access: *HIRMemberAccessExpression) -> *MIRValue {
@@ -777,32 +701,25 @@ class HIRLowerer {
         let instance = this.LowerPlaceExpression(member_access->instance);
         if instance == null { return null; }
         let _type = analyzer->type_manager.Pointer(expression->_type, expression->mutable);
-        let gep = this.arena.New<MIRStructGEPInstruction>("field.access".ToString(), instance, member_access->index as u32, _type);
-        this.current_block->instructions.PushBack(gep);
-        return gep as *MIRInstruction;
+        return this.builder.BuildStructGEP("field.access".ToString(), instance, member_access->index as u32, _type) as *MIRInstruction;
     }
 
     fn LowerUnaryExpression(&mut this, unary: *HIRUnaryExpression) -> *MIRValue {
-        let mut lowered: *MIRInstruction = null;
         let operand = this.LowerExpression(unary->operand);
         if operand == null { return null; }
 
         if unary->_operator == TokenType::MINUS {
             if unary->operand->_type->IsFloat() {
-                lowered = this.arena.New<MIRUnaryInstruction>("neg".ToString(), MIRUnaryKind::FNeg, operand) as *MIRInstruction;
+                return this.builder.BuildUnary("neg".ToString(), MIRUnaryKind::FNeg, operand) as *MIRInstruction;
             } else {
-                lowered = this.arena.New<MIRUnaryInstruction>("neg".ToString(), MIRUnaryKind::Neg, operand) as *MIRInstruction;
+                return this.builder.BuildUnary("neg".ToString(), MIRUnaryKind::Neg, operand) as *MIRInstruction;
             }
         } else if unary->_operator == TokenType::NOT {
-            lowered = this.arena.New<MIRUnaryInstruction>("not".ToString(), MIRUnaryKind::Not, operand) as *MIRInstruction;
+            return this.builder.BuildUnary("not".ToString(), MIRUnaryKind::Not, operand) as *MIRInstruction;
         } else { return null; }
-
-        this.current_block->instructions.PushBack(lowered);
-        return lowered;
     }
 
     fn LowerBinaryExpression(&mut this, binary: *HIRBinaryExpression) -> *MIRValue {
-        let mut lowered: *MIRInstruction = null;
         let expression = binary as *HIRExpression;
         let result_type = expression->_type;
 
@@ -811,29 +728,26 @@ class HIRLowerer {
         if left == null { return null; }
 
         if binary->_operator == TokenType::AND || binary->_operator == TokenType::OR {
-            let mut right_block = this.arena.New<MIRBlock>("binary.right".ToString());
-            let merge_block = this.arena.New<MIRBlock>("binary.merge".ToString());
-            let left_block = this.current_block;
+            let mut right_block = this.builder.BuildBlock("binary.right".ToString());
+            let merge_block = this.builder.BuildBlock("binary.merge".ToString());
+            let left_block = this.builder.GetCurrentBlock();
 
             if binary->_operator == TokenType::AND {
-                this.current_block->terminator = this.arena.New<MIRConditionalBranchInstruction>(left, right_block, merge_block);
+                this.builder.BuildConditionalBranch(left, right_block, merge_block);
             } else {
-                this.current_block->terminator = this.arena.New<MIRConditionalBranchInstruction>(left, merge_block, right_block);
+                this.builder.BuildConditionalBranch(left, merge_block, right_block);
             }
 
-            this.current_block = right_block;
-            this.current_function->blocks.PushBack(right_block);
+            this.builder.SetCurrentBlock(right_block);
             let right = this.LowerExpression(binary->right);
             if right == null { return null; }
-            this.current_block->terminator = this.arena.New<MIRBranchInstruction>(merge_block);
-            right_block = this.current_block;
+            right_block = this.builder.GetCurrentBlock();
+            this.builder.BuildBranch(merge_block);
 
-            this.current_block = merge_block;
-            this.current_function->blocks.PushBack(merge_block);
-            let phi = this.arena.New<MIRPhiInstruction>("short.circuit".ToString(), result_type);
+            this.builder.SetCurrentBlock(merge_block);
+            let phi = this.builder.BuildPhi("short.circuit".ToString(), result_type);
             phi->AddIncoming(left, left_block);
             phi->AddIncoming(right, right_block);
-            this.current_block->instructions.PushBack(phi);
             return phi as *MIRInstruction;
         }
 
@@ -845,61 +759,61 @@ class HIRLowerer {
             let signed = left_type->IsSigned();
 
             if binary->_operator == TokenType::PLUS {
-                lowered = this.arena.New<MIRBinaryInstruction>("add".ToString(), MIRBinaryKind::Add, left, right, result_type) as *MIRInstruction;
+                return this.builder.BuildBinary("add".ToString(), MIRBinaryKind::Add, left, right, result_type) as *MIRInstruction;
             } else if binary->_operator == TokenType::MINUS {
-                lowered = this.arena.New<MIRBinaryInstruction>("sub".ToString(), MIRBinaryKind::Sub, left, right, result_type) as *MIRInstruction;
+                return this.builder.BuildBinary("sub".ToString(), MIRBinaryKind::Sub, left, right, result_type) as *MIRInstruction;
             } else if binary->_operator == TokenType::MUL {
-                lowered = this.arena.New<MIRBinaryInstruction>("mul".ToString(), MIRBinaryKind::Mul, left, right, result_type) as *MIRInstruction;
+                return this.builder.BuildBinary("mul".ToString(), MIRBinaryKind::Mul, left, right, result_type) as *MIRInstruction;
             } else if binary->_operator == TokenType::DIV {
-                lowered = this.arena.New<MIRBinaryInstruction>("div".ToString(), signed ? MIRBinaryKind::SDiv : MIRBinaryKind::UDiv, left, right, result_type) as *MIRInstruction;
+                return this.builder.BuildBinary("div".ToString(), signed ? MIRBinaryKind::SDiv : MIRBinaryKind::UDiv, left, right, result_type) as *MIRInstruction;
             } else if binary->_operator == TokenType::MOD {
-                lowered = this.arena.New<MIRBinaryInstruction>("rem".ToString(), signed ? MIRBinaryKind::SRem : MIRBinaryKind::URem, left, right, result_type) as *MIRInstruction;
+                return this.builder.BuildBinary("rem".ToString(), signed ? MIRBinaryKind::SRem : MIRBinaryKind::URem, left, right, result_type) as *MIRInstruction;
             } else if binary->_operator == TokenType::EQUAL {
-                lowered = this.arena.New<MIRBinaryInstruction>("eq".ToString(), MIRBinaryKind::ICmpEq, left, right, result_type) as *MIRInstruction;
+                return this.builder.BuildBinary("eq".ToString(), MIRBinaryKind::ICmpEq, left, right, result_type) as *MIRInstruction;
             } else if binary->_operator == TokenType::NOT_EQUAL {
-                lowered = this.arena.New<MIRBinaryInstruction>("ne".ToString(), MIRBinaryKind::ICmpNe, left, right, result_type) as *MIRInstruction;
+                return this.builder.BuildBinary("ne".ToString(), MIRBinaryKind::ICmpNe, left, right, result_type) as *MIRInstruction;
             } else if binary->_operator == TokenType::LESS {
-                lowered = this.arena.New<MIRBinaryInstruction>("lt".ToString(), signed ? MIRBinaryKind::ICmpSlt : MIRBinaryKind::ICmpUlt, left, right, result_type) as *MIRInstruction;
+                return this.builder.BuildBinary("lt".ToString(), signed ? MIRBinaryKind::ICmpSlt : MIRBinaryKind::ICmpUlt, left, right, result_type) as *MIRInstruction;
             } else if binary->_operator == TokenType::LESS_EQUAL {
-                lowered = this.arena.New<MIRBinaryInstruction>("le".ToString(), signed ? MIRBinaryKind::ICmpSle : MIRBinaryKind::ICmpUle, left, right, result_type) as *MIRInstruction;
+                return this.builder.BuildBinary("le".ToString(), signed ? MIRBinaryKind::ICmpSle : MIRBinaryKind::ICmpUle, left, right, result_type) as *MIRInstruction;
             } else if binary->_operator == TokenType::GREATER {
-                lowered = this.arena.New<MIRBinaryInstruction>("gt".ToString(), signed ? MIRBinaryKind::ICmpSgt : MIRBinaryKind::ICmpUgt, left, right, result_type) as *MIRInstruction;
+                return this.builder.BuildBinary("gt".ToString(), signed ? MIRBinaryKind::ICmpSgt : MIRBinaryKind::ICmpUgt, left, right, result_type) as *MIRInstruction;
             } else if binary->_operator == TokenType::GREATER_EQUAL {
-                lowered = this.arena.New<MIRBinaryInstruction>("ge".ToString(), signed ? MIRBinaryKind::ICmpSge : MIRBinaryKind::ICmpUge, left, right, result_type) as *MIRInstruction;
+                return this.builder.BuildBinary("ge".ToString(), signed ? MIRBinaryKind::ICmpSge : MIRBinaryKind::ICmpUge, left, right, result_type) as *MIRInstruction;
             } else if binary->_operator == TokenType::BITWISE_AND {
-                lowered = this.arena.New<MIRBinaryInstruction>("and".ToString(), MIRBinaryKind::And, left, right, result_type) as *MIRInstruction;
+                return this.builder.BuildBinary("and".ToString(), MIRBinaryKind::And, left, right, result_type) as *MIRInstruction;
             } else if binary->_operator == TokenType::BITWISE_OR {
-                lowered = this.arena.New<MIRBinaryInstruction>("or".ToString(), MIRBinaryKind::Or, left, right, result_type) as *MIRInstruction;
+                return this.builder.BuildBinary("or".ToString(), MIRBinaryKind::Or, left, right, result_type) as *MIRInstruction;
             } else if binary->_operator == TokenType::BITWISE_XOR {
-                lowered = this.arena.New<MIRBinaryInstruction>("xor".ToString(), MIRBinaryKind::Xor, left, right, result_type) as *MIRInstruction;
+                return this.builder.BuildBinary("xor".ToString(), MIRBinaryKind::Xor, left, right, result_type) as *MIRInstruction;
             } else if binary->_operator == TokenType::LSHIFT {
-                lowered = this.arena.New<MIRBinaryInstruction>("shl".ToString(), MIRBinaryKind::Shl, left, right, result_type) as *MIRInstruction;
+                return this.builder.BuildBinary("shl".ToString(), MIRBinaryKind::Shl, left, right, result_type) as *MIRInstruction;
             } else if binary->_operator == TokenType::RSHIFT {
-                lowered = this.arena.New<MIRBinaryInstruction>("shr".ToString(), signed ? MIRBinaryKind::AShr : MIRBinaryKind::LShr, left, right, result_type) as *MIRInstruction;
+                return this.builder.BuildBinary("shr".ToString(), signed ? MIRBinaryKind::AShr : MIRBinaryKind::LShr, left, right, result_type) as *MIRInstruction;
             } else { return null; }
         } else if left_type->IsFloat() {
             if binary->_operator == TokenType::PLUS {
-                lowered = this.arena.New<MIRBinaryInstruction>("add".ToString(), MIRBinaryKind::FAdd, left, right, result_type) as *MIRInstruction;
+                return this.builder.BuildBinary("add".ToString(), MIRBinaryKind::FAdd, left, right, result_type) as *MIRInstruction;
             } else if binary->_operator == TokenType::MINUS {
-                lowered = this.arena.New<MIRBinaryInstruction>("sub".ToString(), MIRBinaryKind::FSub, left, right, result_type) as *MIRInstruction;
+                return this.builder.BuildBinary("sub".ToString(), MIRBinaryKind::FSub, left, right, result_type) as *MIRInstruction;
             } else if binary->_operator == TokenType::MUL {
-                lowered = this.arena.New<MIRBinaryInstruction>("mul".ToString(), MIRBinaryKind::FMul, left, right, result_type) as *MIRInstruction;
+                return this.builder.BuildBinary("mul".ToString(), MIRBinaryKind::FMul, left, right, result_type) as *MIRInstruction;
             } else if binary->_operator == TokenType::DIV {
-                lowered = this.arena.New<MIRBinaryInstruction>("div".ToString(), MIRBinaryKind::FDiv, left, right, result_type) as *MIRInstruction;
+                return this.builder.BuildBinary("div".ToString(), MIRBinaryKind::FDiv, left, right, result_type) as *MIRInstruction;
             } else if binary->_operator == TokenType::MOD {
-                lowered = this.arena.New<MIRBinaryInstruction>("rem".ToString(), MIRBinaryKind::FRem, left, right, result_type) as *MIRInstruction;
+                return this.builder.BuildBinary("rem".ToString(), MIRBinaryKind::FRem, left, right, result_type) as *MIRInstruction;
             } else if binary->_operator == TokenType::EQUAL {
-                lowered = this.arena.New<MIRBinaryInstruction>("eq".ToString(), MIRBinaryKind::FCmpEq, left, right, result_type) as *MIRInstruction;
+                return this.builder.BuildBinary("eq".ToString(), MIRBinaryKind::FCmpEq, left, right, result_type) as *MIRInstruction;
             } else if binary->_operator == TokenType::NOT_EQUAL {
-                lowered = this.arena.New<MIRBinaryInstruction>("ne".ToString(), MIRBinaryKind::FCmpNe, left, right, result_type) as *MIRInstruction;
+                return this.builder.BuildBinary("ne".ToString(), MIRBinaryKind::FCmpNe, left, right, result_type) as *MIRInstruction;
             } else if binary->_operator == TokenType::LESS {
-                lowered = this.arena.New<MIRBinaryInstruction>("lt".ToString(), MIRBinaryKind::FCmpLt, left, right, result_type) as *MIRInstruction;
+                return this.builder.BuildBinary("lt".ToString(), MIRBinaryKind::FCmpLt, left, right, result_type) as *MIRInstruction;
             } else if binary->_operator == TokenType::LESS_EQUAL {
-                lowered = this.arena.New<MIRBinaryInstruction>("le".ToString(), MIRBinaryKind::FCmpLe, left, right, result_type) as *MIRInstruction;
+                return this.builder.BuildBinary("le".ToString(), MIRBinaryKind::FCmpLe, left, right, result_type) as *MIRInstruction;
             } else if binary->_operator == TokenType::GREATER {
-                lowered = this.arena.New<MIRBinaryInstruction>("gt".ToString(), MIRBinaryKind::FCmpGt, left, right, result_type) as *MIRInstruction;
+                return this.builder.BuildBinary("gt".ToString(), MIRBinaryKind::FCmpGt, left, right, result_type) as *MIRInstruction;
             } else if binary->_operator == TokenType::GREATER_EQUAL {
-                lowered = this.arena.New<MIRBinaryInstruction>("ge".ToString(), MIRBinaryKind::FCmpGe, left, right, result_type) as *MIRInstruction;
+                return this.builder.BuildBinary("ge".ToString(), MIRBinaryKind::FCmpGe, left, right, result_type) as *MIRInstruction;
             } else { return null; }
         } else if left_type->IsPointer() || right_type->IsPointer() {
             let mut pointer = left_type->IsPointer() ? left : right;
@@ -907,31 +821,27 @@ class HIRLowerer {
 
             if left_type->IsPointer() && right_type->IsPointer() {
                 if binary->_operator == TokenType::EQUAL {
-                    lowered = this.arena.New<MIRBinaryInstruction>("eq".ToString(), MIRBinaryKind::ICmpEq, pointer, other, result_type) as *MIRInstruction;
+                    return this.builder.BuildBinary("eq".ToString(), MIRBinaryKind::ICmpEq, pointer, other, result_type) as *MIRInstruction;
                 } else if binary->_operator == TokenType::NOT_EQUAL {
-                    lowered = this.arena.New<MIRBinaryInstruction>("ne".ToString(), MIRBinaryKind::ICmpNe, pointer, other, result_type) as *MIRInstruction;
+                    return this.builder.BuildBinary("ne".ToString(), MIRBinaryKind::ICmpNe, pointer, other, result_type) as *MIRInstruction;
                 } else if binary->_operator == TokenType::GREATER {
-                    lowered = this.arena.New<MIRBinaryInstruction>("gt".ToString(), MIRBinaryKind::ICmpUgt, pointer, other, result_type) as *MIRInstruction;
+                    return this.builder.BuildBinary("gt".ToString(), MIRBinaryKind::ICmpUgt, pointer, other, result_type) as *MIRInstruction;
                 } else if binary->_operator == TokenType::GREATER_EQUAL {
-                    lowered = this.arena.New<MIRBinaryInstruction>("ge".ToString(), MIRBinaryKind::ICmpUge, pointer, other, result_type) as *MIRInstruction;
+                    return this.builder.BuildBinary("ge".ToString(), MIRBinaryKind::ICmpUge, pointer, other, result_type) as *MIRInstruction;
                 } else if binary->_operator == TokenType::LESS {
-                    lowered = this.arena.New<MIRBinaryInstruction>("lt".ToString(), MIRBinaryKind::ICmpUlt, pointer, other, result_type) as *MIRInstruction;
+                    return this.builder.BuildBinary("lt".ToString(), MIRBinaryKind::ICmpUlt, pointer, other, result_type) as *MIRInstruction;
                 } else if binary->_operator == TokenType::LESS_EQUAL {
-                    lowered = this.arena.New<MIRBinaryInstruction>("le".ToString(), MIRBinaryKind::ICmpUle, pointer, other, result_type) as *MIRInstruction;
+                    return this.builder.BuildBinary("le".ToString(), MIRBinaryKind::ICmpUle, pointer, other, result_type) as *MIRInstruction;
                 } else { return null; }
             }
 
             if binary->_operator == TokenType::PLUS {
-                lowered = this.arena.New<MIRArrayGEPInstruction>("ptr.add".ToString(), pointer, other) as *MIRInstruction;
+                return this.builder.BuildArrayGEP("ptr.add".ToString(), pointer, other) as *MIRInstruction;
             } else if binary->_operator == TokenType::MINUS && left_type->IsPointer() {
-                let neg = this.arena.New<MIRUnaryInstruction>("ptr.neg".ToString(), MIRUnaryKind::Neg, other) as *MIRInstruction;
-                this.current_block->instructions.PushBack(neg);
-                lowered = this.arena.New<MIRArrayGEPInstruction>("ptr.sub".ToString(), pointer, neg) as *MIRInstruction;
+                let neg = this.builder.BuildUnary("ptr.neg".ToString(), MIRUnaryKind::Neg, other) as *MIRInstruction;
+                return this.builder.BuildArrayGEP("ptr.sub".ToString(), pointer, neg) as *MIRInstruction;
             } else { return null; }
         } else { return null; }
-
-        this.current_block->instructions.PushBack(lowered);
-        return lowered;
     }
 
     fn LowerTernaryExpression(&mut this, ternary: *HIRTernaryExpression) -> *MIRValue {
@@ -939,31 +849,27 @@ class HIRLowerer {
         let condition = this.LowerExpression(ternary->condition);
         if condition == null { return null; }
 
-        let mut then_block = this.arena.New<MIRBlock>("ternary.then".ToString());
-        let mut else_block = this.arena.New<MIRBlock>("ternary.else".ToString());
-        let merge_block = this.arena.New<MIRBlock>("ternary.merge".ToString());
-        this.current_block->terminator = this.arena.New<MIRConditionalBranchInstruction>(condition, then_block, else_block);
+        let mut then_block = this.builder.BuildBlock("ternary.then".ToString());
+        let mut else_block = this.builder.BuildBlock("ternary.else".ToString());
+        let merge_block = this.builder.BuildBlock("ternary.merge".ToString());
+        this.builder.BuildConditionalBranch(condition, then_block, else_block);
 
-        this.current_block = then_block;
-        this.current_function->blocks.PushBack(then_block);
+        this.builder.SetCurrentBlock(then_block);
         let then_value = this.LowerExpression(ternary->then);
         if then_value == null { return null; }
-        this.current_block->terminator = this.arena.New<MIRBranchInstruction>(merge_block);
-        then_block = this.current_block;
+        then_block = this.builder.GetCurrentBlock();
+        this.builder.BuildBranch(merge_block);
 
-        this.current_block = else_block;
-        this.current_function->blocks.PushBack(else_block);
+        this.builder.SetCurrentBlock(else_block);
         let else_value = this.LowerExpression(ternary->_else);
         if else_value == null { return null; }
-        this.current_block->terminator = this.arena.New<MIRBranchInstruction>(merge_block);
-        else_block = this.current_block;
+        else_block = this.builder.GetCurrentBlock();
+        this.builder.BuildBranch(merge_block);
 
-        this.current_block = merge_block;
-        this.current_function->blocks.PushBack(merge_block);
+        this.builder.SetCurrentBlock(merge_block);
         let phi = this.arena.New<MIRPhiInstruction>("ternary".ToString(), expression->_type);
         phi->AddIncoming(then_value, then_block);
         phi->AddIncoming(else_value, else_block);
-        this.current_block->instructions.PushBack(phi);
         return phi as *MIRInstruction;
     }
 }

@@ -686,11 +686,28 @@ class MIRParameter : MIRValue {
 
 class MIRBlock {
     pub name: String,
+    pub parent: *MIRFunctionDeclaration = null,
     pub instructions: Vector<*MIRInstruction>,
     pub terminator: *MIRTerminator = null;
 
     MIRBlock(&mut this, name: String) {
         this.name = name;
+    }
+
+    pub fn HasTerminator(&this) -> bool {
+        return this.terminator != null;
+    }
+
+    pub fn GetTerminator(&this) -> *MIRTerminator {
+        return this.terminator;
+    }
+
+    pub fn SetTerminator(&mut this, terminator: *MIRTerminator) {
+        this.terminator = terminator;
+    }
+
+    pub fn AddInstruction(&mut this, instruction: *MIRInstruction) {
+        this.instructions.PushBack(instruction);
     }
 
     pub fn ToString(&this) -> String {
@@ -780,7 +797,14 @@ class MIRFunctionDeclaration : MIRLinkableDeclaration {
     pub parameters: Vector<*MIRParameter>,
     pub blocks: Vector<*MIRBlock>;
 
-    MIRFunctionDeclaration(&mut this, name: String, _type: *SemanticType, linkage: MIRDeclarationLinkage) : MIRLinkableDeclaration(MIRDeclarationKind::Function, name, _type, linkage) {}
+    MIRFunctionDeclaration(&mut this, name: String, parameters: Vector<*MIRParameter>, _type: *SemanticType, linkage: MIRDeclarationLinkage) : MIRLinkableDeclaration(MIRDeclarationKind::Function, name, _type, linkage) {
+        this.parameters = parameters;
+    }
+
+    pub fn AddBlock(&mut this, block: *mut MIRBlock) {
+        this.blocks.PushBack(block);
+        block->parent = this;
+    }
 
     pub fn ToString(&this) -> String {
         let declaration = (this as *MIRLinkableDeclaration) as *MIRDeclaration;
@@ -836,5 +860,156 @@ class MIRModule {
             if !result.Empty() { result += "\n"; }
             result += declaration->ToString();
         } return result;
+    }
+}
+
+class MIRBuilder {
+    arena: Arena,
+    block: *mut MIRBlock = null,
+    function: *mut MIRFunctionDeclaration = null,
+    module: *mut MIRModule;
+
+    MIRBuilder(&mut this, module: *mut MIRModule) {
+        this.module = module;
+    }
+
+    pub fn BuildType(&mut this, name: String, _type: *SemanticType) -> *mut MIRTypeDeclaration {
+        let type_declaration = this.arena.New<MIRTypeDeclaration>(name, _type);
+        this.module->declarations.PushBack(type_declaration);
+        return type_declaration;
+    }
+
+    pub fn BuildConstant(&mut this, name: String, _type: *SemanticType, initializer: *MIRValue) -> *mut MIRConstantDeclaration {
+        let constant = this.arena.New<MIRConstantDeclaration>(name, _type, initializer);
+        this.module->declarations.PushBack(constant);
+        return constant;
+    }
+
+    pub fn BuildFunction(&mut this, name: String, parameters: Vector<*MIRParameter>, _type: *SemanticType, linkage: MIRDeclarationLinkage) -> *mut MIRFunctionDeclaration {
+        let function = this.arena.New<MIRFunctionDeclaration>(name, parameters, _type, linkage);
+        this.module->declarations.PushBack(function as *MIRLinkableDeclaration);
+        return function;
+    }
+
+    pub fn SetCurrentFunction(&mut this, function: *mut MIRFunctionDeclaration) {
+        this.function = function;
+    }
+
+    pub fn GetCurrentFunction(&this) -> *mut MIRFunctionDeclaration {
+        return this.function;
+    }
+
+    pub fn BuildStatic(&mut this, name: String, _type: *SemanticType, mutable: bool, initializer: *MIRValue, linkage: MIRDeclarationLinkage) -> *mut MIRStaticDeclaration {
+        let _static = this.arena.New<MIRStaticDeclaration>(name, _type, mutable, initializer, linkage);
+        this.module->declarations.PushBack(_static as *MIRLinkableDeclaration);
+        return _static;
+    }
+
+    pub fn BuildBlock(&mut this, name: String) -> *mut MIRBlock {
+        let block = this.arena.New<MIRBlock>(name);
+        this.function->AddBlock(block);
+        return block;
+    }
+
+    pub fn SetCurrentBlock(&mut this, block: *mut MIRBlock) {
+        this.block = block;
+    }
+
+    pub fn GetCurrentBlock(&this) -> *mut MIRBlock {
+        return this.block;
+    }
+
+    pub fn BuildParameter(&mut this, name: String, index: u32, _type: *SemanticType) -> *MIRParameter {
+        return this.arena.New<MIRParameter>(name, index, _type);
+    }
+
+    pub fn BuildAlloca(&mut this, name: String, _type: *SemanticType) -> *MIRAllocaInstruction {
+        let alloca = this.arena.New<MIRAllocaInstruction>(name, _type);
+        this.block->AddInstruction(alloca);
+        return alloca;
+    }
+
+    pub fn BuildLoad(&mut this, name: String, pointer: *MIRValue) -> *MIRLoadInstruction {
+        let load = this.arena.New<MIRLoadInstruction>(name, pointer);
+        this.block->AddInstruction(load);
+        return load;
+    }
+
+    pub fn BuildStore(&mut this, pointer: *MIRValue, value: *MIRValue) -> *MIRStoreInstruction {
+        let store = this.arena.New<MIRStoreInstruction>(pointer, value);
+        this.block->AddInstruction(store);
+        return store;
+    }
+
+    pub fn BuildArrayGEP(&mut this, name: String, pointer: *MIRValue, index: *MIRValue) -> *MIRArrayGEPInstruction {
+        let gep = this.arena.New<MIRArrayGEPInstruction>(name, pointer, index);
+        this.block->AddInstruction(gep);
+        return gep;
+    }
+
+    pub fn BuildStructGEP(&mut this, name: String, pointer: *MIRValue, index: u32, _type: *SemanticType) -> *MIRStructGEPInstruction {
+        let gep = this.arena.New<MIRStructGEPInstruction>(name, pointer, index, _type);
+        this.block->AddInstruction(gep);
+        return gep;
+    }
+
+    pub fn BuildUnary(&mut this, name: String, kind: MIRUnaryKind, operand: *MIRValue) -> *MIRUnaryInstruction {
+        let unary = this.arena.New<MIRUnaryInstruction>(name, kind, operand);
+        this.block->AddInstruction(unary);
+        return unary;
+    }
+
+    pub fn BuildBinary(&mut this, name: String, kind: MIRBinaryKind, left: *MIRValue, right: *MIRValue, _type: *SemanticType) -> *MIRBinaryInstruction {
+        let binary = this.arena.New<MIRBinaryInstruction>(name, kind, left, right, _type);
+        this.block->AddInstruction(binary);
+        return binary;
+    }
+
+    pub fn BuildCall(&mut this, name: String, callee: *MIRValue, arguments: Vector<*MIRValue>) -> *MIRCallInstruction {
+        let call = this.arena.New<MIRCallInstruction>(name, callee, arguments);
+        this.block->AddInstruction(call);
+        return call;
+    }
+
+    pub fn BuildCast(&mut this, name: String, kind: MIRCastKind, value: *MIRValue, _type: *SemanticType) -> *MIRCastInstruction {
+        let cast = this.arena.New<MIRCastInstruction>(name, kind, value, _type);
+        this.block->AddInstruction(cast);
+        return cast;
+    }
+
+    pub fn BuildSelect(&mut this, name: String, condition: *MIRValue, then_value: *MIRValue, else_value: *MIRValue, _type: *SemanticType) -> *MIRSelectInstruction {
+        let select = this.arena.New<MIRSelectInstruction>(name, condition, then_value, else_value, _type);
+        this.block->AddInstruction(select);
+        return select;
+    }
+
+    pub fn BuildPhi(&mut this, name: String, _type: *SemanticType) -> *mut MIRPhiInstruction {
+        let phi = this.arena.New<MIRPhiInstruction>(name, _type);
+        this.block->AddInstruction(phi);
+        return phi;
+    }
+
+    pub fn BuildReturn(&mut this, value: *MIRValue) -> *MIRReturnInstruction {
+        let _return = this.arena.New<MIRReturnInstruction>(value);
+        this.block->SetTerminator(_return);
+        return _return;
+    }
+
+    pub fn BuildBranch(&mut this, target: *MIRBlock) -> *MIRBranchInstruction {
+        let branch = this.arena.New<MIRBranchInstruction>(target);
+        this.block->SetTerminator(branch);
+        return branch;
+    }
+
+    pub fn BuildConditionalBranch(&mut this, condition: *MIRValue, then_target: *MIRBlock, else_target: *MIRBlock) -> *MIRConditionalBranchInstruction {
+        let branch = this.arena.New<MIRConditionalBranchInstruction>(condition, then_target, else_target);
+        this.block->SetTerminator(branch);
+        return branch;
+    }
+
+    pub fn BuildUnreachable(&mut this) -> *MIRUnreachableInstruction {
+        let unreachable = this.arena.New<MIRUnreachableInstruction>();
+        this.block->SetTerminator(unreachable);
+        return unreachable;
     }
 }

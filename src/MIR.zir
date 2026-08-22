@@ -686,7 +686,7 @@ class MIRParameter : MIRValue {
 
 class MIRBlock {
     pub name: String,
-    pub parent: *MIRFunctionDeclaration = null,
+    pub parent: *mut MIRFunctionDeclaration = null,
     pub instructions: Vector<*MIRInstruction>,
     pub terminator: *MIRTerminator = null;
 
@@ -703,11 +703,19 @@ class MIRBlock {
     }
 
     pub fn SetTerminator(&mut this, terminator: *MIRTerminator) {
-        this.terminator = terminator;
+        if this.HasTerminator() {
+            Logger::Log("Block already terminated!", LogSeverity::Fatal);
+        } this.terminator = terminator;
     }
 
-    pub fn AddInstruction(&mut this, instruction: *MIRInstruction) {
-        this.instructions.PushBack(instruction);
+    pub fn AddInstruction(&mut this, instruction: *mut MIRInstruction) {
+        if this.HasTerminator() {
+            Logger::Log("Appending instruction after block terminator!", LogSeverity::Fatal);
+        }
+
+        if !(instruction as *MIRValue)->_type->IsVoid() {
+            instruction->name = this.parent->GetUniqueName(instruction->name);
+        } this.instructions.PushBack(instruction);
     }
 
     pub fn ToString(&this) -> String {
@@ -795,15 +803,24 @@ class MIRLinkableDeclaration : MIRDeclaration {
 
 class MIRFunctionDeclaration : MIRLinkableDeclaration {
     pub parameters: Vector<*MIRParameter>,
-    pub blocks: Vector<*MIRBlock>;
+    pub blocks: Vector<*MIRBlock>,
+    pub names: Map<String, u32>;
 
     MIRFunctionDeclaration(&mut this, name: String, parameters: Vector<*MIRParameter>, _type: *SemanticType, linkage: MIRDeclarationLinkage) : MIRLinkableDeclaration(MIRDeclarationKind::Function, name, _type, linkage) {
         this.parameters = parameters;
     }
 
     pub fn AddBlock(&mut this, block: *mut MIRBlock) {
+        (block->name, block->parent) = (this.GetUniqueName(block->name), this);
         this.blocks.PushBack(block);
-        block->parent = this;
+    }
+
+    pub fn GetUniqueName(&mut this, name: &String) -> String {
+        if name.Empty() { return name; }
+        let count = this.names.Get(name, 0);
+        this.names[name] = count + 1;
+        if count == 0 { return name; }
+        return name + '.' + String::FromInteger(count as u64);
     }
 
     pub fn ToString(&this) -> String {
@@ -1031,7 +1048,7 @@ class MIRBuilder {
         return unreachable;
     }
 
-    pub fn DeclarationReference(&mut this, declaration: *MIRDeclaration) -> *MIRDeclarationReference {
+    pub fn ReferenceDeclaration(&mut this, declaration: *MIRDeclaration) -> *MIRDeclarationReference {
         return this.arena.New<MIRDeclarationReference>(declaration);
     }
 

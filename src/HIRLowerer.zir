@@ -21,8 +21,9 @@ class HIRLowerer {
     builder: MIRBuilder,
     namespaces: Vector<String>,
     strings: Map<String, *MIRStaticDeclaration>,
-    variables: Map<*HIRVariableStatement, *mut MIRValue>,
+    variables: Map<*HIRVariableStatement, *MIRValue>,
     declarations: Map<*HIRDeclaration, *mut MIRDeclaration>,
+    parameters: Map<*HIRDeclaration, *MIRValue>,
     runtime_functions: Map<String, *MIRFunctionDeclaration>,
     break_blocks: Vector<*mut MIRBlock>,
     continue_blocks: Vector<*mut MIRBlock>,
@@ -148,6 +149,16 @@ class HIRLowerer {
         let declaration: *mut MIRDeclaration = this.declarations[function as *HIRDeclaration];
         this.builder.SetCurrentFunction((declaration as *mut MIRLinkableDeclaration) as *mut MIRFunctionDeclaration);
         this.builder.SetCurrentBlock(this.builder.BuildBlock("entry".ToString()));
+        this.parameters.Clear();
+
+        for i in 0..function->parameters.Size() {
+            let parameter: *HIRParameterDeclaration = function->parameters[i];
+            let lowered_parameter: *MIRParameter = this.builder.GetCurrentFunction()->parameters[i];
+            let alloca = this.builder.BuildAlloca((parameter as *HIRDeclaration)->name, (parameter as *HIRDeclaration)->_type);
+            this.parameters[(parameter as *HIRDeclaration)] = (alloca as *MIRInstruction) as *MIRValue;
+            this.builder.BuildStore(alloca as *MIRInstruction, lowered_parameter);
+        }
+
         this.LowerBlockStatement(function->body);
     }
 
@@ -261,7 +272,7 @@ class HIRLowerer {
 
     fn LowerVariableStatement(&mut this, variable: *HIRVariableStatement) {
         let alloca = this.builder.BuildAlloca(variable->name, variable->_type);
-        this.variables[variable] = (alloca as *mut MIRInstruction) as *mut MIRValue;
+        this.variables[variable] = (alloca as *MIRInstruction) as *MIRValue;
 
         if variable->initializer != null {
             let value = this.LowerExpression(variable->initializer);
@@ -347,7 +358,7 @@ class HIRLowerer {
     fn LowerForStatement(&mut this, _for: *HIRForStatement) {
         this.LowerVariableStatement(_for->iterator);
         let alloca = this.builder.BuildAlloca(_for->variable->name, _for->variable->_type);
-        this.variables[_for->variable] = (alloca as *mut MIRInstruction) as *mut MIRValue;
+        this.variables[_for->variable] = (alloca as *MIRInstruction) as *MIRValue;
 
         let condition_block = this.builder.BuildBlock("for.cond".ToString());
         let body_block = this.builder.BuildBlock("for.body".ToString());
@@ -407,17 +418,15 @@ class HIRLowerer {
 
     fn LowerPlaceExpression(&mut this, expression: *HIRExpression) -> *MIRValue {
         if expression->kind == HIRExpressionKind::VariableReference {
-            let variable = (expression as *HIRVariableReference)->variable;
-
-            if this.variables.Has(variable) {
-                return this.variables[variable];
-            } return null;
+            return this.variables.Get((expression as *HIRVariableReference)->variable, null);
         } else if expression->kind == HIRExpressionKind::DeclarationReference {
             let declaration = (expression as *HIRDeclarationReference)->declaration;
 
             if this.declarations.Has(declaration) {
                 return this.builder.ReferenceDeclaration(this.declarations[declaration]);
-            } return null;
+            } else {
+                return this.parameters.Get(declaration, null);
+            }
         } else if expression->kind == HIRExpressionKind::Temporary {
             let alloca = this.builder.BuildAlloca("temporary".ToString(), expression->_type);
             let initializer = this.LowerExpression((expression as *HIRTemporaryExpression)->initializer);
@@ -700,8 +709,8 @@ class HIRLowerer {
         let expression = member_access as *HIRExpression;
         let instance = this.LowerPlaceExpression(member_access->instance);
         if instance == null { return null; }
-        let _type = analyzer->type_manager.Pointer(expression->_type, expression->mutable);
-        return this.builder.BuildStructGEP("field.access".ToString(), instance, member_access->index as u32, _type);
+        let field_type = analyzer->type_manager.Pointer(expression->_type, expression->mutable);
+        return this.builder.BuildStructGEP("field.access".ToString(), instance, member_access->index as u32, field_type);
     }
 
     fn LowerUnaryExpression(&mut this, unary: *HIRUnaryExpression) -> *MIRValue {

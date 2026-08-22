@@ -867,60 +867,58 @@ class MIRBuilder {
     arena: Arena,
     block: *mut MIRBlock = null,
     function: *mut MIRFunctionDeclaration = null,
-    module: *mut MIRModule;
+    pub module: *mut MIRModule;
 
-    MIRBuilder(&mut this, module: *mut MIRModule) {
-        this.module = module;
+    pub fn ConstantBoolean(&mut this, value: bool, _type: *SemanticType) -> *MIRConstantBoolean {
+        return this.arena.New<MIRConstantBoolean>(value, _type);
     }
 
-    pub fn BuildType(&mut this, name: String, _type: *SemanticType) -> *mut MIRTypeDeclaration {
-        let type_declaration = this.arena.New<MIRTypeDeclaration>(name, _type);
-        this.module->declarations.PushBack(type_declaration);
-        return type_declaration;
+    pub fn ConstantCharacter(&mut this, value: u32, _type: *SemanticType) -> *MIRConstantCharacter {
+        return this.arena.New<MIRConstantCharacter>(value, _type);
     }
 
-    pub fn BuildConstant(&mut this, name: String, _type: *SemanticType, initializer: *MIRValue) -> *mut MIRConstantDeclaration {
-        let constant = this.arena.New<MIRConstantDeclaration>(name, _type, initializer);
-        this.module->declarations.PushBack(constant);
-        return constant;
+    pub fn ConstantInteger(&mut this, value: u64, _type: *SemanticType) -> *MIRConstantInteger {
+        return this.arena.New<MIRConstantInteger>(value, _type);
     }
 
-    pub fn BuildFunction(&mut this, name: String, parameters: Vector<*MIRParameter>, _type: *SemanticType, linkage: MIRDeclarationLinkage) -> *mut MIRFunctionDeclaration {
-        let function = this.arena.New<MIRFunctionDeclaration>(name, parameters, _type, linkage);
-        this.module->declarations.PushBack(function as *MIRLinkableDeclaration);
-        return function;
+    pub fn ConstantFloat(&mut this, value: f64, _type: *SemanticType) -> *MIRConstantFloat {
+        return this.arena.New<MIRConstantFloat>(value, _type);
     }
 
-    pub fn SetCurrentFunction(&mut this, function: *mut MIRFunctionDeclaration) {
-        this.function = function;
+    pub fn ConstantString(&mut this, value: String, _type: *SemanticType) -> *MIRConstantString {
+        return this.arena.New<MIRConstantString>(value, _type);
     }
 
-    pub fn GetCurrentFunction(&this) -> *mut MIRFunctionDeclaration {
-        return this.function;
+    pub fn ConstantArray(&mut this, values: Vector<*MIRValue>, _type: *SemanticType) -> *MIRConstantArray {
+        return this.arena.New<MIRConstantArray>(values, _type);
     }
 
-    pub fn BuildStatic(&mut this, name: String, _type: *SemanticType, mutable: bool, initializer: *MIRValue, linkage: MIRDeclarationLinkage) -> *mut MIRStaticDeclaration {
-        let _static = this.arena.New<MIRStaticDeclaration>(name, _type, mutable, initializer, linkage);
-        this.module->declarations.PushBack(_static as *MIRLinkableDeclaration);
-        return _static;
+    pub fn ConstantStruct(&mut this, values: Vector<*MIRValue>, _type: *SemanticType) -> *MIRConstantStruct {
+        return this.arena.New<MIRConstantStruct>(values, _type);
     }
 
-    pub fn BuildBlock(&mut this, name: String) -> *mut MIRBlock {
-        let block = this.arena.New<MIRBlock>(name);
-        this.function->AddBlock(block);
-        return block;
+    pub fn ConstantNull(&mut this, _type: *SemanticType) -> *MIRConstantNull {
+        return this.arena.New<MIRConstantNull>(_type);
     }
 
-    pub fn SetCurrentBlock(&mut this, block: *mut MIRBlock) {
-        this.block = block;
+    pub fn ConstantUnary(&mut this, kind: MIRUnaryKind, operand: *MIRValue) -> *MIRUnaryExpression {
+        return this.arena.New<MIRUnaryExpression>(kind, operand);
     }
 
-    pub fn GetCurrentBlock(&this) -> *mut MIRBlock {
-        return this.block;
+    pub fn ConstantBinary(&mut this, kind: MIRBinaryKind, left: *MIRValue, right: *MIRValue, _type: *SemanticType) -> *MIRBinaryExpression {
+        return this.arena.New<MIRBinaryExpression>(kind, left, right, _type);
     }
 
-    pub fn BuildParameter(&mut this, name: String, index: u32, _type: *SemanticType) -> *MIRParameter {
-        return this.arena.New<MIRParameter>(name, index, _type);
+    pub fn ConstantCast(&mut this, kind: MIRCastKind, value: *MIRValue, _type: *SemanticType) -> *MIRCastExpression {
+        return this.arena.New<MIRCastExpression>(kind, value, _type);
+    }
+
+    pub fn ConstantArrayGEP(&mut this, pointer: *MIRValue, index: *MIRValue) -> *MIRArrayGEPExpression {
+        return this.arena.New<MIRArrayGEPExpression>(pointer, index);
+    }
+
+    pub fn ConstantStructGEP(&mut this, pointer: *MIRValue, index: u32, _type: *SemanticType) -> *MIRStructGEPExpression {
+        return this.arena.New<MIRStructGEPExpression>(pointer, index, _type);
     }
 
     pub fn BuildAlloca(&mut this, name: String, _type: *SemanticType) -> *MIRAllocaInstruction {
@@ -941,28 +939,44 @@ class MIRBuilder {
         return store;
     }
 
-    pub fn BuildArrayGEP(&mut this, name: String, pointer: *MIRValue, index: *MIRValue) -> *MIRArrayGEPInstruction {
+    pub fn BuildArrayGEP(&mut this, name: String, pointer: *MIRValue, index: *MIRValue) -> *MIRValue {
+        if this.GetCurrentBlock() == null {
+            return (this.ConstantArrayGEP(pointer, index) as *MIRConstantExpression) as *MIRConstant;
+        }
+
         let gep = this.arena.New<MIRArrayGEPInstruction>(name, pointer, index);
         this.block->AddInstruction(gep);
-        return gep;
+        return gep as *MIRInstruction;
     }
 
-    pub fn BuildStructGEP(&mut this, name: String, pointer: *MIRValue, index: u32, _type: *SemanticType) -> *MIRStructGEPInstruction {
+    pub fn BuildStructGEP(&mut this, name: String, pointer: *MIRValue, index: u32, _type: *SemanticType) -> *MIRValue {
+        if this.GetCurrentBlock() == null {
+            return (this.ConstantStructGEP(pointer, index, _type) as *MIRConstantExpression) as *MIRConstant;
+        }
+
         let gep = this.arena.New<MIRStructGEPInstruction>(name, pointer, index, _type);
         this.block->AddInstruction(gep);
-        return gep;
+        return gep as *MIRInstruction;
     }
 
-    pub fn BuildUnary(&mut this, name: String, kind: MIRUnaryKind, operand: *MIRValue) -> *MIRUnaryInstruction {
+    pub fn BuildUnary(&mut this, name: String, kind: MIRUnaryKind, operand: *MIRValue) -> *MIRValue {
+        if this.GetCurrentBlock() == null {
+            return (this.ConstantUnary(kind, operand) as *MIRConstantExpression) as *MIRConstant;
+        }
+
         let unary = this.arena.New<MIRUnaryInstruction>(name, kind, operand);
         this.block->AddInstruction(unary);
-        return unary;
+        return unary as *MIRInstruction;
     }
 
-    pub fn BuildBinary(&mut this, name: String, kind: MIRBinaryKind, left: *MIRValue, right: *MIRValue, _type: *SemanticType) -> *MIRBinaryInstruction {
+    pub fn BuildBinary(&mut this, name: String, kind: MIRBinaryKind, left: *MIRValue, right: *MIRValue, _type: *SemanticType) -> *MIRValue {
+        if this.GetCurrentBlock() == null {
+            return (this.ConstantBinary(kind, left, right, _type) as *MIRConstantExpression) as *MIRConstant;
+        }
+
         let binary = this.arena.New<MIRBinaryInstruction>(name, kind, left, right, _type);
         this.block->AddInstruction(binary);
-        return binary;
+        return binary as *MIRInstruction;
     }
 
     pub fn BuildCall(&mut this, name: String, callee: *MIRValue, arguments: Vector<*MIRValue>) -> *MIRCallInstruction {
@@ -971,10 +985,14 @@ class MIRBuilder {
         return call;
     }
 
-    pub fn BuildCast(&mut this, name: String, kind: MIRCastKind, value: *MIRValue, _type: *SemanticType) -> *MIRCastInstruction {
+    pub fn BuildCast(&mut this, name: String, kind: MIRCastKind, value: *MIRValue, _type: *SemanticType) -> *MIRValue {
+        if this.GetCurrentBlock() == null {
+            return (this.ConstantCast(kind, value, _type) as *MIRConstantExpression) as *MIRConstant;
+        }
+
         let cast = this.arena.New<MIRCastInstruction>(name, kind, value, _type);
         this.block->AddInstruction(cast);
-        return cast;
+        return cast as *MIRInstruction;
     }
 
     pub fn BuildSelect(&mut this, name: String, condition: *MIRValue, then_value: *MIRValue, else_value: *MIRValue, _type: *SemanticType) -> *MIRSelectInstruction {
@@ -1011,5 +1029,59 @@ class MIRBuilder {
         let unreachable = this.arena.New<MIRUnreachableInstruction>();
         this.block->SetTerminator(unreachable);
         return unreachable;
+    }
+
+    pub fn DeclarationReference(&mut this, declaration: *MIRDeclaration) -> *MIRDeclarationReference {
+        return this.arena.New<MIRDeclarationReference>(declaration);
+    }
+
+    pub fn BuildParameter(&mut this, name: String, index: u32, _type: *SemanticType) -> *MIRParameter {
+        return this.arena.New<MIRParameter>(name, index, _type);
+    }
+
+    pub fn BuildBlock(&mut this, name: String) -> *mut MIRBlock {
+        let block = this.arena.New<MIRBlock>(name);
+        this.function->AddBlock(block);
+        return block;
+    }
+
+    pub fn SetCurrentBlock(&mut this, block: *mut MIRBlock) {
+        this.block = block;
+    }
+
+    pub fn GetCurrentBlock(&this) -> *mut MIRBlock {
+        return this.block;
+    }
+
+    pub fn BuildType(&mut this, name: String, _type: *SemanticType) -> *mut MIRTypeDeclaration {
+        let type_declaration = this.arena.New<MIRTypeDeclaration>(name, _type);
+        this.module->declarations.PushBack(type_declaration);
+        return type_declaration;
+    }
+
+    pub fn BuildConstant(&mut this, name: String, _type: *SemanticType, initializer: *MIRValue) -> *mut MIRConstantDeclaration {
+        let constant = this.arena.New<MIRConstantDeclaration>(name, _type, initializer);
+        this.module->declarations.PushBack(constant);
+        return constant;
+    }
+
+    pub fn BuildFunction(&mut this, name: String, parameters: Vector<*MIRParameter>, _type: *SemanticType, linkage: MIRDeclarationLinkage) -> *mut MIRFunctionDeclaration {
+        let function = this.arena.New<MIRFunctionDeclaration>(name, parameters, _type, linkage);
+        this.module->declarations.PushBack(function as *MIRLinkableDeclaration);
+        return function;
+    }
+
+    pub fn SetCurrentFunction(&mut this, function: *mut MIRFunctionDeclaration) {
+        this.function = function;
+    }
+
+    pub fn GetCurrentFunction(&this) -> *mut MIRFunctionDeclaration {
+        return this.function;
+    }
+
+    pub fn BuildStatic(&mut this, name: String, _type: *SemanticType, mutable: bool, initializer: *MIRValue, linkage: MIRDeclarationLinkage) -> *mut MIRStaticDeclaration {
+        let _static = this.arena.New<MIRStaticDeclaration>(name, _type, mutable, initializer, linkage);
+        this.module->declarations.PushBack(_static as *MIRLinkableDeclaration);
+        return _static;
     }
 }

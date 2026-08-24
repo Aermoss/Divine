@@ -726,7 +726,7 @@ class SemanticAnalyzer {
             if value == null { return; }
         }
 
-        this.AnalyzeDestructors(null);
+        this.AnalyzeDestructors(null, value);
         this.current_block->statements.PushBack(this.arena.New<HIRReturnStatement>(value));
     }
 
@@ -909,11 +909,19 @@ class SemanticAnalyzer {
         this.current_block->statements.PushBack(this.arena.New<HIRLoopStatement>(body));
     }
 
-    fn AnalyzeDestructors(&mut this, target: *mut Scope) {
+    fn AnalyzeDestructors(&mut this, target: *mut Scope, exception: *HIRExpression) {
         let mut scope = this.scope_manager.current;
 
         while scope != null && !scope->global {
             for instance in scope->instances.Reverse() {
+                if exception != null {
+                    if instance->kind == HIRExpressionKind::VariableReference && exception->kind == HIRExpressionKind::VariableReference {
+                        if (instance as *HIRVariableReference)->variable == (exception as *HIRVariableReference)->variable { continue; }
+                    } else if instance->kind == HIRExpressionKind::DeclarationReference && exception->kind == HIRExpressionKind::DeclarationReference {
+                        if (instance as *HIRDeclarationReference)->declaration == (exception as *HIRDeclarationReference)->declaration { continue; }
+                    }
+                }
+
                 let _type = instance->_type;
                 let mut values = Vector<*HIRExpression>();
                 values.PushBack(instance);
@@ -936,7 +944,7 @@ class SemanticAnalyzer {
             return;
         }
 
-        this.AnalyzeDestructors(this.loop_scopes.Back());
+        this.AnalyzeDestructors(this.loop_scopes.Back(), null);
         this.current_block->statements.PushBack(this.arena.New<HIRContinueStatement>());
     }
 
@@ -946,7 +954,7 @@ class SemanticAnalyzer {
             return;
         }
 
-        this.AnalyzeDestructors(this.loop_scopes.Back());
+        this.AnalyzeDestructors(this.loop_scopes.Back(), null);
         this.current_block->statements.PushBack(this.arena.New<HIRBreakStatement>());
     }
 
@@ -970,7 +978,7 @@ class SemanticAnalyzer {
             this.AnalyzeStatement(statement);
         }
 
-        this.AnalyzeDestructors(this.scope_manager.current);
+        this.AnalyzeDestructors(this.scope_manager.current, null);
         this.current_block = prev_block;
         return statement;
     }

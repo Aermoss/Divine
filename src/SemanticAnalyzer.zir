@@ -886,7 +886,7 @@ class SemanticAnalyzer {
             let dereference_candidates = iterator_type->GetCandidates("operator*".ToString(), _for as *ASTStatement, false);
             let value = this.AnalyzeResolvedCallExpression(dereference_candidates, values, _for as *ASTStatement);
             if value == null { return; }
-            variable = this.arena.New<HIRVariableStatement>(_for->variable, value->_type, value, false);
+            variable = this.arena.New<HIRVariableStatement>(_for->variable, (value as *HIRExpression)->_type, value, false);
         }
 
         this.scope_manager.PushScope(String("for"), false);
@@ -915,11 +915,13 @@ class SemanticAnalyzer {
         while scope != null && !scope->global {
             for instance in scope->instances.Reverse() {
                 let _type = instance->_type;
-                let candidates = _type->GetCandidates(("~" + _type->name), null, true);
-                if candidates.Empty() { continue; }
                 let mut values = Vector<*HIRExpression>();
                 values.PushBack(instance);
-                let expression = this.arena.New<HIRDestructorExpression>(this.AnalyzeResolvedCallExpression(candidates, values, null) as *HIRCallExpression);
+                let candidates = _type->GetCandidates(("~" + _type->name), null, true);
+                let function = this.ResolveOverload(candidates, values, null, true);
+                if function == null { continue; }
+                let callee = this.arena.New<HIRDeclarationReference>(function as *HIRDeclaration, false);
+                let expression = this.arena.New<HIRDestructorExpression>(instance, callee);
                 this.current_block->statements.PushBack(this.arena.New<HIRExpressionStatement>(expression));
             }
 
@@ -1395,13 +1397,14 @@ class SemanticAnalyzer {
 
                 for symbol in this.scope_manager.Resolve(path, true) {
                     if symbol->kind == SymbolKind::Type && symbol->_type->IsClass() {
-                        let _class = symbol->_type;
-                        let instance = this.arena.New<HIRConstructorExpression>(_class);
-                        values.Insert(0, this.ImplicitAddressOf(instance));
-
+                        let (_class, arguments) = (symbol->_type, values);
+                        values.Insert(0, this.arena.New<HIRNullLiteral>(this.type_manager.NullPointer()));
                         let candidates = _class->GetCandidates(_class->name, call as *ASTExpression, false);
-                        instance->call = this.AnalyzeResolvedCallExpression(candidates, values, call as *ASTExpression) as *HIRCallExpression;
-                        return instance;
+                        if candidates.Empty() { return null; }
+                        let function = this.ResolveOverload(candidates, values, call as *ASTExpression, false);
+                        if function == null { return null; }
+                        let callee = this.arena.New<HIRDeclarationReference>(function as *HIRDeclaration, false);
+                        return this.arena.New<HIRConstructorExpression>(callee, arguments, _class);
                     }
                 }
 
@@ -1458,18 +1461,18 @@ class SemanticAnalyzer {
         }
     }
 
-    fn AnalyzeResolvedCallExpression(&mut this, candidates: &Vector<*HIRFunctionDeclaration>, values: &Vector<*HIRExpression>, node: *ASTNode) -> *HIRExpression {
+    fn AnalyzeResolvedCallExpression(&mut this, candidates: &Vector<*HIRFunctionDeclaration>, values: &Vector<*HIRExpression>, node: *ASTNode) -> *HIRCallExpression {
         let function = this.ResolveOverload(candidates, values, node, false);
         if function == null { return null; }
         return this.AnalyzeResolvedCallExpression(function, values, node);
     }
 
-    fn AnalyzeResolvedCallExpression(&mut this, function: *HIRFunctionDeclaration, values: &Vector<*HIRExpression>, node: *ASTNode) -> *HIRExpression {
+    fn AnalyzeResolvedCallExpression(&mut this, function: *HIRFunctionDeclaration, values: &Vector<*HIRExpression>, node: *ASTNode) -> *HIRCallExpression {
         let expression = this.arena.New<HIRDeclarationReference>(function as *HIRDeclaration, false);
         return this.AnalyzeResolvedCallExpression(expression, values, node);
     }
 
-    fn AnalyzeResolvedCallExpression(&mut this, function: *HIRExpression, values: &Vector<*HIRExpression>, node: *ASTNode) -> *HIRExpression {
+    fn AnalyzeResolvedCallExpression(&mut this, function: *HIRExpression, values: &Vector<*HIRExpression>, node: *ASTNode) -> *HIRCallExpression {
         if !function->_type->IsFunction() {
             Logger::Log("Call target is not a function.", node, LogSeverity::Error);
             return null;

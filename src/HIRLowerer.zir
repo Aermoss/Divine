@@ -24,7 +24,6 @@ class HIRLowerer {
     variables: Map<*HIRVariableStatement, *MIRValue>,
     declarations: Map<*HIRDeclaration, *mut MIRDeclaration>,
     parameters: Map<*HIRDeclaration, *MIRValue>,
-    instances: Map<*HIRConstructorExpression, *MIRValue>,
     runtime_functions: Map<String, *MIRFunctionDeclaration>,
     break_blocks: Vector<*mut MIRBlock>,
     continue_blocks: Vector<*mut MIRBlock>,
@@ -371,9 +370,7 @@ class HIRLowerer {
         this.builder.BuildConditionalBranch(condition, body_block, end_block);
 
         this.builder.SetCurrentBlock(body_block);
-        let value = this.LowerExpression(_for->variable->initializer);
-        if value == null { return; }
-        this.builder.BuildStore(alloca as *MIRInstruction, value);
+        this.LowerExpressionTo(_for->variable->initializer, alloca as *MIRInstruction);
 
         this.break_blocks.PushBack(end_block);
         this.continue_blocks.PushBack(step_block);
@@ -427,19 +424,12 @@ class HIRLowerer {
                 return this.parameters.Get(declaration, null);
             }
         } else if expression->kind == HIRExpressionKind::Constructor {
-            let constructor = expression as *HIRConstructorExpression;
-
-            if !this.instances.Has(constructor) {
-                let alloca = this.builder.BuildAlloca("temporary".ToString(), constructor->_type);
-                return this.LowerConstructorExpression(constructor, alloca as *MIRInstruction);
-            } else {
-                return this.instances[constructor];
-            }
+            let alloca = this.builder.BuildAlloca("temporary".ToString(), expression->_type);
+            this.LowerExpressionTo(expression as *HIRConstructorExpression, alloca as *MIRInstruction);
+            return alloca as *MIRInstruction;
         } else if expression->kind == HIRExpressionKind::Temporary {
             let alloca = this.builder.BuildAlloca("temporary".ToString(), expression->_type);
-            let initializer = this.LowerExpression((expression as *HIRTemporaryExpression)->initializer);
-            if initializer == null { return null; }
-            this.builder.BuildStore(alloca as *MIRInstruction, initializer);
+            this.LowerExpressionTo((expression as *HIRTemporaryExpression)->initializer, alloca as *MIRInstruction);
             return alloca as *MIRInstruction;
         } else if expression->kind == HIRExpressionKind::MemberAccess {
             return this.LowerMemberAccessExpression(expression as *HIRMemberAccessExpression);
@@ -527,12 +517,12 @@ class HIRLowerer {
         let place = this.LowerPlaceExpression(assignment->left);
         let value = this.LowerExpression(assignment->right);
         if place == null || value == null { return null; }
-        let store = this.builder.BuildStore(place, value);
+        this.builder.BuildStore(place, value);
         return value;
     }
 
     fn LowerCallExpression(&mut this, call: *HIRCallExpression) -> *MIRValue {
-        let callee = this.LowerExpression(call->function);
+        let callee = this.LowerExpression(call->callee);
         if callee == null { return null; }
         let mut arguments = Vector<*MIRValue>();
 
@@ -546,13 +536,29 @@ class HIRLowerer {
     }
 
     fn LowerConstructorExpression(&mut this, constructor: *HIRConstructorExpression, destination: *MIRValue) -> *MIRValue {
-        this.instances[constructor] = destination;
-        this.LowerCallExpression(constructor->call);
+        let callee = this.LowerExpression(constructor->callee);
+        if callee == null { return null; }
+        let mut arguments = Vector<*MIRValue>();
+        arguments.PushBack(destination);
+
+        for argument in constructor->arguments {
+            let lowered = this.LowerExpression(argument);
+            if lowered == null { return null; }
+            arguments.PushBack(lowered);
+        }
+
+        this.builder.BuildCall("constructor".ToString(), callee, arguments) as *MIRInstruction;
         return destination;
     }
 
     fn LowerDestructorExpression(&mut this, destructor: *HIRDestructorExpression) -> *MIRValue {
-        this.LowerCallExpression(destructor->call);
+        let instance = this.LowerPlaceExpression(destructor->instance);
+        if instance == null { return null; }
+        let callee = this.LowerExpression(destructor->callee);
+        if callee == null { return null; }
+        let mut arguments = Vector<*MIRValue>();
+        arguments.PushBack(instance);
+        this.builder.BuildCall("destructor".ToString(), callee, arguments) as *MIRInstruction;
         return null;
     }
 

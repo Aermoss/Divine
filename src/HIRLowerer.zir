@@ -276,9 +276,7 @@ class HIRLowerer {
         this.variables[variable] = (alloca as *MIRInstruction) as *MIRValue;
 
         if variable->initializer != null {
-            let value = this.LowerExpression(variable->initializer);
-            if value == null { return; }
-            this.builder.BuildStore(alloca as *MIRInstruction, value);
+            this.LowerExpressionTo(variable->initializer, alloca as *MIRInstruction);
         }
     }
 
@@ -429,7 +427,14 @@ class HIRLowerer {
                 return this.parameters.Get(declaration, null);
             }
         } else if expression->kind == HIRExpressionKind::Constructor {
-            return this.instances.Get(expression as *HIRConstructorExpression, null);
+            let constructor = expression as *HIRConstructorExpression;
+
+            if !this.instances.Has(constructor) {
+                let alloca = this.builder.BuildAlloca("temporary".ToString(), constructor->_type);
+                return this.LowerConstructorExpression(constructor, alloca as *MIRInstruction);
+            } else {
+                return this.instances[constructor];
+            }
         } else if expression->kind == HIRExpressionKind::Temporary {
             let alloca = this.builder.BuildAlloca("temporary".ToString(), expression->_type);
             let initializer = this.LowerExpression((expression as *HIRTemporaryExpression)->initializer);
@@ -442,6 +447,16 @@ class HIRLowerer {
             return this.LowerExpression((expression as *HIRDereferenceExpression)->operand);
         } else {
             return null;
+        }
+    }
+
+    fn LowerExpressionTo(&mut this, expression: *HIRExpression, destination: *MIRValue) {
+        if expression->kind == HIRExpressionKind::Constructor {
+            this.LowerConstructorExpression(expression as *HIRConstructorExpression, destination);
+        } else {
+            let value = this.LowerExpression(expression);
+            if value == null { return; }
+            this.builder.BuildStore(destination as *MIRInstruction, value);
         }
     }
 
@@ -477,8 +492,6 @@ class HIRLowerer {
             return this.LowerAssignmentExpression(expression as *HIRAssignmentExpression);
         } else if expression->kind == HIRExpressionKind::Call {
             return this.LowerCallExpression(expression as *HIRCallExpression);
-        } else if expression->kind == HIRExpressionKind::Constructor {
-            return this.LowerConstructorExpression(expression as *HIRConstructorExpression);
         } else if expression->kind == HIRExpressionKind::Destructor {
             return this.LowerDestructorExpression(expression as *HIRDestructorExpression);
         } else if expression->kind == HIRExpressionKind::New {
@@ -532,11 +545,10 @@ class HIRLowerer {
         return this.builder.BuildCall("call".ToString(), callee, arguments) as *MIRInstruction;
     }
 
-    fn LowerConstructorExpression(&mut this, constructor: *HIRConstructorExpression) -> *MIRValue {
-        let alloca = this.builder.BuildAlloca("constructor".ToString(), constructor->_type);
-        this.instances[constructor] = alloca as *MIRInstruction;
+    fn LowerConstructorExpression(&mut this, constructor: *HIRConstructorExpression, destination: *MIRValue) -> *MIRValue {
+        this.instances[constructor] = destination;
         this.LowerCallExpression(constructor->call);
-        return this.builder.BuildLoad("constructor.load".ToString(), alloca as *MIRInstruction) as *MIRInstruction;
+        return destination;
     }
 
     fn LowerDestructorExpression(&mut this, destructor: *HIRDestructorExpression) -> *MIRValue {

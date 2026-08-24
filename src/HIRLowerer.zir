@@ -24,6 +24,7 @@ class HIRLowerer {
     variables: Map<*HIRVariableStatement, *MIRValue>,
     declarations: Map<*HIRDeclaration, *mut MIRDeclaration>,
     parameters: Map<*HIRDeclaration, *MIRValue>,
+    temporaries: Map<*HIRExpression, *MIRValue>,
     runtime_functions: Map<String, *MIRFunctionDeclaration>,
     break_blocks: Vector<*mut MIRBlock>,
     continue_blocks: Vector<*mut MIRBlock>,
@@ -413,7 +414,9 @@ class HIRLowerer {
     }
 
     fn LowerPlaceExpression(&mut this, expression: *HIRExpression) -> *MIRValue {
-        if expression->kind == HIRExpressionKind::VariableReference {
+        if this.temporaries.Has(expression) {
+            return this.temporaries[expression];
+        } else if expression->kind == HIRExpressionKind::VariableReference {
             return this.variables.Get((expression as *HIRVariableReference)->variable, null);
         } else if expression->kind == HIRExpressionKind::DeclarationReference {
             let declaration = (expression as *HIRDeclarationReference)->declaration;
@@ -423,16 +426,15 @@ class HIRLowerer {
             } else {
                 return this.parameters.Get(declaration, null);
             }
-        } else if expression->kind == HIRExpressionKind::Constructor {
-            let alloca = this.builder.BuildAlloca("temporary".ToString(), expression->_type);
-            this.LowerExpressionTo(expression as *HIRConstructorExpression, alloca as *MIRInstruction);
-            return alloca as *MIRInstruction;
         } else if expression->kind == HIRExpressionKind::MemberAccess {
             return this.LowerMemberAccessExpression(expression as *HIRMemberAccessExpression);
         } else if expression->kind == HIRExpressionKind::Dereference {
             return this.LowerExpression((expression as *HIRDereferenceExpression)->operand);
         } else {
-            return null;
+            let alloca = this.builder.BuildAlloca("temporary".ToString(), expression->_type);
+            this.LowerExpressionTo(expression, alloca as *MIRInstruction);
+            this.temporaries[expression] = (alloca as *MIRInstruction) as *MIRValue;
+            return alloca as *MIRInstruction;
         }
     }
 

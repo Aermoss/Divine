@@ -257,7 +257,7 @@ class SemanticAnalyzer {
         } return true;
     }
 
-    pub fn Materialize(&mut this, _expression: *HIRExpression, target: &SemanticType) -> *HIRExpression {
+    pub fn Coerce(&mut this, _expression: *HIRExpression, target: &SemanticType) -> *HIRExpression {
         unsafe {
             let expression = _expression as *mut HIRExpression;
         }
@@ -265,7 +265,7 @@ class SemanticAnalyzer {
         if expression == null {
             return expression;
         } else if expression->deferred != null {
-            return this.Materialize(this.AnalyzeExpression(expression->deferred, target), target);
+            return this.Coerce(this.AnalyzeExpression(expression->deferred, target), target);
         }
 
         if expression->_type->IsInteger() && expression->_type->IsLiteral() && target.IsPointer() {
@@ -289,14 +289,14 @@ class SemanticAnalyzer {
         } return expression;
     }
 
-    fn Materialize(&mut this, _expression: *HIRExpression) -> *HIRExpression {
+    fn Coerce(&mut this, _expression: *HIRExpression) -> *HIRExpression {
         unsafe {
             let expression = _expression as *mut HIRExpression;
         }
 
         if expression != null {
             if expression->deferred != null {
-                return this.Materialize(this.AnalyzeExpression(expression->deferred, null));
+                return this.Coerce(this.AnalyzeExpression(expression->deferred, null));
             } else if expression->_type->IsLiteral() {
                 expression->_type = expression->_type->IsInteger() ? this.type_manager.Integer(32, true) : this.type_manager.Float(64);
             }
@@ -314,7 +314,7 @@ class SemanticAnalyzer {
     }
 
     fn ImplicitAddressOf(&mut this, expression: *HIRExpression) -> *HIRExpression {
-        if expression != null && (expression->category == HIRExpressionCategory::Place || expression->_type->IsClass()) {
+        if expression != null && (expression->category == HIRExpressionCategory::Place || expression->_type->HasFields()) {
             if expression->kind == HIRExpressionKind::Dereference {
                 return (expression as *HIRDereferenceExpression)->operand;
             }
@@ -341,7 +341,7 @@ class SemanticAnalyzer {
         if _type == null { return; }
 
         if constant->initializer != null {
-            initializer = this.Materialize(this.AnalyzeExpression(constant->initializer), _type);
+            initializer = this.Coerce(this.AnalyzeExpression(constant->initializer), _type);
         }
 
         let declaration = this.arena.New<HIRConstantDeclaration>(constant->name, _type, initializer);
@@ -355,13 +355,13 @@ class SemanticAnalyzer {
         if _type == null { return; }
 
         if _static->initializer != null && !_static->zero_initializer {
-            initializer = this.Materialize(this.AnalyzeExpression(_static->initializer), _type);
+            initializer = this.Coerce(this.AnalyzeExpression(_static->initializer), _type);
         }
 
         let mut alignment: *HIRExpression = null;
 
         if _static->alignment != null {
-            alignment = this.Materialize(this.AnalyzeExpression(_static->alignment), this.type_manager.IntegerPointer(false));
+            alignment = this.Coerce(this.AnalyzeExpression(_static->alignment), this.type_manager.IntegerPointer(false));
             if alignment == null { return; }
 
             if !alignment->_type->IsIntegerPointer() || alignment->_type->IsSigned() {
@@ -625,7 +625,7 @@ class SemanticAnalyzer {
             let mut value: *HIRExpression = null;
 
             if member->value != null {
-                value = this.Materialize(this.AnalyzeExpression(member->value), underlying_type);
+                value = this.Coerce(this.AnalyzeExpression(member->value), underlying_type);
                 if value == null { continue; }
 
                 if !underlying_type->IsCompatible(value->_type) {
@@ -718,7 +718,7 @@ class SemanticAnalyzer {
 
         if _return->expression != null {
             let return_type = this.current_function->Return();
-            value = this.Materialize(this.AnalyzeExpression(_return->expression), return_type);
+            value = this.Coerce(this.AnalyzeExpression(_return->expression), return_type);
             if value == null { return; }
         }
 
@@ -789,8 +789,8 @@ class SemanticAnalyzer {
             start = this.AnalyzeExpression(range->start);
             end = this.AnalyzeExpression(range->end);
             if start == null || end == null { return; }
-            start = this.Materialize(start, end->_type);
-            end = this.Materialize(end, start->_type);
+            start = this.Coerce(start, end->_type);
+            end = this.Coerce(end, start->_type);
         } else {
             let iterable = this.ImplicitDereference(this.AnalyzeExpression(_for->iterable));
             if iterable == null { return; }
@@ -987,10 +987,10 @@ class SemanticAnalyzer {
             _type = this.ResolveType(variable->_type);
 
             if variable->initializer != null {
-                initializer = this.Materialize(this.AnalyzeExpression(variable->initializer), _type);
+                initializer = this.Coerce(this.AnalyzeExpression(variable->initializer), _type);
             }
         } else if variable->initializer != null {
-            initializer = this.Materialize(this.AnalyzeExpression(variable->initializer));
+            initializer = this.Coerce(this.AnalyzeExpression(variable->initializer));
             _type = initializer->_type;
         } else {
             Logger::Log("Type annotation required for variable '" + variable->name + "' without initializer.", variable as *ASTStatement, LogSeverity::Error);
@@ -1041,9 +1041,9 @@ class SemanticAnalyzer {
         if right == null { return null; }
 
         if left->_type->IsPointer() && (_operator == TokenType::PLUS_ASSIGN || _operator == TokenType::MINUS_ASSIGN) {
-            right = this.Materialize(right, this.type_manager.IntegerPointer(false));
+            right = this.Coerce(right, this.type_manager.IntegerPointer(false));
         } else {
-            right = this.Materialize(right, left->_type);
+            right = this.Coerce(right, left->_type);
         }
 
         if left->_type->HasMethods() {
@@ -1486,7 +1486,7 @@ class SemanticAnalyzer {
 
         for i in 0..param_types.Size() {
             let param_type: *SemanticType = param_types[i];
-            let mut value = this.Materialize(values[i], param_type);
+            let mut value = this.Coerce(values[i], param_type);
 
             if param_type->IsReference() && param_type->Pointee().IsCompatible(value->_type) {
                 value = this.ImplicitAddressOf(value);
@@ -1521,7 +1521,7 @@ class SemanticAnalyzer {
         }
 
         if _new->size != null {
-            size = this.Materialize(this.AnalyzeExpression(_new->size), this.type_manager.IntegerPointer(false));
+            size = this.Coerce(this.AnalyzeExpression(_new->size), this.type_manager.IntegerPointer(false));
 
             if size == null {
                 return null;
@@ -1569,7 +1569,7 @@ class SemanticAnalyzer {
         let mut target = this.ResolveType(cast->target_type);
         if target == null { return null; }
 
-        let value = this.Materialize(this.AnalyzeExpression(cast->expression), target);
+        let value = this.Coerce(this.AnalyzeExpression(cast->expression), target);
         if value == null { return null; }
 
         if *value->_type == *target && this.LiteralNeedsExplicitType(cast->expression, target) {
@@ -1680,7 +1680,7 @@ class SemanticAnalyzer {
             return null;
         }
 
-        let index = this.Materialize(this.ImplicitDereference(this.AnalyzeExpression(index_access->index)), this.type_manager.IntegerPointer(false));
+        let index = this.Coerce(this.ImplicitDereference(this.AnalyzeExpression(index_access->index)), this.type_manager.IntegerPointer(false));
 
         if index == null {
             return null;
@@ -1814,9 +1814,9 @@ class SemanticAnalyzer {
             }
 
             if operand_target != null {
-                value = this.Materialize(value, operand_target);
+                value = this.Coerce(value, operand_target);
             } else {
-                value = this.Materialize(value);
+                value = this.Coerce(value);
             }
 
             if unary->_operator == TokenType::MINUS {
@@ -1858,7 +1858,7 @@ class SemanticAnalyzer {
         if left == null { return null; }
 
         if operand_target != null {
-            left = this.Materialize(left, operand_target);
+            left = this.Coerce(left, operand_target);
         }
 
         if binary->_operator == TokenType::AND || binary->_operator == TokenType::OR {
@@ -1887,7 +1887,7 @@ class SemanticAnalyzer {
         if right == null { return null; }
 
         if operand_target != null {
-            right = this.Materialize(right, operand_target);
+            right = this.Coerce(right, operand_target);
         }
 
         return this.AnalyzeResolvedBinaryExpression(left, right, binary->_operator, binary as *ASTExpression);
@@ -1938,11 +1938,11 @@ class SemanticAnalyzer {
         }
 
         if left->_type->IsPointer() && right->_type->IsInteger() && right->_type->IsLiteral() {
-            right = this.Materialize(right, this.type_manager.IntegerPointer(false));
+            right = this.Coerce(right, this.type_manager.IntegerPointer(false));
         } else if right->_type->IsPointer() && left->_type->IsInteger() && left->_type->IsLiteral() {
-            left = this.Materialize(left, this.type_manager.IntegerPointer(false));
+            left = this.Coerce(left, this.type_manager.IntegerPointer(false));
         } else {
-            (left, right) = (this.Materialize(left, right->_type), this.Materialize(right, left->_type));
+            (left, right) = (this.Coerce(left, right->_type), this.Coerce(right, left->_type));
         }
 
         if left->_type->IsBoolean() && right->_type->IsBoolean() {
@@ -2060,8 +2060,8 @@ class SemanticAnalyzer {
         let mut else_value = this.AnalyzeExpression(ternary->_else);
         if else_value == null { return null; }
 
-        this.Materialize(then_value, target != null ? target : else_value->_type);
-        this.Materialize(else_value, target != null ? target : then_value->_type);
+        this.Coerce(then_value, target != null ? target : else_value->_type);
+        this.Coerce(else_value, target != null ? target : then_value->_type);
 
         let mutable = then_value->mutable && else_value->mutable ? true : false;
         let category = (then_value->category == HIRExpressionCategory::Place && else_value->category == HIRExpressionCategory::Place)

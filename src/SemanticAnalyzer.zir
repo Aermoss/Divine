@@ -44,6 +44,7 @@ class SemanticAnalyzer {
     forwards: Vector<SemanticForward>,
     class_data: Map<*ASTNode, Pair<*mut HIRClassDeclaration, *mut Scope>>,
     structure_data: Map<*ASTNode, Pair<*mut HIRStructureDeclaration, *mut Scope>>,
+    temporaries: Vector<*HIRExpression>,
     loop_scopes: Vector<*mut Scope>,
 
     pub abi: HIRDeclarationABI = HIRDeclarationABI::Native,
@@ -679,14 +680,17 @@ class SemanticAnalyzer {
 
                     if expression != null {
                         this.current_block->statements.PushBack(this.arena.New<HIRExpressionStatement>(expression));
-                    } assignment = assignment->next;
+                    }
+
+                    this.FlushTemporaries(null);
+                    assignment = assignment->next;
                 }
             } else {
                 let expression = this.AnalyzeExpression(expression);
 
                 if expression != null {
                     this.current_block->statements.PushBack(this.arena.New<HIRExpressionStatement>(expression));
-                }
+                } this.FlushTemporaries(null);
             }
         } else if statement->kind == ASTStatementKind::If {
             this.AnalyzeIfStatement(statement as *ASTIfStatement);
@@ -722,6 +726,7 @@ class SemanticAnalyzer {
             if value == null { return; }
         }
 
+        this.FlushTemporaries(value);
         this.AnalyzeDestructors(null, value);
         this.current_block->statements.PushBack(this.arena.New<HIRReturnStatement>(value));
     }
@@ -905,6 +910,23 @@ class SemanticAnalyzer {
         this.current_block->statements.PushBack(this.arena.New<HIRLoopStatement>(body));
     }
 
+    fn FlushTemporaries(&mut this, exception: *HIRExpression) {
+        for instance in this.temporaries.Reverse() {
+            if instance == exception { continue; }
+            let _type = instance->_type;
+            let mut values = Vector<*HIRExpression>();
+            values.PushBack(instance);
+            let candidates = _type->GetCandidates(("~" + _type->name), null, true);
+            let function = this.ResolveOverload(candidates, values, null, true);
+            if function == null { continue; }
+            let callee = this.arena.New<HIRDeclarationReference>(function as *HIRDeclaration, false);
+            let expression = this.arena.New<HIRDestructorExpression>(instance, callee);
+            this.current_block->statements.PushBack(this.arena.New<HIRExpressionStatement>(expression));
+        }
+
+        this.temporaries.Clear();
+    }
+
     fn AnalyzeDestructors(&mut this, target: *mut Scope, exception: *HIRExpression) {
         let mut scope = this.scope_manager.current;
 
@@ -1003,6 +1025,9 @@ class SemanticAnalyzer {
 
             if _type->IsClass() {
                 this.scope_manager.current->instances.PushBack(this.arena.New<HIRVariableReference>(statement));
+                this.FlushTemporaries(initializer);
+            } else {
+                this.FlushTemporaries(null);
             }
         }
 
@@ -1408,7 +1433,9 @@ class SemanticAnalyzer {
                         let function = this.ResolveOverload(candidates, values, call as *ASTExpression, false);
                         if function == null { return null; }
                         let callee = this.arena.New<HIRDeclarationReference>(function as *HIRDeclaration, false);
-                        return this.arena.New<HIRConstructorExpression>(callee, arguments, _class);
+                        let constructor = this.arena.New<HIRConstructorExpression>(callee, arguments, _class);
+                        this.temporaries.PushBack(constructor);
+                        return constructor;
                     }
                 }
 
@@ -1509,7 +1536,11 @@ class SemanticAnalyzer {
             values[i] = this.MakeCompatible(value, param_type);
         }
 
-        return this.arena.New<HIRCallExpression>(function, values);
+        let call = this.arena.New<HIRCallExpression>(function, values);
+
+        if function->_type->Return()->HasFields() {
+            this.temporaries.PushBack(call);
+        } return call;
     }
 
     fn AnalyzeNewExpression(&mut this, _new: *ASTNewExpression) -> *HIRExpression {

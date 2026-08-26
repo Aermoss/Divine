@@ -19,16 +19,22 @@
 class HIRLowerer {
     context: MIRContext,
     builder: MIRBuilder,
+    target_info: TargetInfo,
     namespaces: Vector<String>,
     strings: Map<String, *MIRStaticDeclaration>,
     variables: Map<*HIRVariableStatement, *MIRValue>,
     declarations: Map<*HIRDeclaration, *mut MIRDeclaration>,
+    types: Map<*SemanticType, *mut MIRDeclaration>,
     parameters: Map<*HIRDeclaration, *MIRValue>,
     temporaries: Map<*HIRExpression, *MIRValue>,
     runtime_functions: Map<String, *MIRFunctionDeclaration>,
     break_blocks: Vector<*mut MIRBlock>,
     continue_blocks: Vector<*mut MIRBlock>,
     module: *mut MIRModule = null;
+
+    HIRLowerer(&mut this, target_info: &TargetInfo) {
+        this.target_info = target_info;
+    }
 
     pub fn Lower(&mut this, module: *HIRModule) -> *MIRModule {
         this.module = this.context->arena.New<MIRModule>();
@@ -100,7 +106,9 @@ class HIRLowerer {
         let initializer = this.LowerConstantExpression(constant->initializer);
         if initializer == null { return; }
 
-        let lowered = this.builder.BuildConstant(declaration->name, declaration->_type, initializer);
+        let _type = this.LowerType(declaration->_type);
+        if _type == null { return; }
+        let lowered = this.builder.BuildConstant(declaration->name, _type, initializer);
         this.declarations[declaration] = lowered;
     }
 
@@ -121,7 +129,9 @@ class HIRLowerer {
             if initializer == null { return; }
         }
 
-        let lowered = this.builder.BuildStatic(declaration->name, declaration->_type, _static->mutable, initializer, this.LowerLinkage(declaration->linkage));
+        let _type = this.LowerType(declaration->_type);
+        if _type == null { return; }
+        let lowered = this.builder.BuildStatic(declaration->name, _type, _static->mutable, initializer, this.LowerLinkage(declaration->linkage));
         this.declarations[declaration] = lowered as *mut MIRLinkableDeclaration;
     }
 
@@ -134,31 +144,37 @@ class HIRLowerer {
         return _type->Size() > 8 || !_type->IsTrivial();
     }
 
-    fn LowerAggregateType(&mut this, _type: *SemanticType) -> *SemanticType {
+    fn LowerAggregateType(&mut this, _type: *SemanticType) -> *MIRType {
+        let lowered_type = this.LowerType(_type);
+
         if !this.IsAggregate(_type) {
-            return _type;
+            return lowered_type;
         } else if this.IsIndirectAggregate(_type) {
-            return analyzer->type_manager.Pointer(_type, true);
+            return this.context->PointerType(lowered_type);
         } else {
             let size = _type->Size();
             let width: u32 = size > 4 ? 64 : size > 2 ? 32 : size > 1 ? 16 : 8;
-            return analyzer->type_manager.Integer(width, false);
+            return this.context->IntegerType(width);
         }
     }
 
     fn LowerAggregateValue(&mut this, value: *MIRValue, _type: *SemanticType) -> *MIRValue {
-        let alloca = this.builder.BuildAlloca("abi.aggregate".ToString(), _type) as *MIRInstruction;
+        let lowered_type = this.LowerType(_type);
+        if lowered_type == null { return null; }
+        let alloca = this.builder.BuildAlloca("abi.aggregate".ToString(), lowered_type) as *MIRInstruction;
         this.builder.BuildStore(alloca, value);
         if this.IsIndirectAggregate(_type) { return alloca; }
-        let target = analyzer->type_manager.Pointer(this.LowerAggregateType(_type), true);
+        let target = this.context->PointerType(this.LowerAggregateType(_type));
         let pointer = this.builder.BuildCast("abi.cast".ToString(), MIRCastKind::Bitcast, alloca, target) as *MIRInstruction;
         return this.builder.BuildLoad("abi.value".ToString(), pointer) as *MIRInstruction;
     }
 
     fn RaiseAggregateValue(&mut this, value: *MIRValue, _type: *SemanticType) -> *MIRValue {
+        let lowered_type = this.LowerType(_type);
+        if lowered_type == null { return null; }
         if this.IsIndirectAggregate(_type) { return value; }
-        let alloca = this.builder.BuildAlloca("abi.aggregate".ToString(), _type) as *MIRInstruction;
-        let target = analyzer->type_manager.Pointer(this.LowerAggregateType(_type), true);
+        let alloca = this.builder.BuildAlloca("abi.aggregate".ToString(), lowered_type) as *MIRInstruction;
+        let target = this.context->PointerType(this.LowerAggregateType(_type));
         let pointer = this.builder.BuildCast("abi.cast".ToString(), MIRCastKind::Bitcast, alloca, target) as *MIRInstruction;
         this.builder.BuildStore(pointer, value);
         return this.builder.BuildLoad("abi.value".ToString(), alloca) as *MIRInstruction;
@@ -176,11 +192,12 @@ class HIRLowerer {
 
         for i in 0..function->parameters.Size() {
             let parameter: *HIRParameterDeclaration = function->parameters[i];
-            let lowered = this.builder.BuildParameter((parameter as *HIRDeclaration)->name, i as u32, (parameter as *HIRDeclaration)->_type);
+            let lowered = this.builder.BuildParameter((parameter as *HIRDeclaration)->name, i as u32, this.LowerType((parameter as *HIRDeclaration)->_type));
             parameters.PushBack(lowered);
         }
 
-        let lowered = this.builder.BuildFunction(name, parameters, declaration->_type, this.LowerLinkage(declaration->linkage));
+        let _return = this.LowerType(declaration->_type->Return());
+        let lowered = this.builder.BuildFunction(name, parameters, _return, this.LowerLinkage(declaration->linkage));
         this.declarations[declaration] = lowered as *mut MIRLinkableDeclaration;
     }
 
@@ -194,7 +211,7 @@ class HIRLowerer {
         for i in 0..function->parameters.Size() {
             let parameter: *HIRParameterDeclaration = function->parameters[i];
             let lowered_parameter: *MIRParameter = this.builder.GetCurrentFunction()->parameters[i];
-            let alloca = this.builder.BuildAlloca((parameter as *HIRDeclaration)->name, (parameter as *HIRDeclaration)->_type);
+            let alloca = this.builder.BuildAlloca((parameter as *HIRDeclaration)->name, this.LowerType((parameter as *HIRDeclaration)->_type));
             this.parameters[(parameter as *HIRDeclaration)] = (alloca as *MIRInstruction) as *MIRValue;
             this.builder.BuildStore(alloca as *MIRInstruction, lowered_parameter);
         }
@@ -204,12 +221,23 @@ class HIRLowerer {
 
     fn LowerClassDeclarationFirstPass(&mut this, _class: *HIRClassDeclaration) {
         let declaration = _class as *HIRDeclaration;
-        let lowered = this.builder.BuildType(declaration->name, declaration->_type);
-        this.declarations[declaration] = lowered;
-        lowered->types = _class->fields;
+        let lowered = this.builder.BuildType(declaration->name, this.context->StructType());
+        this.types[declaration->_type] = lowered;
     }
 
-    fn LowerClassDeclarationSecondPass(&mut this, _class: *HIRClassDeclaration) {}
+    fn LowerClassDeclarationSecondPass(&mut this, _class: *HIRClassDeclaration) {
+        let declaration = _class as *HIRDeclaration;
+        let lowered: *mut MIRDeclaration = this.types[declaration->_type];
+        let fields = Vector<*MIRType>();
+
+        for field in _class->fields {
+            let lowered_field = this.LowerType(field);
+            if lowered_field == null { return; }
+            fields.PushBack(lowered_field);
+        }
+
+        (lowered->_type as *mut MIRStructType)->SetBody(fields);
+    }
 
     fn LowerClassDeclarationThirdPass(&mut this, _class: *HIRClassDeclaration) {
         this.namespaces.PushBack((_class as *HIRDeclaration)->name);
@@ -245,12 +273,23 @@ class HIRLowerer {
 
     fn LowerStructureDeclarationFirstPass(&mut this, structure: *HIRStructureDeclaration) {
         let declaration = structure as *HIRDeclaration;
-        let lowered = this.builder.BuildType(declaration->name, declaration->_type);
-        this.declarations[declaration] = lowered;
-        lowered->types = structure->fields;
+        let lowered = this.builder.BuildType(declaration->name, this.context->StructType());
+        this.types[declaration->_type] = lowered;
     }
 
-    fn LowerStructureDeclarationSecondPass(&mut this, structure: *HIRStructureDeclaration) {}
+    fn LowerStructureDeclarationSecondPass(&mut this, structure: *HIRStructureDeclaration) {
+        let declaration = structure as *HIRDeclaration;
+        let lowered: *mut MIRDeclaration = this.types[declaration->_type];
+        let fields = Vector<*MIRType>();
+
+        for field in structure->fields {
+            let lowered_field = this.LowerType(field);
+            if lowered_field == null { return; }
+            fields.PushBack(lowered_field);
+        }
+
+        (lowered->_type as *mut MIRStructType)->SetBody(fields);
+    }
 
     fn LowerStructureDeclarationThirdPass(&mut this, structure: *HIRStructureDeclaration) {
         this.namespaces.PushBack((structure as *HIRDeclaration)->name);
@@ -311,7 +350,9 @@ class HIRLowerer {
     }
 
     fn LowerVariableStatement(&mut this, variable: *HIRVariableStatement) {
-        let alloca = this.builder.BuildAlloca(variable->name, variable->_type);
+        let _type = this.LowerType(variable->_type);
+        if _type == null { return; }
+        let alloca = this.builder.BuildAlloca(variable->name, _type);
         this.variables[variable] = (alloca as *MIRInstruction) as *MIRValue;
 
         if variable->initializer != null {
@@ -395,7 +436,7 @@ class HIRLowerer {
 
     fn LowerForStatement(&mut this, _for: *HIRForStatement) {
         this.LowerVariableStatement(_for->iterator);
-        let alloca = this.builder.BuildAlloca(_for->variable->name, _for->variable->_type);
+        let alloca = this.builder.BuildAlloca(_for->variable->name, this.LowerType(_for->variable->_type));
         this.variables[_for->variable] = (alloca as *MIRInstruction) as *MIRValue;
 
         let condition_block = this.builder.BuildBlock("for.cond".ToString());
@@ -446,7 +487,7 @@ class HIRLowerer {
 
     fn LowerConstantExpression(&mut this, expression: *HIRExpression) -> *MIRValue {
         if expression->kind == HIRExpressionKind::StringLiteral {
-            return this.builder.ConstantString((expression as *HIRStringLiteral)->value, expression->_type) as *MIRConstant;
+            return this.builder.ConstantString((expression as *HIRStringLiteral)->value, this.LowerType(expression->_type)) as *MIRConstant;
         } else {
             return this.LowerExpression(expression);
         }
@@ -470,7 +511,7 @@ class HIRLowerer {
         } else if expression->kind == HIRExpressionKind::Dereference {
             return this.LowerExpression((expression as *HIRDereferenceExpression)->operand);
         } else {
-            let alloca = this.builder.BuildAlloca("temporary".ToString(), expression->_type);
+            let alloca = this.builder.BuildAlloca("temporary".ToString(), this.LowerType(expression->_type));
             this.LowerExpressionTo(expression, alloca as *MIRInstruction);
             this.temporaries[expression] = (alloca as *MIRInstruction) as *MIRValue;
             return alloca as *MIRInstruction;
@@ -496,13 +537,13 @@ class HIRLowerer {
 
     fn LowerExpression(&mut this, expression: *HIRExpression) -> *MIRValue {
         if expression->kind == HIRExpressionKind::BooleanLiteral {
-            return this.builder.ConstantBoolean((expression as *HIRBooleanLiteral)->value, expression->_type) as *MIRConstant;
+            return this.builder.ConstantBoolean((expression as *HIRBooleanLiteral)->value, this.LowerType(expression->_type)) as *MIRConstant;
         } else if expression->kind == HIRExpressionKind::CharacterLiteral {
-            return this.builder.ConstantCharacter((expression as *HIRCharacterLiteral)->value, expression->_type) as *MIRConstant;
+            return this.builder.ConstantCharacter((expression as *HIRCharacterLiteral)->value, this.LowerType(expression->_type)) as *MIRConstant;
         } else if expression->kind == HIRExpressionKind::IntegerLiteral {
-            return this.builder.ConstantInteger((expression as *HIRIntegerLiteral)->value, expression->_type) as *MIRConstant;
+            return this.builder.ConstantInteger((expression as *HIRIntegerLiteral)->value, this.LowerType(expression->_type)) as *MIRConstant;
         } else if expression->kind == HIRExpressionKind::FloatLiteral {
-            return this.builder.ConstantFloat((expression as *HIRFloatLiteral)->value, expression->_type) as *MIRConstant;
+            return this.builder.ConstantFloat((expression as *HIRFloatLiteral)->value, this.LowerType(expression->_type)) as *MIRConstant;
         } else if expression->kind == HIRExpressionKind::StringLiteral {
             let value = (expression as *HIRStringLiteral)->value;
             let mut _static: *MIRStaticDeclaration = null;
@@ -511,15 +552,15 @@ class HIRLowerer {
                 _static = this.strings[value];
             } else {
                 let name = "string." + String::FromInteger(this.strings.Size() as u64);
-                let initializer = this.builder.ConstantString(value, expression->_type) as *MIRConstant;
-                let _type = analyzer->type_manager.Array(analyzer->type_manager.Integer(8, false), value->Length() + 1);
+                let initializer = this.builder.ConstantString(value, this.LowerType(expression->_type)) as *MIRConstant;
+                let _type = this.context->ArrayType(this.context->IntegerType(8), value->Length() + 1);
                 _static = this.builder.BuildStatic(name, _type, false, initializer, MIRDeclarationLinkage::Private);
                 this.strings[value] = _static;
             }
 
             return this.builder.ReferenceDeclaration(_static as *MIRLinkableDeclaration);
         } else if expression->kind == HIRExpressionKind::NullLiteral {
-            return this.builder.ConstantNull(expression->_type) as *MIRConstant;
+            return this.builder.ConstantNull(this.LowerType(expression->_type)) as *MIRConstant;
         } else if expression->kind == HIRExpressionKind::Intrinsic {
             return this.LowerIntrinsic(expression as *HIRIntrinsicExpression);
         } else if expression->kind == HIRExpressionKind::Assignment {
@@ -551,14 +592,14 @@ class HIRLowerer {
         } else {
             let place = this.LowerPlaceExpression(expression);
             if place == null { return null; }
-            if place->_type->IsFunction() { return place; }
+            if place->_type->kind == MIRTypeKind::Function { return place; }
             return this.builder.BuildLoad("load".ToString(), place) as *MIRInstruction;
         }
     }
 
     fn LowerIntrinsic(&mut this, intrinsic: *HIRIntrinsicExpression) -> *MIRValue {
         let value = intrinsic->kind == HIRIntrinsicKind::SizeOf ? intrinsic->_type->Size() : intrinsic->_type->Alignment();
-        return this.builder.ConstantInteger(value as u64, (intrinsic as *HIRExpression)->_type) as *MIRConstant;
+        return this.builder.ConstantInteger(value as u64, this.LowerType((intrinsic as *HIRExpression)->_type)) as *MIRConstant;
     }
 
     fn LowerAssignmentExpression(&mut this, assignment: *HIRAssignmentExpression) -> *MIRValue {
@@ -610,34 +651,24 @@ class HIRLowerer {
         return null;
     }
 
-    fn LowerRuntimeFunction(&mut this, name: String, _type: *SemanticType) -> *MIRFunctionDeclaration {
+    fn LowerRuntimeFunction(&mut this, name: String, parameters: &Vector<*MIRType>, _return: *MIRType) -> *MIRFunctionDeclaration {
         for declaration in this.module->declarations {
             if declaration->kind == MIRDeclarationKind::Function && declaration->name == name {
                 return (declaration as *MIRLinkableDeclaration) as *MIRFunctionDeclaration;
             }
         }
 
-        if this.runtime_functions.Has(name) {
-            return this.runtime_functions[name];
-        }
-
-        let parameter_types = _type->Parameters();
-        let mut parameters = Vector<*MIRParameter>();
-
-        for i in 0..parameter_types.Size() {
-            parameters.PushBack(this.builder.BuildParameter("".ToString(), i as u32, parameter_types[i]));
-        }
-
-        let function = this.builder.BuildFunction(name, parameters, _type, MIRDeclarationLinkage::External);
+        if this.runtime_functions.Has(name) { return this.runtime_functions[name]; }
+        let function = this.builder.BuildFunction(name, parameters, _return, MIRDeclarationLinkage::External);
         this.runtime_functions[name] = function;
         return function;
     }
 
     fn LowerNewExpression(&mut this, _new: *HIRNewExpression) -> *MIRValue {
-        let mut parameters = Vector<*SemanticType>();
-        let size_type = analyzer->type_manager.IntegerPointer(false);
+        let mut parameters = Vector<*MIRType>();
+        let size_type = this.context->IntegerType(this.target_info.pointer_size as u32);
         parameters.PushBack(size_type);
-        let malloc = this.LowerRuntimeFunction("malloc".ToString(), analyzer->type_manager.Function(parameters, analyzer->type_manager.Pointer(analyzer->type_manager.Void(), true)));
+        let malloc = this.LowerRuntimeFunction("malloc".ToString(), parameters, this.context->PointerType(this.context->VoidType()));
         let mut allocation_size = (this.builder.ConstantInteger(_new->_type->Size() as u64, size_type) as *MIRConstant) as *MIRValue;
 
         if _new->size != null {
@@ -655,9 +686,9 @@ class HIRLowerer {
     fn LowerDeleteExpression(&mut this, _delete: *HIRDeleteExpression) -> *MIRValue {
         let pointer = this.LowerExpression(_delete->value);
         if pointer == null { return null; }
-        let mut parameters = Vector<*SemanticType>();
-        parameters.PushBack(analyzer->type_manager.Pointer(analyzer->type_manager.Void(), true));
-        let free = this.LowerRuntimeFunction("free".ToString(), analyzer->type_manager.Function(parameters, analyzer->type_manager.Void()));
+        let mut parameters = Vector<*MIRType>();
+        parameters.PushBack(this.context->PointerType(this.context->VoidType()));
+        let free = this.LowerRuntimeFunction("free".ToString(), parameters, this.context->VoidType());
         let mut arguments = Vector<*MIRValue>();
         arguments.PushBack(pointer);
         let callee = this.builder.ReferenceDeclaration(free as *MIRLinkableDeclaration);
@@ -676,65 +707,65 @@ class HIRLowerer {
 
         if value_type->IsBoolean() {
             if target_type->IsInteger() {
-                return this.builder.BuildCast("cast".ToString(), MIRCastKind::ZExt, value, target_type);
+                return this.builder.BuildCast("cast".ToString(), MIRCastKind::ZExt, value, this.LowerType(target_type));
             }
         } else if value_type->IsCharacter() {
             if target_type->IsInteger() {
                 if value_type->Width() < target_type->Width() {
-                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::ZExt, value, target_type);
+                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::ZExt, value, this.LowerType(target_type));
                 } else if value_type->Width() > target_type->Width() {
-                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::Trunc, value, target_type);
+                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::Trunc, value, this.LowerType(target_type));
                 }
             }
         } else if value_type->IsInteger() {
             if target_type->IsCharacter() {
                 if value_type->Width() == 8 && !value_type->IsSigned() {
-                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::ZExt, value, target_type);
+                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::ZExt, value, this.LowerType(target_type));
                 }
             }
 
             if target_type->IsInteger() || target_type->IsEnumeration() {
                 if value_type->Width() < target_type->Width() {
                     if value_type->IsSigned() {
-                        return this.builder.BuildCast("cast".ToString(), MIRCastKind::SExt, value, target_type);
+                        return this.builder.BuildCast("cast".ToString(), MIRCastKind::SExt, value, this.LowerType(target_type));
                     } else {
-                        return this.builder.BuildCast("cast".ToString(), MIRCastKind::ZExt, value, target_type);
+                        return this.builder.BuildCast("cast".ToString(), MIRCastKind::ZExt, value, this.LowerType(target_type));
                     }
                 } else if value_type->Width() > target_type->Width() {
-                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::Trunc, value, target_type);
+                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::Trunc, value, this.LowerType(target_type));
                 }
             }
 
             if target_type->IsFloat() {
                 if value_type->IsSigned() {
-                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::SIToFP, value, target_type);
+                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::SIToFP, value, this.LowerType(target_type));
                 } else {
-                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::UIToFP, value, target_type);
+                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::UIToFP, value, this.LowerType(target_type));
                 }
             }
 
             if target_type->IsPointer() {
-                return this.builder.BuildCast("cast".ToString(), MIRCastKind::IntToPtr, value, target_type);
+                return this.builder.BuildCast("cast".ToString(), MIRCastKind::IntToPtr, value, this.LowerType(target_type));
             }
         } else if value_type->IsFloat() {
             if target_type->IsInteger() {
                 if target_type->IsSigned() {
-                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::FPToSI, value, target_type);
+                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::FPToSI, value, this.LowerType(target_type));
                 } else {
-                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::FPToUI, value, target_type);
+                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::FPToUI, value, this.LowerType(target_type));
                 }
             }
 
             if target_type->IsFloat() {
                 if value_type->Width() < target_type->Width() {
-                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::FPExt, value, target_type);
+                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::FPExt, value, this.LowerType(target_type));
                 } else if value_type->Width() > target_type->Width() {
-                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::FPTrunc, value, target_type);
+                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::FPTrunc, value, this.LowerType(target_type));
                 }
             }
         } else if value_type->IsPointer() {
             if target_type->IsInteger() {
-                return this.builder.BuildCast("cast".ToString(), MIRCastKind::PtrToInt, value, target_type);
+                return this.builder.BuildCast("cast".ToString(), MIRCastKind::PtrToInt, value, this.LowerType(target_type));
             }
 
             if target_type->IsPointer() {
@@ -760,24 +791,24 @@ class HIRLowerer {
                     }
 
                     if index != 0 {
-                        value = this.builder.BuildStructGEP("cast.base".ToString(), value, index, target_type);
+                        value = this.builder.BuildStructGEP("cast.base".ToString(), value, index, this.LowerType(target_type));
                     } else if !related {
                         return null;
                     }
                 }
 
-                return this.builder.BuildCast("cast".ToString(), MIRCastKind::Bitcast, value, target_type);
+                return this.builder.BuildCast("cast".ToString(), MIRCastKind::Bitcast, value, this.LowerType(target_type));
             }
         } else if value_type->IsEnumeration() {
             if target_type->IsInteger() {
                 if value_type->Width() < target_type->Width() {
                     if value_type->IsSigned() {
-                        return this.builder.BuildCast("cast".ToString(), MIRCastKind::SExt, value, target_type);
+                        return this.builder.BuildCast("cast".ToString(), MIRCastKind::SExt, value, this.LowerType(target_type));
                     } else {
-                        return this.builder.BuildCast("cast".ToString(), MIRCastKind::ZExt, value, target_type);
+                        return this.builder.BuildCast("cast".ToString(), MIRCastKind::ZExt, value, this.LowerType(target_type));
                     }
                 } else if value_type->Width() > target_type->Width() {
-                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::Trunc, value, target_type);
+                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::Trunc, value, this.LowerType(target_type));
                 }
             }
         } return value;
@@ -794,7 +825,7 @@ class HIRLowerer {
         let expression = member_access as *HIRExpression;
         let instance = this.LowerPlaceExpression(member_access->instance);
         if instance == null { return null; }
-        let field_type = analyzer->type_manager.Pointer(expression->_type, expression->mutable);
+        let field_type = this.context->PointerType(this.LowerType(expression->_type));
         return this.builder.BuildStructGEP("field.access".ToString(), instance, member_access->index as u32, field_type);
     }
 
@@ -815,7 +846,8 @@ class HIRLowerer {
 
     fn LowerBinaryExpression(&mut this, binary: *HIRBinaryExpression) -> *MIRValue {
         let expression = binary as *HIRExpression;
-        let result_type = expression->_type;
+        let result_type = this.LowerType(expression->_type);
+        if result_type == null { return null; }
 
         let left_type = binary->left->_type;
         let left = this.LowerExpression(binary->left);
@@ -961,9 +993,46 @@ class HIRLowerer {
         this.builder.BuildBranch(merge_block);
 
         this.builder.SetCurrentBlock(merge_block);
-        let phi = this.builder.BuildPhi("ternary".ToString(), expression->_type);
+        let _type = this.LowerType(expression->_type);
+        if _type == null { return null; }
+        let phi = this.builder.BuildPhi("ternary".ToString(), _type);
         phi->AddIncoming(then_value, then_block);
         phi->AddIncoming(else_value, else_block);
         return phi as *MIRInstruction;
+    }
+
+    pub fn LowerType(&mut this, _type: *SemanticType) -> *MIRType {
+        if _type->IsVoid() {
+            return this.context->VoidType();
+        } else if _type->IsBoolean() || _type->IsCharacter() || _type->IsInteger() {
+            return this.context->IntegerType(_type->Width());
+        } else if _type->IsFloat() {
+            return this.context->FloatType(_type->Width());
+        } else if _type->IsPointer() {
+            let pointee = this.LowerType(_type->Pointee());
+            if pointee == null { return null; }
+            return this.context->PointerType(pointee);
+        } else if _type->IsArray() {
+            let element = this.LowerType(_type->Element());
+            if element == null { return null; }
+            return this.context->ArrayType(element, _type->Length());
+        } else if _type->IsClass() || _type->IsStructure() {
+            let declaration = this.types.Get(_type, null);
+            return declaration != null ? declaration->_type : null;
+        } else if _type->IsFunction() {
+            let mut parameters = Vector<*MIRType>();
+
+            for parameter in _type->Parameters() {
+                let lowered_parameter = this.LowerType(parameter);
+                if lowered_parameter == null { return null; }
+                parameters.PushBack(lowered_parameter);
+            }
+
+            let mut _return = this.LowerType(_type->Return());
+            if _return == null { return null; }
+            return this.context->FunctionType(parameters, _return);
+        } else {
+            return null;
+        }
     }
 }

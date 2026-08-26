@@ -23,7 +23,7 @@ class MIRLowerer {
     context: LLVMContextRef,
     pub target: *Target,
 
-    types: Map<*SemanticType, LLVMTypeRef>,
+    types: Map<*MIRType, LLVMTypeRef>,
     declarations: Map<*MIRDeclaration, LLVMValueRef>,
     blocks: Map<*MIRBlock, LLVMBasicBlockRef>,
     values: Map<*MIRValue, LLVMValueRef>,
@@ -156,15 +156,15 @@ class MIRLowerer {
 
     fn LowerTypeDeclarationSecondPass(&mut this, _type: *MIRTypeDeclaration) {
         let declaration = _type as *MIRDeclaration;
-        let mut types = Vector<LLVMTypeRef>();
+        let mut fields = Vector<LLVMTypeRef>();
 
-        for _type in _type->types {
-            let lowered_type = this.LowerType(_type);
-            if lowered_type == null { return; }
-            types.PushBack(lowered_type);
+        for field in (declaration->_type as *MIRStructType)->fields {
+            let lowered_field = this.LowerType(field);
+            if lowered_field == null { return; }
+            fields.PushBack(lowered_field);
         }
 
-        LLVMStructSetBody(this.types[declaration->_type], types.Data(), types.Size() as u32, 0);
+        LLVMStructSetBody(this.types[declaration->_type], fields.Data(), fields.Size() as u32, 0);
     }
 
     fn LowerConstantDeclarationFirstPass(&mut this, constant: *MIRConstantDeclaration) {
@@ -213,17 +213,17 @@ class MIRLowerer {
     fn LowerFunctionDeclarationFirstPass(&mut this, function: *MIRFunctionDeclaration) {
         let linkable_declaration = function as *MIRLinkableDeclaration;
         let declaration = linkable_declaration as *MIRDeclaration;
-        let mut param_types = Vector<LLVMTypeRef>();
-        let return_type = this.LowerType(declaration->_type->Return());
-        if return_type == null { return; }
+        let mut parameters = Vector<LLVMTypeRef>();
 
-        for param in declaration->_type->Parameters() {
-            let param_type = this.LowerType(param);
-            if param_type == null { return; }
-            param_types.PushBack(param_type);
+        for parameter in function->parameters {
+            let lowered_parameter_type = this.LowerType((parameter as *MIRValue)->_type);
+            if lowered_parameter_type == null { return; }
+            parameters.PushBack(lowered_parameter_type);
         }
 
-        let value = LLVMAddFunction(this.module, declaration->name.Data(), LLVMFunctionType(return_type, param_types.Data(), param_types.Size() as u32, 0));
+        let _return = this.LowerType(function->_return);
+        if _return == null { return; }
+        let value = LLVMAddFunction(this.module, declaration->name.Data(), LLVMFunctionType(_return, parameters.Data(), parameters.Size() as u32, 0));
         LLVMSetFunctionCallConv(value, (linkable_declaration->linkage == MIRDeclarationLinkage::Internal ? LLVMCallConv::LLVMFastCallConv : LLVMCallConv::LLVMCCallConv) as u32);
         this.declarations[declaration] = value;
 
@@ -276,10 +276,9 @@ class MIRLowerer {
         for block in function->blocks {
             if LLVMGetBasicBlockTerminator(this.blocks[block]) == null {
                 LLVMPositionBuilderAtEnd(this.builder, this.blocks[block]);
-                let return_type = declaration->_type->Return();
 
-                if !return_type->IsVoid() {
-                    LLVMBuildRet(this.builder, LLVMConstNull(this.LowerType(return_type)));
+                if function->_return->kind != MIRTypeKind::Void {
+                    LLVMBuildRet(this.builder, LLVMConstNull(this.LowerType(function->_return)));
                 } else {
                     LLVMBuildRetVoid(this.builder);
                 }
@@ -323,7 +322,7 @@ class MIRLowerer {
                 values.PushBack(lowered_value);
             }
 
-            let _type = this.LowerType((constant as *MIRValue)->_type->Element());
+            let _type = this.LowerType(((constant as *MIRValue)->_type as *MIRArrayType)->element);
             if _type == null { return null; }
             return LLVMConstArray2(_type, values.Data(), values.Size() as u64);
         } else if constant->kind == MIRConstantKind::Struct {
@@ -385,7 +384,7 @@ class MIRLowerer {
     }
 
     fn LowerArrayGEPExpression(&mut this, gep: *MIRArrayGEPExpression) -> LLVMValueRef {
-        let _type = this.LowerType(gep->pointer->_type->Pointee());
+        let _type = this.LowerType((gep->pointer->_type as *MIRPointerType)->pointee);
         if _type == null { return null; }
         let pointer = this.LowerValue(gep->pointer);
         if pointer == null { return null; }
@@ -395,7 +394,7 @@ class MIRLowerer {
     }
 
     fn LowerStructGEPExpression(&mut this, gep: *MIRStructGEPExpression) -> LLVMValueRef {
-        let _type = this.LowerType(gep->pointer->_type->Pointee());
+        let _type = this.LowerType((gep->pointer->_type as *MIRPointerType)->pointee);
         if _type == null { return null; }
         let pointer = this.LowerValue(gep->pointer);
         if pointer == null { return null; }
@@ -458,7 +457,7 @@ class MIRLowerer {
 
     fn LowerArrayGEPInstruction(&mut this, gep: *MIRArrayGEPInstruction) -> LLVMValueRef {
         let instruction = gep as *MIRInstruction;
-        let _type = this.LowerType(gep->pointer->_type->Pointee());
+        let _type = this.LowerType((gep->pointer->_type as *MIRPointerType)->pointee);
         if _type == null { return null; }
         let pointer = this.LowerValue(gep->pointer);
         if pointer == null { return null; }
@@ -469,7 +468,7 @@ class MIRLowerer {
 
     fn LowerStructGEPInstruction(&mut this, gep: *MIRStructGEPInstruction) -> LLVMValueRef {
         let instruction = gep as *MIRInstruction;
-        let _type = this.LowerType(gep->pointer->_type->Pointee());
+        let _type = this.LowerType((gep->pointer->_type as *MIRPointerType)->pointee);
         if _type == null { return null; }
         let pointer = this.LowerValue(gep->pointer);
         if pointer == null { return null; }
@@ -649,43 +648,42 @@ class MIRLowerer {
         return LLVMBuildUnreachable(this.builder);
     }
 
-    fn LowerType(&mut this, _type: *SemanticType) -> LLVMTypeRef {
-        if _type->IsVoid() {
+    fn LowerType(&mut this, _type: *MIRType) -> LLVMTypeRef {
+        if _type->kind == MIRTypeKind::Void {
             return LLVMVoidTypeInContext(this.context);
-        } else if _type->IsBoolean() {
-            return LLVMInt1TypeInContext(this.context);
-        } else if _type->IsCharacter() {
-            return LLVMInt32TypeInContext(this.context);
-        } else if _type->IsInteger() {
-            return LLVMIntTypeInContext(this.context, _type->Width());
-        } else if _type->IsFloat() {
-            if _type->Width() == 64 {
+        } else if _type->kind == MIRTypeKind::Integer {
+            return LLVMIntTypeInContext(this.context, (_type as *MIRIntegerType)->width);
+        } else if _type->kind == MIRTypeKind::Float {
+            if (_type as *MIRFloatType)->width == 64 {
                 return LLVMDoubleTypeInContext(this.context);
             } else {
                 return LLVMFloatTypeInContext(this.context);
             }
-        } else if _type->IsPointer() {
-            let pointee_type = this.LowerType(_type->Pointee());
-            if pointee_type == null { return null; }
-            return LLVMPointerType(pointee_type, 0);
-        } else if _type->IsArray() {
-            let element_type = this.LowerType(_type->Element());
-            if element_type == null { return null; }
-            return LLVMArrayType2(element_type, _type->Length() as u64);
-        } else if _type->IsFunction() {
-            let mut param_types = Vector<LLVMTypeRef>();
-            let return_type = this.LowerType(_type->Return());
-            if return_type == null { return null; }
+        } else if _type->kind == MIRTypeKind::Pointer {
+            let pointer = _type as *MIRPointerType;
+            let pointee = this.LowerType(pointer->pointee);
+            if pointee == null { return null; }
+            return LLVMPointerType(pointee, 0);
+        } else if _type->kind == MIRTypeKind::Array {
+            let array = _type as *MIRArrayType;
+            let element = this.LowerType(array->element);
+            if element == null { return null; }
+            return LLVMArrayType2(element, array->length as u64);
+        } else if _type->kind == MIRTypeKind::Struct {
+            return this.types.Get(_type, null);
+        } else if _type->kind == MIRTypeKind::Function {
+            let function = _type as *MIRFunctionType;
+            let mut parameters = Vector<LLVMTypeRef>();
 
-            for param in _type->Parameters() {
-                let param_type = this.LowerType(param);
-                if param_type == null { return null; }
-                param_types.PushBack(param_type);
+            for parameter in function->parameters {
+                let lowered_parameter = this.LowerType(parameter);
+                if lowered_parameter == null { return null; }
+                parameters.PushBack(lowered_parameter);
             }
 
-            return LLVMFunctionType(return_type, param_types.Data(), param_types.Size() as u32, 0);
-        } else if _type->HasFields() {
-            return this.types.Get(_type, null);
+            let _return = this.LowerType(function->_return);
+            if _return == null { return null; }
+            return LLVMFunctionType(_return, parameters.Data(), parameters.Size() as u32, 0);
         } else {
             return null;
         }

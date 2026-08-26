@@ -106,19 +106,22 @@ class MIRArrayType : MIRType {
 }
 
 class MIRStructType : MIRType {
+    pub name: String,
     pub fields: Vector<*MIRType>;
 
-    MIRStructType(&mut this) : MIRType(MIRTypeKind::Struct) {}
+    MIRStructType(&mut this, name: String) : MIRType(MIRTypeKind::Struct) {
+        this.name = name;
+    }
 
     MIRStructType(&mut this, fields: Vector<*MIRType>) : MIRType(MIRTypeKind::Struct) {
-        this.fields = fields;
+        (this.name, this.fields) = ("".ToString(), fields);
     }
 
     pub fn SetBody(&mut this, fields: Vector<*MIRType>) {
         this.fields = fields;
     }
 
-    pub fn ToString(&this) -> String {
+    pub fn ToDefinitionString(&this) -> String {
         let mut result = "{ ".ToString();
 
         for i in 0..this.fields.Size() {
@@ -126,6 +129,12 @@ class MIRStructType : MIRType {
             let _type: *MIRType = this.fields[i];
             result += _type->ToString();
         } return result + " }";
+    }
+
+    pub fn ToString(&this) -> String {
+        if this.name.Empty()  {
+            return this.ToDefinitionString();
+        } return '%' + this.name;
     }
 }
 
@@ -247,7 +256,7 @@ class MIRConstantInteger : MIRConstant {
     }
 
     pub fn ToString(&this) -> String {
-        return String::FromInteger(this.value);
+        return ((this as *MIRConstant) as *MIRValue)->_type->ToString() + ' ' + String::FromInteger(this.value);
     }
 }
 
@@ -259,7 +268,7 @@ class MIRConstantFloat : MIRConstant {
     }
 
     pub fn ToString(&this) -> String {
-        return String::FromFloat(this.value);
+        return ((this as *MIRConstant) as *MIRValue)->_type->ToString() + ' ' + String::FromFloat(this.value);
     }
 }
 
@@ -582,15 +591,15 @@ class MIRLoadInstruction : MIRInstruction {
 }
 
 class MIRStoreInstruction : MIRInstruction {
-    pub pointer: *MIRValue,
-    pub value: *MIRValue;
+    pub value: *MIRValue,
+    pub pointer: *MIRValue;
 
-    MIRStoreInstruction(&mut this, pointer: *MIRValue, value: *MIRValue, _type: *MIRType) : MIRInstruction(MIRInstructionKind::Store, "".ToString(), _type) {
-        (this.pointer, this.value) = (pointer, value);
+    MIRStoreInstruction(&mut this, value: *MIRValue, pointer: *MIRValue, _type: *MIRType) : MIRInstruction(MIRInstructionKind::Store, "".ToString(), _type) {
+        (this.value, this.pointer) = (value, pointer);
     }
 
     pub fn ToString(&this) -> String {
-        return "store " + this.pointer->ToString() + ", " + this.value->ToString();
+        return "store " + this.value->ToString() + ", " + this.pointer->ToString();
     }
 }
 
@@ -772,7 +781,7 @@ class MIRBranchInstruction : MIRTerminator {
     }
 
     pub fn ToString(&this) -> String {
-        return "branch %" + this.target->name;
+        return "branch " + this.target->ToString();
     }
 }
 
@@ -786,7 +795,7 @@ class MIRConditionalBranchInstruction : MIRTerminator {
     }
 
     pub fn ToString(&this) -> String {
-        return "branch " + this.condition->ToString() + ", %" + this.then_target->name + ", %" + this.else_target->name;
+        return "branch " + this.condition->ToString() + ", " + this.then_target->ToString() + ", " + this.else_target->ToString();
     }
 }
 
@@ -857,7 +866,7 @@ class MIRBlock {
         } this.instructions.PushBack(instruction);
     }
 
-    pub fn ToString(&this) -> String {
+    pub fn ToDefinitionString(&this) -> String {
         let mut result = this.name + ':';
 
         for instruction in this.instructions {
@@ -867,6 +876,10 @@ class MIRBlock {
         if this.terminator != null {
             result += "\n  " + this.terminator->ToString();
         } return result;
+    }
+
+    pub fn ToString(&this) -> String {
+        return '%' + this.name;
     }
 }
 
@@ -903,7 +916,13 @@ class MIRTypeDeclaration : MIRDeclaration {
 
     pub fn ToString(&this) -> String {
         let declaration = this as *MIRDeclaration;
-        return "type %" + declaration->name + " = " + declaration->_type->ToString();
+        let mut result = "type %" + declaration->name + " = ";
+
+        if declaration->_type->kind == MIRTypeKind::Struct {
+            result += (declaration->_type as *MIRStructType)->ToDefinitionString();
+        } else {
+            result += declaration->_type->ToString();
+        } return result;
     }
 }
 
@@ -981,7 +1000,7 @@ class MIRFunctionDeclaration : MIRLinkableDeclaration {
             for i in 0..this.blocks.Size() {
                 if i != 0 { result += '\n'; }
                 let block: *MIRBlock = this.blocks[i];
-                result += block->ToString() + '\n';
+                result += block->ToDefinitionString() + '\n';
             } result += '}';
         } return result;
     }
@@ -1012,10 +1031,26 @@ class MIRModule {
 
     pub fn ToString(&this) -> String {
         let mut result = String();
+        let mut previous: *MIRDeclaration = null;
 
         for declaration in this.declarations {
-            if !result.Empty() { result += '\n'; }
+            if previous != null {
+                result += '\n';
+
+                if previous->kind != declaration->kind {
+                    result += '\n';
+                } else if declaration->kind == MIRDeclarationKind::Function {
+                    let current = (declaration as *MIRLinkableDeclaration) as *MIRFunctionDeclaration;
+                    let previous = (previous as *MIRLinkableDeclaration) as *MIRFunctionDeclaration;
+
+                    if !current->blocks.Empty() || !previous->blocks.Empty() {
+                        result += '\n';
+                    }
+                }
+            }
+
             result += declaration->ToString();
+            previous = declaration;
         } return result;
     }
 }
@@ -1045,8 +1080,8 @@ class MIRContext {
         return this.arena.New<MIRArrayType>(element, length);
     }
 
-    pub fn StructType(&mut this) -> *MIRType {
-        return this.arena.New<MIRStructType>();
+    pub fn StructType(&mut this, name: String) -> *MIRType {
+        return this.arena.New<MIRStructType>(name);
     }
 
     pub fn StructType(&mut this, fields: Vector<*MIRType>) -> *MIRType {
@@ -1132,8 +1167,8 @@ class MIRBuilder {
         return load;
     }
 
-    pub fn BuildStore(&mut this, pointer: *MIRValue, value: *MIRValue) -> *MIRStoreInstruction {
-        let store = this.context->arena.New<MIRStoreInstruction>(pointer, value, this.context->VoidType());
+    pub fn BuildStore(&mut this, value: *MIRValue, pointer: *MIRValue) -> *MIRStoreInstruction {
+        let store = this.context->arena.New<MIRStoreInstruction>(value, pointer, this.context->VoidType());
         this.block->AddInstruction(store);
         return store;
     }

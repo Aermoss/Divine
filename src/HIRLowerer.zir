@@ -125,6 +125,45 @@ class HIRLowerer {
         this.declarations[declaration] = lowered as *mut MIRLinkableDeclaration;
     }
 
+    fn IsAggregate(&mut this, _type: *SemanticType) -> bool {
+        return _type != null && _type->HasFields();
+    }
+
+    fn IsIndirectAggregate(&mut this, _type: *SemanticType) -> bool {
+        if !this.IsAggregate(_type) { return false; }
+        return _type->Size() > 8 || !_type->IsTrivial();
+    }
+
+    fn LowerAggregateType(&mut this, _type: *SemanticType) -> *SemanticType {
+        if !this.IsAggregate(_type) {
+            return _type;
+        } else if this.IsIndirectAggregate(_type) {
+            return analyzer->type_manager.Pointer(_type, true);
+        } else {
+            let size = _type->Size();
+            let width: u32 = size > 4 ? 64 : size > 2 ? 32 : size > 1 ? 16 : 8;
+            return analyzer->type_manager.Integer(width, false);
+        }
+    }
+
+    fn LowerAggregateValue(&mut this, value: *MIRValue, _type: *SemanticType) -> *MIRValue {
+        let alloca = this.builder.BuildAlloca("abi.aggregate".ToString(), _type) as *MIRInstruction;
+        this.builder.BuildStore(alloca, value);
+        if this.IsIndirectAggregate(_type) { return alloca; }
+        let target = analyzer->type_manager.Pointer(this.LowerAggregateType(_type), true);
+        let pointer = this.builder.BuildCast("abi.cast".ToString(), MIRCastKind::Bitcast, alloca, target) as *MIRInstruction;
+        return this.builder.BuildLoad("abi.value".ToString(), pointer) as *MIRInstruction;
+    }
+
+    fn RaiseAggregateValue(&mut this, value: *MIRValue, _type: *SemanticType) -> *MIRValue {
+        if this.IsIndirectAggregate(_type) { return value; }
+        let alloca = this.builder.BuildAlloca("abi.aggregate".ToString(), _type) as *MIRInstruction;
+        let target = analyzer->type_manager.Pointer(this.LowerAggregateType(_type), true);
+        let pointer = this.builder.BuildCast("abi.cast".ToString(), MIRCastKind::Bitcast, alloca, target) as *MIRInstruction;
+        this.builder.BuildStore(pointer, value);
+        return this.builder.BuildLoad("abi.value".ToString(), alloca) as *MIRInstruction;
+    }
+
     fn LowerFunctionFirstPass(&mut this, function: *HIRFunctionDeclaration) {
         let declaration = function as *HIRDeclaration;
         let mut name = declaration->name;

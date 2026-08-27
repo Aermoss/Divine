@@ -19,7 +19,6 @@
 
 class Parser {
     arena: Arena,
-    types: Vector<String>,
     tokens: Vector<Token>,
     index: usize;
 
@@ -166,12 +165,6 @@ class Parser {
                 if _type != TokenType::IDENTIFIER && _type != TokenType::COLON && _type != TokenType::DOUBLE_COLON && _type != TokenType::LPAREN && _type != TokenType::RPAREN
                     && _type != TokenType::MUL && _type != TokenType::BITWISE_AND && _type != TokenType::MUT && _type != TokenType::CONST && _type != TokenType::LBRACKET && _type != TokenType::RBRACKET
                         && _type != TokenType::FUNCTION && _type != TokenType::THREE_DOT && _type != TokenType::ARROW && _type != TokenType::INTEGER && _type != TokenType::COMMA { return false; }
-
-                if _type == TokenType::IDENTIFIER {
-                    if !this.types.Contains(token.value) {
-                        return false;
-                    }
-                }
             }
 
             if depth == 0 {
@@ -547,33 +540,18 @@ class Parser {
 
         if this.Match(TokenType::FUNCTION) {
             if !this.ExpectSuccess(TokenType::LPAREN) { return null; }
-            let function_type = this.arena.New<ASTFunctionType>(token);
+            let function = this.arena.New<ASTFunctionType>(token);
 
             if this.Current()._type != TokenType::RPAREN {
                 while this.Current()._type != TokenType::EOF {
-                    if this.Peek(1)._type == TokenType::THREE_DOT {
-                        let pack_name = this.Expect(TokenType::IDENTIFIER);
-                        if pack_name._type == TokenType::UNKNOWN { return null; }
-                        function_type->pack_name = pack_name.value;
-                        this.Advance();
-                        break;
-                    }
-
                     if this.Match(TokenType::THREE_DOT) {
-                        function_type->var_arg = true;
+                        function->var_arg = true;
                         break;
                     }
 
-                    if (this.Peek(1)._type == TokenType::COLON || this.Peek(1)._type == TokenType::LBRACKET) || (this.Peek(1)._type == TokenType::MUT && (this.Peek(2)._type == TokenType::COLON || this.Peek(2)._type == TokenType::LBRACKET)) {
-                        let param = this.ParseParameter();
-                        if param == null { return null; }
-                        function_type->parameters.PushBack(param);
-                    } else {
-                        let token = this.Current();
-                        let _type = this.ParseType();
-                        if _type == null { return null; }
-                        function_type->parameters.PushBack(this.arena.New<ASTParameterDeclaration>(String(""), _type, false, token));
-                    }
+                    let _type = this.ParseType();
+                    if _type == null { return null; }
+                    function->parameters.PushBack(_type);
 
                     if !this.Match(TokenType::COMMA) {
                         break;
@@ -584,9 +562,9 @@ class Parser {
             if !this.ExpectSuccess(TokenType::RPAREN) { return null; }
 
             if this.Match(TokenType::ARROW) {
-                function_type->return_type = this.ParseType();
-                if function_type->return_type == null { return null; }
-            } node = function_type;
+                function->_return = this.ParseType();
+                if function->_return == null { return null; }
+            } node = function;
         } else {
             node = this.arena.New<ASTPathType>(this.ParsePath(), token);
         }
@@ -1080,34 +1058,24 @@ class Parser {
             }
         }
 
-        let function_type = this.arena.New<ASTFunctionType>(token);
-        let function = this.arena.New<ASTFunctionDeclaration>(name, function_type, no_mangle, token);
-        let types = this.types;
+        let function = this.arena.New<ASTFunctionDeclaration>(name, no_mangle, token);
 
         if this.Match(TokenType::LESS) {
             function->generic = true;
 
             while this.Current()._type != TokenType::GREATER {
                 let type_name = this.Expect(TokenType::IDENTIFIER);
-
-                if type_name._type == TokenType::UNKNOWN {
-                    this.types = types;
-                    return null;
-                }
-
+                if type_name._type == TokenType::UNKNOWN { return null; }
                 function->types.PushBack(type_name.value);
-                this.types.PushBack(type_name.value);
                 if !this.Match(TokenType::COMMA) { break; }
             }
 
             if !this.ExpectSuccess(TokenType::GREATER) {
-                this.types = types;
                 return null;
             }
         }
 
         if !this.ExpectSuccess(TokenType::LPAREN) {
-            this.types = types;
             return null;
         }
 
@@ -1116,10 +1084,10 @@ class Parser {
 
             if this.Match(TokenType::BITWISE_AND) {
                 let mutable = this.Match(TokenType::MUT);
-                if !this.ExpectSuccess(TokenType::THIS) { this.types = types; return null; }
-                function_type->instance_kind = mutable ? ASTInstanceKind::MutRef : ASTInstanceKind::ConstRef;
+                if !this.ExpectSuccess(TokenType::THIS) { return null; }
+                function->instance_kind = mutable ? ASTInstanceKind::MutRef : ASTInstanceKind::ConstRef;
             } else if this.Match(TokenType::THIS) {
-                function_type->instance_kind = ASTInstanceKind::Copy;
+                function->instance_kind = ASTInstanceKind::Copy;
             } else {
                 has_instance = false;
             }
@@ -1128,25 +1096,20 @@ class Parser {
                 while this.Current()._type != TokenType::EOF {
                     if this.Peek(1)._type == TokenType::THREE_DOT {
                         let pack_name = this.Expect(TokenType::IDENTIFIER);
-
-                        if pack_name._type == TokenType::UNKNOWN {
-                            this.types = types;
-                            return null;
-                        }
-
-                        function_type->pack_name = pack_name.value;
+                        if pack_name._type == TokenType::UNKNOWN { return null; }
+                        function->pack_name = pack_name.value;
                         this.Advance();
                         break;
                     }
 
                     if this.Match(TokenType::THREE_DOT) {
-                        function_type->var_arg = true;
+                        function->var_arg = true;
                         break;
                     }
 
                     let param = this.ParseParameter();
-                    if param == null { this.types = types; return null; }
-                    function_type->parameters.PushBack(param);
+                    if param == null { return null; }
+                    function->parameters.PushBack(param);
 
                     if !this.Match(TokenType::COMMA) {
                         break;
@@ -1156,7 +1119,6 @@ class Parser {
         }
 
         if !this.ExpectSuccess(TokenType::RPAREN) {
-            this.types = types;
             return null;
         }
 
@@ -1165,21 +1127,13 @@ class Parser {
         }
 
         if this.Match(TokenType::ARROW) {
-            function_type->return_type = this.ParseType();
-
-            if function_type->return_type == null {
-                this.types = types;
-                return null;
-            }
+            function->_return = this.ParseType();
+            if function->_return == null { return null; }
         } else {
             if token._type != TokenType::FUNCTION && token._type != TokenType::PUBLIC {
                 while (this.Match(TokenType::COLON) && function->constructors.Empty()) || (this.Match(TokenType::COMMA) && !function->constructors.Empty()) {
                     let expression = this.ParseExpression();
-
-                    if expression == null {
-                        this.types = types;
-                        return null;
-                    }
+                    if expression == null { return null; }
 
                     if expression->kind == ASTExpressionKind::Call {
                         function->constructors.PushBack(expression as *ASTCallExpression);
@@ -1193,12 +1147,10 @@ class Parser {
 
         if this.Current()._type == TokenType::LBRACE {
             let body = this.ParseBlockStatement();
-            this.types = types;
             if body == null { return null; }
             function->body = body;
-        } else {
-            this.types = types;
-            if !this.ExpectSuccess(TokenType::SEMICOLON) { return null; }
+        } else if !this.ExpectSuccess(TokenType::SEMICOLON) {
+            return null;
         } return function;
     }
 
@@ -1241,44 +1193,35 @@ class Parser {
         let identifier = this.Expect(TokenType::IDENTIFIER);
         if identifier._type == TokenType::UNKNOWN { return null; }
         let class_node = this.arena.New<ASTClassDeclaration>(identifier.value, token);
-        let types = this.types;
 
         if this.Match(TokenType::LESS) {
             class_node->generic = true;
 
             while this.Current()._type != TokenType::GREATER {
                 let type_name = this.Expect(TokenType::IDENTIFIER);
-
-                if type_name._type == TokenType::UNKNOWN {
-                    this.types = types;
-                    return null;
-                }
-
+                if type_name._type == TokenType::UNKNOWN { return null; }
                 class_node->types.PushBack(type_name.value);
-                this.types.PushBack(type_name.value);
                 if !this.Match(TokenType::COMMA) { break; }
             }
 
             if !this.ExpectSuccess(TokenType::GREATER) {
-                this.types = types;
                 return null;
             }
         }
 
         if this.Match(TokenType::COLON) {
             let _type = this.ParseType();
-            if _type == null { this.types = types; return null; }
+            if _type == null { return null; }
             class_node->parents.PushBack(_type);
 
             while this.Match(TokenType::COMMA) {
                 let _type = this.ParseType();
-                if _type == null { this.types = types; return null; }
+                if _type == null { return null; }
                 class_node->parents.PushBack(_type);
             }
         }
 
         if !this.ExpectSuccess(TokenType::LBRACE) {
-            this.types = types;
             return null;
         }
 
@@ -1296,7 +1239,7 @@ class Parser {
             while this.Current()._type != TokenType::SEMICOLON && this.Current()._type != TokenType::RBRACE && this.Current()._type != TokenType::EOF {
                 let public = this.Match(TokenType::PUBLIC);
                 let field = this.ParseField();
-                if field == null { this.types = types; return null; }
+                if field == null { return null; }
                 class_node->fields.PushBack(Pair<bool, *ASTFieldDeclaration>(public, field));
 
                 if !this.Match(TokenType::COMMA) {
@@ -1311,7 +1254,7 @@ class Parser {
                 let public = this.Match(TokenType::PUBLIC);
                 let token = this.Current();
                 let function = this.ParseFunctionDeclaration(attributes, true);
-                if function == null { this.types = types; return null; }
+                if function == null { return null; }
 
                 if token._type == TokenType::FUNCTION {
                     class_node->methods.PushBack(Pair<bool, *ASTFunctionDeclaration>(public, function));
@@ -1320,7 +1263,6 @@ class Parser {
                 } else {
                     if class_node->destructor != null {
                         Logger::Log("Multiple destructor declarations are not allowed.", token, LogSeverity::Error);
-                        this.types = types;
                         return null;
                     }
 
@@ -1329,7 +1271,6 @@ class Parser {
             }
         }
 
-        this.types = types;
         if !this.ExpectSuccess(TokenType::RBRACE) { return null; }
         return class_node;
     }
@@ -1346,32 +1287,23 @@ class Parser {
         let identifier = this.Expect(TokenType::IDENTIFIER);
         if identifier._type == TokenType::UNKNOWN { return null; }
         let struct_node = this.arena.New<ASTStructureDeclaration>(identifier.value, token);
-        let types = this.types;
 
         if this.Match(TokenType::LESS) {
             struct_node->generic = true;
 
             while this.Current()._type != TokenType::GREATER {
                 let type_name = this.Expect(TokenType::IDENTIFIER);
-
-                if type_name._type == TokenType::UNKNOWN {
-                    this.types = types;
-                    return null;
-                }
-
+                if type_name._type == TokenType::UNKNOWN { return null; }
                 struct_node->types.PushBack(type_name.value);
-                this.types.PushBack(type_name.value);
                 if !this.Match(TokenType::COMMA) { break; }
             }
 
             if !this.ExpectSuccess(TokenType::GREATER) {
-                this.types = types;
                 return null;
             }
         }
 
         if !this.ExpectSuccess(TokenType::LBRACE) {
-            this.types = types;
             return null;
         }
 
@@ -1389,7 +1321,7 @@ class Parser {
             while this.Current()._type != TokenType::SEMICOLON && this.Current()._type != TokenType::RBRACE && this.Current()._type != TokenType::EOF {
                 let public = this.Match(TokenType::PUBLIC);
                 let field = this.ParseField();
-                if field == null { this.types = types; return null; }
+                if field == null { return null; }
                 struct_node->fields.PushBack(Pair<bool, *ASTFieldDeclaration>(public, field));
 
                 if !this.Match(TokenType::COMMA) {
@@ -1403,12 +1335,11 @@ class Parser {
                 let attributes = this.ParseAttributes();
                 let public = this.Match(TokenType::PUBLIC);
                 let function = this.ParseFunctionDeclaration(attributes, false);
-                if function == null { this.types = types; return null; }
+                if function == null { return null; }
                 struct_node->methods.PushBack(Pair<bool, *ASTFunctionDeclaration>(public, function));
             }
         }
 
-        this.types = types;
         if !this.ExpectSuccess(TokenType::RBRACE) { return null; }
         return struct_node;
     }
@@ -1638,47 +1569,8 @@ class Parser {
     }
 
     pub fn Parse(&mut this, tokens: &Vector<Token>) -> *ASTModule {
-        (this.tokens, this.index) = (tokens, 0);
-
-        this.types.Clear();
-        this.types.PushBack(String("bool"));
-        this.types.PushBack(String("char"));
-        this.types.PushBack(String("i8"));
-        this.types.PushBack(String("i16"));
-        this.types.PushBack(String("i32"));
-        this.types.PushBack(String("i64"));
-        this.types.PushBack(String("i128"));
-        this.types.PushBack(String("isize"));
-        this.types.PushBack(String("u8"));
-        this.types.PushBack(String("u16"));
-        this.types.PushBack(String("u32"));
-        this.types.PushBack(String("u64"));
-        this.types.PushBack(String("u128"));
-        this.types.PushBack(String("usize"));
-        this.types.PushBack(String("f32"));
-        this.types.PushBack(String("f64"));
-        this.types.PushBack(String("void"));
-        this.arena.Clear();
-
-        loop {
-            let token = this.Advance();
-
-            if token._type == TokenType::CLASS || token._type == TokenType::STRUCTURE || token._type == TokenType::ENUMERATION || token._type == TokenType::TYPE {
-                let identifier = this.Expect(TokenType::IDENTIFIER);
-                if identifier._type == TokenType::UNKNOWN { continue; }
-
-                if this.types.Contains(identifier.value) {
-                    Logger::Log("Type '" + identifier.value + "' is overloaded.", identifier, LogSeverity::Error);
-                } else {
-                    this.types.PushBack(identifier.value);
-                }
-            } else if token._type == TokenType::EOF {
-                this.index = 0;
-                break;
-            }
-        }
-
         let module = this.arena.New<ASTModule>();
+        (this.tokens, this.index) = (tokens, 0);
 
         while this.Current()._type != TokenType::EOF {
             let declaration = this.ParseDeclaration();

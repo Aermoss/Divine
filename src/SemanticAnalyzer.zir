@@ -123,24 +123,14 @@ class SemanticAnalyzer {
                 }
             }
 
-            let params = this.current_function->Parameters();
-            let offset: usize = forward.node->_type->instance_kind != ASTInstanceKind::None ? 1 : 0;
             this.scope_manager.PushScope(forward.node->name, false);
 
-            for j in 0..params.Size() {
-                if offset > j {
-                    let parameter = this.arena.New<HIRParameterDeclaration>("this".ToString(), params[j], false);
-                    this.scope_manager.current->Set("this".ToString(), parameter, false, forward.node as *ASTDeclaration);
-                    forward.function->parameters.PushBack(parameter);
-                } else {
-                    let node: *ASTParameterDeclaration = forward.node->_type->parameters[j - offset];
-                    let parameter = this.arena.New<HIRParameterDeclaration>(node->name, params[j], node->mutable);
-                    this.scope_manager.current->Set(node->name, parameter, false, node as *ASTDeclaration);
-                    forward.function->parameters.PushBack(parameter);
+            for parameter in forward.function->parameters {
+                let declaration = parameter as *HIRDeclaration;
+                this.scope_manager.current->Set(declaration->name, parameter, false, forward.node as *ASTDeclaration);
 
-                    if params[j]->IsClass() {
-                        this.scope_manager.current->instances.PushBack(this.arena.New<HIRDeclarationReference>(parameter, false));
-                    }
+                if declaration->_type->IsClass() {
+                    this.scope_manager.current->instances.PushBack(this.arena.New<HIRDeclarationReference>(parameter, false));
                 }
             }
 
@@ -384,37 +374,40 @@ class SemanticAnalyzer {
             return null;
         }
 
-        let return_type = this.ResolveType(function->_type->return_type);
-        if return_type == null { return null; }
-        let mut param_types = Vector<*SemanticType>();
-
-        if function->_type->instance_kind != ASTInstanceKind::None {
-            if this.current_class == null {
-                Logger::Log("Instance parameters are only allowed in class, structure, and variant methods.", function as *ASTDeclaration, LogSeverity::Error);
-                return null;
-            }
-
-            if function->_type->instance_kind == ASTInstanceKind::ConstRef {
-                param_types.PushBack(this.type_manager.Reference(this.current_class, false));
-            } else if function->_type->instance_kind == ASTInstanceKind::MutRef {
-                param_types.PushBack(this.type_manager.Reference(this.current_class, true));
-            } else {
-                param_types.PushBack(this.current_class);
-            }
-        }
-
-        for parameter in function->_type->parameters {
-            let param_type = this.ResolveType(parameter->_type);
-            if param_type == null { return null; }
-            param_types.PushBack(param_type);
-        }
-
         if this.current_class == null && !function->constructors.Empty() {
             Logger::Log("Constructors can only be declared inside classes.", function as *ASTDeclaration, LogSeverity::Error);
             return null;
         }
 
-        let declaration = this.arena.New<HIRFunctionDeclaration>(function->name, this.type_manager.Function(param_types, return_type), function->no_mangle, this.abi);
+        let mut parameter_types = Vector<*SemanticType>();
+        let mut parameters = Vector<*HIRParameterDeclaration>();
+
+        if function->instance_kind != ASTInstanceKind::None {
+            if this.current_class == null {
+                Logger::Log("Instance parameters are only allowed in class, structure, and variant methods.", function as *ASTDeclaration, LogSeverity::Error);
+                return null;
+            }
+
+            let mut _type = this.current_class;
+
+            if function->instance_kind != ASTInstanceKind::Copy {
+                _type = this.type_manager.Reference(this.current_class, function->instance_kind == ASTInstanceKind::MutRef);
+            }
+
+            parameters.PushBack(this.arena.New<HIRParameterDeclaration>("this".ToString(), _type, false));
+            parameter_types.PushBack(_type);
+        }
+
+        for parameter in function->parameters {
+            let _type = this.ResolveType(parameter->_type);
+            if _type == null { return null; }
+            parameters.PushBack(this.arena.New<HIRParameterDeclaration>(parameter->name, _type, parameter->mutable));
+            parameter_types.PushBack(_type);
+        }
+
+        let _return = this.ResolveType(function->_return);
+        if _return == null { return null; }
+        let declaration = this.arena.New<HIRFunctionDeclaration>(function->name, parameters, _return, this.type_manager.Function(parameter_types, _return), function->no_mangle, this.abi);
 
         if generic != null {
             generic->Set(declaration);
@@ -510,7 +503,7 @@ class SemanticAnalyzer {
 
         for method in _class->methods {
             let function = this.AnalyzeFunctionDeclaration(method.right, null);
-            let _static = method.right->_type->instance_kind == ASTInstanceKind::None;
+            let _static = method.right->instance_kind == ASTInstanceKind::None;
             if function == null { continue; }
 
             if !method.right->generic {
@@ -585,7 +578,7 @@ class SemanticAnalyzer {
 
         for method in structure->methods {
             let function = this.AnalyzeFunctionDeclaration(method.right, null);
-            let _static = method.right->_type->instance_kind == ASTInstanceKind::None;
+            let _static = method.right->instance_kind == ASTInstanceKind::None;
             if function == null { continue; }
 
             if !method.right->generic {
@@ -2191,33 +2184,33 @@ class SemanticAnalyzer {
         if _type->kind == ASTTypeKind::Path {
             return this.ResolveType((_type as *ASTPathType)->path);
         } else if _type->kind == ASTTypeKind::Pointer {
-            let pointer_type = _type as *ASTPointerType;
-            let base_type = this.ResolveType(pointer_type->base_type);
-            if base_type == null { return null; }
-            return this.type_manager.Pointer(base_type, pointer_type->mutable);
+            let pointer = _type as *ASTPointerType;
+            let pointee = this.ResolveType(pointer->pointee);
+            if pointee == null { return null; }
+            return this.type_manager.Pointer(pointee, pointer->mutable);
         } else if _type->kind == ASTTypeKind::Reference {
-            let reference_type = _type as *ASTReferenceType;
-            let base_type = this.ResolveType(reference_type->base_type);
-            if base_type == null { return null; }
-            return this.type_manager.Reference(base_type, reference_type->mutable);
+            let reference = _type as *ASTReferenceType;
+            let pointee = this.ResolveType(reference->pointee);
+            if pointee == null { return null; }
+            return this.type_manager.Reference(pointee, reference->mutable);
         } else if _type->kind == ASTTypeKind::Array {
-            let array_type = _type as *ASTArrayType;
-            let element_type = this.ResolveType(array_type->element_type);
-            if element_type == null { return null; }
-            return this.type_manager.Pointer(element_type, true);
+            let array = _type as *ASTArrayType;
+            let element = this.ResolveType(array->element);
+            if element == null { return null; }
+            return this.type_manager.Pointer(element, true);
         } else if _type->kind == ASTTypeKind::Function {
-            let function_type = _type as *ASTFunctionType;
-            let return_type = this.ResolveType(function_type->return_type);
-            if return_type == null { return null; }
-            let mut param_types = Vector<*SemanticType>();
+            let function = _type as *ASTFunctionType;
+            let mut parameters = Vector<*SemanticType>();
 
-            for parameter in function_type->parameters {
-                let param_type = this.ResolveType(parameter->_type);
-                if param_type == null { return null; }
-                param_types.PushBack(param_type);
+            for parameter in function->parameters {
+                let _type = this.ResolveType(parameter);
+                if _type == null { return null; }
+                parameters.PushBack(_type);
             }
 
-            return this.type_manager.Function(param_types, return_type);
+            let _return = this.ResolveType(function->_return);
+            if _return == null { return null; }
+            return this.type_manager.Function(parameters, _return);
         } else {
             Logger::Log("Unknown type '" + _type->kind.ToString() + "'.", _type, LogSeverity::Error);
             return null;

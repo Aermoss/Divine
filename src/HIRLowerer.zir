@@ -134,11 +134,9 @@ class HIRLowerer {
     }
 
     fn LowerLinkage(&this, linkage: HIRDeclarationLinkage) -> MIRDeclarationLinkage {
-        if linkage == HIRDeclarationLinkage::Internal {
-            return MIRDeclarationLinkage::Internal;
-        } else {
-            return MIRDeclarationLinkage::External;
-        }
+        if linkage == HIRDeclarationLinkage::Private { return MIRDeclarationLinkage::Private; }
+        else if linkage == HIRDeclarationLinkage::Internal { return MIRDeclarationLinkage::Internal; }
+        else { return MIRDeclarationLinkage::External; }
     }
 
     fn LowerStaticDeclarationFirstPass(&mut this, _static: *HIRStaticDeclaration) {
@@ -251,7 +249,7 @@ class HIRLowerer {
 
     fn LowerClassDeclarationFirstPass(&mut this, _class: *HIRClassDeclaration) {
         let declaration = _class as *HIRDeclaration;
-        let lowered = this.builder.BuildType(declaration->name, this.context->StructType(declaration->name));
+        let lowered = this.builder.BuildType(declaration->name, this.context->StructureType(declaration->name));
         this.types[declaration->_type] = lowered;
     }
 
@@ -266,7 +264,7 @@ class HIRLowerer {
             fields.PushBack(lowered_field);
         }
 
-        (lowered->_type as *mut MIRStructType)->SetBody(fields);
+        (lowered->_type as *mut MIRStructureType)->SetBody(fields);
     }
 
     fn LowerClassDeclarationThirdPass(&mut this, _class: *HIRClassDeclaration) {
@@ -303,7 +301,7 @@ class HIRLowerer {
 
     fn LowerStructureDeclarationFirstPass(&mut this, structure: *HIRStructureDeclaration) {
         let declaration = structure as *HIRDeclaration;
-        let lowered = this.builder.BuildType(declaration->name, this.context->StructType(declaration->name));
+        let lowered = this.builder.BuildType(declaration->name, this.context->StructureType(declaration->name));
         this.types[declaration->_type] = lowered;
     }
 
@@ -318,7 +316,7 @@ class HIRLowerer {
             fields.PushBack(lowered_field);
         }
 
-        (lowered->_type as *mut MIRStructType)->SetBody(fields);
+        (lowered->_type as *mut MIRStructureType)->SetBody(fields);
     }
 
     fn LowerStructureDeclarationThirdPass(&mut this, structure: *HIRStructureDeclaration) {
@@ -600,6 +598,26 @@ class HIRLowerer {
             }
 
             return this.builder.ReferenceDeclaration(_static as *MIRLinkableDeclaration);
+        } else if expression->kind == HIRExpressionKind::ArrayLiteral {
+            let mut elements = Vector<*MIRValue>();
+
+            for element in (expression as *HIRArrayLiteral)->elements {
+                let lowered_element = this.LowerExpression(element);
+                if lowered_element == null { return null; }
+                elements.PushBack(lowered_element);
+            }
+
+            return this.builder.ConstantArray(elements, this.LowerType(expression->_type)) as *MIRConstant;
+        } else if expression->kind == HIRExpressionKind::StructureLiteral {
+            let mut fields = Vector<*MIRValue>();
+
+            for field in (expression as *HIRStructureLiteral)->fields {
+                let lowered_field = this.LowerExpression(field);
+                if lowered_field == null { return null; }
+                fields.PushBack(lowered_field);
+            }
+
+            return this.builder.ConstantStruct(fields, this.LowerType(expression->_type)) as *MIRConstant;
         } else if expression->kind == HIRExpressionKind::NullLiteral {
             return this.builder.ConstantNull(this.LowerType(expression->_type)) as *MIRConstant;
         } else if expression->kind == HIRExpressionKind::Intrinsic {
@@ -1019,7 +1037,15 @@ class HIRLowerer {
             let mut other = left_type->IsPointer() ? right : left;
 
             if left_type->IsPointer() && right_type->IsPointer() {
-                if binary->_operator == TokenType::EQUAL {
+                if binary->_operator == TokenType::MINUS {
+                    let element_type = left_type->IsNullPointer() ? right_type->Pointee() : left_type->Pointee();
+                    let size_type = this.context->IntegerType(this.target_info.pointer_size as u32);
+                    let left = this.builder.BuildCast("ptr.diff.left".ToString(), MIRCastKind::PtrToInt, pointer, size_type);
+                    let right = this.builder.BuildCast("ptr.diff.right".ToString(), MIRCastKind::PtrToInt, other, size_type);
+                    let difference = this.builder.BuildBinary("ptr.diff.bytes".ToString(), MIRBinaryKind::Sub, left, right, size_type) as *MIRInstruction;
+                    let size_value = this.builder.ConstantInteger(element_type->Size() as u64, size_type) as *MIRConstant;
+                    return this.builder.BuildBinary("ptr.diff".ToString(), MIRBinaryKind::UDiv, difference, size_value, size_type);
+                } else if binary->_operator == TokenType::EQUAL {
                     return this.builder.BuildBinary("eq".ToString(), MIRBinaryKind::ICmpEq, pointer, other, result_type);
                 } else if binary->_operator == TokenType::NOT_EQUAL {
                     return this.builder.BuildBinary("ne".ToString(), MIRBinaryKind::ICmpNe, pointer, other, result_type);

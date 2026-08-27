@@ -1113,9 +1113,9 @@ class SemanticAnalyzer {
         if expression->kind == ASTExpressionKind::Literal {
             let literal = expression as *ASTLiteral;
 
-            if literal->_type == TokenType::INTEGER && !literal->value.Contains('u') && !literal->value.Contains('i') {
+            if literal->kind == ASTLiteralKind::Integer && (literal as *ASTIntegerLiteral)->suffix.Empty() {
                 return this.type_manager.IntegerLiteral();
-            } else if literal->_type == TokenType::FLOAT && !literal->value.Contains('f') {
+            } else if literal->kind == ASTLiteralKind::Float && (literal as *ASTFloatLiteral)->suffix.Empty() {
                 return this.type_manager.FloatLiteral();
             } else {
                 return null;
@@ -1220,8 +1220,6 @@ class SemanticAnalyzer {
             return this.AnalyzeBinaryExpression(expression as *ASTBinaryExpression, target);
         } else if expression->kind == ASTExpressionKind::Ternary {
             return this.AnalyzeTernaryExpression(expression as *ASTTernaryExpression, target);
-        } else if expression->kind == ASTExpressionKind::StructureInitializer {
-            return this.AnalyzeStructureInitializer(expression as *ASTStructureInitializer);
         } else {
             Logger::Log("Unknown expression '" + expression->kind.ToString() + "'.", expression, LogSeverity::Error);
             return null;
@@ -1229,32 +1227,18 @@ class SemanticAnalyzer {
     }
 
     fn AnalyzeLiteral(&mut this, literal: *ASTLiteral) -> *HIRExpression {
-        if literal->_type == TokenType::INTEGER {
-            let (mut value, mut suffix, mut base: u64) = (String(), String(), 10);
-            let (mut index, mut signed) = (literal->value.Find('i'), true);
-
-            if index == -1 {
-                (index, signed) = (literal->value.Find('u'), false);
-            }
-
-            if index != -1 {
-                value = literal->value.SubString(0, index as usize);
-                suffix = literal->value.SubString(index as usize + 1);
-            } else {
-                value = literal->value;
-            }
-
-            if value.StartsWith("0x") {
-                (value, base) = (value.SubString(2), 16);
-            } else if value.StartsWith("0o") {
-                (value, base) = (value.SubString(2), 8);
-            } else if value.StartsWith("0b") {
-                (value, base) = (value.SubString(2), 2);
-            }
-
+        if literal->kind == ASTLiteralKind::Boolean {
+            return this.arena.New<HIRBooleanLiteral>((literal as *ASTBooleanLiteral)->value, this.type_manager.Boolean());
+        } else if literal->kind == ASTLiteralKind::Character {
+            return this.arena.New<HIRCharacterLiteral>((literal as *ASTCharacterLiteral)->value, this.type_manager.Integer(8, true));
+        } else if literal->kind == ASTLiteralKind::Integer {
+            let integer = literal as *ASTIntegerLiteral;
             let mut _type = this.type_manager.IntegerLiteral();
 
-            if !suffix.Empty() {
+            if !integer->suffix.Empty() {
+                let signed = integer->suffix.StartsWith("i");
+                let suffix = integer->suffix.SubString(1);
+
                 if suffix == "size" {
                     _type = this.type_manager.IntegerPointer(signed);
                 } else {
@@ -1263,54 +1247,92 @@ class SemanticAnalyzer {
                     if width == 128 || width == 64 || width == 32 || width == 16 || width == 8 {
                         _type = this.type_manager.Integer(width, signed);
                     } else {
-                        Logger::Log("Invalid integer suffix '" + (signed ? 'u' : 'i').ToString() + suffix +  "'.", literal as *ASTExpression, LogSeverity::Error);
+                        Logger::Log("Invalid integer suffix '" + integer->suffix +  "'.", literal as *ASTExpression, LogSeverity::Error);
                         return null;
                     }
                 }
             }
 
-            return this.arena.New<HIRIntegerLiteral>(value.ToUnsignedInteger(base), _type);
-        } else if literal->_type == TokenType::FLOAT {
-            let (mut value, mut suffix) = (String(), String());
-            let mut index = literal->value.Find('f');
-
-            if index != -1 {
-                value = literal->value.SubString(0, index as usize);
-                suffix = literal->value.SubString(index as usize + 1);
-            } else {
-                value = literal->value;
-            }
-
+            return this.arena.New<HIRIntegerLiteral>(integer->value, _type);
+        } else if literal->kind == ASTLiteralKind::Float {
+            let float = literal as *ASTFloatLiteral;
             let mut _type = this.type_manager.FloatLiteral();
 
-            if !suffix.Empty() {
-                let width = suffix.ToInteger() as u32;
+            if !float->suffix.Empty() {
+                let width = float->suffix.SubString(1).ToInteger() as u32;
 
                 if width == 64 || width == 32 {
                     _type = this.type_manager.Float(width);
                 } else {
-                    Logger::Log("Invalid float suffix 'f" + suffix +  "'.", literal as *ASTExpression, LogSeverity::Error);
+                    Logger::Log("Invalid float suffix '" + float->suffix +  "'.", literal as *ASTExpression, LogSeverity::Error);
                     return null;
                 }
             }
 
-            return this.arena.New<HIRFloatLiteral>(value.ToFloat(), _type);
-        } else if literal->_type == TokenType::TRUE || literal->_type == TokenType::FALSE {
-            return this.arena.New<HIRBooleanLiteral>(literal->_type == TokenType::TRUE, this.type_manager.Boolean());
-        } else if literal->_type == TokenType::CHAR {
-            if (literal->value.Size() == 2 && literal->value[1] == '\0') || (literal->value.Size() == 1 && literal->value[0] == '\0') {
-                let character: i8 = literal->value[0];
-                return this.arena.New<HIRCharacterLiteral>(character as u32, this.type_manager.Integer(8, true));
-            } else {
-                Logger::Log("Invalid character literal '" + literal->value + "'.", literal as *ASTExpression, LogSeverity::Error);
+            return this.arena.New<HIRFloatLiteral>(float->value, _type);
+        } else if literal->kind == ASTLiteralKind::String {
+            return this.arena.New<HIRStringLiteral>((literal as *ASTStringLiteral)->value, this.type_manager.Pointer(this.type_manager.Integer(8, true), false));
+        } else if literal->kind == ASTLiteralKind::Array {
+            let mut elements = Vector<*HIRExpression>();
+            let mut _type: *SemanticType = null;
+
+            for element in (literal as *ASTArrayLiteral)->elements {
+                let value = this.AnalyzeExpression(element);
+                if value == null { return null; }
+                elements.PushBack(value);
+
+                if _type == null {
+                    _type = value->_type;
+                } else if *_type != *value->_type {
+                    Logger::Log("Array elements must have the same type.", element, LogSeverity::Error);
+                    return null;
+                }
+            }
+
+            return this.arena.New<HIRArrayLiteral>(elements, this.type_manager.Array(_type, elements.Size()));
+        } else if literal->kind == ASTLiteralKind::Structure {
+            let structure = literal as *ASTStructureLiteral;
+
+            if structure->expression->kind != ASTExpressionKind::Path {
+                Logger::Log("Structure initializer target must be a path.", literal as *ASTExpression, LogSeverity::Error);
                 return null;
             }
-        } else if literal->_type == TokenType::STRING {
-            return this.arena.New<HIRStringLiteral>(literal->value, this.type_manager.Pointer(this.type_manager.Integer(8, true), false));
-        } else if literal->_type == TokenType::NULL {
+
+            let _type = this.ResolveType((structure->expression as *ASTPathExpression)->path);
+            if _type == null { return null; }
+
+            if !_type->IsStructure() {
+                Logger::Log("Structure initializer target must be a structure.", literal as *ASTExpression, LogSeverity::Error);
+                return null;
+            }
+
+            let fields = _type->Fields();
+            let mut values = Vector<*HIRExpression>();
+            values.Resize(fields.Size());
+
+            if structure->fields.Size() != fields.Size() {
+                Logger::Log("Structure '" + _type->name + "' argument count mismatch.", literal as *ASTExpression, LogSeverity::Error);
+                return null;
+            }
+
+            for field in structure->fields {
+                let index = fields.Index(field.left);
+
+                if index == -1 {
+                    Logger::Log("Unknown field '" + field.left + "' for structure '" + _type->name + "'.", literal as *ASTExpression, LogSeverity::Error);
+                    return null;
+                }
+
+                let value = this.Coerce(this.AnalyzeExpression(field.right), fields[index as usize].right._type);
+                if value == null { return null; }
+                values[index as usize] = value;
+            }
+
+            return this.arena.New<HIRStructureLiteral>(values, _type);
+        } else if literal->kind == ASTLiteralKind::Null {
             return this.arena.New<HIRNullLiteral>(this.type_manager.NullPointer());
         } else {
-            Logger::Log("Unknown literal type '" + literal->_type.ToString() + "'.", literal as *ASTExpression, LogSeverity::Error);
+            Logger::Log("Unknown literal type '" + literal->kind.ToString() + "'.", literal as *ASTExpression, LogSeverity::Error);
             return null;
         }
     }
@@ -2098,31 +2120,6 @@ class SemanticAnalyzer {
         let category = (then_value->category == HIRExpressionCategory::Place && else_value->category == HIRExpressionCategory::Place)
             ? HIRExpressionCategory::Place : HIRExpressionCategory::Value;
         return this.arena.New<HIRTernaryExpression>(condition, then_value, else_value, category, mutable);
-    }
-
-    fn AnalyzeStructureInitializer(&mut this, node: *ASTStructureInitializer) -> *HIRExpression {
-        if node->expression->kind != ASTExpressionKind::Path {
-            Logger::Log("Structure initializer target must be a path.", node as *ASTExpression, LogSeverity::Error);
-            return null;
-        }
-
-        let _type = this.ResolveType((node->expression as *ASTPathExpression)->path);
-        if _type == null { return null; }
-
-        if !_type->IsStructure() {
-            Logger::Log("Structure initializer target must be a structure.", node as *ASTExpression, LogSeverity::Error);
-            return null;
-        }
-
-        let mut values = Vector<*HIRExpression>();
-
-        for field in node->fields {
-            let value = this.AnalyzeExpression(field.right);
-            if value == null { return null; }
-            values.PushBack(value);
-        }
-
-        return this.arena.New<HIRStructureLiteral>(values, _type);
     }
 
     pub fn ResolveType(&mut this, path: *ASTPath) -> *SemanticType {

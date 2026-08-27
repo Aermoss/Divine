@@ -230,28 +230,82 @@ class Parser {
     fn ParsePrimary(&mut this) -> *ASTExpression {
         let token = this.Current();
 
-        if token._type == TokenType::INTEGER || token._type == TokenType::FLOAT || token._type == TokenType::STRING || token._type == TokenType::CHAR || token._type == TokenType::TRUE || token._type == TokenType::FALSE || token._type == TokenType::NULL {
+        if token._type == TokenType::TRUE || token._type == TokenType::FALSE {
             this.Advance();
-            return this.arena.New<ASTLiteral>(token.value, token._type, token);
+            return this.arena.New<ASTBooleanLiteral>(token._type == TokenType::TRUE, token) as *ASTLiteral;
+        } else if token._type == TokenType::CHAR {
+            this.Advance();
+
+            if !(token.value.Size() == 2 && token.value[1] == '\0') && !(token.value.Size() == 1 && token.value[0] == '\0') {
+                Logger::Log("Invalid character literal '" + token.value + "'.", token, LogSeverity::Error);
+                return null;
+            }
+
+            let character: i8 = token.value[0];
+            return this.arena.New<ASTCharacterLiteral>(character as u32, token) as *ASTLiteral;
+        } else if token._type == TokenType::INTEGER {
+            this.Advance();
+            let (mut value, mut suffix, mut base: u64) = (String(), String(), 10);
+            let mut index = token.value.Find('i');
+
+            if index == -1 {
+                index = token.value.Find('u');
+            }
+
+            if index != -1 {
+                value = token.value.SubString(0, index as usize);
+                suffix = token.value.SubString(index as usize);
+            } else {
+                value = token.value;
+            }
+
+            if value.StartsWith("0x") {
+                (value, base) = (value.SubString(2), 16);
+            } else if value.StartsWith("0o") {
+                (value, base) = (value.SubString(2), 8);
+            } else if value.StartsWith("0b") {
+                (value, base) = (value.SubString(2), 2);
+            }
+
+            return this.arena.New<ASTIntegerLiteral>(value.ToUnsignedInteger(base), suffix, token) as *ASTLiteral;
+        } else if token._type == TokenType::FLOAT {
+            this.Advance();
+            let (mut value, mut suffix) = (String(), String());
+            let mut index = token.value.Find('f');
+
+            if index != -1 {
+                value = token.value.SubString(0, index as usize);
+                suffix = token.value.SubString(index as usize);
+            } else {
+                value = token.value;
+            }
+
+            return this.arena.New<ASTFloatLiteral>(value.ToFloat(), suffix, token) as *ASTLiteral;
+        } else if token._type == TokenType::STRING {
+            this.Advance();
+            return this.arena.New<ASTStringLiteral>(token.value, token) as *ASTLiteral;
+        } else if token._type == TokenType::NULL {
+            this.Advance();
+            return this.arena.New<ASTNullLiteral>(token) as *ASTLiteral;
         } else if token._type == TokenType::IDENTIFIER || token._type == TokenType::THIS || token._type == TokenType::OPERATOR || token._type == TokenType::DOUBLE_COLON {
             return this.arena.New<ASTPathExpression>(this.ParsePath(), token);
         } else if token._type == TokenType::LBRACE {
             this.Advance();
-            let initializer_list = this.arena.New<ASTInitializerList>(token);
+            let array = this.arena.New<ASTArrayLiteral>(token);
 
             if !this.Match(TokenType::RBRACE) {
                 let expression = this.ParseExpression();
                 if expression == null { return null; }
-                initializer_list->expressions.PushBack(expression);
+                array->elements.PushBack(expression);
 
                 while this.Match(TokenType::COMMA) {
                     let expression = this.ParseExpression();
                     if expression == null { return null; }
-                    initializer_list->expressions.PushBack(expression);
+                    array->elements.PushBack(expression);
                 }
 
                 if !this.ExpectSuccess(TokenType::RBRACE) { return null; }
-            } return initializer_list;
+            } return array as *ASTLiteral;
         } else if token._type == TokenType::LPAREN {
             this.Advance();
             let mut expression = this.ParseExpression();
@@ -331,7 +385,7 @@ class Parser {
                 if !this.ExpectSuccess(TokenType::RBRACKET) { return null; }
             } else if token._type == TokenType::LBRACE && expression->kind == ASTExpressionKind::Path && this.IsStructureInitializer() {
                 this.Advance();
-                let structure = this.arena.New<ASTStructureInitializer>(expression, token);
+                let structure = this.arena.New<ASTStructureLiteral>(expression, token);
 
                 while this.Current()._type != TokenType::RBRACE && this.Current()._type != TokenType::EOF {
                     if this.Current()._type == TokenType::TWO_DOT {
@@ -349,7 +403,7 @@ class Parser {
                 }
 
                 if !this.ExpectSuccess(TokenType::RBRACE) { return null; }
-                expression = structure;
+                expression = structure as *ASTLiteral;
             } else if token._type == TokenType::THREE_DOT {
                 this.Advance();
                 expression = this.arena.New<ASTPackSplatExpression>(expression, token);

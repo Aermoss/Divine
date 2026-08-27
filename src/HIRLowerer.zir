@@ -30,7 +30,9 @@ class HIRLowerer {
     runtime_functions: Map<String, *MIRFunctionDeclaration>,
     break_blocks: Vector<*mut MIRBlock>,
     continue_blocks: Vector<*mut MIRBlock>,
-    module: *mut MIRModule = null;
+    indirect_return: *MIRValue,
+    current_return: *SemanticType,
+    module: *mut MIRModule;
 
     HIRLowerer(&mut this, target_info: &TargetInfo) {
         this.target_info = target_info;
@@ -104,10 +106,10 @@ class HIRLowerer {
     }
 
     fn LowerDeclarationFifthPass(&mut this, declaration: *HIRDeclaration) {
-        if declaration->kind == HIRDeclarationKind::Structure {
-            this.LowerStructureDeclarationFourthPass(declaration as *HIRStructureDeclaration);
-        } else if declaration->kind == HIRDeclarationKind::Class {
+        if declaration->kind == HIRDeclarationKind::Class {
             this.LowerClassDeclarationFourthPass(declaration as *HIRClassDeclaration);
+        } else if declaration->kind == HIRDeclarationKind::Structure {
+            this.LowerStructureDeclarationFourthPass(declaration as *HIRStructureDeclaration);
         } else if declaration->kind == HIRDeclarationKind::Function {
             this.LowerFunctionDeclarationSecondPass(declaration as *HIRFunctionDeclaration);
         }
@@ -181,28 +183,6 @@ class HIRLowerer {
         }
     }
 
-    fn LowerAggregateValue(&mut this, value: *MIRValue, _type: *SemanticType) -> *MIRValue {
-        let lowered_type = this.LowerType(_type);
-        if lowered_type == null { return null; }
-        let alloca = this.builder.BuildAlloca("abi.aggregate".ToString(), lowered_type) as *MIRInstruction;
-        this.builder.BuildStore(value, alloca);
-        if this.IsIndirectAggregate(_type) { return alloca; }
-        let target = this.context->PointerType(this.LowerAggregateType(_type));
-        let pointer = this.builder.BuildCast("abi.cast".ToString(), MIRCastKind::Bitcast, alloca, target) as *MIRInstruction;
-        return this.builder.BuildLoad("abi.value".ToString(), pointer) as *MIRInstruction;
-    }
-
-    fn RaiseAggregateValue(&mut this, value: *MIRValue, _type: *SemanticType) -> *MIRValue {
-        let lowered_type = this.LowerType(_type);
-        if lowered_type == null { return null; }
-        if this.IsIndirectAggregate(_type) { return value; }
-        let alloca = this.builder.BuildAlloca("abi.aggregate".ToString(), lowered_type) as *MIRInstruction;
-        let target = this.context->PointerType(this.LowerAggregateType(_type));
-        let pointer = this.builder.BuildCast("abi.cast".ToString(), MIRCastKind::Bitcast, alloca, target) as *MIRInstruction;
-        this.builder.BuildStore(value, pointer);
-        return this.builder.BuildLoad("abi.value".ToString(), alloca) as *MIRInstruction;
-    }
-
     fn LowerFunctionDeclarationFirstPass(&mut this, function: *HIRFunctionDeclaration) {
         let declaration = function as *HIRDeclaration;
         let mut name = declaration->name;
@@ -211,16 +191,23 @@ class HIRLowerer {
             name = Mangler::MangleFunction(name, declaration->_type, Vector<*SemanticType>(), this.namespaces);
         }
 
+        let _return = declaration->_type->Return();
+        let indirect_return = this.IsIndirectAggregate(_return);
+        let mut lowered_return = this.LowerAggregateType(_return);
+        if lowered_return == null { return; }
         let mut parameters = Vector<*MIRParameter>();
 
-        for i in 0..function->parameters.Size() {
-            let parameter: *HIRParameterDeclaration = function->parameters[i];
-            let lowered = this.builder.BuildParameter((parameter as *HIRDeclaration)->name, i as u32, this.LowerType((parameter as *HIRDeclaration)->_type));
-            parameters.PushBack(lowered);
+        if indirect_return {
+            parameters.PushBack(this.builder.BuildParameter("sret".ToString(), 0, lowered_return));
+            lowered_return = this.context->VoidType();
         }
 
-        let _return = this.LowerType(declaration->_type->Return());
-        let lowered = this.builder.BuildFunction(name, parameters, _return, this.LowerLinkage(declaration->linkage));
+        for parameter in function->parameters {
+            let declaration = parameter as *HIRDeclaration;
+            parameters.PushBack(this.builder.BuildParameter(declaration->name, parameters.Size() as u32, this.LowerAggregateType(declaration->_type)));
+        }
+
+        let lowered = this.builder.BuildFunction(name, parameters, lowered_return, this.LowerLinkage(declaration->linkage));
         this.declarations[declaration] = lowered as *mut MIRLinkableDeclaration;
     }
 
@@ -229,14 +216,34 @@ class HIRLowerer {
         let declaration: *mut MIRDeclaration = this.declarations[function as *HIRDeclaration];
         this.builder.SetCurrentFunction((declaration as *mut MIRLinkableDeclaration) as *mut MIRFunctionDeclaration);
         this.builder.SetCurrentBlock(this.builder.BuildBlock("entry".ToString()));
+        this.current_return = (function as *HIRDeclaration)->_type->Return();
+        let indirect_return = this.IsIndirectAggregate(this.current_return);
         this.parameters.Clear();
+
+        if indirect_return {
+            this.indirect_return = this.builder.GetCurrentFunction()->parameters[0];
+        } else {
+            this.indirect_return = null;
+        }
 
         for i in 0..function->parameters.Size() {
             let parameter: *HIRParameterDeclaration = function->parameters[i];
-            let lowered_parameter: *MIRParameter = this.builder.GetCurrentFunction()->parameters[i];
-            let alloca = this.builder.BuildAlloca((parameter as *HIRDeclaration)->name, this.LowerType((parameter as *HIRDeclaration)->_type));
-            this.parameters[(parameter as *HIRDeclaration)] = (alloca as *MIRInstruction) as *MIRValue;
-            this.builder.BuildStore(lowered_parameter, alloca as *MIRInstruction);
+            let lowered_parameter: *MIRParameter = this.builder.GetCurrentFunction()->parameters[(indirect_return ? 1 : 0) + i];
+            let declaration = parameter as *HIRDeclaration;
+
+            if this.IsIndirectAggregate(declaration->_type) {
+                this.parameters[declaration] = lowered_parameter;
+            } else if this.IsAggregate(declaration->_type) {
+                let alloca = this.builder.BuildAlloca(declaration->name, this.LowerType(declaration->_type));
+                this.parameters[declaration] = (alloca as *MIRInstruction) as *MIRValue;
+                let target = this.context->PointerType(this.LowerAggregateType(declaration->_type));
+                let pointer = this.builder.BuildCast("abi.cast".ToString(), MIRCastKind::Bitcast, alloca as *MIRInstruction, target);
+                this.builder.BuildStore(lowered_parameter, pointer as *MIRInstruction);
+            } else {
+                let alloca = this.builder.BuildAlloca(declaration->name, this.LowerType(declaration->_type));
+                this.parameters[declaration] = (alloca as *MIRInstruction) as *MIRValue;
+                this.builder.BuildStore(lowered_parameter, alloca as *MIRInstruction);
+            }
         }
 
         this.LowerBlockStatement(function->body);
@@ -362,14 +369,28 @@ class HIRLowerer {
     }
 
     fn LowerReturnStatement(&mut this, _return: *HIRReturnStatement) {
-        let mut value: *MIRValue = null;
+        if this.indirect_return != null {
+            this.LowerExpressionTo(_return->expression, this.indirect_return);
+            this.builder.BuildReturn(null);
+        } else if this.IsAggregate(this.current_return) {
+            let _type = this.LowerType(this.current_return);
+            if _type == null { return; }
+            let alloca = this.builder.BuildAlloca("abi.aggregate".ToString(), _type);
+            this.LowerExpressionTo(_return->expression, alloca as *MIRInstruction);
+            let target = this.context->PointerType(this.LowerAggregateType(this.current_return));
+            let pointer = this.builder.BuildCast("abi.cast".ToString(), MIRCastKind::Bitcast, alloca as *MIRInstruction, target);
+            let load = this.builder.BuildLoad("abi.value".ToString(), pointer as *MIRInstruction);
+            this.builder.BuildReturn(load as *MIRInstruction);
+        } else {
+            let mut value: *MIRValue = null;
 
-        if _return->expression != null {
-            value = this.LowerExpression(_return->expression);
-            if value == null { return; }
+            if _return->expression != null {
+                value = this.LowerExpression(_return->expression);
+                if value == null { return; }
+            }
+
+            this.builder.BuildReturn(value);
         }
-
-        this.builder.BuildReturn(value);
     }
 
     fn LowerVariableStatement(&mut this, variable: *HIRVariableStatement) {
@@ -542,17 +563,14 @@ class HIRLowerer {
     }
 
     fn LowerExpressionTo(&mut this, expression: *HIRExpression, destination: *MIRValue) {
-        if expression->kind == HIRExpressionKind::Constructor {
+        if expression->kind == HIRExpressionKind::Call {
+            this.LowerCallExpression(expression as *HIRCallExpression, destination);
+            this.temporaries[expression] = destination;
+        } else if expression->kind == HIRExpressionKind::Constructor {
             this.LowerConstructorExpression(expression as *HIRConstructorExpression, destination);
+            this.temporaries[expression] = destination;
         } else {
-            let mut value: *MIRValue = null;
-
-            if expression->kind == HIRExpressionKind::Call {
-                value = this.LowerCallExpression(expression as *HIRCallExpression);
-            } else {
-                value = this.LowerExpression(expression);
-            }
-
+            let value = this.LowerExpression(expression);
             if value == null { return; }
             this.builder.BuildStore(value, destination as *MIRInstruction);
         }
@@ -588,12 +606,8 @@ class HIRLowerer {
             return this.LowerIntrinsic(expression as *HIRIntrinsicExpression);
         } else if expression->kind == HIRExpressionKind::Assignment {
             return this.LowerAssignmentExpression(expression as *HIRAssignmentExpression);
-        } else if expression->kind == HIRExpressionKind::Call {
-            if !expression->_type->HasFields() {
-                return this.LowerCallExpression(expression as *HIRCallExpression);
-            } else {
-                return this.LowerPlaceExpression(expression);
-            }
+        } else if expression->kind == HIRExpressionKind::Call && !this.IsAggregate(expression->_type) {
+            return this.LowerCallExpression(expression as *HIRCallExpression, null);
         } else if expression->kind == HIRExpressionKind::Destructor {
             return this.LowerDestructorExpression(expression as *HIRDestructorExpression);
         } else if expression->kind == HIRExpressionKind::New {
@@ -633,18 +647,54 @@ class HIRLowerer {
         return value;
     }
 
-    fn LowerCallExpression(&mut this, call: *HIRCallExpression) -> *MIRValue {
+    fn LowerCallExpression(&mut this, call: *HIRCallExpression, destination: *MIRValue) -> *MIRValue {
+        let _return = call->callee->_type->Return();
+        let parameters = call->callee->_type->Parameters();
         let callee = this.LowerExpression(call->callee);
         if callee == null { return null; }
         let mut arguments = Vector<*MIRValue>();
 
-        for argument in call->arguments {
-            let lowered = this.LowerExpression(argument);
-            if lowered == null { return null; }
-            arguments.PushBack(lowered);
+        if this.IsIndirectAggregate(_return) {
+            arguments.PushBack(destination);
         }
 
-        return this.builder.BuildCall("call".ToString(), callee, arguments) as *MIRInstruction;
+        for i in 0..call->arguments.Size() {
+            let argument: *HIRExpression = call->arguments[i];
+            let _type: *SemanticType = parameters[i];
+
+            if this.IsAggregate(_type) {
+                let lowered_type = this.LowerType(_type);
+                if lowered_type == null { return null; }
+                let alloca = this.builder.BuildAlloca("abi.aggregate".ToString(), lowered_type);
+                this.LowerExpressionTo(argument, alloca as *MIRInstruction);
+
+                if this.IsIndirectAggregate(_type) {
+                    arguments.PushBack(alloca as *MIRInstruction);
+                } else {
+                    let target = this.context->PointerType(this.LowerAggregateType(_type));
+                    let pointer = this.builder.BuildCast("abi.cast".ToString(), MIRCastKind::Bitcast, alloca as *MIRInstruction, target);
+                    let load = this.builder.BuildLoad("abi.value".ToString(), pointer as *MIRInstruction);
+                    arguments.PushBack(load as *MIRInstruction);
+                }
+            } else {
+                let value = this.LowerExpression(argument);
+                if value == null { return null; }
+                arguments.PushBack(value);
+            }
+        }
+
+        let result = this.builder.BuildCall("call".ToString(), callee, arguments) as *MIRInstruction;
+
+        if this.IsIndirectAggregate(_return) {
+            return destination;
+        } else if this.IsAggregate(_return) {
+            let target = this.context->PointerType(this.LowerAggregateType(_return));
+            let pointer = this.builder.BuildCast("abi.cast".ToString(), MIRCastKind::Bitcast, destination, target);
+            this.builder.BuildStore(result, pointer as *MIRInstruction);
+            return destination;
+        } else if destination != null {
+            this.builder.BuildStore(result, destination as *MIRInstruction);
+        } return result;
     }
 
     fn LowerConstructorExpression(&mut this, constructor: *HIRConstructorExpression, destination: *MIRValue) -> *MIRValue {
@@ -1044,15 +1094,20 @@ class HIRLowerer {
             return declaration != null ? declaration->_type : null;
         } else if _type->IsFunction() {
             let mut parameters = Vector<*MIRType>();
+            let mut _return = this.LowerAggregateType(_type->Return());
+            if _return == null { return null; }
+
+            if this.IsIndirectAggregate(_type->Return()) {
+                parameters.PushBack(_return);
+                _return = this.context->VoidType();
+            }
 
             for parameter in _type->Parameters() {
-                let lowered_parameter = this.LowerType(parameter);
+                let lowered_parameter = this.LowerAggregateType(parameter);
                 if lowered_parameter == null { return null; }
                 parameters.PushBack(lowered_parameter);
             }
 
-            let mut _return = this.LowerType(_type->Return());
-            if _return == null { return null; }
             return this.context->FunctionType(parameters, _return);
         } else {
             return null;

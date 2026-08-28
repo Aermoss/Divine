@@ -538,11 +538,13 @@ class HIRLowerer {
     }
 
     fn LowerConstantExpression(&mut this, expression: *HIRExpression) -> *MIRValue {
-        if expression->kind == HIRExpressionKind::StringLiteral {
-            return this.builder.ConstantString((expression as *HIRStringLiteral)->value, this.LowerType(expression->_type)) as *MIRConstant;
-        } else {
-            return this.LowerExpression(expression);
-        }
+        if expression->kind == HIRExpressionKind::Literal {
+            let literal = expression as *HIRLiteral;
+
+            if literal->kind == HIRLiteralKind::String {
+                return this.builder.ConstantString((literal as *HIRStringLiteral)->value, this.LowerType(expression->_type)) as *MIRConstant;
+            }
+        } return this.LowerExpression(expression);
     }
 
     fn LowerPlaceExpression(&mut this, expression: *HIRExpression) -> *MIRValue {
@@ -585,53 +587,10 @@ class HIRLowerer {
     }
 
     fn LowerExpression(&mut this, expression: *HIRExpression) -> *MIRValue {
-        if expression->kind == HIRExpressionKind::BooleanLiteral {
-            return this.builder.ConstantInteger((expression as *HIRBooleanLiteral)->value ? 1 : 0, this.LowerType(expression->_type)) as *MIRConstant;
-        } else if expression->kind == HIRExpressionKind::CharacterLiteral {
-            return this.builder.ConstantInteger((expression as *HIRCharacterLiteral)->value as u64, this.LowerType(expression->_type)) as *MIRConstant;
-        } else if expression->kind == HIRExpressionKind::IntegerLiteral {
-            return this.builder.ConstantInteger((expression as *HIRIntegerLiteral)->value, this.LowerType(expression->_type)) as *MIRConstant;
-        } else if expression->kind == HIRExpressionKind::FloatLiteral {
-            return this.builder.ConstantFloat((expression as *HIRFloatLiteral)->value, this.LowerType(expression->_type)) as *MIRConstant;
-        } else if expression->kind == HIRExpressionKind::StringLiteral {
-            let value = (expression as *HIRStringLiteral)->value;
-            let mut _static: *MIRStaticDeclaration = null;
-
-            if this.strings.Has(value) {
-                _static = this.strings[value];
-            } else {
-                let name = "string." + String::FromInteger(this.strings.Size() as u64);
-                let initializer = this.builder.ConstantString(value, this.LowerType(expression->_type)) as *MIRConstant;
-                let _type = this.context->ArrayType(this.context->IntegerType(8), value->Length() + 1);
-                _static = this.builder.BuildStatic(name, _type, false, initializer, MIRDeclarationLinkage::Private);
-                this.strings[value] = _static;
-            }
-
-            return this.builder.ReferenceDeclaration(_static as *MIRLinkableDeclaration);
-        } else if expression->kind == HIRExpressionKind::ArrayLiteral {
-            let mut elements = Vector<*MIRValue>();
-
-            for element in (expression as *HIRArrayLiteral)->elements {
-                let lowered_element = this.LowerExpression(element);
-                if lowered_element == null { return null; }
-                elements.PushBack(lowered_element);
-            }
-
-            return this.builder.ConstantArray(elements, this.LowerType(expression->_type)) as *MIRConstant;
-        } else if expression->kind == HIRExpressionKind::StructureLiteral {
-            let mut fields = Vector<*MIRValue>();
-
-            for field in (expression as *HIRStructureLiteral)->fields {
-                let lowered_field = this.LowerExpression(field);
-                if lowered_field == null { return null; }
-                fields.PushBack(lowered_field);
-            }
-
-            return this.builder.ConstantStruct(fields, this.LowerType(expression->_type)) as *MIRConstant;
-        } else if expression->kind == HIRExpressionKind::NullLiteral {
-            return this.builder.ConstantNull(this.LowerType(expression->_type)) as *MIRConstant;
+        if expression->kind == HIRExpressionKind::Literal {
+            return this.LowerLiteral(expression as *HIRLiteral);
         } else if expression->kind == HIRExpressionKind::Intrinsic {
-            return this.LowerIntrinsic(expression as *HIRIntrinsicExpression);
+            return this.LowerIntrinsicExpression(expression as *HIRIntrinsicExpression);
         } else if expression->kind == HIRExpressionKind::Assignment {
             return this.LowerAssignmentExpression(expression as *HIRAssignmentExpression);
         } else if expression->kind == HIRExpressionKind::Call && !this.IsAggregate(expression->_type) {
@@ -662,7 +621,60 @@ class HIRLowerer {
         }
     }
 
-    fn LowerIntrinsic(&mut this, intrinsic: *HIRIntrinsicExpression) -> *MIRValue {
+    fn LowerLiteral(&mut this, literal: *HIRLiteral) -> *MIRValue {
+        let _type = this.LowerType((literal as *HIRExpression)->_type);
+
+        if literal->kind == HIRLiteralKind::Boolean {
+            return this.builder.ConstantInteger((literal as *HIRBooleanLiteral)->value ? 1 : 0, _type) as *MIRConstant;
+        } else if literal->kind == HIRLiteralKind::Character {
+            return this.builder.ConstantInteger((literal as *HIRCharacterLiteral)->value as u64, _type) as *MIRConstant;
+        } else if literal->kind == HIRLiteralKind::Integer {
+            return this.builder.ConstantInteger((literal as *HIRIntegerLiteral)->value, _type) as *MIRConstant;
+        } else if literal->kind == HIRLiteralKind::Float {
+            return this.builder.ConstantFloat((literal as *HIRFloatLiteral)->value, _type) as *MIRConstant;
+        } else if literal->kind == HIRLiteralKind::String {
+            let value = (literal as *HIRStringLiteral)->value;
+            let mut _static: *MIRStaticDeclaration = null;
+
+            if this.strings.Has(value) {
+                _static = this.strings[value];
+            } else {
+                let name = "string." + String::FromInteger(this.strings.Size() as u64);
+                let initializer = this.builder.ConstantString(value, _type) as *MIRConstant;
+                let _type = this.context->ArrayType(this.context->IntegerType(8), value->Length() + 1);
+                _static = this.builder.BuildStatic(name, _type, false, initializer, MIRDeclarationLinkage::Private);
+                this.strings[value] = _static;
+            }
+
+            return this.builder.ReferenceDeclaration(_static as *MIRLinkableDeclaration);
+        } else if literal->kind == HIRLiteralKind::Array {
+            let mut elements = Vector<*MIRValue>();
+
+            for element in (literal as *HIRArrayLiteral)->elements {
+                let lowered_element = this.LowerExpression(element);
+                if lowered_element == null { return null; }
+                elements.PushBack(lowered_element);
+            }
+
+            return this.builder.ConstantArray(elements, _type) as *MIRConstant;
+        } else if literal->kind == HIRLiteralKind::Structure {
+            let mut fields = Vector<*MIRValue>();
+
+            for field in (literal as *HIRStructureLiteral)->fields {
+                let lowered_field = this.LowerExpression(field);
+                if lowered_field == null { return null; }
+                fields.PushBack(lowered_field);
+            }
+
+            return this.builder.ConstantStruct(fields, _type) as *MIRConstant;
+        } else if literal->kind == HIRLiteralKind::Null {
+            return this.builder.ConstantNull(_type) as *MIRConstant;
+        } else {
+            return null;
+        }
+    }
+
+    fn LowerIntrinsicExpression(&mut this, intrinsic: *HIRIntrinsicExpression) -> *MIRValue {
         let value = intrinsic->kind == HIRIntrinsicKind::SizeOf ? intrinsic->_type->Size() : intrinsic->_type->Alignment();
         return this.builder.ConstantInteger(value as u64, this.LowerType((intrinsic as *HIRExpression)->_type)) as *MIRConstant;
     }

@@ -255,8 +255,8 @@ class SemanticAnalyzer {
 
         if expression == null {
             return expression;
-        } else if expression->deferred != null {
-            return this.Coerce(this.AnalyzeExpression(expression->deferred, target), target);
+        } else if expression->kind == HIRExpressionKind::Deferred {
+            return this.Coerce(this.AnalyzeExpression((expression as *HIRDeferredExpression)->expression, target), target);
         }
 
         if expression->_type->IsInteger() && expression->_type->IsLiteral() && target.IsPointer() {
@@ -286,8 +286,8 @@ class SemanticAnalyzer {
         }
 
         if expression != null {
-            if expression->deferred != null {
-                return this.Coerce(this.AnalyzeExpression(expression->deferred, null));
+            if expression->kind == HIRExpressionKind::Deferred {
+                return this.Coerce(this.AnalyzeExpression((expression as *HIRDeferredExpression)->expression, null));
             } else if expression->_type->IsLiteral() {
                 expression->_type = expression->_type->IsInteger() ? this.type_manager.Integer(32, true) : this.type_manager.Float(64);
             }
@@ -844,9 +844,9 @@ class SemanticAnalyzer {
             let mut one: *HIRExpression = null;
 
             if iterator_type->IsFloat() {
-                one = this.context->arena.New<HIRFloatLiteral>(1.0f64, iterator_type);
+                one = this.context->arena.New<HIRFloatLiteral>(1.0f64, iterator_type) as *HIRLiteral;
             } else {
-                one = this.context->arena.New<HIRIntegerLiteral>(1u64, iterator_type);
+                one = this.context->arena.New<HIRIntegerLiteral>(1u64, iterator_type) as *HIRLiteral;
             }
 
             let _operator = inclusive ? TokenType::LESS_EQUAL : TokenType::LESS;
@@ -856,7 +856,8 @@ class SemanticAnalyzer {
             variable = this.context->arena.New<HIRVariableStatement>(_for->variable, iterator_type, iterator_ref, false);
         } else if iterator_type->IsPointer() {
             condition = this.context->arena.New<HIRBinaryExpression>(TokenType::NOT_EQUAL, iterator_ref, end, this.type_manager.Boolean());
-            let step_value = this.context->arena.New<HIRBinaryExpression>(TokenType::PLUS, iterator_ref, this.context->arena.New<HIRIntegerLiteral>(1u64, this.type_manager.IntegerPointer(false)), iterator_type);
+            let one: *HIRExpression = this.context->arena.New<HIRIntegerLiteral>(1u64, this.type_manager.IntegerPointer(false)) as *HIRLiteral;
+            let step_value = this.context->arena.New<HIRBinaryExpression>(TokenType::PLUS, iterator_ref, one, iterator_type);
             step = this.context->arena.New<HIRAssignmentExpression>(iterator_ref, step_value);
             let value = this.context->arena.New<HIRDereferenceExpression>(iterator_ref);
             variable = this.context->arena.New<HIRVariableStatement>(_for->variable, iterator_type->Pointee(), value, false);
@@ -870,7 +871,7 @@ class SemanticAnalyzer {
 
             values = Vector<*HIRExpression>();
             values.PushBack(iterator_ref);
-            values.PushBack(this.context->arena.New<HIRIntegerLiteral>(1u64, this.type_manager.IntegerPointer(false)));
+            values.PushBack(this.context->arena.New<HIRIntegerLiteral>(1u64, this.type_manager.IntegerPointer(false)) as *HIRLiteral);
             let step_candidates = iterator_type->GetCandidates("operator+=".ToString(), _for as *ASTStatement, false);
             step = this.AnalyzeResolvedCallExpression(step_candidates, values, _for as *ASTStatement);
             if step == null { return; }
@@ -1162,7 +1163,7 @@ class SemanticAnalyzer {
             let _type = this.IsDeferrableExpression(expression);
 
             if _type != null {
-                return this.context->arena.New<HIRDeferredExpression>(_type, expression);
+                return this.context->arena.New<HIRDeferredExpression>(expression, _type);
             }
         }
 
@@ -1223,9 +1224,9 @@ class SemanticAnalyzer {
 
     fn AnalyzeLiteral(&mut this, literal: *ASTLiteral) -> *HIRExpression {
         if literal->kind == ASTLiteralKind::Boolean {
-            return this.context->arena.New<HIRBooleanLiteral>((literal as *ASTBooleanLiteral)->value, this.type_manager.Boolean());
+            return this.context->arena.New<HIRBooleanLiteral>((literal as *ASTBooleanLiteral)->value, this.type_manager.Boolean()) as *HIRLiteral;
         } else if literal->kind == ASTLiteralKind::Character {
-            return this.context->arena.New<HIRCharacterLiteral>((literal as *ASTCharacterLiteral)->value, this.type_manager.Integer(8, true));
+            return this.context->arena.New<HIRCharacterLiteral>((literal as *ASTCharacterLiteral)->value, this.type_manager.Integer(8, true)) as *HIRLiteral;
         } else if literal->kind == ASTLiteralKind::Integer {
             let integer = literal as *ASTIntegerLiteral;
             let mut _type = this.type_manager.IntegerLiteral();
@@ -1248,7 +1249,7 @@ class SemanticAnalyzer {
                 }
             }
 
-            return this.context->arena.New<HIRIntegerLiteral>(integer->value, _type);
+            return this.context->arena.New<HIRIntegerLiteral>(integer->value, _type) as *HIRLiteral;
         } else if literal->kind == ASTLiteralKind::Float {
             let float = literal as *ASTFloatLiteral;
             let mut _type = this.type_manager.FloatLiteral();
@@ -1264,9 +1265,9 @@ class SemanticAnalyzer {
                 }
             }
 
-            return this.context->arena.New<HIRFloatLiteral>(float->value, _type);
+            return this.context->arena.New<HIRFloatLiteral>(float->value, _type) as *HIRLiteral;
         } else if literal->kind == ASTLiteralKind::String {
-            return this.context->arena.New<HIRStringLiteral>((literal as *ASTStringLiteral)->value, this.type_manager.Pointer(this.type_manager.Integer(8, true), false));
+            return this.context->arena.New<HIRStringLiteral>((literal as *ASTStringLiteral)->value, this.type_manager.Pointer(this.type_manager.Integer(8, true), false)) as *HIRLiteral;
         } else if literal->kind == ASTLiteralKind::Array {
             let mut elements = Vector<*HIRExpression>();
             let mut _type: *SemanticType = null;
@@ -1284,7 +1285,7 @@ class SemanticAnalyzer {
                 }
             }
 
-            return this.context->arena.New<HIRArrayLiteral>(elements, this.type_manager.Array(_type, elements.Size()));
+            return this.context->arena.New<HIRArrayLiteral>(elements, this.type_manager.Array(_type, elements.Size())) as *HIRLiteral;
         } else if literal->kind == ASTLiteralKind::Structure {
             let structure = literal as *ASTStructureLiteral;
 
@@ -1323,9 +1324,9 @@ class SemanticAnalyzer {
                 values[index as usize] = value;
             }
 
-            return this.context->arena.New<HIRStructureLiteral>(values, _type);
+            return this.context->arena.New<HIRStructureLiteral>(values, _type) as *HIRLiteral;
         } else if literal->kind == ASTLiteralKind::Null {
-            return this.context->arena.New<HIRNullLiteral>(this.type_manager.NullPointer());
+            return this.context->arena.New<HIRNullLiteral>(this.type_manager.NullPointer()) as *HIRLiteral;
         } else {
             Logger::Log("Unknown literal type '" + literal->kind.ToString() + "'.", literal as *ASTExpression, LogSeverity::Error);
             return null;
@@ -1444,7 +1445,7 @@ class SemanticAnalyzer {
                 for symbol in this.scope_manager.Resolve(path, true) {
                     if symbol->kind == SymbolKind::Type && symbol->_type->IsClass() {
                         let (_class, arguments) = (symbol->_type, Vector<*HIRExpression>(values));
-                        values.Insert(0, this.context->arena.New<HIRNullLiteral>(this.type_manager.NullPointer()));
+                        values.Insert(0, this.context->arena.New<HIRNullLiteral>(this.type_manager.NullPointer()) as *HIRLiteral);
                         let candidates = _class->GetCandidates(_class->name, call as *ASTExpression, false);
                         if candidates.Empty() { return null; }
                         let function = this.ResolveOverload(candidates, values, call as *ASTExpression, false);

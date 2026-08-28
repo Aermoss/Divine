@@ -174,14 +174,20 @@ class MIRValue {
     }
 
     pub fn ToString(&this) -> String {
+        let mut _type = this._type;
+
+        if _type->kind == MIRTypeKind::Function {
+            _type = (this._type as *MIRFunctionType)->_return;
+        }
+
         if this.kind == MIRValueKind::Constant {
-            return (this as *MIRConstant)->ToString();
+            return _type->ToString() + ' ' + (this as *MIRConstant)->ToString();
         } else if this.kind == MIRValueKind::Instruction {
-            return (this as *MIRInstruction)->ToString();
+            return _type->ToString() + ' ' + (this as *MIRInstruction)->ToString();
         } else if this.kind == MIRValueKind::DeclarationReference {
-            return (this as *MIRDeclarationReference)->ToString();
+            return _type->ToString() + ' ' + (this as *MIRDeclarationReference)->ToString();
         } else if this.kind == MIRValueKind::Parameter {
-            return (this as *MIRParameter)->ToString();
+            return _type->ToString() + ' ' + (this as *MIRParameter)->ToString();
         } else {
             return "<invalid value>".ToString();
         }
@@ -189,7 +195,7 @@ class MIRValue {
 }
 
 enum MIRConstantKind: u8 {
-    Integer, Float, Boolean, Character, String, Array, Structure, Null, Expression
+    Integer, Float, String, Array, Structure, Null, Expression
 }
 
 class MIRConstant : MIRValue {
@@ -200,11 +206,7 @@ class MIRConstant : MIRValue {
     }
 
     pub fn ToString(&this) -> String {
-        if this.kind == MIRConstantKind::Boolean {
-            return (this as *MIRConstantBoolean)->ToString();
-        } else if this.kind == MIRConstantKind::Character {
-            return (this as *MIRConstantCharacter)->ToString();
-        } else if this.kind == MIRConstantKind::Integer {
+        if this.kind == MIRConstantKind::Integer {
             return (this as *MIRConstantInteger)->ToString();
         } else if this.kind == MIRConstantKind::Float {
             return (this as *MIRConstantFloat)->ToString();
@@ -224,30 +226,6 @@ class MIRConstant : MIRValue {
     }
 }
 
-class MIRConstantBoolean : MIRConstant {
-    pub value: bool;
-
-    MIRConstantBoolean(&mut this, value: bool, _type: *MIRType) : MIRConstant(MIRConstantKind::Boolean, _type) {
-        this.value = value;
-    }
-
-    pub fn ToString(&this) -> String {
-        return (this.value ? "true" : "false").ToString();
-    }
-}
-
-class MIRConstantCharacter : MIRConstant {
-    pub value: u32;
-
-    MIRConstantCharacter(&mut this, value: u32, _type: *MIRType) : MIRConstant(MIRConstantKind::Character, _type) {
-        this.value = value;
-    }
-
-    pub fn ToString(&this) -> String {
-        return '\'' + String(this.value as i8).Escape() + '\'';
-    }
-}
-
 class MIRConstantInteger : MIRConstant {
     pub value: u64;
 
@@ -256,7 +234,11 @@ class MIRConstantInteger : MIRConstant {
     }
 
     pub fn ToString(&this) -> String {
-        return ((this as *MIRConstant) as *MIRValue)->_type->ToString() + ' ' + String::FromInteger(this.value);
+        let value = (this as *MIRConstant) as *MIRValue;
+
+        if (value->_type as *MIRIntegerType)->width == 1 {
+            return (this.value != 0 ? "true" : "false").ToString();
+        } return String::FromInteger(this.value);
     }
 }
 
@@ -268,7 +250,7 @@ class MIRConstantFloat : MIRConstant {
     }
 
     pub fn ToString(&this) -> String {
-        return ((this as *MIRConstant) as *MIRValue)->_type->ToString() + ' ' + String::FromFloat(this.value);
+        return String::FromFloat(this.value);
     }
 }
 
@@ -726,7 +708,7 @@ class MIRPhiInstruction : MIRInstruction {
 
         for i in 0..this.incomings.Size() {
             if i != 0 { result += ", "; }
-            result += '[' + this.incomings[i].value->ToString() + ", %" + this.incomings[i].block->name + ']';
+            result += '[' + this.incomings[i].value->ToString() + ", " + this.incomings[i].block->ToString() + ']';
         } return result;
     }
 }
@@ -954,8 +936,9 @@ class MIRLinkableDeclaration : MIRDeclaration {
 class MIRFunctionDeclaration : MIRLinkableDeclaration {
     pub parameters: Vector<*MIRParameter>,
     pub _return: *MIRType,
-    pub blocks: Vector<*MIRBlock>,
-    pub names: Map<String, u32>;
+    pub blocks: Vector<*mut MIRBlock>,
+    pub names: Map<String, u32>,
+    pub alloca_index: usize = 0;
 
     MIRFunctionDeclaration(&mut this, name: String, parameters: Vector<*MIRParameter>, _return: *MIRType, _type: *MIRType, linkage: MIRDeclarationLinkage) : MIRLinkableDeclaration(MIRDeclarationKind::Function, name, _type, linkage) {
         (this.parameters, this._return) = (parameters, _return);
@@ -970,6 +953,13 @@ class MIRFunctionDeclaration : MIRLinkableDeclaration {
     pub fn AddBlock(&mut this, block: *mut MIRBlock) {
         (block->name, block->parent) = (this.GetUniqueName(block->name), this);
         this.blocks.PushBack(block);
+    }
+
+    pub fn AddAllocaInstruction(&mut this, alloca: *mut MIRAllocaInstruction) {
+        let instruction = alloca as *mut MIRInstruction;
+        instruction->name = this.GetUniqueName(instruction->name);
+        this.blocks[0]->instructions.Insert(this.alloca_index, alloca);
+        this.alloca_index += 1;
     }
 
     pub fn GetUniqueName(&mut this, name: &String) -> String {
@@ -1103,14 +1093,6 @@ class MIRBuilder {
         (this.context, this.module) = (context, module);
     }
 
-    pub fn ConstantBoolean(&mut this, value: bool, _type: *MIRType) -> *MIRConstantBoolean {
-        return this.context->arena.New<MIRConstantBoolean>(value, _type);
-    }
-
-    pub fn ConstantCharacter(&mut this, value: u32, _type: *MIRType) -> *MIRConstantCharacter {
-        return this.context->arena.New<MIRConstantCharacter>(value, _type);
-    }
-
     pub fn ConstantInteger(&mut this, value: u64, _type: *MIRType) -> *MIRConstantInteger {
         return this.context->arena.New<MIRConstantInteger>(value, _type);
     }
@@ -1157,7 +1139,7 @@ class MIRBuilder {
 
     pub fn BuildAlloca(&mut this, name: String, _type: *MIRType) -> *MIRAllocaInstruction {
         let alloca = this.context->arena.New<MIRAllocaInstruction>(name, _type, this.context->PointerType(_type));
-        this.block->AddInstruction(alloca);
+        this.function->AddAllocaInstruction(alloca);
         return alloca;
     }
 

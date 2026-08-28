@@ -25,6 +25,7 @@ class MIRLowerer {
 
     types: Map<*MIRType, LLVMTypeRef>,
     declarations: Map<*MIRDeclaration, LLVMValueRef>,
+    phis: Map<*MIRPhiInstruction, LLVMValueRef>,
     blocks: Map<*MIRBlock, LLVMBasicBlockRef>,
     values: Map<*MIRValue, LLVMValueRef>,
 
@@ -261,6 +262,8 @@ class MIRLowerer {
             this.blocks[block] = LLVMAppendBasicBlockInContext(this.context, value, block->name.Data());
         }
 
+        this.phis.Clear();
+
         for block in function->blocks {
             LLVMPositionBuilderAtEnd(this.builder, this.blocks[block]);
 
@@ -273,15 +276,15 @@ class MIRLowerer {
             }
         }
 
-        for block in function->blocks {
-            if LLVMGetBasicBlockTerminator(this.blocks[block]) == null {
-                LLVMPositionBuilderAtEnd(this.builder, this.blocks[block]);
+        for pair in this.phis {
+            let (phi, lowered) = (pair.left, pair.right);
 
-                if function->_return->kind != MIRTypeKind::Void {
-                    LLVMBuildRet(this.builder, LLVMConstNull(this.LowerType(function->_return)));
-                } else {
-                    LLVMBuildRetVoid(this.builder);
-                }
+            for incoming in phi->incomings {
+                let mut value = this.LowerValue(incoming.value);
+                if value == null { continue; }
+                let mut block = this.blocks.Get(incoming.block, null);
+                if block == null { continue; }
+                LLVMAddIncoming(lowered, &mut value, &mut block, 1);
             }
         }
     }
@@ -334,7 +337,7 @@ class MIRLowerer {
                 fields.PushBack(lowered_field);
             }
 
-            return LLVMConstStructInContext(this.context, fields.Data(), fields.Size() as u32, 0);
+            return LLVMConstNamedStruct(_type, fields.Data(), fields.Size() as u32);
         } else if constant->kind == MIRConstantKind::Null {
             return LLVMConstNull(_type);
         } else if constant->kind == MIRConstantKind::Expression {
@@ -594,14 +597,8 @@ class MIRLowerer {
         let _type = this.LowerType((instruction as *MIRValue)->_type);
         if _type == null { return null; }
         let lowered = LLVMBuildPhi(this.builder, _type, instruction->name.Data());
-
-        for incoming in phi->incomings {
-            let mut value = this.LowerValue(incoming.value);
-            if value == null { return null; }
-            let mut block = this.blocks.Get(incoming.block, null);
-            if block == null { return null; }
-            LLVMAddIncoming(lowered, &mut value, &mut block, 1);
-        } return lowered;
+        this.phis[phi] = lowered;
+        return lowered;
     }
 
     fn LowerTerminator(&mut this, terminator: *MIRTerminator) -> LLVMValueRef {

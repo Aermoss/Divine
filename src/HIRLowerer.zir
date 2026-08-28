@@ -243,6 +243,12 @@ class HIRLowerer {
         }
 
         this.LowerBlockStatement(function->body);
+
+        if !this.builder.GetCurrentBlock()->HasTerminator() {
+            if this.builder.GetCurrentFunction()->_return->kind == MIRTypeKind::Void {
+                this.builder.BuildReturn(null);
+            }
+        }
     }
 
     fn LowerClassDeclarationFirstPass(&mut this, _class: *HIRClassDeclaration) {
@@ -405,9 +411,10 @@ class HIRLowerer {
         if condition == null { return; }
 
         let then_block = this.builder.BuildBlock("if.then".ToString());
-        let merge_block = this.builder.BuildBlock("if.merge".ToString());
+        let mut merge_block: *mut MIRBlock = null;
 
         if _if->else_body == null {
+            merge_block = this.builder.BuildBlock("if.merge".ToString());
             this.builder.BuildConditionalBranch(condition, then_block, merge_block);
         } else {
             let else_block = this.builder.BuildBlock("if.else".ToString());
@@ -416,6 +423,7 @@ class HIRLowerer {
             this.LowerBlockStatement(_if->else_body);
 
             if !this.builder.GetCurrentBlock()->HasTerminator() {
+                merge_block = this.builder.BuildBlock("if.merge".ToString());
                 this.builder.BuildBranch(merge_block);
             }
         }
@@ -424,10 +432,14 @@ class HIRLowerer {
         this.LowerBlockStatement(_if->then_body);
 
         if !this.builder.GetCurrentBlock()->HasTerminator() {
-            this.builder.BuildBranch(merge_block);
+            if merge_block == null {
+                merge_block = this.builder.BuildBlock("if.merge".ToString());
+            } this.builder.BuildBranch(merge_block);
         }
 
-        this.builder.SetCurrentBlock(merge_block);
+        if merge_block != null {
+            this.builder.SetCurrentBlock(merge_block);
+        }
     }
 
     fn LowerWhileStatement(&mut this, _while: *HIRWhileStatement) {
@@ -755,7 +767,7 @@ class HIRLowerer {
 
     fn LowerNewExpression(&mut this, _new: *HIRNewExpression) -> *MIRValue {
         let mut parameters = Vector<*MIRType>();
-        let size_type = this.context->IntegerType(this.target_info.pointer_size as u32);
+        let size_type = this.context->IntegerType(this.target_info.pointer_size as u32 * 8);
         parameters.PushBack(size_type);
         let malloc = this.LowerRuntimeFunction("malloc".ToString(), parameters, this.context->PointerType(this.context->VoidType()));
         let mut allocation_size = (this.builder.ConstantInteger(_new->_type->Size() as u64, size_type) as *MIRConstant) as *MIRValue;
@@ -1037,7 +1049,7 @@ class HIRLowerer {
             if left_type->IsPointer() && right_type->IsPointer() {
                 if binary->_operator == TokenType::MINUS {
                     let element_type = left_type->IsNullPointer() ? right_type->Pointee() : left_type->Pointee();
-                    let size_type = this.context->IntegerType(this.target_info.pointer_size as u32);
+                    let size_type = this.context->IntegerType(this.target_info.pointer_size as u32 * 8);
                     let left = this.builder.BuildCast("ptr.diff.left".ToString(), MIRCastKind::PtrToInt, pointer, size_type);
                     let right = this.builder.BuildCast("ptr.diff.right".ToString(), MIRCastKind::PtrToInt, other, size_type);
                     let difference = this.builder.BuildBinary("ptr.diff.bytes".ToString(), MIRBinaryKind::Sub, left, right, size_type) as *MIRInstruction;

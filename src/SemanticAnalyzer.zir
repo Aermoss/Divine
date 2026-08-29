@@ -903,7 +903,7 @@ class SemanticAnalyzer {
             let _type = instance->_type;
             let mut values = Vector<*HIRExpression>();
             values.PushBack(instance);
-            let candidates = _type->GetCandidates(("~" + _type->name), null, true);
+            let candidates = _type->GetCandidates('~' + _type->name, null, true);
             let function = this.ResolveOverload(candidates, values, null, true);
             if function == null { continue; }
             let callee = this.builder.ReferenceDeclaration(function as *HIRDeclaration, false);
@@ -930,7 +930,7 @@ class SemanticAnalyzer {
                 let _type = instance->_type;
                 let mut values = Vector<*HIRExpression>();
                 values.PushBack(instance);
-                let candidates = _type->GetCandidates(("~" + _type->name), null, true);
+                let candidates = _type->GetCandidates('~' + _type->name, null, true);
                 let function = this.ResolveOverload(candidates, values, null, true);
                 if function == null { continue; }
                 let callee = this.builder.ReferenceDeclaration(function as *HIRDeclaration, false);
@@ -997,6 +997,34 @@ class SemanticAnalyzer {
 
             if variable->initializer != null {
                 initializer = this.Coerce(this.AnalyzeExpression(variable->initializer), _type);
+
+                if initializer != null {
+                    let same = _type->IsSame(initializer->_type);
+
+                    if _type->IsReference() && _type->Pointee().IsCompatible(initializer->_type) {
+                        initializer = this.ImplicitAddressOf(initializer);
+                    }
+
+                    if initializer->_type->IsReference() && _type->IsCompatible(initializer->_type->Pointee()) {
+                        initializer = this.ImplicitDereference(initializer);
+                    }
+
+                    if ! _type->IsCompatible(initializer->_type) {
+                        Logger::Log("Incompatible variable initialization types. ('" + _type->ToString() + "' != '" + initializer->_type->ToString() + "').", variable as *ASTStatement, LogSeverity::Error);
+                        return;
+                    }
+
+                    if ! _type->IsMutabilityCompatible(initializer->_type) {
+                        Logger::Log("Cannot assign immutable pointer to mutable pointer.", variable as *ASTStatement, LogSeverity::Error);
+                        return;
+                    }
+
+                    if same && !this.LiteralNeedsExplicitType(variable->initializer, _type) {
+                        Logger::Log("Unnecessary type annotation, type can be inferred from initializer.", variable as *ASTStatement, LogSeverity::Warning);
+                    }
+
+                    initializer = this.MakeCompatible(initializer, _type);
+                }
             }
         } else if variable->initializer != null {
             initializer = this.Coerce(this.AnalyzeExpression(variable->initializer));
@@ -1538,7 +1566,7 @@ class SemanticAnalyzer {
                 return null;
             }
 
-            if !param_type->IsMutabilityCompatible(value->_type) && false {
+            if !param_type->IsMutabilityCompatible(value->_type) {
                 Logger::Log("Cannot assign immutable pointer to mutable pointer.", node, LogSeverity::Error);
                 return null;
             }
@@ -1554,21 +1582,72 @@ class SemanticAnalyzer {
     }
 
     fn AnalyzeNewExpression(&mut this, _new: *ASTNewExpression) -> *HIRExpression {
-        let mut size: *HIRExpression = null;
         let _type = this.ResolveType(_new->_type);
         if _type == null { return null; }
 
         if _new->size != null {
-            size = this.Coerce(this.AnalyzeExpression(_new->size), this.type_manager.IntegerPointer(false));
+            let size = this.Coerce(this.AnalyzeExpression(_new->size), this.type_manager.IntegerPointer(false));
             if size == null { return null; }
 
             if !size->_type->IsIntegerPointer() || size->_type->IsSigned() {
                 Logger::Log("Array size must be of type 'usize'.", _new as *ASTExpression, LogSeverity::Error);
                 return null;
             }
-        }
 
-        return this.builder.New(_type, size);
+            if _type->HasFields() {
+                let mut values = Vector<*HIRExpression>();
+                values.PushBack(this.builder.NullLiteral(this.type_manager.NullPointer()) as *HIRLiteral);
+                let candidates = _type->GetCandidates(_type->name, _new as *ASTExpression, false);
+                if candidates.Empty() { return null; }
+                let function = this.ResolveOverload(candidates, values, _new as *ASTExpression, false);
+                if function == null { return null; }
+                let callee = this.builder.ReferenceDeclaration(function as *HIRDeclaration, false);
+                return this.builder.New(_type, size, false, callee, Vector<*HIRExpression>());
+            } else {
+                return this.builder.New(_type, size, false, null, Vector<*HIRExpression>());
+            }
+        } else if _new->initialized {
+            let mut values = Vector<*HIRExpression>();
+
+            for argument in _new->arguments {
+                let value = this.AnalyzeExpression(argument);
+                if value == null { return null; }
+                values.PushBack(value);
+            }
+
+            if _type->HasFields() {
+                let arguments = Vector<*HIRExpression>(values);
+                values.Insert(0, this.builder.NullLiteral(this.type_manager.NullPointer()) as *HIRLiteral);
+                let candidates = _type->GetCandidates(_type->name, _new as *ASTExpression, false);
+                if candidates.Empty() { return null; }
+                let function = this.ResolveOverload(candidates, values, _new as *ASTExpression, false);
+                if function == null { return null; }
+                let callee = this.builder.ReferenceDeclaration(function as *HIRDeclaration, false);
+                return this.builder.New(_type, null, true, callee, arguments);
+            } else {
+                if values.Size() != 1 {
+                    Logger::Log("Primitive type initialization requires exactly 1 argument.", _new as *ASTExpression, LogSeverity::Error);
+                    return null;
+                }
+
+                let value = values[0];
+
+                if _type->IsCompatible(value->_type) {
+                    if _type->IsMutabilityCompatible(value->_type) {
+                        values[0] = this.MakeCompatible(value, _type);
+                        return this.builder.New(_type, null, true, null, values);
+                    } else {
+                        Logger::Log("Cannot assign immutable pointer to mutable pointer.", _new as *ASTExpression, LogSeverity::Error);
+                        return null;
+                    }
+                } else {
+                    Logger::Log("Incompatible primitive type initialization types. ('" + _type->ToString() + "' != '" + value->_type->ToString() + "').", _new as *ASTExpression, LogSeverity::Error);
+                    return null;
+                }
+            }
+        } else {
+            return this.builder.New(_type, null, false, null, Vector<*HIRExpression>());
+        }
     }
 
     fn AnalyzeDeleteExpression(&mut this, _delete: *ASTDeleteExpression) -> *HIRExpression {
@@ -1580,7 +1659,19 @@ class SemanticAnalyzer {
             return null;
         }
 
-        return this.builder.Delete(pointer, _delete->array);
+        if pointer->_type->Pointee().HasFields() {
+            let _class = pointer->_type->Pointee();
+            let mut values = Vector<*HIRExpression>();
+            values.PushBack(this.builder.NullLiteral(this.type_manager.NullPointer()) as *HIRLiteral);
+            let candidates = _class->GetCandidates('~' + _class->name, _delete as *ASTExpression, false);
+            if candidates.Empty() { return null; }
+            let function = this.ResolveOverload(candidates, values, _delete as *ASTExpression, false);
+            if function == null { return null; }
+            let callee = this.builder.ReferenceDeclaration(function as *HIRDeclaration, false);
+            return this.builder.Delete(pointer, _delete->array, callee, Vector<*HIRExpression>());
+        } else {
+            return this.builder.Delete(pointer, _delete->array, null, Vector<*HIRExpression>());
+        }
     }
 
     fn LiteralNeedsExplicitType(&mut this, expression: *ASTExpression, target: *SemanticType) -> bool {

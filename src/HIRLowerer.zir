@@ -802,7 +802,7 @@ class HIRLowerer {
             pointer = this.builder.BuildArrayGEP("new.gep".ToString(), pointer, this.builder.ConstantInteger(8, size_type) as *MIRConstant);
             pointer = this.builder.BuildCast("new.cast".ToString(), MIRCastKind::Bitcast, pointer, this.context->PointerType(this.LowerType(_new->_type)));
 
-            if _new->_type->HasFields() {
+            if _new->callee != null {
                 let alloca = this.builder.BuildAlloca("new.index".ToString(), size_type) as *MIRInstruction;
                 this.builder.BuildStore(this.builder.ConstantInteger(0, size_type) as *MIRConstant, alloca);
                 let condition_block = this.builder.BuildBlock("new.cond".ToString());
@@ -816,6 +816,10 @@ class HIRLowerer {
                 this.builder.BuildConditionalBranch(condition, loop_block, end_block);
 
                 this.builder.SetCurrentBlock(loop_block);
+                let arguments = Vector<*MIRValue>();
+                arguments.PushBack(this.builder.BuildArrayGEP("new.gep".ToString(), pointer, index));
+                let callee = this.LowerExpression(_new->callee);
+                this.builder.BuildCall("new.constructor".ToString(), callee, arguments) as *MIRInstruction;
                 this.builder.BuildStore(this.builder.BuildBinary("new.add".ToString(), MIRBinaryKind::Add, index, this.builder.ConstantInteger(1, size_type) as *MIRConstant, size_type), alloca);
                 this.builder.BuildBranch(condition_block);
                 this.builder.SetCurrentBlock(end_block);
@@ -825,28 +829,36 @@ class HIRLowerer {
             arguments.PushBack(allocation_size);
             pointer = this.builder.BuildCall("new".ToString(), callee, arguments) as *MIRInstruction;
             pointer = this.builder.BuildCast("new.cast".ToString(), MIRCastKind::Bitcast, pointer, this.context->PointerType(this.LowerType(_new->_type)));
+
+            if _new->callee != null {
+                let arguments = Vector<*MIRValue>();
+                arguments.PushBack(pointer);
+                let callee = this.LowerExpression(_new->callee);
+                this.builder.BuildCall("new.constructor".ToString(), callee, arguments) as *MIRInstruction;
+            }
         } return pointer;
     }
 
     fn LowerDeleteExpression(&mut this, _delete: *HIRDeleteExpression) -> *MIRValue {
-        let mut pointer = this.LowerExpression(_delete->value);
+        let pointer = this.LowerExpression(_delete->value);
         if pointer == null { return null; }
         let mut parameters = Vector<*MIRType>();
         parameters.PushBack(this.context->PointerType(this.context->VoidType()));
         let free = this.LowerRuntimeFunction("free".ToString(), parameters, this.context->VoidType());
         let callee = this.builder.ReferenceDeclaration(free as *MIRLinkableDeclaration);
         let pointer_type = pointer->_type as *MIRPointerType;
+        let mut raw_pointer = pointer;
 
         if pointer_type->pointee->kind != MIRTypeKind::Integer || (pointer_type->pointee as *MIRIntegerType)->width != 8 {
-            pointer = this.builder.BuildCast("delete.cast".ToString(), MIRCastKind::Bitcast, pointer, this.context->PointerType(this.context->IntegerType(8))) as *MIRInstruction;
+            raw_pointer = this.builder.BuildCast("delete.cast".ToString(), MIRCastKind::Bitcast, pointer, this.context->PointerType(this.context->IntegerType(8))) as *MIRInstruction;
         }
 
         if _delete->array {
             let size_type = this.context->IntegerType(this.target_info.pointer_size as u32 * 8);
-            let shifted_pointer = this.builder.BuildArrayGEP("delete.gep".ToString(), pointer, this.builder.ConstantInteger(-8 as u64, size_type) as *MIRConstant);
+            raw_pointer = this.builder.BuildArrayGEP("delete.gep".ToString(), raw_pointer, this.builder.ConstantInteger(-8 as u64, size_type) as *MIRConstant);
 
-            if _delete->value->_type->Pointee().HasFields() {
-                let size = this.builder.BuildLoad("delete.size".ToString(), this.builder.BuildCast("delete.cast".ToString(), MIRCastKind::Bitcast, shifted_pointer, this.context->PointerType(size_type))) as *MIRInstruction;
+            if _delete->callee != null {
+                let size = this.builder.BuildLoad("delete.size".ToString(), this.builder.BuildCast("delete.cast".ToString(), MIRCastKind::Bitcast, raw_pointer, this.context->PointerType(size_type))) as *MIRInstruction;
 
                 let alloca = this.builder.BuildAlloca("delete.index".ToString(), size_type) as *MIRInstruction;
                 this.builder.BuildStore(this.builder.ConstantInteger(0, size_type) as *MIRConstant, alloca);
@@ -861,16 +873,23 @@ class HIRLowerer {
                 this.builder.BuildConditionalBranch(condition, loop_block, end_block);
 
                 this.builder.SetCurrentBlock(loop_block);
+                let arguments = Vector<*MIRValue>();
+                arguments.PushBack(this.builder.BuildArrayGEP("delete.gep".ToString(), pointer, index));
+                let callee = this.LowerExpression(_delete->callee);
+                this.builder.BuildCall("delete.destructor".ToString(), callee, arguments) as *MIRInstruction;
                 this.builder.BuildStore(this.builder.BuildBinary("delete.add".ToString(), MIRBinaryKind::Add, index, this.builder.ConstantInteger(1, size_type) as *MIRConstant, size_type), alloca);
                 this.builder.BuildBranch(condition_block);
                 this.builder.SetCurrentBlock(end_block);
             }
-
-            pointer = shifted_pointer;
+        } else if _delete->callee != null {
+            let arguments = Vector<*MIRValue>();
+            arguments.PushBack(pointer);
+            let callee = this.LowerExpression(_delete->callee);
+            this.builder.BuildCall("delete.destructor".ToString(), callee, arguments) as *MIRInstruction;
         }
 
         let mut arguments = Vector<*MIRValue>();
-        arguments.PushBack(pointer);
+        arguments.PushBack(raw_pointer);
         this.builder.BuildCall("delete".ToString(), callee, arguments);
         return null;
     }

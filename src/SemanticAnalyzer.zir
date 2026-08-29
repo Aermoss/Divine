@@ -247,7 +247,7 @@ class SemanticAnalyzer {
         } return true;
     }
 
-    pub fn Coerce(&mut this, _expression: *HIRExpression, target: &SemanticType) -> *HIRExpression {
+    pub fn Coerce(&mut this, _expression: *HIRExpression, target: *SemanticType) -> *HIRExpression {
         unsafe {
             let expression = _expression as *mut HIRExpression;
         }
@@ -258,20 +258,20 @@ class SemanticAnalyzer {
             return this.Coerce(this.AnalyzeExpression((expression as *HIRDeferredExpression)->expression, target), target);
         }
 
-        if expression->_type->IsInteger() && expression->_type->IsLiteral() && target.IsPointer() {
-            if !(target.IsReference() && target.Pointee().IsInteger()) {
+        if expression->_type->IsInteger() && expression->_type->IsLiteral() && target->IsPointer() {
+            if !(target->IsReference() && target->Pointee().IsInteger()) {
                 expression->_type = this.type_manager.IntegerPointer(false);
             }
         }
 
         if expression->_type->IsLiteral() {
             if expression->_type->IsInteger() {
-                if !target.IsInteger() || target.IsLiteral() {
+                if !target->IsInteger() || target->IsLiteral() {
                     expression->_type = this.type_manager.Integer(32, true);
                 } else {
                     expression->_type = target;
                 }
-            } else if !target.IsFloat() || target.IsLiteral() {
+            } else if !target->IsFloat() || target->IsLiteral() {
                 expression->_type = this.type_manager.Float(64);
             } else {
                 expression->_type = target;
@@ -313,11 +313,11 @@ class SemanticAnalyzer {
         } return expression;
     }
 
-    fn MakeCompatible(&mut this, expression: *HIRExpression, target: &SemanticType) -> *HIRExpression {
-        if target.IsPointer() && expression->_type->IsPointer() {
-            if target.Pointee().IsClass() && expression->_type->Pointee().IsClass() {
+    fn MakeCompatible(&mut this, expression: *HIRExpression, target: *SemanticType) -> *HIRExpression {
+        if target->IsPointer() && expression->_type->IsPointer() {
+            if target->Pointee().IsClass() && expression->_type->Pointee().IsClass() {
                 for field in expression->_type->Pointee().Fields() {
-                    if field.left == target.Pointee().name {
+                    if field.left == target->Pointee().name {
                         return this.builder.Cast(expression, target);
                     }
                 }
@@ -1703,13 +1703,13 @@ class SemanticAnalyzer {
         return this.AnalyzeResolvedCastExpression(value, target, cast as *ASTExpression);
     }
 
-    fn AnalyzeResolvedCastExpression(&mut this, mut value: *HIRExpression, target: &SemanticType, node: *ASTNode) -> *HIRExpression {
-        if !target.IsPointer() {
+    fn AnalyzeResolvedCastExpression(&mut this, mut value: *HIRExpression, target: *SemanticType, node: *ASTNode) -> *HIRExpression {
+        if !target->IsPointer() {
             value = this.ImplicitDereference(value);
         }
 
         let (mut state, mut failed) = (false, false);
-        let (mut left: *SemanticType, mut right) = (target, value->_type);
+        let (mut left, mut right) = (target, value->_type);
 
         while left->IsPointer() && right->IsPointer() {
             if left->IsMutable() != right->IsMutable() {
@@ -1723,7 +1723,7 @@ class SemanticAnalyzer {
 
         if *value->_type == target {
             if !state {
-                Logger::Log("Redundant cast. ('" + value->_type->ToString() + "' to '" + target.ToString() + "')", node, LogSeverity::Warning);
+                Logger::Log("Redundant cast. ('" + value->_type->ToString() + "' to '" + target->ToString() + "')", node, LogSeverity::Warning);
             } else {
                 if !failed || this._unsafe {
                     return this.builder.Cast(value, target);
@@ -1735,48 +1735,48 @@ class SemanticAnalyzer {
         }
 
         if value->_type->IsBoolean() {
-            if target.IsInteger() {
+            if target->IsInteger() {
                 return this.builder.Cast(value, target);
             }
         } else if value->_type->IsCharacter() {
-            if target.IsInteger() {
+            if target->IsInteger() {
                 return this.builder.Cast(value, target);
             }
         } else if value->_type->IsInteger() {
-            if target.IsPointer() || target.IsInteger() || target.IsFloat() || target.IsEnumeration() {
+            if target->IsPointer() || target->IsInteger() || target->IsFloat() || target->IsEnumeration() {
                 return this.builder.Cast(value, target);
-            } else if target.IsCharacter() {
+            } else if target->IsCharacter() {
                 if value->_type->Width() == 8 && !value->_type->IsSigned() {
                     return this.builder.Cast(value, target);
                 }
             }
         } else if value->_type->IsFloat() {
-            if target.IsInteger() || target.IsFloat() {
+            if target->IsInteger() || target->IsFloat() {
                 return this.builder.Cast(value, target);
             }
         } else if value->_type->IsPointer() {
-            if target.IsInteger() {
+            if target->IsInteger() {
                 return this.builder.Cast(value, target);
             }
         } else if value->_type->IsEnumeration() {
-            if target.IsInteger() {
+            if target->IsInteger() {
                 return this.builder.Cast(value, target);
             }
         }
 
-        if value->_type->IsPointer() && target.IsPointer() {
-            if value->_type->Pointee().IsClass() && target.Pointee().IsClass() {
+        if value->_type->IsPointer() && target->IsPointer() {
+            if value->_type->Pointee().IsClass() && target->Pointee().IsClass() {
                 let mut related = false;
 
                 for field in value->_type->Pointee().Fields() {
-                    if field.left == target.Pointee().name {
+                    if field.left == target->Pointee().name {
                         related = true;
                         break;
                     }
                 }
 
                 if !related {
-                    for field in target.Pointee().Fields() {
+                    for field in target->Pointee().Fields() {
                         if field.left == value->_type->Pointee().name {
                             related = true;
                             break;
@@ -1785,14 +1785,14 @@ class SemanticAnalyzer {
                 }
 
                 if !related {
-                    Logger::Log("Cannot cast class '" + value->_type->Pointee().name + "' to unrelated class '" + target.Pointee().name + "'.", node, LogSeverity::Error);
+                    Logger::Log("Cannot cast class '" + value->_type->Pointee().name + "' to unrelated class '" + target->Pointee().name + "'.", node, LogSeverity::Error);
                     return null;
                 }
             }
 
             return this.builder.Cast(value, target);
         } else {
-            Logger::Log("Cannot cast '" + value->_type->ToString() + "' to '" + target.ToString() + "'.", node, LogSeverity::Error);
+            Logger::Log("Cannot cast '" + value->_type->ToString() + "' to '" + target->ToString() + "'.", node, LogSeverity::Error);
             return null;
         }
     }

@@ -532,15 +532,15 @@ class HIRBinaryExpression : HIRExpression {
 
 class HIRTernaryExpression : HIRExpression {
     pub condition: *HIRExpression,
-    pub then: *HIRExpression,
-    pub _else: *HIRExpression;
+    pub then_value: *HIRExpression,
+    pub else_value: *HIRExpression;
 
-    HIRTernaryExpression(&mut this, condition: *HIRExpression, then: *HIRExpression, _else: *HIRExpression, category: HIRExpressionCategory, mutable: bool) : HIRExpression(HIRExpressionKind::Ternary, then->_type, category, mutable) {
-        (this.condition, this.then, this._else) = (condition, then, _else);
+    HIRTernaryExpression(&mut this, condition: *HIRExpression, then_value: *HIRExpression, else_value: *HIRExpression, category: HIRExpressionCategory, mutable: bool) : HIRExpression(HIRExpressionKind::Ternary, then_value->_type, category, mutable) {
+        (this.condition, this.then_value, this.else_value) = (condition, then_value, else_value);
     }
 
     pub fn ToString(&this) -> String {
-        return this.condition->ToString() + " ? " + this.then->ToString() + " : " + this._else->ToString();
+        return this.condition->ToString() + " ? " + this.then_value->ToString() + " : " + this.else_value->ToString();
     }
 }
 
@@ -914,6 +914,8 @@ class HIRDeclaration {
             return (this as *HIRParameterDeclaration)->ToString();
         } else if this->kind == HIRDeclarationKind::Function {
             return (this as *HIRFunctionDeclaration)->ToString(0);
+        } else if this->kind == HIRDeclarationKind::Field {
+            return (this as *HIRFieldDeclaration)->ToString();
         } else if this->kind == HIRDeclarationKind::Class {
             return (this as *HIRClassDeclaration)->ToString();
         } else if this->kind == HIRDeclarationKind::Structure {
@@ -1213,6 +1215,241 @@ class HIRContext {
 
     pub fn EnumerationType(&mut this, name: String, underlying: *HIRType) -> *HIRType {
         return this.arena.New<HIREnumerationType>(name, underlying);
+    }
+}
+
+class HIRBuilder {
+    context: *mut HIRContext,
+    module: *mut HIRModule,
+    function: *mut HIRFunctionDeclaration = null,
+    block: *mut HIRBlockStatement = null;
+
+    HIRBuilder(&mut this, context: *mut HIRContext, module: *mut HIRModule) {
+        (this.context, this.module) = (context, module);
+    }
+
+    pub fn BooleanLiteral(&mut this, value: bool, _type: *SemanticType) -> *mut HIRBooleanLiteral {
+        return this.context->arena.New<HIRBooleanLiteral>(value, _type);
+    }
+
+    pub fn CharacterLiteral(&mut this, value: u32, _type: *SemanticType) -> *mut HIRCharacterLiteral {
+        return this.context->arena.New<HIRCharacterLiteral>(value, _type);
+    }
+
+    pub fn IntegerLiteral(&mut this, value: u64, _type: *SemanticType) -> *mut HIRIntegerLiteral {
+        return this.context->arena.New<HIRIntegerLiteral>(value, _type);
+    }
+
+    pub fn FloatLiteral(&mut this, value: f64, _type: *SemanticType) -> *mut HIRFloatLiteral {
+        return this.context->arena.New<HIRFloatLiteral>(value, _type);
+    }
+
+    pub fn StringLiteral(&mut this, value: String, _type: *SemanticType) -> *mut HIRStringLiteral {
+        return this.context->arena.New<HIRStringLiteral>(value, _type);
+    }
+
+    pub fn ArrayLiteral(&mut this, elements: Vector<*HIRExpression>, _type: *SemanticType) -> *mut HIRArrayLiteral {
+        return this.context->arena.New<HIRArrayLiteral>(elements, _type);
+    }
+
+    pub fn StructureLiteral(&mut this, fields: Vector<*HIRExpression>, _type: *SemanticType) -> *mut HIRStructureLiteral {
+        return this.context->arena.New<HIRStructureLiteral>(fields, _type);
+    }
+
+    pub fn NullLiteral(&mut this, _type: *SemanticType) -> *mut HIRNullLiteral {
+        return this.context->arena.New<HIRNullLiteral>(_type);
+    }
+
+    pub fn ReferenceVariable(&mut this, variable: *HIRVariableStatement) -> *mut HIRVariableReference {
+        return this.context->arena.New<HIRVariableReference>(variable);
+    }
+
+    pub fn ReferenceDeclaration(&mut this, declaration: *HIRDeclaration, mutable: bool) -> *mut HIRDeclarationReference {
+        return this.context->arena.New<HIRDeclarationReference>(declaration, mutable);
+    }
+
+    pub fn Dereference(&mut this, operand: *HIRExpression) -> *mut HIRDereferenceExpression {
+        return this.context->arena.New<HIRDereferenceExpression>(operand);
+    }
+
+    pub fn AddressOf(&mut this, operand: *HIRExpression, mutable: bool) -> *mut HIRAddressOfExpression {
+        return this.context->arena.New<HIRAddressOfExpression>(operand, mutable);
+    }
+
+    pub fn Assignment(&mut this, left: *HIRExpression, right: *HIRExpression) -> *mut HIRAssignmentExpression {
+        return this.context->arena.New<HIRAssignmentExpression>(left, right);
+    }
+
+    pub fn Unary(&mut this, _operator: TokenType, operand: *HIRExpression) -> *mut HIRUnaryExpression {
+        return this.context->arena.New<HIRUnaryExpression>(_operator, operand);
+    }
+
+    pub fn Binary(&mut this, _operator: TokenType, left: *HIRExpression, right: *HIRExpression, _type: *SemanticType) -> *mut HIRBinaryExpression {
+        return this.context->arena.New<HIRBinaryExpression>(_operator, left, right, _type);
+    }
+
+    pub fn Ternary(&mut this, condition: *HIRExpression, then_value: *HIRExpression, else_value: *HIRExpression, category: HIRExpressionCategory, mutable: bool) -> *mut HIRTernaryExpression {
+        return this.context->arena.New<HIRTernaryExpression>(condition, then_value, else_value, category, mutable);
+    }
+
+    pub fn Call(&mut this, callee: *HIRExpression, arguments: Vector<*HIRExpression>) -> *mut HIRCallExpression {
+        return this.context->arena.New<HIRCallExpression>(callee, arguments);
+    }
+
+    pub fn Cast(&mut this, value: *HIRExpression, _type: *SemanticType) -> *mut HIRCastExpression {
+        return this.context->arena.New<HIRCastExpression>(value, _type);
+    }
+
+    pub fn IndexAccess(&mut this, value: *HIRExpression, index: *HIRExpression) -> *mut HIRIndexAccessExpression {
+        return this.context->arena.New<HIRIndexAccessExpression>(value, index);
+    }
+
+    pub fn MemberAccess(&mut this, instance: *HIRExpression, _type: *SemanticType, index: usize) -> *mut HIRMemberAccessExpression {
+        return this.context->arena.New<HIRMemberAccessExpression>(instance, _type, index);
+    }
+
+    pub fn New(&mut this, _type: *SemanticType, size: *HIRExpression) -> *mut HIRNewExpression {
+        return this.context->arena.New<HIRNewExpression>(_type, size);
+    }
+
+    pub fn Delete(&mut this, value: *HIRExpression) -> *mut HIRDeleteExpression {
+        return this.context->arena.New<HIRDeleteExpression>(value);
+    }
+
+    pub fn Constructor(&mut this, callee: *HIRExpression, arguments: Vector<*HIRExpression>, _type: *SemanticType) -> *mut HIRConstructorExpression {
+        return this.context->arena.New<HIRConstructorExpression>(callee, arguments, _type);
+    }
+
+    pub fn Destructor(&mut this, instance: *HIRExpression, callee: *HIRExpression) -> *mut HIRDestructorExpression {
+        return this.context->arena.New<HIRDestructorExpression>(instance, callee);
+    }
+
+    pub fn Intrinsic(&mut this, kind: HIRIntrinsicKind, _type: *SemanticType) -> *mut HIRIntrinsicExpression {
+        return this.context->arena.New<HIRIntrinsicExpression>(kind, _type);
+    }
+
+    pub fn Deferred(&mut this, expression: *ASTExpression, _type: *SemanticType) -> *mut HIRDeferredExpression {
+        return this.context->arena.New<HIRDeferredExpression>(expression, _type);
+    }
+
+    pub fn BuildBlockStatement(&mut this) -> *mut HIRBlockStatement {
+        return this.context->arena.New<HIRBlockStatement>();
+    }
+
+    pub fn SetCurrentBlock(&mut this, block: *mut HIRBlockStatement) {
+        this.block = block;
+    }
+
+    pub fn GetCurrentBlock(&this) -> *mut HIRBlockStatement {
+        return this.block;
+    }
+
+    pub fn BuildVariableStatement(&mut this, name: String, _type: *SemanticType, initializer: *HIRExpression, mutable: bool) -> *mut HIRVariableStatement {
+        let variable = this.context->arena.New<HIRVariableStatement>(name, _type, initializer, mutable);
+        this.block->statements.PushBack(variable);
+        return variable;
+    }
+
+    pub fn BuildExpressionStatement(&mut this, expression: *HIRExpression) -> *mut HIRExpressionStatement {
+        let statement = this.context->arena.New<HIRExpressionStatement>(expression);
+        this.block->statements.PushBack(statement);
+        return statement;
+    }
+
+    pub fn BuildReturnStatement(&mut this, value: *HIRExpression) -> *mut HIRReturnStatement {
+        let _return = this.context->arena.New<HIRReturnStatement>(value);
+        this.block->statements.PushBack(_return);
+        return _return;
+    }
+
+    pub fn BuildBreakStatement(&mut this) -> *mut HIRBreakStatement {
+        let _break = this.context->arena.New<HIRBreakStatement>();
+        this.block->statements.PushBack(_break);
+        return _break;
+    }
+
+    pub fn BuildContinueStatement(&mut this) -> *mut HIRContinueStatement {
+        let _continue = this.context->arena.New<HIRContinueStatement>();
+        this.block->statements.PushBack(_continue);
+        return _continue;
+    }
+
+    pub fn BuildIfStatement(&mut this, condition: *HIRExpression, then_body: *HIRBlockStatement, else_body: *HIRBlockStatement) -> *mut HIRIfStatement {
+        let statement = this.context->arena.New<HIRIfStatement>(condition, then_body, else_body);
+        this.block->statements.PushBack(statement);
+        return statement;
+    }
+
+    pub fn BuildWhileStatement(&mut this, condition: *HIRExpression, while_body: *HIRBlockStatement, else_body: *HIRBlockStatement) -> *mut HIRWhileStatement {
+        let statement = this.context->arena.New<HIRWhileStatement>(condition, while_body, else_body);
+        this.block->statements.PushBack(statement);
+        return statement;
+    }
+
+    pub fn BuildLoopStatement(&mut this, body: *HIRBlockStatement) -> *mut HIRLoopStatement {
+        let statement = this.context->arena.New<HIRLoopStatement>(body);
+        this.block->statements.PushBack(statement);
+        return statement;
+    }
+
+    pub fn BuildForStatement(&mut this, iterator: *HIRVariableStatement, variable: *HIRVariableStatement, condition: *HIRExpression, step: *HIRExpression, body: *HIRBlockStatement) -> *mut HIRForStatement {
+        let statement = this.context->arena.New<HIRForStatement>(iterator, variable, condition, step, body);
+        this.block->statements.PushBack(statement);
+        return statement;
+    }
+
+    pub fn BuildParameterDeclaration(&mut this, name: String, _type: *SemanticType, mutable: bool) -> *mut HIRParameterDeclaration {
+        return this.context->arena.New<HIRParameterDeclaration>(name, _type, mutable);
+    }
+
+    pub fn BuildFunctionDeclaration(&mut this, name: String, parameters: Vector<*HIRParameterDeclaration>, _return: *SemanticType, _type: *SemanticType, no_mangle: bool, abi: HIRDeclarationABI) -> *mut HIRFunctionDeclaration {
+        return this.context->arena.New<HIRFunctionDeclaration>(name, parameters, _return, _type, no_mangle, abi);
+    }
+
+    pub fn SetCurrentFunction(&mut this, function: *mut HIRFunctionDeclaration) {
+        this.function = function;
+    }
+
+    pub fn GetCurrentFunction(&this) -> *mut HIRFunctionDeclaration {
+        return this.function;
+    }
+
+    pub fn BuildFieldDeclaration(&mut this, name: String, _type: *SemanticType, initializer: *ASTExpression, public: bool) -> *mut HIRFieldDeclaration {
+        return this.context->arena.New<HIRFieldDeclaration>(name, _type, initializer, public);
+    }
+
+    pub fn BuildClassDeclaration(&mut this, name: String, _type: *SemanticType) -> *mut HIRClassDeclaration {
+        let declaration = this.context->arena.New<HIRClassDeclaration>(name, _type);
+        this.module->declarations.PushBack(declaration);
+        return declaration;
+    }
+
+    pub fn BuildStructureDeclaration(&mut this, name: String, _type: *SemanticType) -> *mut HIRStructureDeclaration {
+        let declaration = this.context->arena.New<HIRStructureDeclaration>(name, _type);
+        this.module->declarations.PushBack(declaration);
+        return declaration;
+    }
+
+    pub fn BuildMemberDeclaration(&mut this, name: String, value: *HIRExpression, _type: *SemanticType) -> *mut HIRMemberDeclaration {
+        return this.context->arena.New<HIRMemberDeclaration>(name, value, _type);
+    }
+
+    pub fn BuildEnumerationDeclaration(&mut this, name: String, _type: *SemanticType) -> *mut HIREnumerationDeclaration {
+        let declaration = this.context->arena.New<HIREnumerationDeclaration>(name, _type);
+        this.module->declarations.PushBack(declaration);
+        return declaration;
+    }
+
+    pub fn BuildConstantDeclaration(&mut this, name: String, _type: *SemanticType, initializer: *HIRExpression) -> *mut HIRConstantDeclaration {
+        let declaration = this.context->arena.New<HIRConstantDeclaration>(name, _type, initializer);
+        this.module->declarations.PushBack(declaration);
+        return declaration;
+    }
+
+    pub fn BuildStaticDeclaration(&mut this, name: String, _type: *SemanticType, initializer: *HIRExpression, alignment: *HIRExpression, mutable: bool, linkage: HIRDeclarationLinkage) -> *mut HIRStaticDeclaration {
+        let declaration = this.context->arena.New<HIRStaticDeclaration>(name, _type, initializer, alignment, mutable, linkage);
+        this.module->declarations.PushBack(declaration);
+        return declaration;
     }
 }
 

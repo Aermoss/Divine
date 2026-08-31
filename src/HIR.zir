@@ -224,8 +224,9 @@ class HIREnumerationType : HIRType {
 }
 
 enum HIRExpressionKind: u8 {
-    Literal, VariableReference, DeclarationReference,
-    Dereference, AddressOf, Assignment, Unary, Binary, Ternary,
+    Literal,
+    VariableReference, DeclarationReference,
+    Assignment, Unary, Binary, Ternary,
     Call, Cast, IndexAccess, MemberAccess,
     New, Delete, Constructor, Destructor,
     Intrinsic, Deferred
@@ -256,10 +257,6 @@ class HIRExpression {
             return (this as *HIRVariableReference)->ToString();
         } else if this.kind == HIRExpressionKind::DeclarationReference {
             return (this as *HIRDeclarationReference)->ToString();
-        } else if this.kind == HIRExpressionKind::Dereference {
-            return (this as *HIRDereferenceExpression)->ToString();
-        } else if this.kind == HIRExpressionKind::AddressOf {
-            return (this as *HIRAddressOfExpression)->ToString();
         } else if this.kind == HIRExpressionKind::Assignment {
             return (this as *HIRAssignmentExpression)->ToString();
         } else if this.kind == HIRExpressionKind::Unary {
@@ -462,34 +459,6 @@ class HIRDeclarationReference : HIRExpression {
     }
 }
 
-class HIRDereferenceExpression : HIRExpression {
-    pub operand: *HIRExpression;
-
-    HIRDereferenceExpression(&mut this, operand: *HIRExpression) : HIRExpression(HIRExpressionKind::Dereference, operand->_type->Pointee(), HIRExpressionCategory::Place, operand->_type->IsMutable()) {
-        this.operand = operand;
-    }
-
-    pub fn ToString(&this) -> String {
-        return '*' + this.operand->ToString();
-    }
-}
-
-class HIRAddressOfExpression : HIRExpression {
-    pub operand: *HIRExpression;
-
-    HIRAddressOfExpression(&mut this, operand: *HIRExpression, mutable: bool) : HIRExpression(HIRExpressionKind::AddressOf, analyzer->type_manager.Reference(operand->_type, mutable)) {
-        this.operand = operand;
-    }
-
-    pub fn ToString(&this) -> String {
-        if (this as *HIRExpression)->_type->IsMutable() {
-            return "&mut " + this.operand->ToString();
-        } else {
-            return '&' + this.operand->ToString();
-        }
-    }
-}
-
 class HIRAssignmentExpression : HIRExpression {
     pub left: *HIRExpression,
     pub right: *HIRExpression;
@@ -519,12 +488,12 @@ class HIRUnaryExpression : HIRExpression {
     pub kind: HIRUnaryKind,
     pub operand: *HIRExpression;
 
-    HIRUnaryExpression(&mut this, kind: HIRUnaryKind, operand: *HIRExpression) : HIRExpression(HIRExpressionKind::Unary, operand->_type) {
+    HIRUnaryExpression(&mut this, kind: HIRUnaryKind, operand: *HIRExpression, _type: *SemanticType, category: HIRExpressionCategory, mutable: bool) : HIRExpression(HIRExpressionKind::Unary, _type, category, mutable) {
         (this.kind, this.operand) = (kind, operand);
     }
 
     pub fn ToString(&this) -> String {
-        return this.kind.ToString() + this.operand->ToString();
+        return this.kind.ToString() + (this.kind == HIRUnaryKind::AddressOf && (this as *HIRExpression)->_type->IsMutable() ? "mut " : "") + this.operand->ToString();
     }
 }
 
@@ -1323,20 +1292,20 @@ class HIRBuilder {
         return this.context->arena.New<HIRDeclarationReference>(declaration, mutable);
     }
 
-    pub fn Dereference(&mut this, operand: *HIRExpression) -> *mut HIRDereferenceExpression {
-        return this.context->arena.New<HIRDereferenceExpression>(operand);
-    }
-
-    pub fn AddressOf(&mut this, operand: *HIRExpression, mutable: bool) -> *mut HIRAddressOfExpression {
-        return this.context->arena.New<HIRAddressOfExpression>(operand, mutable);
-    }
-
     pub fn Assignment(&mut this, left: *HIRExpression, right: *HIRExpression) -> *mut HIRAssignmentExpression {
         return this.context->arena.New<HIRAssignmentExpression>(left, right);
     }
 
+    pub fn AddressOf(&mut this, operand: *HIRExpression, mutable: bool) -> *mut HIRUnaryExpression {
+        return this.context->arena.New<HIRUnaryExpression>(HIRUnaryKind::AddressOf, operand, analyzer->type_manager.Reference(operand->_type, mutable), HIRExpressionCategory::Value, false);
+    }
+
+    pub fn Dereference(&mut this, operand: *HIRExpression) -> *mut HIRUnaryExpression {
+        return this.context->arena.New<HIRUnaryExpression>(HIRUnaryKind::Dereference, operand, operand->_type->Pointee(), HIRExpressionCategory::Place, operand->_type->IsMutable());
+    }
+
     pub fn Unary(&mut this, kind: HIRUnaryKind, operand: *HIRExpression) -> *mut HIRUnaryExpression {
-        return this.context->arena.New<HIRUnaryExpression>(kind, operand);
+        return this.context->arena.New<HIRUnaryExpression>(kind, operand, operand->_type, HIRExpressionCategory::Value, false);
     }
 
     pub fn Binary(&mut this, kind: HIRBinaryKind, left: *HIRExpression, right: *HIRExpression, _type: *SemanticType) -> *mut HIRBinaryExpression {

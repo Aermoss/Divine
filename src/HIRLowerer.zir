@@ -565,7 +565,7 @@ class HIRLowerer {
         } else if expression->kind == HIRExpressionKind::MemberAccess {
             return this.LowerMemberAccessExpression(expression as *HIRMemberAccessExpression);
         } else if expression->kind == HIRExpressionKind::Unary && (expression as *HIRUnaryExpression)->kind == HIRUnaryKind::Dereference {
-            return this.LowerExpression((expression as *HIRUnaryExpression)->operand);
+            return this.LowerUnaryExpression(expression as *HIRUnaryExpression);
         } else {
             let alloca = this.builder.BuildAlloca("temporary".ToString(), this.LowerType(expression->_type));
             this.LowerExpressionTo(expression, alloca as *MIRInstruction);
@@ -608,13 +608,7 @@ class HIRLowerer {
         } else if expression->kind == HIRExpressionKind::IndexAccess {
             return this.LowerIndexAccessExpression(expression as *HIRIndexAccessExpression);
         } else if expression->kind == HIRExpressionKind::Unary && (expression as *HIRUnaryExpression)->kind != HIRUnaryKind::Dereference {
-            let unary = expression as *HIRUnaryExpression;
-
-            if unary->kind == HIRUnaryKind::AddressOf {
-                return this.LowerPlaceExpression(unary->operand);
-            } else {
-                return this.LowerUnaryExpression(unary);
-            }
+            return this.LowerUnaryExpression(expression as *HIRUnaryExpression);
         } else if expression->kind == HIRExpressionKind::Binary {
             return this.LowerBinaryExpression(expression as *HIRBinaryExpression);
         } else if expression->kind == HIRExpressionKind::Ternary {
@@ -1032,18 +1026,24 @@ class HIRLowerer {
     }
 
     fn LowerUnaryExpression(&mut this, unary: *HIRUnaryExpression) -> *MIRValue {
-        let operand = this.LowerExpression(unary->operand);
-        if operand == null { return null; }
+        if unary->kind == HIRUnaryKind::AddressOf {
+            return this.LowerPlaceExpression(unary->operand);
+        } else {
+            let operand = this.LowerExpression(unary->operand);
+            if operand == null { return null; }
 
-        if unary->kind == HIRUnaryKind::Negate {
-            if unary->operand->_type->IsFloat() {
-                return this.builder.BuildUnary("neg".ToString(), MIRUnaryKind::FNeg, operand);
-            } else {
-                return this.builder.BuildUnary("neg".ToString(), MIRUnaryKind::Neg, operand);
-            }
-        } else if unary->kind == HIRUnaryKind::Not {
-            return this.builder.BuildUnary("not".ToString(), MIRUnaryKind::Not, operand);
-        } else { return null; }
+            if unary->kind == HIRUnaryKind::Dereference {
+                return operand;
+            } else if unary->kind == HIRUnaryKind::Negate {
+                if unary->operand->_type->IsFloat() {
+                    return this.builder.BuildUnary("neg".ToString(), MIRUnaryKind::FNeg, operand);
+                } else {
+                    return this.builder.BuildUnary("neg".ToString(), MIRUnaryKind::Neg, operand);
+                }
+            } else if unary->kind == HIRUnaryKind::Not {
+                return this.builder.BuildUnary("not".ToString(), MIRUnaryKind::Not, operand);
+            } else { return null; }
+        }
     }
 
     fn LowerBinaryExpression(&mut this, binary: *HIRBinaryExpression) -> *MIRValue {

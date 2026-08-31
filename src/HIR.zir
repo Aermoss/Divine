@@ -463,7 +463,7 @@ class HIRAssignmentExpression : HIRExpression {
     pub left: *HIRExpression,
     pub right: *HIRExpression;
 
-    HIRAssignmentExpression(&mut this, left: *HIRExpression, right: *HIRExpression) : HIRExpression(HIRExpressionKind::Assignment, analyzer->type_manager.Void()) {
+    HIRAssignmentExpression(&mut this, left: *HIRExpression, right: *HIRExpression, _type: *SemanticType) : HIRExpression(HIRExpressionKind::Assignment, _type) {
         (this.left, this.right) = (left, right);
     }
 
@@ -589,7 +589,7 @@ class HIRIndexAccessExpression : HIRExpression {
     pub value: *HIRExpression,
     pub index: *HIRExpression;
 
-    HIRIndexAccessExpression(&mut this, value: *HIRExpression, index: *HIRExpression) : HIRExpression(HIRExpressionKind::IndexAccess, value->_type->AsReference()) {
+    HIRIndexAccessExpression(&mut this, value: *HIRExpression, index: *HIRExpression, _type: *SemanticType) : HIRExpression(HIRExpressionKind::IndexAccess, _type) {
         (this.value, this.index) = (value, index);
     }
 
@@ -618,7 +618,7 @@ class HIRNewExpression : HIRExpression {
     pub callee: *HIRExpression,
     pub arguments: Vector<*HIRExpression>;
 
-    HIRNewExpression(&mut this, _type: *SemanticType, size: *HIRExpression, initialized: bool, callee: *HIRExpression, arguments: Vector<*HIRExpression>) : HIRExpression(HIRExpressionKind::New, analyzer->type_manager.Pointer(_type, true)) {
+    HIRNewExpression(&mut this, _type: *SemanticType, size: *HIRExpression, initialized: bool, callee: *HIRExpression, arguments: Vector<*HIRExpression>, result_type: *SemanticType) : HIRExpression(HIRExpressionKind::New, result_type) {
         (this._type, this.size, this.initialized, this.callee, this.arguments) = (_type, size, initialized, callee, arguments);
     }
 
@@ -645,7 +645,7 @@ class HIRDeleteExpression : HIRExpression {
     pub callee: *HIRExpression,
     pub arguments: Vector<*HIRExpression>;
 
-    HIRDeleteExpression(&mut this, value: *HIRExpression, array: bool, callee: *HIRExpression, arguments: Vector<*HIRExpression>) : HIRExpression(HIRExpressionKind::Delete, analyzer->type_manager.Void()) {
+    HIRDeleteExpression(&mut this, value: *HIRExpression, array: bool, callee: *HIRExpression, arguments: Vector<*HIRExpression>, _type: *SemanticType) : HIRExpression(HIRExpressionKind::Delete, _type) {
         (this.value, this.array, this.callee, this.arguments) = (value, array, callee, arguments);
     }
 
@@ -677,7 +677,7 @@ class HIRDestructorExpression : HIRExpression {
     pub instance: *HIRExpression,
     pub callee: *HIRExpression;
 
-    HIRDestructorExpression(&mut this, instance: *HIRExpression, callee: *HIRExpression) : HIRExpression(HIRExpressionKind::Destructor, analyzer->type_manager.Void()) {
+    HIRDestructorExpression(&mut this, instance: *HIRExpression, callee: *HIRExpression, _type: *SemanticType) : HIRExpression(HIRExpressionKind::Destructor, _type) {
         (this.instance, this.callee) = (instance, callee);
     }
 
@@ -700,7 +700,7 @@ class HIRIntrinsicExpression : HIRExpression {
     pub kind: HIRIntrinsicKind,
     pub _type: *SemanticType;
 
-    HIRIntrinsicExpression(&mut this, kind: HIRIntrinsicKind, _type: *SemanticType) : HIRExpression(HIRExpressionKind::Intrinsic, analyzer->type_manager.IntegerPointer(false)) {
+    HIRIntrinsicExpression(&mut this, kind: HIRIntrinsicKind, _type: *SemanticType, result_type: *SemanticType) : HIRExpression(HIRExpressionKind::Intrinsic, result_type) {
         (this.kind, this._type) = (kind, _type);
     }
 
@@ -1110,8 +1110,7 @@ class HIREnumerationDeclaration : HIRDeclaration {
 
     pub fn ToString(&this) -> String {
         let declaration = this as *HIRDeclaration;
-        let underlying = analyzer->type_manager->Integer(declaration->_type->width, declaration->_type->signed);
-        let mut result = "enum %" + declaration->name + ": " + underlying->ToString() + " {";
+        let mut result = "enum %" + declaration->name + " {";
 
         if !this.members.Empty() {
             result += '\n';
@@ -1193,7 +1192,7 @@ class HIRContext {
 
     HIRContext(&mut this) {}
 
-    pub fn VoidType(&mut this) -> *HIRType {
+    /* pub fn VoidType(&mut this) -> *HIRType {
         return this.arena.New<HIRVoidType>();
     }
 
@@ -1239,6 +1238,110 @@ class HIRContext {
 
     pub fn EnumerationType(&mut this, name: String, underlying: *HIRType) -> *HIRType {
         return this.arena.New<HIREnumerationType>(name, underlying);
+    } */
+
+    pub fn VoidType(&mut this) -> *SemanticType {
+        return this.arena.New<SemanticType>(TypeKind::Void);
+    }
+
+    pub fn BooleanType(&mut this) -> *SemanticType {
+        let _type = this.arena.New<SemanticType>(TypeKind::Boolean);
+        _type->width = 1;
+        return _type;
+    }
+
+    pub fn CharacterType(&mut this) -> *SemanticType {
+        let _type = this.arena.New<SemanticType>(TypeKind::Character);
+        _type->width = 32;
+        return _type;
+    }
+
+    pub fn IntegerType(&mut this, width: u32, signed: bool) -> *SemanticType {
+        let _type = this.arena.New<SemanticType>(TypeKind::Integer);
+        (_type->width, _type->signed) = (width, signed);
+        return _type;
+    }
+
+    pub fn IntegerPointerType(&mut this, signed: bool) -> *SemanticType {
+        let _type = this.arena.New<SemanticType>(TypeKind::Integer);
+        _type->signed = signed;
+        return _type;
+    }
+
+    pub fn IntegerLiteralType(&mut this) -> *SemanticType {
+        let _type = this.arena.New<SemanticType>(TypeKind::IntegerLiteral);
+        (_type->width, _type->signed) = (32, true);
+        return _type;
+    }
+
+    pub fn FloatType(&mut this, width: u32) -> *SemanticType {
+        let _type = this.arena.New<SemanticType>(TypeKind::Float);
+        _type->width = width;
+        return _type;
+    }
+
+    pub fn FloatLiteralType(&mut this) -> *SemanticType {
+        let _type = this.arena.New<SemanticType>(TypeKind::FloatLiteral);
+        _type->width = 64;
+        return _type;
+    }
+
+    pub fn FunctionType(&mut this, params: &Vector<*SemanticType>, _return: *SemanticType) -> *mut SemanticType {
+        let _type = this.arena.New<SemanticType>(TypeKind::Function);
+        (_type->params, _type->_return) = (params, _return);
+        return _type;
+    }
+
+    pub fn FunctionType(&mut this, params: &Vector<*SemanticType>, _return: *SemanticType, name: &String) -> *mut SemanticType {
+        let _type = this.arena.New<SemanticType>(TypeKind::Function);
+        (_type->params, _type->_return, _type->name) = (params, _return, name);
+        return _type;
+    }
+
+    pub fn ClassType(&mut this, name: &String) -> *mut SemanticType {
+        let _type = this.arena.New<SemanticType>(TypeKind::Class);
+        _type->name = name;
+        return _type;
+    }
+
+    pub fn StructureType(&mut this, name: &String) -> *mut SemanticType {
+        let _type = this.arena.New<SemanticType>(TypeKind::Structure);
+        _type->name = name;
+        return _type;
+    }
+
+    pub fn EnumerationType(&mut this, name: &String, underlying_type: *SemanticType) -> *SemanticType {
+        let _type = this.arena.New<SemanticType>(TypeKind::Enumeration);
+        (_type->width, _type->signed, _type->name) = (underlying_type->width, underlying_type->signed, name);
+        return _type;
+    }
+
+    pub fn VariantType(&mut this, name: &String) -> *mut SemanticType {
+        let _type = this.arena.New<SemanticType>(TypeKind::Variant);
+        _type->name = name;
+        return _type;
+    }
+
+    pub fn PointerType(&mut this, pointee: *SemanticType, mutable: bool) -> *SemanticType {
+        let _type = this.arena.New<SemanticType>(TypeKind::Pointer);
+        (_type->mutable, _type->pointee) = (mutable, pointee);
+        return _type;
+    }
+
+    pub fn NullPointerType(&mut this) -> *SemanticType {
+        return this.PointerType(this.VoidType(), false);
+    }
+
+    pub fn ReferenceType(&mut this, pointee: *SemanticType, mutable: bool) -> *SemanticType {
+        let _type = this.arena.New<SemanticType>(TypeKind::Reference);
+        (_type->mutable, _type->pointee) = (mutable, pointee);
+        return _type;
+    }
+
+    pub fn ArrayType(&mut this, pointee: *SemanticType, length: usize) -> *SemanticType {
+        let _type = this.arena.New<SemanticType>(TypeKind::Array);
+        (_type->length, _type->pointee) = (length, pointee);
+        return _type;
     }
 }
 
@@ -1293,11 +1396,11 @@ class HIRBuilder {
     }
 
     pub fn Assignment(&mut this, left: *HIRExpression, right: *HIRExpression) -> *mut HIRAssignmentExpression {
-        return this.context->arena.New<HIRAssignmentExpression>(left, right);
+        return this.context->arena.New<HIRAssignmentExpression>(left, right, this.context->VoidType());
     }
 
     pub fn AddressOf(&mut this, operand: *HIRExpression, mutable: bool) -> *mut HIRUnaryExpression {
-        return this.context->arena.New<HIRUnaryExpression>(HIRUnaryKind::AddressOf, operand, analyzer->type_manager.Reference(operand->_type, mutable), HIRExpressionCategory::Value, false);
+        return this.context->arena.New<HIRUnaryExpression>(HIRUnaryKind::AddressOf, operand, this.context->ReferenceType(operand->_type, mutable), HIRExpressionCategory::Value, false);
     }
 
     pub fn Dereference(&mut this, operand: *HIRExpression) -> *mut HIRUnaryExpression {
@@ -1325,7 +1428,7 @@ class HIRBuilder {
     }
 
     pub fn IndexAccess(&mut this, value: *HIRExpression, index: *HIRExpression) -> *mut HIRIndexAccessExpression {
-        return this.context->arena.New<HIRIndexAccessExpression>(value, index);
+        return this.context->arena.New<HIRIndexAccessExpression>(value, index, this.context->ReferenceType(value->_type->Pointee(), value->_type->IsMutable()));
     }
 
     pub fn MemberAccess(&mut this, instance: *HIRExpression, _type: *SemanticType, index: usize) -> *mut HIRMemberAccessExpression {
@@ -1333,11 +1436,11 @@ class HIRBuilder {
     }
 
     pub fn New(&mut this, _type: *SemanticType, size: *HIRExpression, initialized: bool, callee: *HIRExpression, arguments: Vector<*HIRExpression>) -> *mut HIRNewExpression {
-        return this.context->arena.New<HIRNewExpression>(_type, size, initialized, callee, arguments);
+        return this.context->arena.New<HIRNewExpression>(_type, size, initialized, callee, arguments, this.context->PointerType(_type, true));
     }
 
     pub fn Delete(&mut this, value: *HIRExpression, array: bool, callee: *HIRExpression, arguments: Vector<*HIRExpression>) -> *mut HIRDeleteExpression {
-        return this.context->arena.New<HIRDeleteExpression>(value, array, callee, arguments);
+        return this.context->arena.New<HIRDeleteExpression>(value, array, callee, arguments, this.context->VoidType());
     }
 
     pub fn Constructor(&mut this, callee: *HIRExpression, arguments: Vector<*HIRExpression>, _type: *SemanticType) -> *mut HIRConstructorExpression {
@@ -1345,11 +1448,11 @@ class HIRBuilder {
     }
 
     pub fn Destructor(&mut this, instance: *HIRExpression, callee: *HIRExpression) -> *mut HIRDestructorExpression {
-        return this.context->arena.New<HIRDestructorExpression>(instance, callee);
+        return this.context->arena.New<HIRDestructorExpression>(instance, callee, this.context->VoidType());
     }
 
     pub fn Intrinsic(&mut this, kind: HIRIntrinsicKind, _type: *SemanticType) -> *mut HIRIntrinsicExpression {
-        return this.context->arena.New<HIRIntrinsicExpression>(kind, _type);
+        return this.context->arena.New<HIRIntrinsicExpression>(kind, _type, this.context->IntegerPointerType(false));
     }
 
     pub fn Deferred(&mut this, expression: *ASTExpression, _type: *SemanticType) -> *mut HIRDeferredExpression {

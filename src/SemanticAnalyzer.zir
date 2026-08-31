@@ -15,7 +15,7 @@
  */
 
 #[include "std/str", "std/vec", "std/map", "std/pair", "std/arena",
-    "src/ScopeManager.zir", "src/Scope.zir", "src/Symbol.zir", "src/Generic.zir", "src/TypeManager.zir", "src/Types.zir",
+    "src/ScopeManager.zir", "src/Scope.zir", "src/Symbol.zir", "src/Generic.zir", "src/Types.zir",
         "src/Tokens.zir", "src/AST.zir", "src/HIR.zir", "src/Logger.zir" : *]
 
 class SemanticForward {
@@ -38,8 +38,6 @@ class SemanticAnalyzer {
     context: HIRContext,
     module: *mut HIRModule = null,
     pub builder: HIRBuilder,
-
-    pub type_manager: TypeManager,
     pub scope_manager: ScopeManager,
 
     forwards: Vector<SemanticForward>,
@@ -260,19 +258,19 @@ class SemanticAnalyzer {
 
         if expression->_type->IsInteger() && expression->_type->IsLiteral() && target->IsPointer() {
             if !(target->IsReference() && target->Pointee().IsInteger()) {
-                expression->_type = this.type_manager.IntegerPointer(false);
+                expression->_type = this.context.IntegerPointerType(false);
             }
         }
 
         if expression->_type->IsLiteral() {
             if expression->_type->IsInteger() {
                 if !target->IsInteger() || target->IsLiteral() {
-                    expression->_type = this.type_manager.Integer(32, true);
+                    expression->_type = this.context.IntegerType(32, true);
                 } else {
                     expression->_type = target;
                 }
             } else if !target->IsFloat() || target->IsLiteral() {
-                expression->_type = this.type_manager.Float(64);
+                expression->_type = this.context.FloatType(64);
             } else {
                 expression->_type = target;
             }
@@ -288,7 +286,7 @@ class SemanticAnalyzer {
             if expression->kind == HIRExpressionKind::Deferred {
                 return this.Coerce(this.AnalyzeExpression((expression as *HIRDeferredExpression)->expression, null));
             } else if expression->_type->IsLiteral() {
-                expression->_type = expression->_type->IsInteger() ? this.type_manager.Integer(32, true) : this.type_manager.Float(64);
+                expression->_type = expression->_type->IsInteger() ? this.context.IntegerType(32, true) : this.context.FloatType(64);
             }
         } return expression;
     }
@@ -350,7 +348,7 @@ class SemanticAnalyzer {
         let mut alignment: *HIRExpression = null;
 
         if _static->alignment != null {
-            alignment = this.Coerce(this.AnalyzeExpression(_static->alignment), this.type_manager.IntegerPointer(false));
+            alignment = this.Coerce(this.AnalyzeExpression(_static->alignment), this.context.IntegerPointerType(false));
             if alignment == null { return; }
 
             if !alignment->_type->IsIntegerPointer() || alignment->_type->IsSigned() {
@@ -388,7 +386,7 @@ class SemanticAnalyzer {
             let mut _type = this.current_class;
 
             if function->instance_kind != ASTInstanceKind::Copy {
-                _type = this.type_manager.Reference(this.current_class, function->instance_kind == ASTInstanceKind::MutRef);
+                _type = this.context.ReferenceType(this.current_class, function->instance_kind == ASTInstanceKind::MutRef);
             }
 
             parameters.PushBack(this.builder.BuildParameterDeclaration("this".ToString(), _type, false));
@@ -404,7 +402,7 @@ class SemanticAnalyzer {
 
         let _return = this.ResolveType(function->_return);
         if _return == null { return null; }
-        let declaration = this.builder.BuildFunctionDeclaration(function->name, parameters, _return, this.type_manager.Function(parameter_types, _return), function->no_mangle, this.abi);
+        let declaration = this.builder.BuildFunctionDeclaration(function->name, parameters, _return, this.context.FunctionType(parameter_types, _return), function->no_mangle, this.abi);
 
         if generic != null {
             generic->Set(declaration);
@@ -429,7 +427,7 @@ class SemanticAnalyzer {
             return Pair<*mut HIRClassDeclaration, *mut Scope>(null, null);
         }
 
-        let _type = this.type_manager.Class(_class->name);
+        let _type = this.context.ClassType(_class->name);
         let declaration = this.builder.BuildClassDeclaration(_class->name, _type);
 
         if generic != null {
@@ -528,7 +526,7 @@ class SemanticAnalyzer {
             return Pair<*mut HIRStructureDeclaration, *mut Scope>(null, null);
         }
 
-        let _type = this.type_manager.Structure(structure->name);
+        let _type = this.context.StructureType(structure->name);
         let declaration = this.builder.BuildStructureDeclaration(structure->name, _type);
 
         if generic != null {
@@ -603,7 +601,7 @@ class SemanticAnalyzer {
             return;
         }
 
-        let _type = this.type_manager.Enumeration(enumeration->name, underlying_type);
+        let _type = this.context.EnumerationType(enumeration->name, underlying_type);
         let declaration = this.builder.BuildEnumerationDeclaration(enumeration->name, _type);
         let mut value: *HIRExpression = this.builder.IntegerLiteral(0, _type) as *HIRLiteral;
         this.scope_manager.current->Set(enumeration->name, _type, enumeration as *ASTDeclaration);
@@ -814,7 +812,7 @@ class SemanticAnalyzer {
             if start == null || end == null { return; }
         }
 
-        if start->_type != end->_type {
+        if *start->_type != *end->_type {
             Logger::Log("Start and end expressions of a for loop must have the same type.", _for as *ASTStatement, LogSeverity::Error);
             return;
         }
@@ -848,13 +846,13 @@ class SemanticAnalyzer {
             }
 
             let kind = inclusive ? HIRBinaryKind::LessEqual : HIRBinaryKind::Less;
-            condition = this.builder.Binary(kind, iterator_ref, end, this.type_manager.Boolean());
+            condition = this.builder.Binary(kind, iterator_ref, end, this.context.BooleanType());
             let next = this.builder.Binary(HIRBinaryKind::Add, iterator_ref, one, iterator_type);
             step = this.builder.Assignment(iterator_ref, next);
             variable = this.builder.BuildVariableStatement(_for->variable, iterator_type, iterator_ref, false);
         } else if iterator_type->IsPointer() {
-            condition = this.builder.Binary(HIRBinaryKind::NotEqual, iterator_ref, end, this.type_manager.Boolean());
-            let one: *HIRExpression = this.builder.IntegerLiteral(1, this.type_manager.IntegerPointer(false)) as *HIRLiteral;
+            condition = this.builder.Binary(HIRBinaryKind::NotEqual, iterator_ref, end, this.context.BooleanType());
+            let one: *HIRExpression = this.builder.IntegerLiteral(1, this.context.IntegerPointerType(false)) as *HIRLiteral;
             let step_value = this.builder.Binary(HIRBinaryKind::Add, iterator_ref, one, iterator_type);
             step = this.builder.Assignment(iterator_ref, step_value);
             let value = this.builder.Dereference(iterator_ref);
@@ -869,7 +867,7 @@ class SemanticAnalyzer {
 
             values = Vector<*HIRExpression>();
             values.PushBack(iterator_ref);
-            values.PushBack(this.builder.IntegerLiteral(1, this.type_manager.IntegerPointer(false)) as *HIRLiteral);
+            values.PushBack(this.builder.IntegerLiteral(1, this.context.IntegerPointerType(false)) as *HIRLiteral);
             let step_candidates = iterator_type->GetCandidates("operator+=".ToString(), _for as *ASTStatement, false);
             step = this.AnalyzeResolvedCallExpression(step_candidates, values, _for as *ASTStatement);
             if step == null { return; }
@@ -1082,7 +1080,7 @@ class SemanticAnalyzer {
         if right == null { return null; }
 
         if left->_type->IsPointer() && (assignment->kind == ASTAssignmentKind::AddAssign || assignment->kind == ASTAssignmentKind::SubtractAssign) {
-            right = this.Coerce(right, this.type_manager.IntegerPointer(false));
+            right = this.Coerce(right, this.context.IntegerPointerType(false));
         } else {
             right = this.Coerce(right, left->_type);
         }
@@ -1132,9 +1130,9 @@ class SemanticAnalyzer {
             let literal = expression as *ASTLiteral;
 
             if literal->kind == ASTLiteralKind::Integer && (literal as *ASTIntegerLiteral)->suffix.Empty() {
-                return this.type_manager.IntegerLiteral();
+                return this.context.IntegerLiteralType();
             } else if literal->kind == ASTLiteralKind::Float && (literal as *ASTFloatLiteral)->suffix.Empty() {
-                return this.type_manager.FloatLiteral();
+                return this.context.FloatLiteralType();
             } else {
                 return null;
             }
@@ -1248,24 +1246,24 @@ class SemanticAnalyzer {
 
     fn AnalyzeLiteral(&mut this, literal: *ASTLiteral) -> *HIRExpression {
         if literal->kind == ASTLiteralKind::Boolean {
-            return this.builder.BooleanLiteral((literal as *ASTBooleanLiteral)->value, this.type_manager.Boolean()) as *HIRLiteral;
+            return this.builder.BooleanLiteral((literal as *ASTBooleanLiteral)->value, this.context.BooleanType()) as *HIRLiteral;
         } else if literal->kind == ASTLiteralKind::Character {
-            return this.builder.CharacterLiteral((literal as *ASTCharacterLiteral)->value, this.type_manager.Integer(8, true)) as *HIRLiteral;
+            return this.builder.CharacterLiteral((literal as *ASTCharacterLiteral)->value, this.context.IntegerType(8, true)) as *HIRLiteral;
         } else if literal->kind == ASTLiteralKind::Integer {
             let integer = literal as *ASTIntegerLiteral;
-            let mut _type = this.type_manager.IntegerLiteral();
+            let mut _type = this.context.IntegerLiteralType();
 
             if !integer->suffix.Empty() {
                 let signed = integer->suffix.StartsWith("i");
                 let suffix = integer->suffix.SubString(1);
 
                 if suffix == "size" {
-                    _type = this.type_manager.IntegerPointer(signed);
+                    _type = this.context.IntegerPointerType(signed);
                 } else {
                     let width = suffix.ToInteger() as u32;
 
                     if width == 128 || width == 64 || width == 32 || width == 16 || width == 8 {
-                        _type = this.type_manager.Integer(width, signed);
+                        _type = this.context.IntegerType(width, signed);
                     } else {
                         Logger::Log("Invalid integer suffix '" + integer->suffix +  "'.", literal as *ASTExpression, LogSeverity::Error);
                         return null;
@@ -1276,13 +1274,13 @@ class SemanticAnalyzer {
             return this.builder.IntegerLiteral(integer->value, _type) as *HIRLiteral;
         } else if literal->kind == ASTLiteralKind::Float {
             let float = literal as *ASTFloatLiteral;
-            let mut _type = this.type_manager.FloatLiteral();
+            let mut _type = this.context.FloatLiteralType();
 
             if !float->suffix.Empty() {
                 let width = float->suffix.SubString(1).ToInteger() as u32;
 
                 if width == 64 || width == 32 {
-                    _type = this.type_manager.Float(width);
+                    _type = this.context.FloatType(width);
                 } else {
                     Logger::Log("Invalid float suffix '" + float->suffix +  "'.", literal as *ASTExpression, LogSeverity::Error);
                     return null;
@@ -1291,7 +1289,7 @@ class SemanticAnalyzer {
 
             return this.builder.FloatLiteral(float->value, _type) as *HIRLiteral;
         } else if literal->kind == ASTLiteralKind::String {
-            return this.builder.StringLiteral((literal as *ASTStringLiteral)->value, this.type_manager.Pointer(this.type_manager.Integer(8, true), false)) as *HIRLiteral;
+            return this.builder.StringLiteral((literal as *ASTStringLiteral)->value, this.context.PointerType(this.context.IntegerType(8, true), false)) as *HIRLiteral;
         } else if literal->kind == ASTLiteralKind::Array {
             let mut elements = Vector<*HIRExpression>();
             let mut _type: *SemanticType = null;
@@ -1309,7 +1307,7 @@ class SemanticAnalyzer {
                 }
             }
 
-            return this.builder.ArrayLiteral(elements, this.type_manager.Array(_type, elements.Size())) as *HIRLiteral;
+            return this.builder.ArrayLiteral(elements, this.context.ArrayType(_type, elements.Size())) as *HIRLiteral;
         } else if literal->kind == ASTLiteralKind::Structure {
             let structure = literal as *ASTStructureLiteral;
 
@@ -1350,7 +1348,7 @@ class SemanticAnalyzer {
 
             return this.builder.StructureLiteral(values, _type) as *HIRLiteral;
         } else if literal->kind == ASTLiteralKind::Null {
-            return this.builder.NullLiteral(this.type_manager.NullPointer()) as *HIRLiteral;
+            return this.builder.NullLiteral(this.context.NullPointerType()) as *HIRLiteral;
         } else {
             Logger::Log("Unknown literal type '" + literal->kind.ToString() + "'.", literal as *ASTExpression, LogSeverity::Error);
             return null;
@@ -1469,7 +1467,7 @@ class SemanticAnalyzer {
                 for symbol in this.scope_manager.Resolve(path, true) {
                     if symbol->kind == SymbolKind::Type && symbol->_type->IsClass() {
                         let (_class, arguments) = (symbol->_type, Vector<*HIRExpression>(values));
-                        values.Insert(0, this.builder.NullLiteral(this.type_manager.NullPointer()) as *HIRLiteral);
+                        values.Insert(0, this.builder.NullLiteral(this.context.NullPointerType()) as *HIRLiteral);
                         let candidates = _class->GetCandidates(_class->name, call as *ASTExpression, false);
                         if candidates.Empty() { return null; }
                         let function = this.ResolveOverload(candidates, values, call as *ASTExpression, false);
@@ -1590,7 +1588,7 @@ class SemanticAnalyzer {
         if _type == null { return null; }
 
         if _new->size != null {
-            let size = this.Coerce(this.AnalyzeExpression(_new->size), this.type_manager.IntegerPointer(false));
+            let size = this.Coerce(this.AnalyzeExpression(_new->size), this.context.IntegerPointerType(false));
             if size == null { return null; }
 
             if !size->_type->IsIntegerPointer() || size->_type->IsSigned() {
@@ -1600,7 +1598,7 @@ class SemanticAnalyzer {
 
             if _type->HasFields() {
                 let mut values = Vector<*HIRExpression>();
-                values.PushBack(this.builder.NullLiteral(this.type_manager.NullPointer()) as *HIRLiteral);
+                values.PushBack(this.builder.NullLiteral(this.context.NullPointerType()) as *HIRLiteral);
                 let candidates = _type->GetCandidates(_type->name, _new as *ASTExpression, false);
                 if candidates.Empty() { return null; }
                 let function = this.ResolveOverload(candidates, values, _new as *ASTExpression, false);
@@ -1621,7 +1619,7 @@ class SemanticAnalyzer {
 
             if _type->HasFields() {
                 let arguments = Vector<*HIRExpression>(values);
-                values.Insert(0, this.builder.NullLiteral(this.type_manager.NullPointer()) as *HIRLiteral);
+                values.Insert(0, this.builder.NullLiteral(this.context.NullPointerType()) as *HIRLiteral);
                 let candidates = _type->GetCandidates(_type->name, _new as *ASTExpression, false);
                 if candidates.Empty() { return null; }
                 let function = this.ResolveOverload(candidates, values, _new as *ASTExpression, false);
@@ -1666,7 +1664,7 @@ class SemanticAnalyzer {
         if pointer->_type->Pointee().HasFields() {
             let _class = pointer->_type->Pointee();
             let mut values = Vector<*HIRExpression>();
-            values.PushBack(this.builder.NullLiteral(this.type_manager.NullPointer()) as *HIRLiteral);
+            values.PushBack(this.builder.NullLiteral(this.context.NullPointerType()) as *HIRLiteral);
             let candidates = _class->GetCandidates('~' + _class->name, _delete as *ASTExpression, false);
             if candidates.Empty() { return null; }
             let function = this.ResolveOverload(candidates, values, _delete as *ASTExpression, false);
@@ -1684,9 +1682,9 @@ class SemanticAnalyzer {
         if _type == null {
             return false;
         } else if _type->IsInteger() {
-            return target->IsInteger() && !target->IsSame(this.type_manager.Integer(32, true));
+            return target->IsInteger() && !target->IsSame(this.context.IntegerType(32, true));
         } else if _type->IsFloat() {
-            return target->IsFloat() && !target->IsSame(this.type_manager.Float(64));
+            return target->IsFloat() && !target->IsSame(this.context.FloatType(64));
         } else {
             return false;
         }
@@ -1807,7 +1805,7 @@ class SemanticAnalyzer {
             return null;
         }
 
-        let index = this.Coerce(this.ImplicitDereference(this.AnalyzeExpression(index_access->index)), this.type_manager.IntegerPointer(false));
+        let index = this.Coerce(this.ImplicitDereference(this.AnalyzeExpression(index_access->index)), this.context.IntegerPointerType(false));
 
         if index == null {
             return null;
@@ -2078,7 +2076,7 @@ class SemanticAnalyzer {
                     return null;
                 }
 
-                return this.builder.Binary(this.AnalyzeBinaryKind(kind), left, right, this.type_manager.Boolean());
+                return this.builder.Binary(this.AnalyzeBinaryKind(kind), left, right, this.context.BooleanType());
             } else {
                 Logger::Log("Incompatible binary operation types. ('" + left->_type->ToString() + "' != '" + right->_type->ToString() + "').", node, LogSeverity::Error);
                 return null;
@@ -2086,16 +2084,16 @@ class SemanticAnalyzer {
         }
 
         if left->_type->IsPointer() && right->_type->IsInteger() && right->_type->IsLiteral() {
-            right = this.Coerce(right, this.type_manager.IntegerPointer(false));
+            right = this.Coerce(right, this.context.IntegerPointerType(false));
         } else if right->_type->IsPointer() && left->_type->IsInteger() && left->_type->IsLiteral() {
-            left = this.Coerce(left, this.type_manager.IntegerPointer(false));
+            left = this.Coerce(left, this.context.IntegerPointerType(false));
         } else {
             (left, right) = (this.Coerce(left, right->_type), this.Coerce(right, left->_type));
         }
 
         if left->_type->IsBoolean() && right->_type->IsBoolean() {
             if kind == ASTBinaryKind::Equal || kind == ASTBinaryKind::NotEqual {
-                return this.builder.Binary(this.AnalyzeBinaryKind(kind), left, right, this.type_manager.Boolean());
+                return this.builder.Binary(this.AnalyzeBinaryKind(kind), left, right, this.context.BooleanType());
             } else if kind == ASTBinaryKind::LogicalAnd || kind == ASTBinaryKind::BitwiseAnd || kind == ASTBinaryKind::LogicalOr || kind == ASTBinaryKind::BitwiseOr || kind == ASTBinaryKind::BitwiseXor {
                 return this.builder.Binary(this.AnalyzeBinaryKind(kind), left, right, left->_type);
             } else {
@@ -2104,7 +2102,7 @@ class SemanticAnalyzer {
             }
         } else if left->_type->IsCharacter() && right->_type->IsCharacter() {
             if kind == ASTBinaryKind::Equal || kind == ASTBinaryKind::NotEqual || kind == ASTBinaryKind::Greater || kind == ASTBinaryKind::GreaterEqual || kind == ASTBinaryKind::Less || kind == ASTBinaryKind::LessEqual {
-                return this.builder.Binary(this.AnalyzeBinaryKind(kind), left, right, this.type_manager.Boolean());
+                return this.builder.Binary(this.AnalyzeBinaryKind(kind), left, right, this.context.BooleanType());
             } else {
                 Logger::Log("Invalid binary operation '" + kind.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
                 return null;
@@ -2118,7 +2116,7 @@ class SemanticAnalyzer {
             if kind == ASTBinaryKind::Add || kind == ASTBinaryKind::Subtract || kind == ASTBinaryKind::Multiply || kind == ASTBinaryKind::Divide || kind == ASTBinaryKind::Modulo {
                 return this.builder.Binary(this.AnalyzeBinaryKind(kind), left, right, left->_type);
             } else if kind == ASTBinaryKind::Equal || kind == ASTBinaryKind::NotEqual || kind == ASTBinaryKind::Greater || kind == ASTBinaryKind::GreaterEqual || kind == ASTBinaryKind::Less || kind == ASTBinaryKind::LessEqual {
-                return this.builder.Binary(this.AnalyzeBinaryKind(kind), left, right, this.type_manager.Boolean());
+                return this.builder.Binary(this.AnalyzeBinaryKind(kind), left, right, this.context.BooleanType());
             } else if kind == ASTBinaryKind::BitwiseAnd || kind == ASTBinaryKind::BitwiseOr || kind == ASTBinaryKind::BitwiseXor || kind == ASTBinaryKind::LeftShift || kind == ASTBinaryKind::RightShift {
                 return this.builder.Binary(this.AnalyzeBinaryKind(kind), left, right, left->_type);
             } else {
@@ -2134,7 +2132,7 @@ class SemanticAnalyzer {
             if kind == ASTBinaryKind::Add || kind == ASTBinaryKind::Subtract || kind == ASTBinaryKind::Multiply || kind == ASTBinaryKind::Divide || kind == ASTBinaryKind::Modulo {
                 return this.builder.Binary(this.AnalyzeBinaryKind(kind), left, right, left->_type);
             } else if kind == ASTBinaryKind::Equal || kind == ASTBinaryKind::NotEqual || kind == ASTBinaryKind::Greater || kind == ASTBinaryKind::GreaterEqual || kind == ASTBinaryKind::Less || kind == ASTBinaryKind::LessEqual {
-                return this.builder.Binary(this.AnalyzeBinaryKind(kind), left, right, this.type_manager.Boolean());
+                return this.builder.Binary(this.AnalyzeBinaryKind(kind), left, right, this.context.BooleanType());
             } else {
                 Logger::Log("Invalid binary operation '" + kind.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
                 return null;
@@ -2146,9 +2144,9 @@ class SemanticAnalyzer {
             }
 
             if kind == ASTBinaryKind::Subtract {
-                return this.builder.Binary(this.AnalyzeBinaryKind(kind), left, right, this.type_manager.IntegerPointer(false));
+                return this.builder.Binary(this.AnalyzeBinaryKind(kind), left, right, this.context.IntegerPointerType(false));
             } else if kind == ASTBinaryKind::Equal || kind == ASTBinaryKind::NotEqual || kind == ASTBinaryKind::Greater || kind == ASTBinaryKind::GreaterEqual || kind == ASTBinaryKind::Less || kind == ASTBinaryKind::LessEqual {
-                return this.builder.Binary(this.AnalyzeBinaryKind(kind), left, right, this.type_manager.Boolean());
+                return this.builder.Binary(this.AnalyzeBinaryKind(kind), left, right, this.context.BooleanType());
             } else {
                 Logger::Log("Invalid pointer binary operation '" + kind.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
                 return null;
@@ -2184,7 +2182,7 @@ class SemanticAnalyzer {
             if kind == ASTBinaryKind::BitwiseAnd || kind == ASTBinaryKind::BitwiseOr || kind == ASTBinaryKind::BitwiseXor {
                 return this.builder.Binary(this.AnalyzeBinaryKind(kind), left, right, left->_type);
             } else if kind == ASTBinaryKind::Equal || kind == ASTBinaryKind::NotEqual || kind == ASTBinaryKind::Greater || kind == ASTBinaryKind::GreaterEqual || kind == ASTBinaryKind::Less || kind == ASTBinaryKind::LessEqual {
-                return this.builder.Binary(this.AnalyzeBinaryKind(kind), left, right, this.type_manager.Boolean());
+                return this.builder.Binary(this.AnalyzeBinaryKind(kind), left, right, this.context.BooleanType());
             } else {
                 Logger::Log("Invalid binary operation '" + kind.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
                 return null;
@@ -2219,24 +2217,24 @@ class SemanticAnalyzer {
 
     pub fn ResolveType(&mut this, path: *ASTPath) -> *SemanticType {
         if path == null {
-            return this.type_manager.Void();
+            return this.context.VoidType();
         }
 
         if !path->absolute && path->segments.Size() == 1 && path->segments[0].types.Empty() {
             let name = path->segments[0].name;
 
             if name == "void" {
-                return this.type_manager.Void();
+                return this.context.VoidType();
             } else if name == "bool" {
-                return this.type_manager.Boolean();
+                return this.context.BooleanType();
             } else if name == "char" {
-                return this.type_manager.Character();
+                return this.context.CharacterType();
             } else if name.StartsWith('i') || name.StartsWith('u') {
                 let specifier = name.SubString(1);
                 let signed = name[0] != 'u';
 
                 if specifier == "size" {
-                    return this.type_manager.IntegerPointer(signed);
+                    return this.context.IntegerPointerType(signed);
                 } else {
                     let width = specifier.ToUnsignedInteger() as u32;
 
@@ -2245,7 +2243,7 @@ class SemanticAnalyzer {
                         return null;
                     }
 
-                    return this.type_manager.Integer(width, signed);
+                    return this.context.IntegerType(width, signed);
                 }
             } else if name.StartsWith('f') {
                 let width = name.SubString(1).ToUnsignedInteger() as u32;
@@ -2255,7 +2253,7 @@ class SemanticAnalyzer {
                     return null;
                 }
 
-                return this.type_manager.Float(width);
+                return this.context.FloatType(width);
             }
         }
 
@@ -2280,7 +2278,7 @@ class SemanticAnalyzer {
 
     pub fn ResolveType(&mut this, _type: *ASTType) -> *SemanticType {
         if _type == null {
-            return this.type_manager.Void();
+            return this.context.VoidType();
         }
 
         if _type->kind == ASTTypeKind::Path {
@@ -2289,17 +2287,17 @@ class SemanticAnalyzer {
             let pointer = _type as *ASTPointerType;
             let pointee = this.ResolveType(pointer->pointee);
             if pointee == null { return null; }
-            return this.type_manager.Pointer(pointee, pointer->mutable);
+            return this.context.PointerType(pointee, pointer->mutable);
         } else if _type->kind == ASTTypeKind::Reference {
             let reference = _type as *ASTReferenceType;
             let pointee = this.ResolveType(reference->pointee);
             if pointee == null { return null; }
-            return this.type_manager.Reference(pointee, reference->mutable);
+            return this.context.ReferenceType(pointee, reference->mutable);
         } else if _type->kind == ASTTypeKind::Array {
             let array = _type as *ASTArrayType;
             let element = this.ResolveType(array->element);
             if element == null { return null; }
-            return this.type_manager.Pointer(element, true);
+            return this.context.PointerType(element, true);
         } else if _type->kind == ASTTypeKind::Function {
             let function = _type as *ASTFunctionType;
             let mut parameters = Vector<*SemanticType>();
@@ -2312,7 +2310,7 @@ class SemanticAnalyzer {
 
             let _return = this.ResolveType(function->_return);
             if _return == null { return null; }
-            return this.type_manager.Function(parameters, _return);
+            return this.context.FunctionType(parameters, _return);
         } else {
             Logger::Log("Unknown type '" + _type->kind.ToString() + "'.", _type, LogSeverity::Error);
             return null;

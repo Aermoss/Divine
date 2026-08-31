@@ -15,21 +15,21 @@
  */
 
 #[include "std/str", "std/vec", "std/map", "std/pair", "std/arena",
-    "src/ScopeManager.zir", "src/Scope.zir", "src/Symbol.zir", "src/Generic.zir", "src/Types.zir",
+    "src/ScopeManager.zir", "src/Scope.zir", "src/Symbol.zir", "src/Generic.zir",
         "src/Tokens.zir", "src/AST.zir", "src/HIR.zir", "src/Logger.zir" : *]
 
 class SemanticForward {
-    pub _class: *SemanticType,
+    pub _class: *HIRType,
     pub generic: *Generic = null,
-    pub types: Vector<*SemanticType>,
+    pub types: Vector<*HIRType>,
     pub node: *ASTFunctionDeclaration,
     pub function: *mut HIRFunctionDeclaration;
 
-    SemanticForward(&mut this, _class: *SemanticType, node: *ASTFunctionDeclaration, function: *mut HIRFunctionDeclaration) {
+    SemanticForward(&mut this, _class: *HIRType, node: *ASTFunctionDeclaration, function: *mut HIRFunctionDeclaration) {
         (this._class, this.node, this.function) = (_class, node, function);
     }
 
-    SemanticForward(&mut this, _class: *SemanticType, generic: *Generic, types: &Vector<*SemanticType>, node: *ASTFunctionDeclaration, function: *mut HIRFunctionDeclaration) {
+    SemanticForward(&mut this, _class: *HIRType, generic: *Generic, types: &Vector<*HIRType>, node: *ASTFunctionDeclaration, function: *mut HIRFunctionDeclaration) {
         (this._class, this.generic, this.types, this.node, this.function) = (_class, generic, types, node, function);
     }
 }
@@ -52,7 +52,7 @@ class SemanticAnalyzer {
 
     pub generics: Vector<*Generic>,
     pub current_generic: *mut Generic = null,
-    pub current_class: *SemanticType = null;
+    pub current_class: *HIRType = null;
 
     SemanticAnalyzer(&mut this) {
         if analyzer != null {
@@ -245,7 +245,7 @@ class SemanticAnalyzer {
         } return true;
     }
 
-    pub fn Coerce(&mut this, _expression: *HIRExpression, target: *SemanticType) -> *HIRExpression {
+    pub fn Coerce(&mut this, _expression: *HIRExpression, target: *HIRType) -> *HIRExpression {
         unsafe {
             let expression = _expression as *mut HIRExpression;
         }
@@ -311,11 +311,11 @@ class SemanticAnalyzer {
         } return expression;
     }
 
-    fn MakeCompatible(&mut this, expression: *HIRExpression, target: *SemanticType) -> *HIRExpression {
+    fn MakeCompatible(&mut this, expression: *HIRExpression, target: *HIRType) -> *HIRExpression {
         if target->IsPointer() && expression->_type->IsPointer() {
             if target->Pointee().IsClass() && expression->_type->Pointee().IsClass() {
                 for field in expression->_type->Pointee().Fields() {
-                    if field.left == target->Pointee().name {
+                    if (field as *HIRDeclaration)->name == target->Pointee().name {
                         return this.builder.Cast(expression, target);
                     }
                 }
@@ -374,7 +374,7 @@ class SemanticAnalyzer {
             return null;
         }
 
-        let mut parameter_types = Vector<*SemanticType>();
+        let mut parameter_types = Vector<*HIRType>();
         let mut parameters = Vector<*HIRParameterDeclaration>();
 
         if function->instance_kind != ASTInstanceKind::None {
@@ -402,7 +402,7 @@ class SemanticAnalyzer {
 
         let _return = this.ResolveType(function->_return);
         if _return == null { return null; }
-        let declaration = this.builder.BuildFunctionDeclaration(function->name, parameters, _return, this.context.FunctionType(parameter_types, _return), function->no_mangle, this.abi);
+        let declaration = this.builder.BuildFunctionDeclaration(function->name, parameters, _return, this.context.FunctionType(parameter_types, _return), function->no_mangle, function->public, this.abi);
 
         if generic != null {
             generic->Set(declaration);
@@ -427,8 +427,9 @@ class SemanticAnalyzer {
             return Pair<*mut HIRClassDeclaration, *mut Scope>(null, null);
         }
 
-        let _type = this.context.ClassType(_class->name);
+        let _type = this.context.ClassType(null);
         let declaration = this.builder.BuildClassDeclaration(_class->name, _type);
+        _type->declaration = declaration;
 
         if generic != null {
             this.scope_manager.PushScope(generic->current, true);
@@ -445,7 +446,7 @@ class SemanticAnalyzer {
 
     fn AnalyzeClassDeclarationSecondPass(&mut this, declaration: *mut HIRClassDeclaration, _class: *ASTClassDeclaration, scope: *mut Scope) {
         unsafe {
-            let _type = (declaration as *HIRDeclaration)->_type as *mut SemanticType;
+            let _type = (declaration as *HIRDeclaration)->_type as *mut HIRType;
         }
 
         let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
@@ -455,7 +456,6 @@ class SemanticAnalyzer {
             let parent_type = this.ResolveType(_class->parents[i]);
             if parent_type == null { continue; }
             declaration->fields.PushBack(this.builder.BuildFieldDeclaration(parent_type->name, parent_type, null, false));
-            _type->fields[parent_type->name] = Field(i, parent_type, null, false);
         }
 
         for i in 0.._class->fields.Size() {
@@ -463,7 +463,6 @@ class SemanticAnalyzer {
             let field_type = this.ResolveType(field->_type);
             if field_type == null { continue; }
             declaration->fields.PushBack(this.builder.BuildFieldDeclaration(field->name, field_type, field->initializer, field->public));
-            _type->fields[field->name] = Field(i, field_type, field->initializer, field->public);
         }
 
         (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
@@ -471,7 +470,7 @@ class SemanticAnalyzer {
 
     fn AnalyzeClassDeclarationThirdPass(&mut this, declaration: *mut HIRClassDeclaration, _class: *ASTClassDeclaration, scope: *mut Scope) {
         unsafe {
-            let _type = (declaration as *HIRDeclaration)->_type as *mut SemanticType;
+            let _type = (declaration as *HIRDeclaration)->_type as *mut HIRType;
         }
 
         let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
@@ -481,7 +480,6 @@ class SemanticAnalyzer {
             let function = this.AnalyzeFunctionDeclaration(constructor, null);
 
             if function != null {
-                _type->methods.PushBack(Method(constructor->name, function, false, true));
                 declaration->constructors.PushBack(function);
             }
         }
@@ -490,7 +488,6 @@ class SemanticAnalyzer {
             let function = this.AnalyzeFunctionDeclaration(_class->destructor, null);
 
             if function != null {
-                _type->methods.PushBack(Method(_class->destructor->name, function, false, true));
                 declaration->destructor = function;
             }
         }
@@ -501,7 +498,6 @@ class SemanticAnalyzer {
             if function == null { continue; }
 
             if !method->generic {
-                _type->methods.PushBack(Method(method->name, function, _static, method->public));
                 declaration->methods.PushBack(function);
             }
         }
@@ -526,8 +522,9 @@ class SemanticAnalyzer {
             return Pair<*mut HIRStructureDeclaration, *mut Scope>(null, null);
         }
 
-        let _type = this.context.StructureType(structure->name);
+        let _type = this.context.StructureType(null);
         let declaration = this.builder.BuildStructureDeclaration(structure->name, _type);
+        _type->declaration = declaration;
 
         if generic != null {
             this.scope_manager.PushScope(generic->current, true);
@@ -544,7 +541,7 @@ class SemanticAnalyzer {
 
     fn AnalyzeStructureDeclarationSecondPass(&mut this, declaration: *mut HIRStructureDeclaration, structure: *ASTStructureDeclaration, scope: *mut Scope) {
         unsafe {
-            let _type = (declaration as *HIRDeclaration)->_type as *mut SemanticType;
+            let _type = (declaration as *HIRDeclaration)->_type as *mut HIRType;
         }
 
         let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
@@ -555,7 +552,6 @@ class SemanticAnalyzer {
             let field_type = this.ResolveType(field->_type);
             if field_type == null { continue; }
             declaration->fields.PushBack(this.builder.BuildFieldDeclaration(field->name, field_type, field->initializer, field->public));
-            _type->fields[field->name] = Field(i, field_type, field->initializer, field->public);
         }
 
         (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
@@ -563,7 +559,7 @@ class SemanticAnalyzer {
 
     fn AnalyzeStructureDeclarationThirdPass(&mut this, declaration: *mut HIRStructureDeclaration, structure: *ASTStructureDeclaration, scope: *mut Scope) {
         unsafe {
-            let _type = (declaration as *HIRDeclaration)->_type as *mut SemanticType;
+            let _type = (declaration as *HIRDeclaration)->_type as *mut HIRType;
         }
 
         let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
@@ -575,7 +571,6 @@ class SemanticAnalyzer {
             if function == null { continue; }
 
             if !method->generic {
-                _type->methods.PushBack(Method(method->name, function, _static, method->public));
                 declaration->methods.PushBack(function);
             }
         }
@@ -601,8 +596,10 @@ class SemanticAnalyzer {
             return;
         }
 
-        let _type = this.context.EnumerationType(enumeration->name, underlying_type);
+        let _type = this.context.EnumerationType(null, underlying_type as *HIRIntegerType);
         let declaration = this.builder.BuildEnumerationDeclaration(enumeration->name, _type);
+        _type->declaration = declaration;
+
         let mut value: *HIRExpression = this.builder.IntegerLiteral(0, _type) as *HIRLiteral;
         this.scope_manager.current->Set(enumeration->name, _type, enumeration as *ASTDeclaration);
         this.scope_manager.PushScope(enumeration->name, true);
@@ -991,7 +988,7 @@ class SemanticAnalyzer {
 
     fn AnalyzeVariableStatement(&mut this, variable: *ASTVariableStatement) {
         let mut initializer: *HIRExpression = null;
-        let mut _type: *SemanticType = null;
+        let mut _type: *HIRType = null;
 
         if variable->_type != null {
             _type = this.ResolveType(variable->_type);
@@ -1125,7 +1122,7 @@ class SemanticAnalyzer {
         return this.builder.Assignment(left, right);
     }
 
-    fn IsDeferrableExpression(&mut this, expression: *ASTExpression) -> *SemanticType {
+    fn IsDeferrableExpression(&mut this, expression: *ASTExpression) -> *HIRType {
         if expression->kind == ASTExpressionKind::Literal {
             let literal = expression as *ASTLiteral;
 
@@ -1190,7 +1187,7 @@ class SemanticAnalyzer {
         return this.AnalyzeExpression(expression, null);
     }
 
-    pub fn AnalyzeExpression(&mut this, expression: *ASTExpression, target: *SemanticType) -> *HIRExpression {
+    pub fn AnalyzeExpression(&mut this, expression: *ASTExpression, target: *HIRType) -> *HIRExpression {
         if expression->kind == ASTExpressionKind::Literal {
             return this.AnalyzeLiteral(expression as *ASTLiteral);
         } else if expression->kind == ASTExpressionKind::Path {
@@ -1292,7 +1289,7 @@ class SemanticAnalyzer {
             return this.builder.StringLiteral((literal as *ASTStringLiteral)->value, this.context.PointerType(this.context.IntegerType(8, true), false)) as *HIRLiteral;
         } else if literal->kind == ASTLiteralKind::Array {
             let mut elements = Vector<*HIRExpression>();
-            let mut _type: *SemanticType = null;
+            let mut _type: *HIRType = null;
 
             for element in (literal as *ASTArrayLiteral)->elements {
                 let value = this.AnalyzeExpression(element);
@@ -1334,14 +1331,15 @@ class SemanticAnalyzer {
             }
 
             for field in structure->fields {
-                let index = fields.Index(field.left);
+                let index = _type->Index(field.left);
 
                 if index == -1 {
                     Logger::Log("Unknown field '" + field.left + "' for structure '" + _type->name + "'.", literal as *ASTExpression, LogSeverity::Error);
                     return null;
                 }
 
-                let value = this.Coerce(this.AnalyzeExpression(field.right), fields[index as usize].right._type);
+                let field: *HIRFieldDeclaration = fields[index as usize];
+                let value = this.Coerce(this.AnalyzeExpression(field.right), (field as *HIRDeclaration)->_type);
                 if value == null { return null; }
                 values[index as usize] = value;
             }
@@ -1365,7 +1363,7 @@ class SemanticAnalyzer {
                     return null;
                 }
 
-                let mut _type: *SemanticType;
+                let mut _type: *HIRType;
                 let argument: *ASTExpression = call->arguments[0];
 
                 if argument->kind == ASTExpressionKind::Path {
@@ -1444,14 +1442,14 @@ class SemanticAnalyzer {
                 let index = instance->_type->HasFields() ? instance->_type->Index(member_access->member) : -1;
 
                 if index != -1 {
-                    let field = instance->_type->Fields()[member_access->member];
+                    let field: *HIRFieldDeclaration = instance->_type->Fields()[member_access->member];
 
-                    if !field.public && (this.current_class != null && *this.current_class != *instance->_type) {
+                    if !field->public && (this.current_class != null && *this.current_class != *instance->_type) {
                         Logger::Log("Field '" + member_access->member + "' is private.", call as *ASTExpression, LogSeverity::Error);
                         return null;
                     }
 
-                    let target = this.builder.MemberAccess(instance, field._type, index as usize);
+                    let target = this.builder.MemberAccess(instance, (field as *HIRDeclaration)->_type, index as usize);
                     return this.AnalyzeResolvedCallExpression(target, values, call as *ASTExpression);
                 } else {
                     values.Insert(0, this.ImplicitAddressOf(instance));
@@ -1552,7 +1550,7 @@ class SemanticAnalyzer {
         let param_types = function->_type->Parameters();
 
         for i in 0..param_types.Size() {
-            let param_type: *SemanticType = param_types[i];
+            let param_type: *HIRType = param_types[i];
             let mut value = this.Coerce(values[i], param_type);
 
             if param_type->IsReference() && param_type->Pointee().IsCompatible(value->_type) {
@@ -1676,7 +1674,7 @@ class SemanticAnalyzer {
         }
     }
 
-    fn LiteralNeedsExplicitType(&mut this, expression: *ASTExpression, target: *SemanticType) -> bool {
+    fn LiteralNeedsExplicitType(&mut this, expression: *ASTExpression, target: *HIRType) -> bool {
         let _type = this.IsDeferrableExpression(expression);
 
         if _type == null {
@@ -1704,7 +1702,7 @@ class SemanticAnalyzer {
         return this.AnalyzeResolvedCastExpression(value, target, cast as *ASTExpression);
     }
 
-    fn AnalyzeResolvedCastExpression(&mut this, mut value: *HIRExpression, target: *SemanticType, node: *ASTNode) -> *HIRExpression {
+    fn AnalyzeResolvedCastExpression(&mut this, mut value: *HIRExpression, target: *HIRType, node: *ASTNode) -> *HIRExpression {
         if !target->IsPointer() {
             value = this.ImplicitDereference(value);
         }
@@ -1770,7 +1768,7 @@ class SemanticAnalyzer {
                 let mut related = false;
 
                 for field in value->_type->Pointee().Fields() {
-                    if field.left == target->Pointee().name {
+                    if (field as *HIRDeclaration)->name == target->Pointee().name {
                         related = true;
                         break;
                     }
@@ -1778,7 +1776,7 @@ class SemanticAnalyzer {
 
                 if !related {
                     for field in target->Pointee().Fields() {
-                        if field.left == value->_type->Pointee().name {
+                        if (field as *HIRDeclaration)->name == value->_type->Pointee().name {
                             related = true;
                             break;
                         }
@@ -1867,21 +1865,21 @@ class SemanticAnalyzer {
         let index = instance->_type->Index(member_access->member);
 
         if index != -1 {
-            let field = instance->_type->Fields()[index as usize].right;
+            let field: *HIRFieldDeclaration = instance->_type->Fields()[index as usize];
 
-            if !field.public && (this.current_class != null && *this.current_class != *instance->_type) {
+            if !field->public && (this.current_class != null && *this.current_class != *instance->_type) {
                 Logger::Log("Field '" + member_access->member + "' is private.", member_access as *ASTExpression, LogSeverity::Error);
                 return null;
             }
 
-            return this.builder.MemberAccess(instance, field._type, index as usize);
+            return this.builder.MemberAccess(instance, (field as *HIRDeclaration)->_type, index as usize);
         } else {
             Logger::Log("Field '" + member_access->member + "' not found in type '" + instance->_type->ToString() + "'.", member_access as *ASTExpression, LogSeverity::Error);
             return null;
         }
     }
 
-    fn AnalyzeUnaryExpression(&mut this, unary: *ASTUnaryExpression, target: *SemanticType) -> *HIRExpression {
+    fn AnalyzeUnaryExpression(&mut this, unary: *ASTUnaryExpression, target: *HIRType) -> *HIRExpression {
         let raw = this.AnalyzeExpression(unary->operand);
         let mut value = this.ImplicitDereference(raw);
         if value == null { return null; }
@@ -1926,7 +1924,7 @@ class SemanticAnalyzer {
 
             return this.builder.Dereference(raw);
         } else {
-            let mut operand_target: *SemanticType = null;
+            let mut operand_target: *HIRType = null;
 
             if target != null {
                 if unary->kind == ASTUnaryKind::Negate {
@@ -1991,8 +1989,8 @@ class SemanticAnalyzer {
         else { return HIRBinaryKind::RightShift; }
     }
 
-    fn AnalyzeBinaryExpression(&mut this, binary: *ASTBinaryExpression, target: *SemanticType) -> *HIRExpression {
-        let mut operand_target: *SemanticType = null;
+    fn AnalyzeBinaryExpression(&mut this, binary: *ASTBinaryExpression, target: *HIRType) -> *HIRExpression {
+        let mut operand_target: *HIRType = null;
 
         if target != null && binary->kind != ASTBinaryKind::Equal && binary->kind != ASTBinaryKind::NotEqual && binary->kind != ASTBinaryKind::Greater && binary->kind != ASTBinaryKind::Less && binary->kind != ASTBinaryKind::GreaterEqual && binary->kind != ASTBinaryKind::LessEqual && binary->kind != ASTBinaryKind::LogicalAnd && binary->kind != ASTBinaryKind::LogicalOr {
             if target->IsInteger() || target->IsFloat() || target->IsBoolean() {
@@ -2193,7 +2191,7 @@ class SemanticAnalyzer {
         }
     }
 
-    fn AnalyzeTernaryExpression(&mut this, ternary: *ASTTernaryExpression, target: *SemanticType) -> *HIRExpression {
+    fn AnalyzeTernaryExpression(&mut this, ternary: *ASTTernaryExpression, target: *HIRType) -> *HIRExpression {
         let condition = this.ImplicitDereference(this.AnalyzeExpression(ternary->condition));
 
         if condition != null && !condition->_type->IsBoolean() {
@@ -2215,7 +2213,7 @@ class SemanticAnalyzer {
         return this.builder.Ternary(condition, then_value, else_value, category, mutable);
     }
 
-    pub fn ResolveType(&mut this, path: *ASTPath) -> *SemanticType {
+    pub fn ResolveType(&mut this, path: *ASTPath) -> *HIRType {
         if path == null {
             return this.context.VoidType();
         }
@@ -2276,7 +2274,7 @@ class SemanticAnalyzer {
         } return null;
     }
 
-    pub fn ResolveType(&mut this, _type: *ASTType) -> *SemanticType {
+    pub fn ResolveType(&mut this, _type: *ASTType) -> *HIRType {
         if _type == null {
             return this.context.VoidType();
         }
@@ -2300,7 +2298,7 @@ class SemanticAnalyzer {
             return this.context.PointerType(element, true);
         } else if _type->kind == ASTTypeKind::Function {
             let function = _type as *ASTFunctionType;
-            let mut parameters = Vector<*SemanticType>();
+            let mut parameters = Vector<*HIRType>();
 
             for parameter in function->parameters {
                 let _type = this.ResolveType(parameter);

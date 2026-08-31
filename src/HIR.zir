@@ -155,7 +155,9 @@ class HIRType {
     pub fn ScoreParameter(&this, other: &HIRType) -> u64 {
         if other.IsLiteral() {
             if this.IsInteger() && other.IsInteger() {
-                if (this as *HIRIntegerType)->width == (other as *HIRIntegerType)->width && (this as *HIRIntegerType)->signed == (other as *HIRIntegerType)->signed {
+                let (left, right) = (this as *HIRIntegerType, other as *HIRIntegerType);
+
+                if left->width == right->width && left->signed == right->signed && left->native == right->native {
                     return 100;
                 } return 1;
             } else if this.IsFloat() && other.IsFloat() {
@@ -338,6 +340,18 @@ class HIRType {
         let mut result = Vector<*HIRFunctionDeclaration>();
         let mut found = false;
 
+        if this.IsClass() {
+            let declaration = (this as *HIRClassType)->declaration;
+
+            if (declaration as *HIRDeclaration)->name == name {
+                result += declaration->constructors;
+                return result;
+            } else if ('~' + (declaration as *HIRDeclaration)->name) == name {
+                result.PushBack(declaration->destructor);
+                return result;
+            }
+        }
+
         for method in this.Methods() {
             if (method as *HIRDeclaration)->name != name {
                 continue;
@@ -361,7 +375,8 @@ class HIRType {
         if (this.IsVoid() && other.IsVoid()) || (this.IsBoolean() && other.IsBoolean()) || (this.IsCharacter() && other.IsCharacter()) {
             return true;
         } else if this.IsInteger() && other.IsInteger() {
-            return (this as *HIRIntegerType)->signed == (other as *HIRIntegerType)->signed && (this as *HIRIntegerType)->width == (other as *HIRIntegerType)->width;
+            let (left, right) = (this as *HIRIntegerType, other as *HIRIntegerType);
+            return left->signed == right->signed && left->width == right->width && left->native == right->native;
         } else if this.IsFloat() && other.IsFloat() {
             return (this as *HIRFloatType)->width == (other as *HIRFloatType)->width;
         } else if (this.IsPointer() || this.IsArray()) && (other.IsPointer() || other.IsArray()) {
@@ -1585,63 +1600,63 @@ class HIRContext {
 
     HIRContext(&mut this) {}
 
-    pub fn VoidType(&mut this) -> *HIRType {
+    pub fn VoidType(&mut this) -> *mut HIRVoidType {
         return this.arena.New<HIRVoidType>();
     }
 
-    pub fn BooleanType(&mut this) -> *HIRType {
+    pub fn BooleanType(&mut this) -> *mut HIRBooleanType {
         return this.arena.New<HIRBooleanType>();
     }
 
-    pub fn CharacterType(&mut this) -> *HIRType {
+    pub fn CharacterType(&mut this) -> *mut HIRCharacterType {
         return this.arena.New<HIRCharacterType>();
     }
 
-    pub fn IntegerType(&mut this, width: u32, signed: bool) -> *HIRType {
+    pub fn IntegerType(&mut this, width: u32, signed: bool) -> *mut HIRIntegerType {
         return this.arena.New<HIRIntegerType>(width, signed, false, false);
     }
 
-    pub fn IntegerPointerType(&mut this, signed: bool) -> *HIRType {
-        return this.arena.New<HIRIntegerType>(64, signed, false, true);
+    pub fn IntegerPointerType(&mut this, signed: bool) -> *mut HIRIntegerType {
+        return this.arena.New<HIRIntegerType>(64u32, signed, false, true);
     }
 
-    pub fn IntegerLiteralType(&mut this, width: u32, signed: bool, literal: bool, native: bool) -> *HIRType {
-        return this.arena.New<HIRIntegerType>(32, signed, true, false);
+    pub fn IntegerLiteralType(&mut this) -> *mut HIRIntegerType {
+        return this.arena.New<HIRIntegerType>(32u32, true, true, false);
     }
 
-    pub fn FloatType(&mut this, width: u32) -> *HIRType {
+    pub fn FloatType(&mut this, width: u32) -> *mut HIRFloatType {
         return this.arena.New<HIRFloatType>(width, false);
     }
 
-    pub fn FloatLiteralType(&mut this) -> *HIRType {
-        return this.arena.New<HIRFloatType>(64, true);
+    pub fn FloatLiteralType(&mut this) -> *mut HIRFloatType {
+        return this.arena.New<HIRFloatType>(64u32, true);
     }
 
-    pub fn PointerType(&mut this, pointee: *HIRType, mutable: bool) -> *HIRType {
+    pub fn PointerType(&mut this, pointee: *HIRType, mutable: bool) -> *mut HIRPointerType {
         return this.arena.New<HIRPointerType>(pointee, mutable);
     }
 
-    pub fn ReferenceType(&mut this, referent: *HIRType, mutable: bool) -> *HIRType {
+    pub fn ReferenceType(&mut this, referent: *HIRType, mutable: bool) -> *mut HIRReferenceType {
         return this.arena.New<HIRReferenceType>(referent, mutable);
     }
 
-    pub fn ArrayType(&mut this, element: *HIRType, length: usize) -> *HIRType {
+    pub fn ArrayType(&mut this, element: *HIRType, length: usize) -> *mut HIRArrayType {
         return this.arena.New<HIRArrayType>(element, length);
     }
 
-    pub fn FunctionType(&mut this, parameters: Vector<*HIRType>, _return: *HIRType) -> *HIRType {
+    pub fn FunctionType(&mut this, parameters: Vector<*HIRType>, _return: *HIRType) -> *mut HIRFunctionType {
         return this.arena.New<HIRFunctionType>(parameters, _return);
     }
 
-    pub fn ClassType(&mut this, declaration: *HIRClassDeclaration) -> *HIRType {
+    pub fn ClassType(&mut this, declaration: *HIRClassDeclaration) -> *mut HIRClassType {
         return this.arena.New<HIRClassType>(declaration);
     }
 
-    pub fn StructureType(&mut this, declaration: *HIRStructureDeclaration) -> *HIRType {
+    pub fn StructureType(&mut this, declaration: *HIRStructureDeclaration) -> *mut HIRStructureType {
         return this.arena.New<HIRStructureType>(declaration);
     }
 
-    pub fn EnumerationType(&mut this, declaration: *HIREnumerationDeclaration, underlying: *HIRIntegerType) -> *HIRType {
+    pub fn EnumerationType(&mut this, declaration: *HIREnumerationDeclaration, underlying: *HIRIntegerType) -> *mut HIREnumerationType {
         return this.arena.New<HIREnumerationType>(declaration, underlying);
     }
 }
@@ -1684,8 +1699,8 @@ class HIRBuilder {
         return this.context->arena.New<HIRStructureLiteral>(fields, _type);
     }
 
-    pub fn NullLiteral(&mut this, _type: *HIRType) -> *mut HIRNullLiteral {
-        return this.context->arena.New<HIRNullLiteral>(_type);
+    pub fn NullLiteral(&mut this) -> *mut HIRNullLiteral {
+        return this.context->arena.New<HIRNullLiteral>(this.context->PointerType(this.context->VoidType(), false));
     }
 
     pub fn ReferenceVariable(&mut this, variable: *HIRVariableStatement) -> *mut HIRVariableReference {
@@ -1830,8 +1845,8 @@ class HIRBuilder {
         return this.context->arena.New<HIRParameterDeclaration>(name, _type, mutable);
     }
 
-    pub fn BuildFunctionDeclaration(&mut this, name: String, parameters: Vector<*HIRParameterDeclaration>, _return: *HIRType, _type: *HIRType, no_mangle: bool, abi: HIRDeclarationABI) -> *mut HIRFunctionDeclaration {
-        return this.context->arena.New<HIRFunctionDeclaration>(name, parameters, _return, _type, no_mangle, abi);
+    pub fn BuildFunctionDeclaration(&mut this, name: String, parameters: Vector<*HIRParameterDeclaration>, _return: *HIRType, _type: *HIRType, no_mangle: bool, public: bool, abi: HIRDeclarationABI) -> *mut HIRFunctionDeclaration {
+        return this.context->arena.New<HIRFunctionDeclaration>(name, parameters, _return, _type, no_mangle, public, abi);
     }
 
     pub fn SetCurrentFunction(&mut this, function: *mut HIRFunctionDeclaration) {

@@ -16,7 +16,7 @@
 
 #[include "std/str", "std/vec", "std/map", "std/pair", "std/arena",
     "src/ScopeManager.zir", "src/Scope.zir", "src/Symbol.zir", "src/Generic.zir",
-        "src/Tokens.zir", "src/AST.zir", "src/HIR.zir", "src/Logger.zir" : *]
+        "src/Token.zir", "src/AST.zir", "src/HIR.zir", "src/Logger.zir" : *]
 
 class SemanticForward {
     pub _class: *HIRType,
@@ -286,7 +286,11 @@ class SemanticAnalyzer {
             if expression->kind == HIRExpressionKind::Deferred {
                 return this.Coerce(this.AnalyzeExpression((expression as *HIRDeferredExpression)->expression, null));
             } else if expression->_type->IsLiteral() {
-                expression->_type = expression->_type->IsInteger() ? this.context.IntegerType(32, true) : this.context.FloatType(64);
+                if expression->_type->IsInteger() {
+                    expression->_type = this.context.IntegerType(32, true);
+                } else {
+                    expression->_type = this.context.FloatType(64);
+                }
             }
         } return expression;
     }
@@ -314,8 +318,10 @@ class SemanticAnalyzer {
     fn MakeCompatible(&mut this, expression: *HIRExpression, target: *HIRType) -> *HIRExpression {
         if target->IsPointer() && expression->_type->IsPointer() {
             if target->Pointee().IsClass() && expression->_type->Pointee().IsClass() {
+                let declaration = (target->Pointee() as *HIRClassType)->declaration;
+
                 for field in expression->_type->Pointee().Fields() {
-                    if (field as *HIRDeclaration)->name == target->Pointee().name {
+                    if (field as *HIRDeclaration)->name == (declaration as *HIRDeclaration)->name {
                         return this.builder.Cast(expression, target);
                     }
                 }
@@ -452,14 +458,14 @@ class SemanticAnalyzer {
         let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
         (this.current_class, this.scope_manager.current) = (_type, scope);
 
-        for i in 0.._class->parents.Size() {
-            let parent_type = this.ResolveType(_class->parents[i]);
+        for parent in _class->parents {
+            let parent_type = this.ResolveType(parent);
             if parent_type == null { continue; }
-            declaration->fields.PushBack(this.builder.BuildFieldDeclaration(parent_type->name, parent_type, null, false));
+            let parent_name = ((parent_type as *HIRClassType)->declaration as *HIRDeclaration)->name;
+            declaration->fields.PushBack(this.builder.BuildFieldDeclaration(parent_name, parent_type, null, false));
         }
 
-        for i in 0.._class->fields.Size() {
-            let field: *ASTFieldDeclaration = _class->fields[i];
+        for field in _class->fields {
             let field_type = this.ResolveType(field->_type);
             if field_type == null { continue; }
             declaration->fields.PushBack(this.builder.BuildFieldDeclaration(field->name, field_type, field->initializer, field->public));
@@ -547,8 +553,7 @@ class SemanticAnalyzer {
         let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
         (this.current_class, this.scope_manager.current) = (_type, scope);
 
-        for i in 0..structure->fields.Size() {
-            let field: *ASTFieldDeclaration = structure->fields[i];
+        for field in structure->fields {
             let field_type = this.ResolveType(field->_type);
             if field_type == null { continue; }
             declaration->fields.PushBack(this.builder.BuildFieldDeclaration(field->name, field_type, field->initializer, field->public));
@@ -898,10 +903,18 @@ class SemanticAnalyzer {
     fn FlushTemporaries(&mut this, exception: *HIRExpression) {
         for instance in this.temporaries.Reverse() {
             if instance == exception { continue; }
-            let _type = instance->_type;
             let mut values = Vector<*HIRExpression>();
             values.PushBack(instance);
-            let candidates = _type->GetCandidates('~' + _type->name, null, true);
+            let mut declaration: *HIRDeclaration = null;
+            let _type = instance->_type;
+
+            if _type->IsClass() {
+                declaration = (_type as *HIRClassType)->declaration;
+            } else {
+                declaration = (_type as *HIRStructureType)->declaration;
+            }
+
+            let candidates = _type->GetCandidates('~' + declaration->name, null, true);
             let function = this.ResolveOverload(candidates, values, null, true);
             if function == null { continue; }
             let callee = this.builder.ReferenceDeclaration(function as *HIRDeclaration, false);
@@ -925,10 +938,18 @@ class SemanticAnalyzer {
                     }
                 }
 
-                let _type = instance->_type;
                 let mut values = Vector<*HIRExpression>();
                 values.PushBack(instance);
-                let candidates = _type->GetCandidates('~' + _type->name, null, true);
+                let mut declaration: *HIRDeclaration = null;
+                let _type = instance->_type;
+
+                if _type->IsClass() {
+                    declaration = (_type as *HIRClassType)->declaration;
+                } else {
+                    declaration = (_type as *HIRStructureType)->declaration;
+                }
+
+                let candidates = _type->GetCandidates('~' + declaration->name, null, true);
                 let function = this.ResolveOverload(candidates, values, null, true);
                 if function == null { continue; }
                 let callee = this.builder.ReferenceDeclaration(function as *HIRDeclaration, false);
@@ -1326,7 +1347,7 @@ class SemanticAnalyzer {
             values.Resize(fields.Size());
 
             if structure->fields.Size() != fields.Size() {
-                Logger::Log("Structure '" + _type->name + "' argument count mismatch.", literal as *ASTExpression, LogSeverity::Error);
+                Logger::Log("Structure '" + ((_type as *HIRStructureType)->declaration as *HIRDeclaration)->name + "' argument count mismatch.", literal as *ASTExpression, LogSeverity::Error);
                 return null;
             }
 
@@ -1334,19 +1355,19 @@ class SemanticAnalyzer {
                 let index = _type->Index(field.left);
 
                 if index == -1 {
-                    Logger::Log("Unknown field '" + field.left + "' for structure '" + _type->name + "'.", literal as *ASTExpression, LogSeverity::Error);
+                    Logger::Log("Unknown field '" + field.left + "' for structure '" + ((_type as *HIRStructureType)->declaration as *HIRDeclaration)->name + "'.", literal as *ASTExpression, LogSeverity::Error);
                     return null;
                 }
 
-                let field: *HIRFieldDeclaration = fields[index as usize];
-                let value = this.Coerce(this.AnalyzeExpression(field.right), (field as *HIRDeclaration)->_type);
+                let field_declaration: *HIRFieldDeclaration = fields[index as usize];
+                let value = this.Coerce(this.AnalyzeExpression(field.right), (field_declaration as *HIRDeclaration)->_type);
                 if value == null { return null; }
                 values[index as usize] = value;
             }
 
             return this.builder.StructureLiteral(values, _type) as *HIRLiteral;
         } else if literal->kind == ASTLiteralKind::Null {
-            return this.builder.NullLiteral(this.context.NullPointerType()) as *HIRLiteral;
+            return this.builder.NullLiteral() as *HIRLiteral;
         } else {
             Logger::Log("Unknown literal type '" + literal->kind.ToString() + "'.", literal as *ASTExpression, LogSeverity::Error);
             return null;
@@ -1442,7 +1463,7 @@ class SemanticAnalyzer {
                 let index = instance->_type->HasFields() ? instance->_type->Index(member_access->member) : -1;
 
                 if index != -1 {
-                    let field: *HIRFieldDeclaration = instance->_type->Fields()[member_access->member];
+                    let field: *HIRFieldDeclaration = instance->_type->Fields()[index as usize];
 
                     if !field->public && (this.current_class != null && *this.current_class != *instance->_type) {
                         Logger::Log("Field '" + member_access->member + "' is private.", call as *ASTExpression, LogSeverity::Error);
@@ -1465,8 +1486,9 @@ class SemanticAnalyzer {
                 for symbol in this.scope_manager.Resolve(path, true) {
                     if symbol->kind == SymbolKind::Type && symbol->_type->IsClass() {
                         let (_class, arguments) = (symbol->_type, Vector<*HIRExpression>(values));
-                        values.Insert(0, this.builder.NullLiteral(this.context.NullPointerType()) as *HIRLiteral);
-                        let candidates = _class->GetCandidates(_class->name, call as *ASTExpression, false);
+                        values.Insert(0, this.builder.NullLiteral() as *HIRLiteral);
+                        let declaration = (_class as *HIRClassType)->declaration as *HIRDeclaration;
+                        let candidates = _class->GetCandidates(declaration->name, call as *ASTExpression, false);
                         if candidates.Empty() { return null; }
                         let function = this.ResolveOverload(candidates, values, call as *ASTExpression, false);
                         if function == null { return null; }
@@ -1562,8 +1584,12 @@ class SemanticAnalyzer {
             }
 
             if !param_type->IsCompatible(value->_type) {
-                Logger::Log("Incompatible argument types for function '" + function->_type->name + "'. ('" + param_type->ToString() + "' != '" + value->_type->ToString() + "').", node, LogSeverity::Error);
-                return null;
+                if function->kind == HIRExpressionKind::DeclarationReference {
+                    let name = (function as *HIRDeclarationReference)->declaration->name;
+                    Logger::Log("Incompatible argument types for function '" + name + "'. ('" + param_type->ToString() + "' != '" + value->_type->ToString() + "').", node, LogSeverity::Error);
+                } else {
+                    Logger::Log("Incompatible argument types for function. ('" + param_type->ToString() + "' != '" + value->_type->ToString() + "').", node, LogSeverity::Error);
+                } return null;
             }
 
             if !param_type->IsMutabilityCompatible(value->_type) {
@@ -1596,8 +1622,16 @@ class SemanticAnalyzer {
 
             if _type->HasFields() {
                 let mut values = Vector<*HIRExpression>();
-                values.PushBack(this.builder.NullLiteral(this.context.NullPointerType()) as *HIRLiteral);
-                let candidates = _type->GetCandidates(_type->name, _new as *ASTExpression, false);
+                values.PushBack(this.builder.NullLiteral() as *HIRLiteral);
+                let mut declaration: *HIRDeclaration = null;
+
+                if _type->IsClass() {
+                    declaration = (_type as *HIRClassType)->declaration;
+                } else {
+                    declaration = (_type as *HIRStructureType)->declaration;
+                }
+
+                let candidates = _type->GetCandidates(declaration->name, _new as *ASTExpression, false);
                 if candidates.Empty() { return null; }
                 let function = this.ResolveOverload(candidates, values, _new as *ASTExpression, false);
                 if function == null { return null; }
@@ -1617,8 +1651,16 @@ class SemanticAnalyzer {
 
             if _type->HasFields() {
                 let arguments = Vector<*HIRExpression>(values);
-                values.Insert(0, this.builder.NullLiteral(this.context.NullPointerType()) as *HIRLiteral);
-                let candidates = _type->GetCandidates(_type->name, _new as *ASTExpression, false);
+                values.Insert(0, this.builder.NullLiteral() as *HIRLiteral);
+                let mut declaration: *HIRDeclaration = null;
+
+                if _type->IsClass() {
+                    declaration = (_type as *HIRClassType)->declaration;
+                } else {
+                    declaration = (_type as *HIRStructureType)->declaration;
+                }
+
+                let candidates = _type->GetCandidates(declaration->name, _new as *ASTExpression, false);
                 if candidates.Empty() { return null; }
                 let function = this.ResolveOverload(candidates, values, _new as *ASTExpression, false);
                 if function == null { return null; }
@@ -1660,10 +1702,18 @@ class SemanticAnalyzer {
         }
 
         if pointer->_type->Pointee().HasFields() {
-            let _class = pointer->_type->Pointee();
             let mut values = Vector<*HIRExpression>();
-            values.PushBack(this.builder.NullLiteral(this.context.NullPointerType()) as *HIRLiteral);
-            let candidates = _class->GetCandidates('~' + _class->name, _delete as *ASTExpression, false);
+            values.PushBack(this.builder.NullLiteral() as *HIRLiteral);
+            let mut declaration: *HIRDeclaration = null;
+            let _type = pointer->_type->Pointee();
+
+            if _type->IsClass() {
+                declaration = (_type as *HIRClassType)->declaration;
+            } else {
+                declaration = (_type as *HIRStructureType)->declaration;
+            }
+
+            let candidates = _type->GetCandidates('~' + declaration->name, _delete as *ASTExpression, false);
             if candidates.Empty() { return null; }
             let function = this.ResolveOverload(candidates, values, _delete as *ASTExpression, false);
             if function == null { return null; }
@@ -1768,7 +1818,9 @@ class SemanticAnalyzer {
                 let mut related = false;
 
                 for field in value->_type->Pointee().Fields() {
-                    if (field as *HIRDeclaration)->name == target->Pointee().name {
+                    let target_declaration = (target->Pointee() as *HIRClassType)->declaration;
+
+                    if (field as *HIRDeclaration)->name == (target_declaration as *HIRDeclaration)->name {
                         related = true;
                         break;
                     }
@@ -1776,7 +1828,9 @@ class SemanticAnalyzer {
 
                 if !related {
                     for field in target->Pointee().Fields() {
-                        if (field as *HIRDeclaration)->name == value->_type->Pointee().name {
+                        let source_declaration = (value->_type->Pointee() as *HIRClassType)->declaration;
+
+                        if (field as *HIRDeclaration)->name == (source_declaration as *HIRDeclaration)->name {
                             related = true;
                             break;
                         }
@@ -1784,7 +1838,9 @@ class SemanticAnalyzer {
                 }
 
                 if !related {
-                    Logger::Log("Cannot cast class '" + value->_type->Pointee().name + "' to unrelated class '" + target->Pointee().name + "'.", node, LogSeverity::Error);
+                    let target_name = ((target->Pointee() as *HIRClassType)->declaration as *HIRDeclaration)->name;
+                    let source_name = ((value->_type->Pointee() as *HIRClassType)->declaration as *HIRDeclaration)->name;
+                    Logger::Log("Cannot cast class '" + source_name + "' to unrelated class '" + target_name + "'.", node, LogSeverity::Error);
                     return null;
                 }
             }

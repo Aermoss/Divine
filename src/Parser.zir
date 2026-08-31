@@ -102,30 +102,6 @@ class Parser {
         } return false;
     }
 
-    fn GetBinaryOperatorPrecedence(&this, _type: TokenType) -> i32 {
-        if _type == TokenType::OR { return 1; }
-        else if _type == TokenType::AND { return 2; }
-        else if _type == TokenType::BITWISE_OR { return 3; }
-        else if _type == TokenType::BITWISE_XOR { return 4; }
-        else if _type == TokenType::BITWISE_AND { return 5; }
-        else if _type == TokenType::EQUAL || _type == TokenType::NOT_EQUAL { return 6; }
-        else if _type == TokenType::LESS || _type == TokenType::LESS_EQUAL || _type == TokenType::GREATER || _type == TokenType::GREATER_EQUAL { return 7; }
-        else if _type == TokenType::LSHIFT || _type == TokenType::RSHIFT { return 8; }
-        else if _type == TokenType::PLUS || _type == TokenType::MINUS { return 9; }
-        else if _type == TokenType::MUL || _type == TokenType::DIV || _type == TokenType::MOD { return 10; }
-        else if _type == TokenType::AS { return 11; }
-        else { return -1; }
-    }
-
-    fn IsBinaryOperator(&this, _type: TokenType) -> bool {
-        let precedence = this.GetBinaryOperatorPrecedence(_type);
-        return precedence >= 0 && precedence != 11;
-    }
-
-    fn IsUnaryOperator(&this, _type: TokenType) -> bool {
-        return _type == TokenType::NOT || _type == TokenType::MINUS || _type == TokenType::BITWISE_AND || _type == TokenType::MUL;
-    }
-
     fn IsStructureInitializer(&this) -> bool {
         let after_brace = this.Peek(1);
         if after_brace._type == TokenType::RBRACE { return true; }
@@ -174,11 +150,6 @@ class Parser {
                     && next._type != TokenType::CHAR && next._type != TokenType::TRUE && next._type != TokenType::FALSE && next._type != TokenType::NULL;
             }
         } return false;
-    }
-
-    fn IsAssignmentOperator(&this, _type: TokenType) -> bool {
-        return _type == TokenType::ASSIGN || _type == TokenType::PLUS_ASSIGN || _type == TokenType::MINUS_ASSIGN || _type == TokenType::MUL_ASSIGN || _type == TokenType::DIV_ASSIGN || _type == TokenType::MOD_ASSIGN
-           || _type == TokenType::LSHIFT_ASSIGN || _type == TokenType::RSHIFT_ASSIGN || _type == TokenType::AND_ASSIGN || _type == TokenType::OR_ASSIGN || _type == TokenType::XOR_ASSIGN;
     }
 
     fn ParsePath(&mut this) -> *ASTPath {
@@ -408,18 +379,28 @@ class Parser {
 
     fn ParseUnaryExpression(&mut this) -> *ASTExpression {
         let token = this.Current();
-        let mut mutable = false;
 
-        if this.IsUnaryOperator(token._type) {
+        if token._type == TokenType::BITWISE_AND {
             this.Advance();
-
-            if token._type == TokenType::BITWISE_AND {
-                mutable = this.Match(TokenType::MUT);
-            }
-
+            let mutable = this.Match(TokenType::MUT);
             let expression = this.ParseUnaryExpression();
             if expression == null { return null; }
-            return this.arena.New<ASTUnaryExpression>(expression, token._type, mutable, token);
+            return this.arena.New<ASTUnaryExpression>(ASTUnaryKind::AddressOf, expression, mutable, token);
+        } else if token._type == TokenType::MUL {
+            this.Advance();
+            let expression = this.ParseUnaryExpression();
+            if expression == null { return null; }
+            return this.arena.New<ASTUnaryExpression>(ASTUnaryKind::Dereference, expression, false, token);
+        } else if token._type == TokenType::MINUS {
+            this.Advance();
+            let expression = this.ParseUnaryExpression();
+            if expression == null { return null; }
+            return this.arena.New<ASTUnaryExpression>(ASTUnaryKind::Negate, expression, false, token);
+        } else if token._type == TokenType::NOT {
+            this.Advance();
+            let expression = this.ParseUnaryExpression();
+            if expression == null { return null; }
+            return this.arena.New<ASTUnaryExpression>(ASTUnaryKind::Not, expression, false, token);
         } else if token._type == TokenType::NEW {
             this.Advance();
             let _type = this.ParseType();
@@ -468,6 +449,42 @@ class Parser {
         }
     }
 
+    fn GetBinaryPrecedence(&this, _type: TokenType) -> i32 {
+        if _type == TokenType::OR { return 1; }
+        else if _type == TokenType::AND { return 2; }
+        else if _type == TokenType::BITWISE_OR { return 3; }
+        else if _type == TokenType::BITWISE_XOR { return 4; }
+        else if _type == TokenType::BITWISE_AND { return 5; }
+        else if _type == TokenType::EQUAL || _type == TokenType::NOT_EQUAL { return 6; }
+        else if _type == TokenType::LESS || _type == TokenType::LESS_EQUAL || _type == TokenType::GREATER || _type == TokenType::GREATER_EQUAL { return 7; }
+        else if _type == TokenType::LSHIFT || _type == TokenType::RSHIFT { return 8; }
+        else if _type == TokenType::PLUS || _type == TokenType::MINUS { return 9; }
+        else if _type == TokenType::MUL || _type == TokenType::DIV || _type == TokenType::MOD { return 10; }
+        else if _type == TokenType::AS { return 11; }
+        else { return -1; }
+    }
+
+    fn ParseBinaryKind(&this, _type: TokenType) -> ASTBinaryKind {
+        if _type == TokenType::PLUS { return ASTBinaryKind::Add; }
+        else if _type == TokenType::MINUS { return ASTBinaryKind::Subtract; }
+        else if _type == TokenType::MUL { return ASTBinaryKind::Multiply; }
+        else if _type == TokenType::DIV { return ASTBinaryKind::Divide; }
+        else if _type == TokenType::MOD { return ASTBinaryKind::Modulo; }
+        else if _type == TokenType::EQUAL { return ASTBinaryKind::Equal; }
+        else if _type == TokenType::NOT_EQUAL { return ASTBinaryKind::NotEqual; }
+        else if _type == TokenType::LESS { return ASTBinaryKind::Less; }
+        else if _type == TokenType::LESS_EQUAL { return ASTBinaryKind::LessEqual; }
+        else if _type == TokenType::GREATER { return ASTBinaryKind::Greater; }
+        else if _type == TokenType::GREATER_EQUAL { return ASTBinaryKind::GreaterEqual; }
+        else if _type == TokenType::AND { return ASTBinaryKind::LogicalAnd; }
+        else if _type == TokenType::OR { return ASTBinaryKind::LogicalOr; }
+        else if _type == TokenType::BITWISE_AND { return ASTBinaryKind::BitwiseAnd; }
+        else if _type == TokenType::BITWISE_OR { return ASTBinaryKind::BitwiseOr; }
+        else if _type == TokenType::BITWISE_XOR { return ASTBinaryKind::BitwiseXor; }
+        else if _type == TokenType::LSHIFT { return ASTBinaryKind::LeftShift; }
+        else { return ASTBinaryKind::RightShift; }
+    }
+
     fn ParseBinaryExpression(&mut this, min_precedence: i32) -> *ASTExpression {
         let mut left = this.ParseUnaryExpression();
         if left == null { return null; }
@@ -487,7 +504,7 @@ class Parser {
                 }
             }
 
-            let precedence = this.GetBinaryOperatorPrecedence(token._type);
+            let precedence = this.GetBinaryPrecedence(token._type);
             if precedence < min_precedence { break; }
             this.Advance();
 
@@ -498,7 +515,7 @@ class Parser {
             } else {
                 let right = this.ParseBinaryExpression(precedence + 1);
                 if right == null { return null; }
-                left = this.arena.New<ASTBinaryExpression>(left, right, token._type, token);
+                left = this.arena.New<ASTBinaryExpression>(this.ParseBinaryKind(token._type), left, right, token);
             }
         } return left;
     }
@@ -578,6 +595,20 @@ class Parser {
         } return node;
     }
 
+    fn ParseAssignmentKind(&this, _type: TokenType) -> ASTAssignmentKind {
+        if _type == TokenType::ASSIGN { return ASTAssignmentKind::Assign; }
+        else if _type == TokenType::PLUS_ASSIGN { return ASTAssignmentKind::AddAssign; }
+        else if _type == TokenType::MINUS_ASSIGN { return ASTAssignmentKind::SubtractAssign; }
+        else if _type == TokenType::MUL_ASSIGN { return ASTAssignmentKind::MultiplyAssign; }
+        else if _type == TokenType::DIV_ASSIGN { return ASTAssignmentKind::DivideAssign; }
+        else if _type == TokenType::MOD_ASSIGN { return ASTAssignmentKind::ModuloAssign; }
+        else if _type == TokenType::AND_ASSIGN { return ASTAssignmentKind::AndAssign; }
+        else if _type == TokenType::OR_ASSIGN { return ASTAssignmentKind::OrAssign; }
+        else if _type == TokenType::XOR_ASSIGN { return ASTAssignmentKind::XorAssign; }
+        else if _type == TokenType::LSHIFT_ASSIGN { return ASTAssignmentKind::LeftShiftAssign; }
+        else { return ASTAssignmentKind::RightShiftAssign; }
+    }
+
     fn ParseStatement(&mut this, expression: bool) -> *ASTStatement {
         let token = this.Current();
 
@@ -611,7 +642,7 @@ class Parser {
                 while root == null || this.Match(TokenType::COMMA) {
                     let _expression = this.ParseExpression();
                     if _expression == null { return null; }
-                    let assignment = this.arena.New<ASTAssignmentExpression>(_expression, null, TokenType::ASSIGN, token);
+                    let assignment = this.arena.New<ASTAssignmentExpression>(ASTAssignmentKind::Assign, _expression, null, token);
 
                     if root != null {
                         current->next = assignment;
@@ -644,21 +675,19 @@ class Parser {
             }
 
             let left = this.ParseExpression();
+            let _operator = this.Current();
 
-            if this.IsAssignmentOperator(this.Current()._type) {
-                let _operator = this.Advance();
+            if _operator._type == TokenType::ASSIGN || _operator._type == TokenType::PLUS_ASSIGN || _operator._type == TokenType::MINUS_ASSIGN || _operator._type == TokenType::MUL_ASSIGN || _operator._type == TokenType::DIV_ASSIGN || _operator._type == TokenType::MOD_ASSIGN
+                || _operator._type == TokenType::AND_ASSIGN || _operator._type == TokenType::OR_ASSIGN || _operator._type == TokenType::XOR_ASSIGN || _operator._type == TokenType::LSHIFT_ASSIGN || _operator._type == TokenType::RSHIFT_ASSIGN {
+
+                this.Advance();
                 let right = this.ParseExpression();
                 if right == null { return null; }
-                let assignment = this.arena.New<ASTAssignmentExpression>(left, right, _operator._type, _operator);
-
-                if !expression {
-                    if !this.ExpectSuccess(TokenType::SEMICOLON) { return null; }
-                } return this.arena.New<ASTExpressionStatement>(assignment, token);
+                let assignment = this.arena.New<ASTAssignmentExpression>(this.ParseAssignmentKind(_operator._type), left, right, _operator);
+                if !expression && !this.ExpectSuccess(TokenType::SEMICOLON) { return null; }
+                return this.arena.New<ASTExpressionStatement>(assignment, token);
             } else {
-                if !expression {
-                    if !this.ExpectSuccess(TokenType::SEMICOLON) { return null; }
-                }
-
+                if !expression && !this.ExpectSuccess(TokenType::SEMICOLON) { return null; }
                 return this.arena.New<ASTExpressionStatement>(left, token);
             }
         }

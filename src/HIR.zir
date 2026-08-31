@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#[include "std/str", "std/vec", "src/Tokens.zir", "src/Types.zir" : *]
+#[include "std/str", "std/vec", "src/AST.zir", "src/Types.zir" : *]
 
 enum HIRTypeKind: u8 {
     Void, Boolean, Character,
@@ -503,30 +503,71 @@ class HIRAssignmentExpression : HIRExpression {
     }
 }
 
+enum HIRUnaryKind: u8 {
+    AddressOf, Dereference, Negate, Not
+}
+
+fn ToString(kind: HIRUnaryKind) -> String {
+    if kind == HIRUnaryKind::AddressOf { return '&'.ToString(); }
+    else if kind == HIRUnaryKind::Dereference { return '*'.ToString(); }
+    else if kind == HIRUnaryKind::Negate { return '-'.ToString(); }
+    else if kind == HIRUnaryKind::Not { return '!'.ToString(); }
+    else { return "<invalid unary>".ToString(); }
+}
+
 class HIRUnaryExpression : HIRExpression {
-    pub _operator: TokenType,
+    pub kind: HIRUnaryKind,
     pub operand: *HIRExpression;
 
-    HIRUnaryExpression(&mut this, _operator: TokenType, operand: *HIRExpression) : HIRExpression(HIRExpressionKind::Unary, operand->_type) {
-        (this._operator, this.operand) = (_operator, operand);
+    HIRUnaryExpression(&mut this, kind: HIRUnaryKind, operand: *HIRExpression) : HIRExpression(HIRExpressionKind::Unary, operand->_type) {
+        (this.kind, this.operand) = (kind, operand);
     }
 
     pub fn ToString(&this) -> String {
-        return ToUnaryOperatorString(this._operator) + this.operand->ToString();
+        return this.kind.ToString() + this.operand->ToString();
     }
 }
 
+enum HIRBinaryKind: u8 {
+    Add, Subtract, Multiply, Divide, Modulo,
+    Equal, NotEqual, Less, LessEqual, Greater, GreaterEqual,
+    LogicalAnd, LogicalOr, BitwiseAnd, BitwiseOr, BitwiseXor,
+    LeftShift, RightShift
+}
+
+fn ToString(kind: HIRBinaryKind) -> String {
+    if kind == HIRBinaryKind::Add { return '+'.ToString(); }
+    else if kind == HIRBinaryKind::Subtract { return '-'.ToString(); }
+    else if kind == HIRBinaryKind::Multiply { return '*'.ToString(); }
+    else if kind == HIRBinaryKind::Divide { return '/'.ToString(); }
+    else if kind == HIRBinaryKind::Modulo { return '%'.ToString(); }
+    else if kind == HIRBinaryKind::Equal { return "==".ToString(); }
+    else if kind == HIRBinaryKind::NotEqual { return "!=".ToString(); }
+    else if kind == HIRBinaryKind::Less { return '<'.ToString(); }
+    else if kind == HIRBinaryKind::LessEqual { return "<=".ToString(); }
+    else if kind == HIRBinaryKind::Greater { return '>'.ToString(); }
+    else if kind == HIRBinaryKind::GreaterEqual { return ">=".ToString(); }
+    else if kind == HIRBinaryKind::LogicalAnd { return "&&".ToString(); }
+    else if kind == HIRBinaryKind::LogicalOr { return "||".ToString(); }
+    else if kind == HIRBinaryKind::BitwiseAnd { return '&'.ToString(); }
+    else if kind == HIRBinaryKind::BitwiseOr { return '|'.ToString(); }
+    else if kind == HIRBinaryKind::BitwiseXor { return '^'.ToString(); }
+    else if kind == HIRBinaryKind::LeftShift { return "<<".ToString(); }
+    else if kind == HIRBinaryKind::RightShift { return ">>".ToString(); }
+    else { return "<invalid binary>".ToString(); }
+}
+
 class HIRBinaryExpression : HIRExpression {
-    pub _operator: TokenType,
+    pub kind: HIRBinaryKind,
     pub left: *HIRExpression,
     pub right: *HIRExpression;
 
-    HIRBinaryExpression(&mut this, _operator: TokenType, left: *HIRExpression, right: *HIRExpression, _type: *SemanticType) : HIRExpression(HIRExpressionKind::Binary, _type) {
-        (this._operator, this.left, this.right) = (_operator, left, right);
+    HIRBinaryExpression(&mut this, kind: HIRBinaryKind, left: *HIRExpression, right: *HIRExpression, _type: *SemanticType) : HIRExpression(HIRExpressionKind::Binary, _type) {
+        (this.kind, this.left, this.right) = (kind, left, right);
     }
 
     pub fn ToString(&this) -> String {
-        return this.left->ToString() + ' ' + ToBinaryOperatorString(this._operator) + ' ' + this.right->ToString();
+        return this.left->ToString() + ' ' + this.kind.ToString() + ' ' + this.right->ToString();
     }
 }
 
@@ -1294,12 +1335,12 @@ class HIRBuilder {
         return this.context->arena.New<HIRAssignmentExpression>(left, right);
     }
 
-    pub fn Unary(&mut this, _operator: TokenType, operand: *HIRExpression) -> *mut HIRUnaryExpression {
-        return this.context->arena.New<HIRUnaryExpression>(_operator, operand);
+    pub fn Unary(&mut this, kind: HIRUnaryKind, operand: *HIRExpression) -> *mut HIRUnaryExpression {
+        return this.context->arena.New<HIRUnaryExpression>(kind, operand);
     }
 
-    pub fn Binary(&mut this, _operator: TokenType, left: *HIRExpression, right: *HIRExpression, _type: *SemanticType) -> *mut HIRBinaryExpression {
-        return this.context->arena.New<HIRBinaryExpression>(_operator, left, right, _type);
+    pub fn Binary(&mut this, kind: HIRBinaryKind, left: *HIRExpression, right: *HIRExpression, _type: *SemanticType) -> *mut HIRBinaryExpression {
+        return this.context->arena.New<HIRBinaryExpression>(kind, left, right, _type);
     }
 
     pub fn Ternary(&mut this, condition: *HIRExpression, then_value: *HIRExpression, else_value: *HIRExpression, category: HIRExpressionCategory, mutable: bool) -> *mut HIRTernaryExpression {

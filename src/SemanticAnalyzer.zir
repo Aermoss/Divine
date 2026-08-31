@@ -605,7 +605,7 @@ class SemanticAnalyzer {
 
         let _type = this.type_manager.Enumeration(enumeration->name, underlying_type);
         let declaration = this.builder.BuildEnumerationDeclaration(enumeration->name, _type);
-        let mut value: *HIRExpression = this.builder.IntegerLiteral(0, underlying_type) as *HIRLiteral;
+        let mut value: *HIRExpression = this.builder.IntegerLiteral(0, _type) as *HIRLiteral;
         this.scope_manager.current->Set(enumeration->name, _type, enumeration as *ASTDeclaration);
         this.scope_manager.PushScope(enumeration->name, true);
 
@@ -618,10 +618,14 @@ class SemanticAnalyzer {
                     Logger::Log("Expected an expression of type '" + underlying_type->ToString() + "'.", member->value, LogSeverity::Error);
                     continue;
                 }
+
+                unsafe {
+                    (value as *mut HIRExpression)->_type = _type;
+                }
             }
 
             let member_declaration = this.builder.BuildMemberDeclaration(member->name, value, _type);
-            value = this.builder.Binary(TokenType::PLUS, value, this.builder.IntegerLiteral(1, underlying_type) as *HIRLiteral, underlying_type);
+            value = this.builder.Binary(HIRBinaryKind::Add, value, this.builder.IntegerLiteral(1, _type) as *HIRLiteral, _type);
             this.scope_manager.current->Set(member->name, member_declaration, false, enumeration as *ASTDeclaration);
             declaration->members.PushBack(member_declaration);
         }
@@ -843,15 +847,15 @@ class SemanticAnalyzer {
                 one = this.builder.IntegerLiteral(1, iterator_type) as *HIRLiteral;
             }
 
-            let _operator = inclusive ? TokenType::LESS_EQUAL : TokenType::LESS;
-            condition = this.builder.Binary(_operator, iterator_ref, end, this.type_manager.Boolean());
-            let next = this.builder.Binary(TokenType::PLUS, iterator_ref, one, iterator_type);
+            let kind = inclusive ? HIRBinaryKind::LessEqual : HIRBinaryKind::Less;
+            condition = this.builder.Binary(kind, iterator_ref, end, this.type_manager.Boolean());
+            let next = this.builder.Binary(HIRBinaryKind::Add, iterator_ref, one, iterator_type);
             step = this.builder.Assignment(iterator_ref, next);
             variable = this.builder.BuildVariableStatement(_for->variable, iterator_type, iterator_ref, false);
         } else if iterator_type->IsPointer() {
-            condition = this.builder.Binary(TokenType::NOT_EQUAL, iterator_ref, end, this.type_manager.Boolean());
+            condition = this.builder.Binary(HIRBinaryKind::NotEqual, iterator_ref, end, this.type_manager.Boolean());
             let one: *HIRExpression = this.builder.IntegerLiteral(1, this.type_manager.IntegerPointer(false)) as *HIRLiteral;
-            let step_value = this.builder.Binary(TokenType::PLUS, iterator_ref, one, iterator_type);
+            let step_value = this.builder.Binary(HIRBinaryKind::Add, iterator_ref, one, iterator_type);
             step = this.builder.Assignment(iterator_ref, step_value);
             let value = this.builder.Dereference(iterator_ref);
             variable = this.builder.BuildVariableStatement(_for->variable, iterator_type->Pointee(), value, false);
@@ -1055,21 +1059,20 @@ class SemanticAnalyzer {
         }
     }
 
-    fn AssignmentToBinaryOperator(&this, _operator: TokenType) -> TokenType {
-        if _operator == TokenType::PLUS_ASSIGN { return TokenType::PLUS; }
-        else if _operator == TokenType::MINUS_ASSIGN { return TokenType::MINUS; }
-        else if _operator == TokenType::MUL_ASSIGN { return TokenType::MUL; }
-        else if _operator == TokenType::DIV_ASSIGN { return TokenType::DIV; }
-        else if _operator == TokenType::MOD_ASSIGN { return TokenType::MOD; }
-        else if _operator == TokenType::LSHIFT_ASSIGN { return TokenType::LSHIFT; }
-        else if _operator == TokenType::RSHIFT_ASSIGN { return TokenType::RSHIFT; }
-        else if _operator == TokenType::AND_ASSIGN { return TokenType::BITWISE_AND; }
-        else if _operator == TokenType::OR_ASSIGN { return TokenType::BITWISE_OR; }
-        else { return TokenType::BITWISE_XOR; }
+    fn AssignmentToBinaryKind(&this, kind: ASTAssignmentKind) -> ASTBinaryKind {
+        if kind == ASTAssignmentKind::AddAssign { return ASTBinaryKind::Add; }
+        else if kind == ASTAssignmentKind::SubtractAssign { return ASTBinaryKind::Subtract; }
+        else if kind == ASTAssignmentKind::MultiplyAssign { return ASTBinaryKind::Multiply; }
+        else if kind == ASTAssignmentKind::DivideAssign { return ASTBinaryKind::Divide; }
+        else if kind == ASTAssignmentKind::ModuloAssign { return ASTBinaryKind::Modulo; }
+        else if kind == ASTAssignmentKind::LeftShiftAssign { return ASTBinaryKind::LeftShift; }
+        else if kind == ASTAssignmentKind::RightShiftAssign { return ASTBinaryKind::RightShift; }
+        else if kind == ASTAssignmentKind::AndAssign { return ASTBinaryKind::BitwiseAnd; }
+        else if kind == ASTAssignmentKind::OrAssign { return ASTBinaryKind::BitwiseOr; }
+        else { return ASTBinaryKind::BitwiseXor; }
     }
 
     fn AnalyzeAssignmentExpression(&mut this, assignment: *ASTAssignmentExpression) -> *HIRExpression {
-        let _operator = assignment->_operator;
         let left_raw = this.AnalyzeExpression(assignment->left);
         let mut left = this.ImplicitDereference(left_raw);
         if left == null { return null; }
@@ -1078,7 +1081,7 @@ class SemanticAnalyzer {
         let mut right = this.ImplicitDereference(right_raw);
         if right == null { return null; }
 
-        if left->_type->IsPointer() && (_operator == TokenType::PLUS_ASSIGN || _operator == TokenType::MINUS_ASSIGN) {
+        if left->_type->IsPointer() && (assignment->kind == ASTAssignmentKind::AddAssign || assignment->kind == ASTAssignmentKind::SubtractAssign) {
             right = this.Coerce(right, this.type_manager.IntegerPointer(false));
         } else {
             right = this.Coerce(right, left->_type);
@@ -1089,15 +1092,15 @@ class SemanticAnalyzer {
             values.PushBack(this.ImplicitAddressOf(left));
             values.PushBack(right_raw);
 
-            let name = "operator" + _operator.ToAssignmentOperatorString();
+            let name = "operator" + assignment->kind.ToString();
             let candidates = left->_type->GetCandidates(name, assignment as *ASTExpression, true);
             let function = this.ResolveOverload(candidates, values, assignment as *ASTExpression, true);
 
             if function != null {
                 return this.AnalyzeResolvedCallExpression(function, values, assignment as *ASTExpression);
             } else if left->_type == right->_type {
-                if _operator != TokenType::ASSIGN {
-                    Logger::Log("Invalid class assignment operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", assignment as *ASTExpression, LogSeverity::Error);
+                if assignment->kind != ASTAssignmentKind::Assign {
+                    Logger::Log("Invalid class assignment operation '" + assignment->kind.ToString() + "' for type '" + left->_type->ToString() + "'.", assignment as *ASTExpression, LogSeverity::Error);
                     return null;
                 }
             } else {
@@ -1116,8 +1119,8 @@ class SemanticAnalyzer {
             return null;
         }
 
-        if _operator != TokenType::ASSIGN {
-            right = this.AnalyzeResolvedBinaryExpression(left, right, this.AssignmentToBinaryOperator(_operator), assignment as *ASTExpression);
+        if assignment->kind != ASTAssignmentKind::Assign {
+            right = this.AnalyzeResolvedBinaryExpression(this.AssignmentToBinaryKind(assignment->kind), left, right, assignment as *ASTExpression);
             if right == null { return null; }
         }
 
@@ -1150,7 +1153,7 @@ class SemanticAnalyzer {
         } else if expression->kind == ASTExpressionKind::Binary {
             let binary = expression as *ASTBinaryExpression;
 
-            if binary->_operator == TokenType::EQUAL || binary->_operator == TokenType::NOT_EQUAL || binary->_operator == TokenType::GREATER || binary->_operator == TokenType::LESS || binary->_operator == TokenType::GREATER_EQUAL || binary->_operator == TokenType::LESS_EQUAL || binary->_operator == TokenType::AND || binary->_operator == TokenType::OR {
+            if binary->kind == ASTBinaryKind::Equal || binary->kind == ASTBinaryKind::NotEqual || binary->kind == ASTBinaryKind::Greater || binary->kind == ASTBinaryKind::Less || binary->kind == ASTBinaryKind::GreaterEqual || binary->kind == ASTBinaryKind::LessEqual || binary->kind == ASTBinaryKind::LogicalAnd || binary->kind == ASTBinaryKind::LogicalOr {
                 return null;
             }
 
@@ -1167,7 +1170,7 @@ class SemanticAnalyzer {
         } else if expression->kind == ASTExpressionKind::Unary {
             let unary = expression as *ASTUnaryExpression;
 
-            if unary->_operator == TokenType::MINUS || unary->_operator == TokenType::NOT {
+            if unary->kind == ASTUnaryKind::Negate || unary->kind == ASTUnaryKind::Not {
                 return this.IsDeferrableExpression(unary->operand);
             } else {
                 return null;
@@ -1888,7 +1891,7 @@ class SemanticAnalyzer {
         let mut values = Vector<*HIRExpression>();
         values.PushBack(this.ImplicitAddressOf(value));
 
-        let name = "operator" + unary->_operator.ToUnaryOperatorString();
+        let name = "operator" + unary->kind.ToString();
         let candidates = this.scope_manager.ResolveCandidates(name, unary as *ASTExpression, true);
         let function = this.ResolveOverload(candidates, values, unary as *ASTExpression, true);
 
@@ -1905,7 +1908,7 @@ class SemanticAnalyzer {
             }
         }
 
-        if unary->_operator == TokenType::BITWISE_AND {
+        if unary->kind == ASTUnaryKind::AddressOf {
             if raw->category != HIRExpressionCategory::Place {
                 Logger::Log("Cannot take reference to non-place value.", unary as *ASTExpression, LogSeverity::Error);
                 return null;
@@ -1917,7 +1920,7 @@ class SemanticAnalyzer {
             }
 
             return this.builder.AddressOf(raw, unary->mutable);
-        } else if unary->_operator == TokenType::MUL {
+        } else if unary->kind == ASTUnaryKind::Dereference {
             if !raw->_type->IsPointer() {
                 Logger::Log("Cannot dereference non-pointer type '" + raw->_type->ToString() + "'.", unary as *ASTExpression, LogSeverity::Error);
                 return null;
@@ -1928,11 +1931,11 @@ class SemanticAnalyzer {
             let mut operand_target: *SemanticType = null;
 
             if target != null {
-                if unary->_operator == TokenType::MINUS {
+                if unary->kind == ASTUnaryKind::Negate {
                     if target->IsFloat() || (target->IsInteger() && target->IsSigned()) {
                         operand_target = target;
                     }
-                } else if unary->_operator == TokenType::TILDE || unary->_operator == TokenType::NOT {
+                } else if unary->kind == ASTUnaryKind::Not {
                     operand_target = target;
                 }
             }
@@ -1943,36 +1946,57 @@ class SemanticAnalyzer {
                 value = this.Coerce(value);
             }
 
-            if unary->_operator == TokenType::MINUS {
-                if value->_type->IsInteger() || value->_type->IsFloat() {
-                    if value->_type->IsInteger() && !value->_type->IsSigned() {
-                        Logger::Log("Cannot negate unsigned type '" + value->_type->ToString() + "'.", unary as *ASTExpression, LogSeverity::Error);
-                        return null;
-                    }
-
-                    return this.builder.Unary(unary->_operator, value);
-                } else {
+            if unary->kind == ASTUnaryKind::Negate {
+                if !value->_type->IsInteger() && !value->_type->IsFloat() {
                     Logger::Log("Cannot negate type '" + value->_type->ToString() + "'.", unary as *ASTExpression, LogSeverity::Error);
                     return null;
                 }
-            } else if unary->_operator == TokenType::NOT {
-                if value->_type->IsInteger() || value->_type->IsBoolean() {
-                    return this.builder.Unary(unary->_operator, value);
-                } else {
+
+                if value->_type->IsInteger() && !value->_type->IsSigned() {
+                    Logger::Log("Cannot negate unsigned type '" + value->_type->ToString() + "'.", unary as *ASTExpression, LogSeverity::Error);
+                    return null;
+                }
+
+                return this.builder.Unary(HIRUnaryKind::Negate, value);
+            } else if unary->kind == ASTUnaryKind::Not {
+                if !value->_type->IsInteger() && !value->_type->IsBoolean() {
                     Logger::Log("Cannot invert type '" + value->_type->ToString() + "'.", unary as *ASTExpression, LogSeverity::Error);
                     return null;
                 }
+
+                return this.builder.Unary(HIRUnaryKind::Not, value);
             } else {
-                Logger::Log("Invalid unary operation '" + unary->_operator.ToString() + "'.", unary as *ASTExpression, LogSeverity::Error);
+                Logger::Log("Invalid unary operation '" + unary->kind.ToString() + "'.", unary as *ASTExpression, LogSeverity::Error);
                 return null;
             }
         }
     }
 
+    fn AnalyzeBinaryKind(&this, kind: ASTBinaryKind) -> HIRBinaryKind {
+        if kind == ASTBinaryKind::Add { return HIRBinaryKind::Add; }
+        else if kind == ASTBinaryKind::Subtract { return HIRBinaryKind::Subtract; }
+        else if kind == ASTBinaryKind::Multiply { return HIRBinaryKind::Multiply; }
+        else if kind == ASTBinaryKind::Divide { return HIRBinaryKind::Divide; }
+        else if kind == ASTBinaryKind::Modulo { return HIRBinaryKind::Modulo; }
+        else if kind == ASTBinaryKind::Equal { return HIRBinaryKind::Equal; }
+        else if kind == ASTBinaryKind::NotEqual { return HIRBinaryKind::NotEqual; }
+        else if kind == ASTBinaryKind::Less { return HIRBinaryKind::Less; }
+        else if kind == ASTBinaryKind::LessEqual { return HIRBinaryKind::LessEqual; }
+        else if kind == ASTBinaryKind::Greater { return HIRBinaryKind::Greater; }
+        else if kind == ASTBinaryKind::GreaterEqual { return HIRBinaryKind::GreaterEqual; }
+        else if kind == ASTBinaryKind::LogicalAnd { return HIRBinaryKind::LogicalAnd; }
+        else if kind == ASTBinaryKind::LogicalOr { return HIRBinaryKind::LogicalOr; }
+        else if kind == ASTBinaryKind::BitwiseAnd { return HIRBinaryKind::BitwiseAnd; }
+        else if kind == ASTBinaryKind::BitwiseOr { return HIRBinaryKind::BitwiseOr; }
+        else if kind == ASTBinaryKind::BitwiseXor { return HIRBinaryKind::BitwiseXor; }
+        else if kind == ASTBinaryKind::LeftShift { return HIRBinaryKind::LeftShift; }
+        else { return HIRBinaryKind::RightShift; }
+    }
+
     fn AnalyzeBinaryExpression(&mut this, binary: *ASTBinaryExpression, target: *SemanticType) -> *HIRExpression {
         let mut operand_target: *SemanticType = null;
 
-        if target != null && binary->_operator != TokenType::EQUAL && binary->_operator != TokenType::NOT_EQUAL && binary->_operator != TokenType::GREATER && binary->_operator != TokenType::LESS && binary->_operator != TokenType::GREATER_EQUAL && binary->_operator != TokenType::LESS_EQUAL && binary->_operator != TokenType::AND && binary->_operator != TokenType::OR {
+        if target != null && binary->kind != ASTBinaryKind::Equal && binary->kind != ASTBinaryKind::NotEqual && binary->kind != ASTBinaryKind::Greater && binary->kind != ASTBinaryKind::Less && binary->kind != ASTBinaryKind::GreaterEqual && binary->kind != ASTBinaryKind::LessEqual && binary->kind != ASTBinaryKind::LogicalAnd && binary->kind != ASTBinaryKind::LogicalOr {
             if target->IsInteger() || target->IsFloat() || target->IsBoolean() {
                 operand_target = target;
             }
@@ -1985,9 +2009,9 @@ class SemanticAnalyzer {
             left = this.Coerce(left, operand_target);
         }
 
-        if binary->_operator == TokenType::AND || binary->_operator == TokenType::OR {
+        if binary->kind == ASTBinaryKind::LogicalAnd || binary->kind == ASTBinaryKind::LogicalOr {
             if !left->_type->IsBoolean() {
-                Logger::Log("Invalid type '" + left->_type->ToString() + "' for binary operation '" + binary->_operator.ToString() + "'.", binary as *ASTExpression, LogSeverity::Error);
+                Logger::Log("Invalid type '" + left->_type->ToString() + "' for binary operation '" + binary->kind.ToString() + "'.", binary as *ASTExpression, LogSeverity::Error);
                 return null;
             }
 
@@ -2000,11 +2024,11 @@ class SemanticAnalyzer {
             }
 
             if !right->_type->IsBoolean() {
-                Logger::Log("Invalid type '" + right->_type->ToString() + "' for binary operation '" + binary->_operator.ToString() + "'.", binary as *ASTExpression, LogSeverity::Error);
+                Logger::Log("Invalid type '" + right->_type->ToString() + "' for binary operation '" + binary->kind.ToString() + "'.", binary as *ASTExpression, LogSeverity::Error);
                 return null;
             }
 
-            return this.builder.Binary(binary->_operator, left, right, left->_type);
+            return this.builder.Binary(this.AnalyzeBinaryKind(binary->kind), left, right, left->_type);
         }
 
         let mut right = this.AnalyzeExpression(binary->right);
@@ -2014,10 +2038,10 @@ class SemanticAnalyzer {
             right = this.Coerce(right, operand_target);
         }
 
-        return this.AnalyzeResolvedBinaryExpression(left, right, binary->_operator, binary as *ASTExpression);
+        return this.AnalyzeResolvedBinaryExpression(binary->kind, left, right, binary as *ASTExpression);
     }
 
-    fn AnalyzeResolvedBinaryExpression(&mut this, mut left: *HIRExpression, mut right: *HIRExpression, _operator: TokenType, node: *ASTNode) -> *HIRExpression {
+    fn AnalyzeResolvedBinaryExpression(&mut this, kind: ASTBinaryKind, mut left: *HIRExpression, mut right: *HIRExpression, node: *ASTNode) -> *HIRExpression {
         let (left_raw, right_raw) = (left, right);
         (left, right) = (this.ImplicitDereference(left), this.ImplicitDereference(right));
 
@@ -2025,7 +2049,7 @@ class SemanticAnalyzer {
         values.PushBack(left);
         values.PushBack(right);
 
-        let name = "operator" + _operator.ToBinaryOperatorString();
+        let name = "operator" + kind.ToString();
         let candidates = this.scope_manager.ResolveCandidates(name, node, true);
         let function = this.ResolveOverload(candidates, values, node, true);
 
@@ -2049,12 +2073,12 @@ class SemanticAnalyzer {
             }
 
             if *left->_type == *right->_type {
-                if _operator != TokenType::EQUAL && _operator != TokenType::NOT_EQUAL {
-                    Logger::Log("Invalid binary operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
+                if kind != ASTBinaryKind::Equal && kind != ASTBinaryKind::NotEqual {
+                    Logger::Log("Invalid binary operation '" + kind.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
                     return null;
                 }
 
-                return this.builder.Binary(_operator, left, right, this.type_manager.Boolean());
+                return this.builder.Binary(this.AnalyzeBinaryKind(kind), left, right, this.type_manager.Boolean());
             } else {
                 Logger::Log("Incompatible binary operation types. ('" + left->_type->ToString() + "' != '" + right->_type->ToString() + "').", node, LogSeverity::Error);
                 return null;
@@ -2070,19 +2094,19 @@ class SemanticAnalyzer {
         }
 
         if left->_type->IsBoolean() && right->_type->IsBoolean() {
-            if _operator == TokenType::EQUAL || _operator == TokenType::NOT_EQUAL {
-                return this.builder.Binary(_operator, left, right, this.type_manager.Boolean());
-            } else if _operator == TokenType::AND || _operator == TokenType::BITWISE_AND || _operator == TokenType::OR || _operator == TokenType::BITWISE_OR || _operator == TokenType::BITWISE_XOR {
-                return this.builder.Binary(_operator, left, right, left->_type);
+            if kind == ASTBinaryKind::Equal || kind == ASTBinaryKind::NotEqual {
+                return this.builder.Binary(this.AnalyzeBinaryKind(kind), left, right, this.type_manager.Boolean());
+            } else if kind == ASTBinaryKind::LogicalAnd || kind == ASTBinaryKind::BitwiseAnd || kind == ASTBinaryKind::LogicalOr || kind == ASTBinaryKind::BitwiseOr || kind == ASTBinaryKind::BitwiseXor {
+                return this.builder.Binary(this.AnalyzeBinaryKind(kind), left, right, left->_type);
             } else {
-                Logger::Log("Invalid binary operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
+                Logger::Log("Invalid binary operation '" + kind.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
                 return null;
             }
         } else if left->_type->IsCharacter() && right->_type->IsCharacter() {
-            if _operator == TokenType::EQUAL || _operator == TokenType::NOT_EQUAL || _operator == TokenType::GREATER || _operator == TokenType::GREATER_EQUAL || _operator == TokenType::LESS || _operator == TokenType::LESS_EQUAL {
-                return this.builder.Binary(_operator, left, right, this.type_manager.Boolean());
+            if kind == ASTBinaryKind::Equal || kind == ASTBinaryKind::NotEqual || kind == ASTBinaryKind::Greater || kind == ASTBinaryKind::GreaterEqual || kind == ASTBinaryKind::Less || kind == ASTBinaryKind::LessEqual {
+                return this.builder.Binary(this.AnalyzeBinaryKind(kind), left, right, this.type_manager.Boolean());
             } else {
-                Logger::Log("Invalid binary operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
+                Logger::Log("Invalid binary operation '" + kind.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
                 return null;
             }
         } else if left->_type->IsInteger() && right->_type->IsInteger() {
@@ -2091,14 +2115,14 @@ class SemanticAnalyzer {
                 return null;
             }
 
-            if _operator == TokenType::PLUS || _operator == TokenType::MINUS || _operator == TokenType::MUL || _operator == TokenType::DIV || _operator == TokenType::MOD {
-                return this.builder.Binary(_operator, left, right, left->_type);
-            } else if _operator == TokenType::EQUAL || _operator == TokenType::NOT_EQUAL || _operator == TokenType::GREATER || _operator == TokenType::GREATER_EQUAL || _operator == TokenType::LESS || _operator == TokenType::LESS_EQUAL {
-                return this.builder.Binary(_operator, left, right, this.type_manager.Boolean());
-            } else if _operator == TokenType::BITWISE_AND || _operator == TokenType::BITWISE_OR || _operator == TokenType::BITWISE_XOR || _operator == TokenType::LSHIFT || _operator == TokenType::RSHIFT {
-                return this.builder.Binary(_operator, left, right, left->_type);
+            if kind == ASTBinaryKind::Add || kind == ASTBinaryKind::Subtract || kind == ASTBinaryKind::Multiply || kind == ASTBinaryKind::Divide || kind == ASTBinaryKind::Modulo {
+                return this.builder.Binary(this.AnalyzeBinaryKind(kind), left, right, left->_type);
+            } else if kind == ASTBinaryKind::Equal || kind == ASTBinaryKind::NotEqual || kind == ASTBinaryKind::Greater || kind == ASTBinaryKind::GreaterEqual || kind == ASTBinaryKind::Less || kind == ASTBinaryKind::LessEqual {
+                return this.builder.Binary(this.AnalyzeBinaryKind(kind), left, right, this.type_manager.Boolean());
+            } else if kind == ASTBinaryKind::BitwiseAnd || kind == ASTBinaryKind::BitwiseOr || kind == ASTBinaryKind::BitwiseXor || kind == ASTBinaryKind::LeftShift || kind == ASTBinaryKind::RightShift {
+                return this.builder.Binary(this.AnalyzeBinaryKind(kind), left, right, left->_type);
             } else {
-                Logger::Log("Invalid binary operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
+                Logger::Log("Invalid binary operation '" + kind.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
                 return null;
             }
         } else if left->_type->IsFloat() && right->_type->IsFloat() {
@@ -2107,12 +2131,12 @@ class SemanticAnalyzer {
                 return null;
             }
 
-            if _operator == TokenType::PLUS || _operator == TokenType::MINUS || _operator == TokenType::MUL || _operator == TokenType::DIV || _operator == TokenType::MOD {
-                return this.builder.Binary(_operator, left, right, left->_type);
-            } else if _operator == TokenType::EQUAL || _operator == TokenType::NOT_EQUAL || _operator == TokenType::GREATER || _operator == TokenType::GREATER_EQUAL || _operator == TokenType::LESS || _operator == TokenType::LESS_EQUAL {
-                return this.builder.Binary(_operator, left, right, this.type_manager.Boolean());
+            if kind == ASTBinaryKind::Add || kind == ASTBinaryKind::Subtract || kind == ASTBinaryKind::Multiply || kind == ASTBinaryKind::Divide || kind == ASTBinaryKind::Modulo {
+                return this.builder.Binary(this.AnalyzeBinaryKind(kind), left, right, left->_type);
+            } else if kind == ASTBinaryKind::Equal || kind == ASTBinaryKind::NotEqual || kind == ASTBinaryKind::Greater || kind == ASTBinaryKind::GreaterEqual || kind == ASTBinaryKind::Less || kind == ASTBinaryKind::LessEqual {
+                return this.builder.Binary(this.AnalyzeBinaryKind(kind), left, right, this.type_manager.Boolean());
             } else {
-                Logger::Log("Invalid binary operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
+                Logger::Log("Invalid binary operation '" + kind.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
                 return null;
             }
         } else if left->_type->IsPointer() && right->_type->IsPointer() {
@@ -2121,12 +2145,12 @@ class SemanticAnalyzer {
                 return null;
             }
 
-            if _operator == TokenType::MINUS {
-                return this.builder.Binary(_operator, left, right, this.type_manager.IntegerPointer(false));
-            } else if _operator == TokenType::EQUAL || _operator == TokenType::NOT_EQUAL || _operator == TokenType::GREATER || _operator == TokenType::GREATER_EQUAL || _operator == TokenType::LESS || _operator == TokenType::LESS_EQUAL {
-                return this.builder.Binary(_operator, left, right, this.type_manager.Boolean());
+            if kind == ASTBinaryKind::Subtract {
+                return this.builder.Binary(this.AnalyzeBinaryKind(kind), left, right, this.type_manager.IntegerPointer(false));
+            } else if kind == ASTBinaryKind::Equal || kind == ASTBinaryKind::NotEqual || kind == ASTBinaryKind::Greater || kind == ASTBinaryKind::GreaterEqual || kind == ASTBinaryKind::Less || kind == ASTBinaryKind::LessEqual {
+                return this.builder.Binary(this.AnalyzeBinaryKind(kind), left, right, this.type_manager.Boolean());
             } else {
-                Logger::Log("Invalid pointer binary operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
+                Logger::Log("Invalid pointer binary operation '" + kind.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
                 return null;
             }
         } else if (left->_type->IsPointer() && right->_type->IsInteger()) || (left->_type->IsInteger() && right->_type->IsPointer()) {
@@ -2138,17 +2162,17 @@ class SemanticAnalyzer {
                 return null;
             }
 
-            if _operator == TokenType::PLUS {
-                return this.builder.Binary(_operator, left, right, pointer->_type);
-            } else if _operator == TokenType::MINUS {
+            if kind == ASTBinaryKind::Add {
+                return this.builder.Binary(this.AnalyzeBinaryKind(kind), left, right, pointer->_type);
+            } else if kind == ASTBinaryKind::Subtract {
                 if left->_type->IsInteger() {
                     Logger::Log("Cannot subtract a pointer from an integer.", node, LogSeverity::Error);
                     return null;
                 }
 
-                return this.builder.Binary(_operator, left, right, pointer->_type);
+                return this.builder.Binary(this.AnalyzeBinaryKind(kind), left, right, pointer->_type);
             } else {
-                Logger::Log("Invalid pointer binary operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
+                Logger::Log("Invalid pointer binary operation '" + kind.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
                 return null;
             }
         } else if left->_type->IsEnumeration() && right->_type->IsEnumeration() {
@@ -2157,16 +2181,16 @@ class SemanticAnalyzer {
                 return null;
             }
 
-            if _operator == TokenType::BITWISE_AND || _operator == TokenType::BITWISE_OR || _operator == TokenType::BITWISE_XOR {
-                return this.builder.Binary(_operator, left, right, left->_type);
-            } else if _operator == TokenType::EQUAL || _operator == TokenType::NOT_EQUAL || _operator == TokenType::GREATER || _operator == TokenType::GREATER_EQUAL || _operator == TokenType::LESS || _operator == TokenType::LESS_EQUAL {
-                return this.builder.Binary(_operator, left, right, this.type_manager.Boolean());
+            if kind == ASTBinaryKind::BitwiseAnd || kind == ASTBinaryKind::BitwiseOr || kind == ASTBinaryKind::BitwiseXor {
+                return this.builder.Binary(this.AnalyzeBinaryKind(kind), left, right, left->_type);
+            } else if kind == ASTBinaryKind::Equal || kind == ASTBinaryKind::NotEqual || kind == ASTBinaryKind::Greater || kind == ASTBinaryKind::GreaterEqual || kind == ASTBinaryKind::Less || kind == ASTBinaryKind::LessEqual {
+                return this.builder.Binary(this.AnalyzeBinaryKind(kind), left, right, this.type_manager.Boolean());
             } else {
-                Logger::Log("Invalid binary operation '" + _operator.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
+                Logger::Log("Invalid binary operation '" + kind.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
                 return null;
             }
         } else {
-            Logger::Log("Invalid type '" + left->_type->ToString() + "' for binary operation '" + _operator.ToString() + "'.", node, LogSeverity::Error);
+            Logger::Log("Invalid type '" + left->_type->ToString() + "' for binary operation '" + kind.ToString() + "'.", node, LogSeverity::Error);
             return null;
         }
     }

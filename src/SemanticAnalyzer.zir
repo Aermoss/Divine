@@ -143,7 +143,7 @@ class SemanticAnalyzer {
     }
 
     fn AnalyzeTypeDeclaration(&mut this, type_definition: *ASTTypeDeclaration) {
-        this.scope_manager.current->Set(type_definition->name, this.ResolveType(type_definition->_type), type_definition as *ASTDeclaration);
+        this.scope_manager.current->Set(type_definition->name, this.AnalyzeType(type_definition->_type), type_definition as *ASTDeclaration);
     }
 
     fn AnalyzeDeclarationThirdPass(&mut this, declaration: *ASTDeclaration) -> bool {
@@ -294,7 +294,7 @@ class SemanticAnalyzer {
 
     fn AnalyzeConstantDeclaration(&mut this, constant: *ASTConstantDeclaration) {
         let mut initializer: *HIRExpression = null;
-        let _type = this.ResolveType(constant->_type);
+        let _type = this.AnalyzeType(constant->_type);
         if _type == null { return; }
 
         if constant->initializer != null {
@@ -307,7 +307,7 @@ class SemanticAnalyzer {
 
     fn AnalyzeStaticDeclaration(&mut this, _static: *ASTStaticDeclaration) {
         let mut initializer: *HIRExpression = null;
-        let _type = this.ResolveType(_static->_type);
+        let _type = this.AnalyzeType(_static->_type);
         if _type == null { return; }
 
         if _static->initializer != null && !_static->zero_initializer {
@@ -363,13 +363,13 @@ class SemanticAnalyzer {
         }
 
         for parameter in function->parameters {
-            let _type = this.ResolveType(parameter->_type);
+            let _type = this.AnalyzeType(parameter->_type);
             if _type == null { return null; }
             parameters.PushBack(this.builder.BuildParameterDeclaration(parameter->name, _type, parameter->mutable));
             parameter_types.PushBack(_type);
         }
 
-        let _return = this.ResolveType(function->_return);
+        let _return = this.AnalyzeType(function->_return);
         if _return == null { return null; }
         let declaration = this.builder.BuildFunctionDeclaration(function->name, parameters, _return, this.context.FunctionType(parameter_types, _return), function->no_mangle, function->public, this.abi);
 
@@ -393,7 +393,7 @@ class SemanticAnalyzer {
         }
 
         for constructor in function->constructors {
-            let _type = this.ResolveType((constructor->expression as *ASTPathExpression)->path);
+            let _type = this.AnalyzeType((constructor->expression as *ASTPathExpression)->path);
             if _type == null { continue; }
 
             if !_type->IsClass() {
@@ -443,14 +443,14 @@ class SemanticAnalyzer {
         (this.current_class, this.scope_manager.current) = (_type, scope);
 
         for parent in _class->parents {
-            let parent_type = this.ResolveType(parent);
+            let parent_type = this.AnalyzeType(parent);
             if parent_type == null { continue; }
             let parent_name = ((parent_type as *HIRClassType)->declaration as *HIRDeclaration)->name;
             declaration->fields.PushBack(this.builder.BuildFieldDeclaration(parent_name, parent_type, null, false));
         }
 
         for field in _class->fields {
-            let field_type = this.ResolveType(field->_type);
+            let field_type = this.AnalyzeType(field->_type);
             if field_type == null { continue; }
             declaration->fields.PushBack(this.builder.BuildFieldDeclaration(field->name, field_type, field->initializer, field->public));
         }
@@ -626,7 +626,7 @@ class SemanticAnalyzer {
         (this.current_class, this.scope_manager.current) = (_type, scope);
 
         for field in structure->fields {
-            let field_type = this.ResolveType(field->_type);
+            let field_type = this.AnalyzeType(field->_type);
             if field_type == null { continue; }
             declaration->fields.PushBack(this.builder.BuildFieldDeclaration(field->name, field_type, field->initializer, field->public));
         }
@@ -663,7 +663,7 @@ class SemanticAnalyzer {
     }
 
     fn AnalyzeEnumerationDeclaration(&mut this, enumeration: *ASTEnumerationDeclaration) {
-        let underlying_type = this.ResolveType(enumeration->underlying_type);
+        let underlying_type = this.AnalyzeType(enumeration->underlying_type);
         if underlying_type == null { return; }
 
         if !underlying_type->IsInteger() {
@@ -1093,7 +1093,7 @@ class SemanticAnalyzer {
         let mut _type: *HIRType = null;
 
         if variable->_type != null {
-            _type = this.ResolveType(variable->_type);
+            _type = this.AnalyzeType(variable->_type);
 
             if variable->initializer != null {
                 initializer = this.Coerce(this.AnalyzeExpression(variable->initializer), _type);
@@ -1415,7 +1415,7 @@ class SemanticAnalyzer {
                 return null;
             }
 
-            let _type = this.ResolveType((structure->expression as *ASTPathExpression)->path);
+            let _type = this.AnalyzeType((structure->expression as *ASTPathExpression)->path);
             if _type == null { return null; }
 
             if !_type->IsStructure() {
@@ -1689,7 +1689,7 @@ class SemanticAnalyzer {
     }
 
     fn AnalyzeNewExpression(&mut this, _new: *ASTNewExpression) -> *HIRExpression {
-        let _type = this.ResolveType(_new->_type);
+        let _type = this.AnalyzeType(_new->_type);
         if _type == null { return null; }
 
         if _new->size != null {
@@ -1820,7 +1820,7 @@ class SemanticAnalyzer {
     }
 
     fn AnalyzeCastExpression(&mut this, cast: *ASTCastExpression) -> *HIRExpression {
-        let mut target = this.ResolveType(cast->target);
+        let mut target = this.AnalyzeType(cast->target);
         if target == null { return null; }
 
         let value = this.Coerce(this.AnalyzeExpression(cast->expression), target);
@@ -2350,7 +2350,7 @@ class SemanticAnalyzer {
         return this.builder.Ternary(condition, then_value, else_value, category, mutable);
     }
 
-    pub fn ResolveType(&mut this, path: *ASTPath) -> *HIRType {
+    pub fn AnalyzeType(&mut this, path: *ASTPath) -> *HIRType {
         if path == null {
             return this.context.VoidType();
         }
@@ -2411,26 +2411,26 @@ class SemanticAnalyzer {
         } return null;
     }
 
-    pub fn ResolveType(&mut this, _type: *ASTType) -> *HIRType {
+    pub fn AnalyzeType(&mut this, _type: *ASTType) -> *HIRType {
         if _type == null {
             return this.context.VoidType();
         }
 
         if _type->kind == ASTTypeKind::Path {
-            return this.ResolveType((_type as *ASTPathType)->path);
+            return this.AnalyzeType((_type as *ASTPathType)->path);
         } else if _type->kind == ASTTypeKind::Pointer {
             let pointer = _type as *ASTPointerType;
-            let pointee = this.ResolveType(pointer->pointee);
+            let pointee = this.AnalyzeType(pointer->pointee);
             if pointee == null { return null; }
             return this.context.PointerType(pointee, pointer->mutable);
         } else if _type->kind == ASTTypeKind::Reference {
             let reference = _type as *ASTReferenceType;
-            let pointee = this.ResolveType(reference->pointee);
+            let pointee = this.AnalyzeType(reference->pointee);
             if pointee == null { return null; }
             return this.context.ReferenceType(pointee, reference->mutable);
         } else if _type->kind == ASTTypeKind::Array {
             let array = _type as *ASTArrayType;
-            let element = this.ResolveType(array->element);
+            let element = this.AnalyzeType(array->element);
             if element == null { return null; }
             return this.context.PointerType(element, true);
         } else if _type->kind == ASTTypeKind::Function {
@@ -2438,12 +2438,12 @@ class SemanticAnalyzer {
             let mut parameters = Vector<*HIRType>();
 
             for parameter in function->parameters {
-                let _type = this.ResolveType(parameter);
+                let _type = this.AnalyzeType(parameter);
                 if _type == null { return null; }
                 parameters.PushBack(_type);
             }
 
-            let _return = this.ResolveType(function->_return);
+            let _return = this.AnalyzeType(function->_return);
             if _return == null { return null; }
             return this.context.FunctionType(parameters, _return);
         } else {

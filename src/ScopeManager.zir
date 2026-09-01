@@ -42,7 +42,7 @@ class ScopeManager {
         } this.current = this.current->parent;
     }
 
-    fn LookupScope(&this, scope: *Scope, segment: ASTPathSegment) -> *Scope {
+    fn LookupScope(&this, scope: *Scope, segment: &ASTPathSegment, path: *ASTPath) -> *Scope {
         if scope == null { return null; }
         let mut types = Vector<*HIRType>();
 
@@ -54,7 +54,9 @@ class ScopeManager {
 
         if !types.Empty() {
             for symbol in scope->Get(segment.name, SymbolKind::Generic) {
-                return symbol->generic->Instantiate(types)->scope;
+                let instance = symbol->generic->Instantiate(types, path);
+                if instance == null { return null; }
+                return instance->scope;
             }
         } else {
             for child in scope->children {
@@ -65,7 +67,7 @@ class ScopeManager {
         } return null;
     }
 
-    fn LookupSymbol(&this, scope: *Scope, segment: ASTPathSegment) -> Vector<*Symbol> {
+    fn LookupSymbol(&this, scope: *Scope, segment: &ASTPathSegment, path: *ASTPath) -> Vector<*Symbol> {
         if scope == null { return Vector<*Symbol>(); }
         let mut types = Vector<*HIRType>();
 
@@ -80,9 +82,9 @@ class ScopeManager {
         for symbol in scope->Get(segment.name) {
             if !types.Empty() {
                 if symbol->kind != SymbolKind::Generic { continue; }
-                let result = symbol->generic->Instantiate(types);
-                if result == null { continue; }
-                symbols.PushBack(result->symbol);
+                let instance = symbol->generic->Instantiate(types, path);
+                if instance == null { return Vector<*Symbol>(); }
+                symbols.PushBack(instance->symbol);
             } else {
                 symbols.PushBack(symbol);
             }
@@ -96,13 +98,13 @@ class ScopeManager {
             let mut root = this.current;
             while root->parent != null { root = root->parent; }
             if path->segments.Size() == 1 { return root; }
-            scope = this.LookupScope(root, path->segments[0]);
+            scope = this.LookupScope(root, path->segments[0], path);
         } else {
             if path->segments.Size() == 1 { return null; }
             let mut cursor = this.current;
 
             while cursor != null {
-                scope = this.LookupScope(cursor, path->segments[0]);
+                scope = this.LookupScope(cursor, path->segments[0], path);
                 if scope != null { break; }
                 cursor = cursor->parent;
             }
@@ -110,7 +112,7 @@ class ScopeManager {
 
         for i in 1..(path->segments.Size() - 1) {
             if scope == null { break; }
-            scope = this.LookupScope(scope, path->segments[i]);
+            scope = this.LookupScope(scope, path->segments[i], path);
         } return scope;
     }
 
@@ -123,7 +125,7 @@ class ScopeManager {
             let mut cursor = this.current;
 
             while cursor != null {
-                let symbols = this.LookupSymbol(cursor, path->segments.Back());
+                let symbols = this.LookupSymbol(cursor, path->segments.Back(), path);
                 if !symbols.Empty() { return symbols; }
                 cursor = cursor->parent;
             }
@@ -131,7 +133,7 @@ class ScopeManager {
             let scope = this.ResolveScope(path);
 
             if scope != null {
-                let symbols = this.LookupSymbol(scope, path->segments.Back());
+                let symbols = this.LookupSymbol(scope, path->segments.Back(), path);
                 if !symbols.Empty() { return symbols; }
             }
         }
@@ -152,7 +154,7 @@ class ScopeManager {
             while cursor != null {
                 let symbols = Vector<*Symbol>();
 
-                for symbol in this.LookupSymbol(cursor, path->segments.Back()) {
+                for symbol in this.LookupSymbol(cursor, path->segments.Back(), path) {
                     if symbol->kind == SymbolKind::Type {
                         symbols.PushBack(symbol);
                     }
@@ -167,7 +169,7 @@ class ScopeManager {
             if scope != null {
                 let symbols = Vector<*Symbol>();
 
-                for symbol in this.LookupSymbol(scope, path->segments.Back()) {
+                for symbol in this.LookupSymbol(scope, path->segments.Back(), path) {
                     if symbol->kind == SymbolKind::Type {
                         symbols.PushBack(symbol);
                     }
@@ -191,7 +193,7 @@ class ScopeManager {
             let mut cursor = this.current;
 
             while cursor != null {
-                symbols = this.LookupSymbol(cursor, path->segments.Back());
+                symbols = this.LookupSymbol(cursor, path->segments.Back(), path);
                 if !symbols.Empty() { break; }
                 cursor = cursor->parent;
             }
@@ -199,7 +201,7 @@ class ScopeManager {
             let scope = this.ResolveScope(path);
 
             if scope != null {
-                symbols = this.LookupSymbol(scope, path->segments.Back());
+                symbols = this.LookupSymbol(scope, path->segments.Back(), path);
             }
         }
 
@@ -223,7 +225,7 @@ class ScopeManager {
             let mut cursor = this.current;
 
             while cursor != null {
-                symbols = this.LookupSymbol(cursor, path->segments.Back());
+                symbols = this.LookupSymbol(cursor, path->segments.Back(), path);
                 if !symbols.Empty() { break; }
                 cursor = cursor->parent;
             }
@@ -231,7 +233,7 @@ class ScopeManager {
             let scope = this.ResolveScope(path);
 
             if scope != null {
-                symbols = this.LookupSymbol(scope, path->segments.Back());
+                symbols = this.LookupSymbol(scope, path->segments.Back(), path);
             }
         }
 

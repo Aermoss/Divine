@@ -451,10 +451,7 @@ class SemanticAnalyzer {
     }
 
     fn AnalyzeClassDeclarationSecondPass(&mut this, declaration: *mut HIRClassDeclaration, _class: *ASTClassDeclaration, scope: *mut Scope) {
-        unsafe {
-            let _type = (declaration as *HIRDeclaration)->_type as *mut HIRType;
-        }
-
+        let _type = (declaration as *HIRDeclaration)->_type;
         let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
         (this.current_class, this.scope_manager.current) = (_type, scope);
 
@@ -475,10 +472,8 @@ class SemanticAnalyzer {
     }
 
     fn AnalyzeClassDeclarationThirdPass(&mut this, declaration: *mut HIRClassDeclaration, _class: *ASTClassDeclaration, scope: *mut Scope) {
-        unsafe {
-            let _type = (declaration as *HIRDeclaration)->_type as *mut HIRType;
-        }
-
+        let _type = (declaration as *HIRDeclaration)->_type;
+        let (mut has_copy_constructor, mut has_copy_assign) = (false, false);
         let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
         (this.current_class, this.scope_manager.current) = (_type, scope);
 
@@ -487,6 +482,14 @@ class SemanticAnalyzer {
 
             if function != null {
                 declaration->constructors.PushBack(function);
+
+                if function->parameters.Size() == 2 {
+                    let parameter: *HIRParameterDeclaration = function->parameters[1];
+
+                    if *(parameter as *HIRDeclaration)->_type == *(this.context.ReferenceType(_type, false) as *HIRType) {
+                        has_copy_constructor = true;
+                    }
+                }
             }
         }
 
@@ -500,12 +503,88 @@ class SemanticAnalyzer {
 
         for method in _class->methods {
             let function = this.AnalyzeFunctionDeclaration(method, null);
-            let _static = method->instance_kind == ASTInstanceKind::None;
-            if function == null { continue; }
 
-            if !method->generic {
+            if function != null {
                 declaration->methods.PushBack(function);
+
+                if method->name == "operator=" && function->parameters.Size() == 2 {
+                    let parameter: *HIRParameterDeclaration = function->parameters[1];
+
+                    if *(parameter as *HIRDeclaration)->_type == *(this.context.ReferenceType(_type, false) as *HIRType) {
+                        if *function->_return == *(this.context.ReferenceType(_type, false) as *HIRType) {
+                            has_copy_assign = true;
+                        }
+                    }
+                }
             }
+        }
+
+        if _class->constructors.Empty() {
+            let mut parameter_types = Vector<*HIRType>();
+            let mut parameters = Vector<*HIRParameterDeclaration>();
+            let _return = this.context.VoidType();
+
+            let this_type = this.context.ReferenceType(_type, true);
+            parameters.PushBack(this.builder.BuildParameterDeclaration("this".ToString(), this_type, false));
+            parameter_types.PushBack(this_type);
+
+            let name = (declaration as *HIRDeclaration)->name;
+            let function = this.builder.BuildFunctionDeclaration(name, parameters, _return, this.context.FunctionType(parameter_types, _return), false, true, HIRDeclarationABI::Native);
+            this.scope_manager.current->Set(name, function, true, _class as *ASTDeclaration);
+            declaration->constructors.PushBack(function);
+        }
+
+        if _class->destructor == null {
+            let mut parameter_types = Vector<*HIRType>();
+            let mut parameters = Vector<*HIRParameterDeclaration>();
+            let _return = this.context.VoidType();
+
+            let this_type = this.context.ReferenceType(_type, true);
+            parameters.PushBack(this.builder.BuildParameterDeclaration("this".ToString(), this_type, false));
+            parameter_types.PushBack(this_type);
+
+            let name = '~' + (declaration as *HIRDeclaration)->name;
+            let function = this.builder.BuildFunctionDeclaration(name, parameters, _return, this.context.FunctionType(parameter_types, _return), false, true, HIRDeclarationABI::Native);
+            this.scope_manager.current->Set(name, function, true, _class as *ASTDeclaration);
+            declaration->destructor = function;
+        }
+
+        if !has_copy_constructor {
+            let mut parameter_types = Vector<*HIRType>();
+            let mut parameters = Vector<*HIRParameterDeclaration>();
+            let _return = this.context.VoidType();
+
+            let this_type = this.context.ReferenceType(_type, true);
+            parameters.PushBack(this.builder.BuildParameterDeclaration("this".ToString(), this_type, false));
+            parameter_types.PushBack(this_type);
+
+            let other_type = this.context.ReferenceType(_type, false);
+            parameters.PushBack(this.builder.BuildParameterDeclaration("other".ToString(), other_type, false));
+            parameter_types.PushBack(other_type);
+
+            let name = (declaration as *HIRDeclaration)->name;
+            let function = this.builder.BuildFunctionDeclaration(name, parameters, _return, this.context.FunctionType(parameter_types, _return), false, true, HIRDeclarationABI::Native);
+            this.scope_manager.current->Set(name, function, true, _class as *ASTDeclaration);
+            declaration->constructors.PushBack(function);
+        }
+
+        if !has_copy_assign {
+            let mut parameter_types = Vector<*HIRType>();
+            let mut parameters = Vector<*HIRParameterDeclaration>();
+            let _return = this.context.ReferenceType(_type, false);
+
+            let this_type = this.context.ReferenceType(_type, true);
+            parameters.PushBack(this.builder.BuildParameterDeclaration("this".ToString(), this_type, false));
+            parameter_types.PushBack(this_type);
+
+            let other_type = this.context.ReferenceType(_type, false);
+            parameters.PushBack(this.builder.BuildParameterDeclaration("other".ToString(), other_type, false));
+            parameter_types.PushBack(other_type);
+
+            let name = "operator=".ToString();
+            let function = this.builder.BuildFunctionDeclaration(name, parameters, _return, this.context.FunctionType(parameter_types, _return), false, true, HIRDeclarationABI::Native);
+            this.scope_manager.current->Set(name, function, true, _class as *ASTDeclaration);
+            declaration->methods.PushBack(function);
         }
 
         (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
@@ -546,10 +625,7 @@ class SemanticAnalyzer {
     }
 
     fn AnalyzeStructureDeclarationSecondPass(&mut this, declaration: *mut HIRStructureDeclaration, structure: *ASTStructureDeclaration, scope: *mut Scope) {
-        unsafe {
-            let _type = (declaration as *HIRDeclaration)->_type as *mut HIRType;
-        }
-
+        let _type = (declaration as *HIRDeclaration)->_type;
         let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
         (this.current_class, this.scope_manager.current) = (_type, scope);
 
@@ -563,10 +639,7 @@ class SemanticAnalyzer {
     }
 
     fn AnalyzeStructureDeclarationThirdPass(&mut this, declaration: *mut HIRStructureDeclaration, structure: *ASTStructureDeclaration, scope: *mut Scope) {
-        unsafe {
-            let _type = (declaration as *HIRDeclaration)->_type as *mut HIRType;
-        }
-
+        let _type = (declaration as *HIRDeclaration)->_type;
         let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
         (this.current_class, this.scope_manager.current) = (_type, scope);
 

@@ -17,73 +17,59 @@
 #[include "std/str", "std/vec", "std/map", "std/pair",
     "src/Scope.zir", "src/Symbol.zir", "src/HIR.zir" : *]
 
-class GenericInstance {
-    pub symbol: *Symbol,
-    pub scope: *mut Scope;
+enum SemanticPass: u8 {
+    None, First, Second, Third, Fourth
+}
 
-    GenericInstance(&mut this, symbol: *Symbol, scope: *mut Scope) {
-        (this.symbol, this.scope) = (symbol, scope);
+class GenericInstance {
+    pub name: String,
+    pub symbol: *Symbol = null,
+    pub scope: *mut Scope = null,
+    pub declaration: *mut HIRDeclaration = null,
+    pub completed: SemanticPass = SemanticPass::None,
+    pub active: SemanticPass = SemanticPass::None,
+    pub types: Vector<*HIRType>;
+
+    GenericInstance(&mut this, name: &String, types: &Vector<*HIRType>) {
+        (this.name, this.types) = (name, types);
     }
 }
 
 class GenericDeclaration {
-    cache: Map<String, *GenericInstance>,
+    cache: Map<String, *mut GenericInstance>,
 
     pub declaration: *ASTDeclaration,
     pub scope: *mut Scope,
     pub _class: *HIRType,
 
     pub name: String,
-    pub type_names: Vector<String>,
-
-    pub current: String,
-    pub types: Vector<*HIRType>;
+    pub types: Vector<String>;
 
     GenericDeclaration(&mut this, declaration: *ASTDeclaration) {
         (this.declaration, this.scope, this._class) = (declaration, analyzer->scope_manager.current, analyzer->current_class);
 
         if declaration->kind == ASTDeclarationKind::Class {
             let _class = declaration as *ASTClassDeclaration;
-            (this.name, this.type_names) = (_class->name, _class->types);
+            (this.name, this.types) = (_class->name, _class->types);
         } else if declaration->kind == ASTDeclarationKind::Structure {
             let structure = declaration as *ASTStructureDeclaration;
-            (this.name, this.type_names) = (structure->name, structure->types);
+            (this.name, this.types) = (structure->name, structure->types);
         } else {
             let function = declaration as *ASTFunctionDeclaration;
-            (this.name, this.type_names) = (function->name, function->types);
+            (this.name, this.types) = (function->name, function->types);
         }
     }
 
     ~GenericDeclaration(&this) {
         for instance in this.cache.Values() {
-            delete instance->symbol;
-            delete instance;
+            if instance->symbol != null {
+                delete instance->symbol;
+            } delete instance;
         }
-    }
-
-    pub fn Set(&mut this, declaration: *HIRDeclaration) {
-        if this.current.Empty() {
-            Logger::Log("GenericDeclaration", "Not in a generic compilation!", LogSeverity::Fatal);
-        }
-
-        let mut symbol: *Symbol = null;
-
-        if declaration->kind != HIRDeclarationKind::Function {
-            symbol = new Symbol(declaration->_type);
-        } else {
-            symbol = new Symbol(declaration);
-        }
-
-        this.cache[this.current] = new GenericInstance(symbol, analyzer->scope_manager.current);
-        this.current = "";
     }
 
     pub fn Instantiate(&mut this, types: &Vector<*HIRType>) -> *GenericInstance {
-        if !this.current.Empty() {
-            Logger::Log("GenericDeclaration", "Nested generics are not supported!", LogSeverity::Fatal);
-        }
-
-        if types.Size() != this.type_names.Size() {
+        if types.Size() != this.types.Size() {
             Logger::Log("GenericDeclaration", "Generic type parameter count mismatch.", LogSeverity::Error);
             return null;
         }
@@ -97,48 +83,115 @@ class GenericDeclaration {
         analyzer->builder.SetCurrentFunction(null);
         (analyzer->scope_manager.current, analyzer->current_generic) = (this.scope, this);
         (analyzer->_unsafe, analyzer->current_class) = (false, this._class);
-        let (mut name, mut first) = (this.name + '<', true);
+        let mut name = this.name + '<';
 
-        for _type in types {
-            if !first {
-                name += ", ";
-            } else {
-                first = false;
-            }
-
-            name += _type->ToString();
+        for i in 0..types.Size() {
+            if i != 0 { name += ", "; }
+            name += types[i]->ToString();
         } name += '>';
 
+        let mut instance: *mut GenericInstance = null;
+
         if this.cache.Has(name) {
+            instance = this.cache[name];
+        } else {
+            instance = new GenericInstance(name, types);
+            this.cache[name] = instance;
+        }
+
+        if instance->active != SemanticPass::None {
             analyzer->builder.SetCurrentBlock(prev_block);
             analyzer->builder.SetCurrentFunction(prev_function);
             (analyzer->scope_manager.current, analyzer->current_generic) = (prev_scope, prev_generic);
             (analyzer->_unsafe, analyzer->current_class) = (prev_unsafe, prev_class);
-            return this.cache[name];
+            return instance;
         }
 
-        (this.current, this.types) = (name, types);
-        analyzer->scope_manager.PushScope(String("generic"), false);
+        analyzer->scope_manager.PushScope("<generic>".ToString(), true);
 
-        for i in 0..this.type_names.Size() {
-            analyzer->scope_manager.current->Set(this.type_names[i], this.types[i], this.declaration);
+        for i in 0..this.types.Size() {
+            analyzer->scope_manager.current->Set(this.types[i], types[i], this.declaration);
         }
 
         if this.declaration->kind == ASTDeclarationKind::Class {
-            analyzer->AnalyzeClassDeclaration(this.declaration as *ASTClassDeclaration, this);
+            let _class = this.declaration as *ASTClassDeclaration;
+
+            if instance->completed < SemanticPass::First && analyzer->current_pass >= SemanticPass::First {
+                instance->active = SemanticPass::First;
+                let pair = analyzer->AnalyzeClassDeclarationFirstPass(_class, instance);
+                (instance->completed, instance->active) = (SemanticPass::First, SemanticPass::None);
+                (instance->declaration, instance->scope) = (pair.left, analyzer->scope_manager.current);
+                instance->symbol = new Symbol(instance->declaration->_type);
+            }
+
+            if instance->completed < SemanticPass::Second && analyzer->current_pass >= SemanticPass::Second {
+                instance->active = SemanticPass::Second;
+                analyzer->AnalyzeClassDeclarationSecondPass(instance->declaration as *mut HIRClassDeclaration, _class, instance->scope);
+                (instance->completed, instance->active) = (SemanticPass::Second, SemanticPass::None);
+            }
+
+            if instance->completed < SemanticPass::Third && analyzer->current_pass >= SemanticPass::Third {
+                instance->active = SemanticPass::Third;
+                analyzer->AnalyzeClassDeclarationThirdPass(instance->declaration as *mut HIRClassDeclaration, _class, instance->scope);
+                (instance->completed, instance->active) = (SemanticPass::Third, SemanticPass::None);
+            }
+
+            if instance->completed < SemanticPass::Fourth && analyzer->current_pass >= SemanticPass::Fourth {
+                instance->active = SemanticPass::Fourth;
+                analyzer->AnalyzeClassDeclarationFourthPass(instance->declaration as *mut HIRClassDeclaration, _class, instance->scope);
+                (instance->completed, instance->active) = (SemanticPass::Fourth, SemanticPass::None);
+            }
         } else if this.declaration->kind == ASTDeclarationKind::Structure {
-            analyzer->AnalyzeStructureDeclaration(this.declaration as *ASTStructureDeclaration, this);
+            let structure = this.declaration as *ASTStructureDeclaration;
+
+            if instance->completed < SemanticPass::First && analyzer->current_pass >= SemanticPass::First {
+                instance->active = SemanticPass::First;
+                let pair = analyzer->AnalyzeStructureDeclarationFirstPass(structure, instance);
+                (instance->completed, instance->active) = (SemanticPass::First, SemanticPass::None);
+                (instance->declaration, instance->scope) = (pair.left, analyzer->scope_manager.current);
+                instance->symbol = new Symbol(instance->declaration->_type);
+            }
+
+            if instance->completed < SemanticPass::Second && analyzer->current_pass >= SemanticPass::Second {
+                instance->active = SemanticPass::Second;
+                analyzer->AnalyzeStructureDeclarationSecondPass(instance->declaration as *mut HIRStructureDeclaration, structure, instance->scope);
+                (instance->completed, instance->active) = (SemanticPass::Second, SemanticPass::None);
+            }
+
+            if instance->completed < SemanticPass::Third && analyzer->current_pass >= SemanticPass::Third {
+                instance->active = SemanticPass::Third;
+                analyzer->AnalyzeStructureDeclarationThirdPass(instance->declaration as *mut HIRStructureDeclaration, structure, instance->scope);
+                (instance->completed, instance->active) = (SemanticPass::Third, SemanticPass::None);
+            }
+
+            if instance->completed < SemanticPass::Fourth && analyzer->current_pass >= SemanticPass::Fourth {
+                instance->active = SemanticPass::Fourth;
+                analyzer->AnalyzeStructureDeclarationFourthPass(instance->declaration as *mut HIRStructureDeclaration, structure, instance->scope);
+                (instance->completed, instance->active) = (SemanticPass::Fourth, SemanticPass::None);
+            }
         } else {
-            analyzer->AnalyzeFunctionDeclaration(this.declaration as *ASTFunctionDeclaration, this);
+            let function = this.declaration as *ASTFunctionDeclaration;
+
+            if instance->completed < SemanticPass::Third && analyzer->current_pass >= SemanticPass::Third {
+                instance->active = SemanticPass::Third;
+                instance->declaration = analyzer->AnalyzeFunctionDeclarationFirstPass(function, instance);
+                (instance->completed, instance->active) = (SemanticPass::Third, SemanticPass::None);
+                instance->symbol = new Symbol(instance->declaration);
+            }
+
+            if instance->completed < SemanticPass::Fourth && analyzer->current_pass >= SemanticPass::Fourth {
+                instance->active = SemanticPass::Fourth;
+                analyzer->AnalyzeFunctionDeclarationSecondPass(instance->declaration as *mut HIRFunctionDeclaration, function);
+                (instance->completed, instance->active) = (SemanticPass::Fourth, SemanticPass::None);
+            }
         }
 
-        this.types.Clear();
         analyzer->scope_manager.PopScope();
         analyzer->builder.SetCurrentBlock(prev_block);
         analyzer->builder.SetCurrentFunction(prev_function);
         (analyzer->scope_manager.current, analyzer->current_generic) = (prev_scope, prev_generic);
         (analyzer->_unsafe, analyzer->current_class) = (prev_unsafe, prev_class);
-        return this.cache[name];
+        return instance;
     }
 }
 

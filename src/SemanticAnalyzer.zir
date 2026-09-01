@@ -24,6 +24,7 @@ class SemanticAnalyzer {
     pub builder: HIRBuilder,
     pub scope_manager: ScopeManager,
 
+    pub current_pass: SemanticPass = SemanticPass::None,
     class_data: Map<*ASTNode, Pair<*mut HIRClassDeclaration, *mut Scope>>,
     structure_data: Map<*ASTNode, Pair<*mut HIRStructureDeclaration, *mut Scope>>,
     function_data: Map<*ASTNode, *mut HIRFunctionDeclaration>,
@@ -55,18 +56,22 @@ class SemanticAnalyzer {
         let mut declared = Map<*ASTNode, bool>();
 
         for declaration in module->declarations {
+            this.current_pass = SemanticPass::First;
             declared[declaration] = this.AnalyzeDeclarationFirstPass(declaration);
         }
 
         for declaration in module->declarations {
+            this.current_pass = SemanticPass::Second;
             declared[declaration] |= this.AnalyzeDeclarationSecondPass(declaration);
         }
 
         for declaration in module->declarations {
+            this.current_pass = SemanticPass::Third;
             declared[declaration] |= this.AnalyzeDeclarationThirdPass(declaration);
         }
 
         for declaration in module->declarations {
+            this.current_pass = SemanticPass::Fourth;
             declared[declaration] |= this.AnalyzeDeclarationFourthPass(declaration);
 
             if !declared[declaration] {
@@ -83,6 +88,7 @@ class SemanticAnalyzer {
         }
 
         this.generics.Clear();
+        this.current_pass = SemanticPass::None;
         return this.module;
     }
 
@@ -320,11 +326,11 @@ class SemanticAnalyzer {
         this.scope_manager.current->Set(_static->name, declaration, false, _static as *ASTDeclaration);
     }
 
-    fn AnalyzeFunctionDeclarationFirstPass(&mut this, function: *ASTFunctionDeclaration, generic: *mut GenericDeclaration) -> *mut HIRFunctionDeclaration {
-        if function->generic && generic == null {
-            let _generic = new GenericDeclaration(function);
-            this.scope_manager.current->Set(function->name, _generic, function as *ASTDeclaration);
-            this.generics.PushBack(_generic);
+    pub fn AnalyzeFunctionDeclarationFirstPass(&mut this, function: *ASTFunctionDeclaration, instance: *mut GenericInstance) -> *mut HIRFunctionDeclaration {
+        if function->generic && instance == null {
+            let generic = new GenericDeclaration(function);
+            this.scope_manager.current->Set(function->name, generic, function as *ASTDeclaration);
+            this.generics.PushBack(generic);
             return null;
         }
 
@@ -363,14 +369,12 @@ class SemanticAnalyzer {
         if _return == null { return null; }
         let declaration = this.builder.BuildFunctionDeclaration(function->name, parameters, _return, this.context.FunctionType(parameter_types, _return), function->no_mangle, function->public, this.abi);
 
-        if generic != null {
-            generic->Set(declaration);
-        } else {
+        if instance == null {
             this.scope_manager.current->Set(function->name, declaration, this.abi == HIRDeclarationABI::Native && !function->no_mangle, function as *ASTDeclaration);
         } return declaration;
     }
 
-    fn AnalyzeFunctionDeclarationSecondPass(&mut this, declaration: *mut HIRFunctionDeclaration, function: *ASTFunctionDeclaration) {
+    pub fn AnalyzeFunctionDeclarationSecondPass(&mut this, declaration: *mut HIRFunctionDeclaration, function: *ASTFunctionDeclaration) {
         if function->body == null { return; }
         this.builder.SetCurrentFunction(declaration);
         this.scope_manager.PushScope(function->name, false);
@@ -406,40 +410,30 @@ class SemanticAnalyzer {
         this.scope_manager.PopScope();
     }
 
-    pub fn AnalyzeFunctionDeclaration(&mut this, function: *ASTFunctionDeclaration, generic: *mut GenericDeclaration) -> *HIRFunctionDeclaration {
-        let declaration = this.AnalyzeFunctionDeclarationFirstPass(function, generic);
-
-        if declaration != null {
-            this.AnalyzeFunctionDeclarationSecondPass(declaration, function);
-        } return declaration;
-    }
-
-    fn AnalyzeClassDeclarationFirstPass(&mut this, _class: *ASTClassDeclaration, generic: *mut GenericDeclaration) -> Pair<*mut HIRClassDeclaration, *mut Scope> {
-        if _class->generic && generic == null {
-            let _generic = new GenericDeclaration(_class);
-            let symbol = this.scope_manager.current->Set(_class->name, _generic, _class as *ASTDeclaration);
-            this.generics.PushBack(_generic);
+    pub fn AnalyzeClassDeclarationFirstPass(&mut this, _class: *ASTClassDeclaration, instance: *mut GenericInstance) -> Pair<*mut HIRClassDeclaration, *mut Scope> {
+        if _class->generic && instance == null {
+            let generic = new GenericDeclaration(_class);
+            this.scope_manager.current->Set(_class->name, generic, _class as *ASTDeclaration);
+            this.generics.PushBack(generic);
             return Pair<*mut HIRClassDeclaration, *mut Scope>(null, null);
         }
 
+        let mut scope: *mut Scope = null;
         let _type = this.context.ClassType(null);
         let declaration = this.builder.BuildClassDeclaration(_class->name, _type);
         _type->declaration = declaration;
 
-        if generic != null {
-            this.scope_manager.PushScope(generic->current, true);
-            generic->Set(declaration);
-        } else {
+        if instance == null {
             this.scope_manager.current->Set(_class->name, _type, _class as *ASTDeclaration);
             this.scope_manager.PushScope(_class->name, true);
+            scope = this.scope_manager.current;
+            this.scope_manager.PopScope();
         }
 
-        let scope = this.scope_manager.current;
-        this.scope_manager.PopScope();
         return Pair<*mut HIRClassDeclaration, *mut Scope>(declaration, scope);
     }
 
-    fn AnalyzeClassDeclarationSecondPass(&mut this, declaration: *mut HIRClassDeclaration, _class: *ASTClassDeclaration, scope: *mut Scope) {
+    pub fn AnalyzeClassDeclarationSecondPass(&mut this, declaration: *mut HIRClassDeclaration, _class: *ASTClassDeclaration, scope: *mut Scope) {
         let _type = (declaration as *HIRDeclaration)->_type;
         let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
         (this.current_class, this.scope_manager.current) = (_type, scope);
@@ -460,7 +454,7 @@ class SemanticAnalyzer {
         (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
     }
 
-    fn AnalyzeClassDeclarationThirdPass(&mut this, declaration: *mut HIRClassDeclaration, _class: *ASTClassDeclaration, scope: *mut Scope) {
+    pub fn AnalyzeClassDeclarationThirdPass(&mut this, declaration: *mut HIRClassDeclaration, _class: *ASTClassDeclaration, scope: *mut Scope) {
         let _type = (declaration as *HIRDeclaration)->_type;
         let (mut has_copy_constructor, mut has_copy_assign) = (false, false);
         let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
@@ -579,7 +573,7 @@ class SemanticAnalyzer {
         (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
     }
 
-    fn AnalyzeClassDeclarationFourthPass(&mut this, declaration: *mut HIRClassDeclaration, _class: *ASTClassDeclaration, scope: *mut Scope) {
+    pub fn AnalyzeClassDeclarationFourthPass(&mut this, declaration: *mut HIRClassDeclaration, _class: *ASTClassDeclaration, scope: *mut Scope) {
         let _type = (declaration as *HIRDeclaration)->_type;
         let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
         (this.current_class, this.scope_manager.current) = (_type, scope);
@@ -599,42 +593,30 @@ class SemanticAnalyzer {
         (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
     }
 
-    pub fn AnalyzeClassDeclaration(&mut this, _class: *ASTClassDeclaration, generic: *mut GenericDeclaration) -> *HIRClassDeclaration {
-        let pair = this.AnalyzeClassDeclarationFirstPass(_class, generic);
-
-        if pair.left != null {
-            this.AnalyzeClassDeclarationSecondPass(pair.left, _class, pair.right);
-            this.AnalyzeClassDeclarationThirdPass(pair.left, _class, pair.right);
-            this.AnalyzeClassDeclarationFourthPass(pair.left, _class, pair.right);
-        } return pair.left;
-    }
-
-    fn AnalyzeStructureDeclarationFirstPass(&mut this, structure: *ASTStructureDeclaration, generic: *mut GenericDeclaration) -> Pair<*mut HIRStructureDeclaration, *mut Scope> {
-        if structure->generic && generic == null {
-            let _generic = new GenericDeclaration(structure);
-            this.scope_manager.current->Set(structure->name, _generic, structure as *ASTDeclaration);
-            this.generics.PushBack(_generic);
+    pub fn AnalyzeStructureDeclarationFirstPass(&mut this, structure: *ASTStructureDeclaration, instance: *mut GenericInstance) -> Pair<*mut HIRStructureDeclaration, *mut Scope> {
+        if structure->generic && instance == null {
+            let generic = new GenericDeclaration(structure);
+            this.scope_manager.current->Set(structure->name, generic, structure as *ASTDeclaration);
+            this.generics.PushBack(generic);
             return Pair<*mut HIRStructureDeclaration, *mut Scope>(null, null);
         }
 
+        let mut scope: *mut Scope = null;
         let _type = this.context.StructureType(null);
         let declaration = this.builder.BuildStructureDeclaration(structure->name, _type);
         _type->declaration = declaration;
 
-        if generic != null {
-            this.scope_manager.PushScope(generic->current, true);
-            generic->Set(declaration);
-        } else {
+        if instance == null {
             this.scope_manager.current->Set(structure->name, _type, structure as *ASTDeclaration);
             this.scope_manager.PushScope(structure->name, true);
+            scope = this.scope_manager.current;
+            this.scope_manager.PopScope();
         }
 
-        let scope = this.scope_manager.current;
-        this.scope_manager.PopScope();
         return Pair<*mut HIRStructureDeclaration, *mut Scope>(declaration, scope);
     }
 
-    fn AnalyzeStructureDeclarationSecondPass(&mut this, declaration: *mut HIRStructureDeclaration, structure: *ASTStructureDeclaration, scope: *mut Scope) {
+    pub fn AnalyzeStructureDeclarationSecondPass(&mut this, declaration: *mut HIRStructureDeclaration, structure: *ASTStructureDeclaration, scope: *mut Scope) {
         let _type = (declaration as *HIRDeclaration)->_type;
         let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
         (this.current_class, this.scope_manager.current) = (_type, scope);
@@ -648,7 +630,7 @@ class SemanticAnalyzer {
         (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
     }
 
-    fn AnalyzeStructureDeclarationThirdPass(&mut this, declaration: *mut HIRStructureDeclaration, structure: *ASTStructureDeclaration, scope: *mut Scope) {
+    pub fn AnalyzeStructureDeclarationThirdPass(&mut this, declaration: *mut HIRStructureDeclaration, structure: *ASTStructureDeclaration, scope: *mut Scope) {
         let _type = (declaration as *HIRDeclaration)->_type;
         let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
         (this.current_class, this.scope_manager.current) = (_type, scope);
@@ -664,7 +646,7 @@ class SemanticAnalyzer {
         (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
     }
 
-    fn AnalyzeStructureDeclarationFourthPass(&mut this, declaration: *mut HIRStructureDeclaration, structure: *ASTStructureDeclaration, scope: *mut Scope) {
+    pub fn AnalyzeStructureDeclarationFourthPass(&mut this, declaration: *mut HIRStructureDeclaration, structure: *ASTStructureDeclaration, scope: *mut Scope) {
         let _type = (declaration as *HIRDeclaration)->_type;
         let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
         (this.current_class, this.scope_manager.current) = (_type, scope);
@@ -674,16 +656,6 @@ class SemanticAnalyzer {
         }
 
         (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
-    }
-
-    pub fn AnalyzeStructureDeclaration(&mut this, structure: *ASTStructureDeclaration, generic: *mut GenericDeclaration) -> *HIRStructureDeclaration {
-        let pair = this.AnalyzeStructureDeclarationFirstPass(structure, generic);
-
-        if pair.left != null {
-            this.AnalyzeStructureDeclarationSecondPass(pair.left, structure, pair.right);
-            this.AnalyzeStructureDeclarationThirdPass(pair.left, structure, pair.right);
-            this.AnalyzeStructureDeclarationFourthPass(pair.left, structure, pair.right);
-        } return pair.left;
     }
 
     fn AnalyzeEnumerationDeclaration(&mut this, enumeration: *ASTEnumerationDeclaration) {

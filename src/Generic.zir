@@ -17,8 +17,17 @@
 #[include "std/str", "std/vec", "std/map", "std/pair",
     "src/Scope.zir", "src/Symbol.zir", "src/HIR.zir" : *]
 
-class Generic {
-    cache: Map<String, Pair<*Symbol, *mut Scope>>,
+class GenericInstance {
+    pub symbol: *Symbol,
+    pub scope: *mut Scope;
+
+    GenericInstance(&mut this, symbol: *Symbol, scope: *mut Scope) {
+        (this.symbol, this.scope) = (symbol, scope);
+    }
+}
+
+class GenericDeclaration {
+    cache: Map<String, *GenericInstance>,
 
     pub declaration: *ASTDeclaration,
     pub scope: *mut Scope,
@@ -30,7 +39,7 @@ class Generic {
     pub current: String,
     pub types: Vector<*HIRType>;
 
-    Generic(&mut this, declaration: *ASTDeclaration) {
+    GenericDeclaration(&mut this, declaration: *ASTDeclaration) {
         (this.declaration, this.scope, this._class) = (declaration, analyzer->scope_manager.current, analyzer->current_class);
 
         if declaration->kind == ASTDeclarationKind::Class {
@@ -45,15 +54,16 @@ class Generic {
         }
     }
 
-    ~Generic(&this) {
-        for pair in this.cache {
-            delete pair.right.left;
+    ~GenericDeclaration(&this) {
+        for instance in this.cache.Values() {
+            delete instance->symbol;
+            delete instance;
         }
     }
 
     pub fn Set(&mut this, declaration: *HIRDeclaration) {
         if this.current.Empty() {
-            Logger::Log("Generic", "Not in a generic compilation!", LogSeverity::Fatal);
+            Logger::Log("GenericDeclaration", "Not in a generic compilation!", LogSeverity::Fatal);
         }
 
         let mut symbol: *Symbol = null;
@@ -64,18 +74,18 @@ class Generic {
             symbol = new Symbol(declaration);
         }
 
-        this.cache[this.current] = Pair<*Symbol, *mut Scope>(symbol, analyzer->scope_manager.current);
+        this.cache[this.current] = new GenericInstance(symbol, analyzer->scope_manager.current);
         this.current = "";
     }
 
-    pub fn Get(&mut this, types: &Vector<*HIRType>) -> Pair<*Symbol, *mut Scope> {
+    pub fn Instantiate(&mut this, types: &Vector<*HIRType>) -> *GenericInstance {
         if !this.current.Empty() {
-            Logger::Log("Generic", "Nested generics are not supported!", LogSeverity::Fatal);
+            Logger::Log("GenericDeclaration", "Nested generics are not supported!", LogSeverity::Fatal);
         }
 
         if types.Size() != this.type_names.Size() {
-            Logger::Log("Generic", "Generic type parameter count mismatch.", LogSeverity::Error);
-            return Pair<*Symbol, *mut Scope>(null, null);
+            Logger::Log("GenericDeclaration", "Generic type parameter count mismatch.", LogSeverity::Error);
+            return null;
         }
 
         let (prev_unsafe, prev_class) = (analyzer->_unsafe, analyzer->current_class);

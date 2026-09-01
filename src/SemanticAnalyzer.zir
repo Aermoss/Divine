@@ -594,6 +594,122 @@ class SemanticAnalyzer {
             this.AnalyzeFunctionDeclarationSecondPass(declaration->methods[i], _class->methods[i]);
         }
 
+        if _class->constructors.Empty() {
+            let fields = (_type as *HIRClassType)->declaration->fields;
+            let function: *mut HIRFunctionDeclaration = declaration->constructors.Back();
+            this.scope_manager.PushScope((function as *HIRDeclaration)->name, false);
+            this.builder.SetCurrentFunction(function);
+            let block = this.builder.BuildBlockStatement();
+            this.builder.SetCurrentBlock(block);
+            function->body = block;
+
+            let this_parameter: *HIRParameterDeclaration = function->parameters[0];
+            let this_reference = this.builder.ReferenceDeclaration(this_parameter, false);
+            let this_dereferenced = this.builder.Dereference(this_reference);
+
+            for i in 0..fields.Size() {
+                let field: *HIRFieldDeclaration = fields[i];
+                let field_type = (field as *HIRDeclaration)->_type;
+                let this_field = this.builder.MemberAccess(this_dereferenced, field_type, i);
+
+                if field_type->IsClass() {
+                    let name = ((field_type as *HIRClassType)->declaration as *HIRDeclaration)->name;
+                    let candidates = field_type->GetCandidates(name, _class as *ASTDeclaration, false);
+                    if candidates.Empty() { continue; }
+
+                    let mut values = Vector<*HIRExpression>();
+                    values.PushBack(this.ImplicitAddressOf(this_field));
+                    let function = this.ResolveOverload(candidates, values, _class as *ASTDeclaration, false);
+                    if function == null { continue; }
+                    let call = this.AnalyzeResolvedCallExpression(function, values, _class as *ASTDeclaration);
+                    if call == null { continue; }
+                    this.builder.BuildExpressionStatement(call);
+                } else if field->initializer != null {
+                    this.builder.BuildExpressionStatement(this.builder.Assignment(this_field, this.AnalyzeExpression(field->initializer)));
+                }
+            }
+
+            this.scope_manager.PopScope();
+        } else if _class->constructors.Size() < declaration->constructors.Size() {
+            let fields = (_type as *HIRClassType)->declaration->fields;
+            let function: *mut HIRFunctionDeclaration = declaration->constructors.Back();
+            this.scope_manager.PushScope((function as *HIRDeclaration)->name, false);
+            this.builder.SetCurrentFunction(function);
+            let block = this.builder.BuildBlockStatement();
+            this.builder.SetCurrentBlock(block);
+            function->body = block;
+
+            let this_parameter: *HIRParameterDeclaration = function->parameters[0];
+            let this_reference = this.builder.ReferenceDeclaration(this_parameter, false);
+            let this_dereferenced = this.builder.Dereference(this_reference);
+
+            let other_parameter: *HIRParameterDeclaration = function->parameters[1];
+            let other_reference = this.builder.ReferenceDeclaration(other_parameter, false);
+            let other_dereferenced = this.builder.Dereference(other_reference);
+
+            for i in 0..fields.Size() {
+                let field: *HIRFieldDeclaration = fields[i];
+                let field_type = (field as *HIRDeclaration)->_type;
+                let this_field = this.builder.MemberAccess(this_dereferenced, field_type, i);
+                let other_field = this.builder.MemberAccess(other_dereferenced, field_type, i);
+
+                if field_type->IsClass() {
+                    let name = ((field_type as *HIRClassType)->declaration as *HIRDeclaration)->name;
+                    let candidates = field_type->GetCandidates(name, _class as *ASTDeclaration, false);
+                    if candidates.Empty() { continue; }
+
+                    let mut values = Vector<*HIRExpression>();
+                    values.PushBack(this.ImplicitAddressOf(this_field));
+                    values.PushBack(this.ImplicitAddressOf(other_field));
+                    let function = this.ResolveOverload(candidates, values, _class as *ASTDeclaration, false);
+                    if function == null { continue; }
+                    let call = this.AnalyzeResolvedCallExpression(function, values, _class as *ASTDeclaration);
+                    if call == null { continue; }
+                    this.builder.BuildExpressionStatement(call);
+                } else {
+                    this.builder.BuildExpressionStatement(this.builder.Assignment(this_field, other_field));
+                }
+            }
+
+            this.scope_manager.PopScope();
+        }
+
+        if _class->destructor == null {
+            let function = declaration->destructor;
+            let fields = (_type as *HIRClassType)->declaration->fields;
+            this.scope_manager.PushScope((function as *HIRDeclaration)->name, false);
+            this.builder.SetCurrentFunction(function);
+            let block = this.builder.BuildBlockStatement();
+            this.builder.SetCurrentBlock(block);
+            function->body = block;
+
+            let this_parameter: *HIRParameterDeclaration = function->parameters[0];
+            let this_reference = this.builder.ReferenceDeclaration(this_parameter, false);
+            let this_dereferenced = this.builder.Dereference(this_reference);
+
+            for i in 0..fields.Size() {
+                let field: *HIRFieldDeclaration = fields[i];
+                let field_type = (field as *HIRDeclaration)->_type;
+                let this_field = this.builder.MemberAccess(this_dereferenced, field_type, i);
+
+                if field_type->IsClass() {
+                    let name = ((field_type as *HIRClassType)->declaration as *HIRDeclaration)->name;
+                    let candidates = field_type->GetCandidates('~' + name, _class as *ASTDeclaration, false);
+                    if candidates.Empty() { continue; }
+
+                    let mut values = Vector<*HIRExpression>();
+                    values.PushBack(this.ImplicitAddressOf(this_field));
+                    let function = this.ResolveOverload(candidates, values, _class as *ASTDeclaration, false);
+                    if function == null { continue; }
+                    let call = this.AnalyzeResolvedCallExpression(function, values, _class as *ASTDeclaration);
+                    if call == null { continue; }
+                    this.builder.BuildExpressionStatement(call);
+                }
+            }
+
+            this.scope_manager.PopScope();
+        }
+
         (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
     }
 
@@ -1134,10 +1250,24 @@ class SemanticAnalyzer {
         }
 
         if _type != null {
-            let statement = this.builder.BuildVariableStatement(variable->name, _type, initializer, variable->mutable);
+            let statement = this.builder.BuildVariableStatement(variable->name, _type, /* !_type->IsClass() ? initializer : null */ initializer, variable->mutable);
             this.scope_manager.current->Set(variable->name, statement, variable as *ASTStatement);
 
             if _type->IsClass() {
+                /* let name = ((_type as *HIRClassType)->declaration as *HIRDeclaration)->name;
+                let candidates = _type->GetCandidates(name, variable as *ASTStatement, false);
+                if candidates.Empty() { return; }
+
+                let mut values = Vector<*HIRExpression>();
+                let reciever = this.builder.ReferenceVariable(statement);
+                (reciever as *mut HIRExpression)->mutable = true;
+                values.PushBack(reciever);
+                values.PushBack(this.ImplicitAddressOf(initializer));
+                let function = this.ResolveOverload(candidates, values, variable as *ASTStatement, false);
+                if function == null { return; }
+                let call = this.AnalyzeResolvedCallExpression(function, values, variable as *ASTStatement);
+                if call == null { return; }
+                this.builder.BuildExpressionStatement(call); */
                 this.scope_manager.current->instances.PushBack(this.builder.ReferenceVariable(statement));
                 this.FlushTemporaries(initializer);
             } else {

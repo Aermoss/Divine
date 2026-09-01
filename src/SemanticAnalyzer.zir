@@ -18,32 +18,16 @@
     "src/ScopeManager.zir", "src/Scope.zir", "src/Symbol.zir", "src/Generic.zir",
         "src/Token.zir", "src/AST.zir", "src/HIR.zir", "src/Logger.zir" : *]
 
-class SemanticForward {
-    pub _class: *HIRType,
-    pub generic: *Generic = null,
-    pub types: Vector<*HIRType>,
-    pub node: *ASTFunctionDeclaration,
-    pub function: *mut HIRFunctionDeclaration;
-
-    SemanticForward(&mut this, _class: *HIRType, node: *ASTFunctionDeclaration, function: *mut HIRFunctionDeclaration) {
-        (this._class, this.node, this.function) = (_class, node, function);
-    }
-
-    SemanticForward(&mut this, _class: *HIRType, generic: *Generic, types: &Vector<*HIRType>, node: *ASTFunctionDeclaration, function: *mut HIRFunctionDeclaration) {
-        (this._class, this.generic, this.types, this.node, this.function) = (_class, generic, types, node, function);
-    }
-}
-
 class SemanticAnalyzer {
     context: HIRContext,
     module: *mut HIRModule = null,
     pub builder: HIRBuilder,
     pub scope_manager: ScopeManager,
 
-    forwards: Vector<SemanticForward>,
+    temporaries: Vector<*HIRExpression>,
     class_data: Map<*ASTNode, Pair<*mut HIRClassDeclaration, *mut Scope>>,
     structure_data: Map<*ASTNode, Pair<*mut HIRStructureDeclaration, *mut Scope>>,
-    temporaries: Vector<*HIRExpression>,
+    function_data: Map<*ASTNode, *mut HIRFunctionDeclaration>,
     loop_scopes: Vector<*mut Scope>,
 
     pub abi: HIRDeclarationABI = HIRDeclarationABI::Native,
@@ -70,8 +54,7 @@ class SemanticAnalyzer {
         let mut declared = Map<*ASTNode, bool>();
 
         for declaration in module->declarations {
-            declared[declaration] = false;
-            declared[declaration] |= this.AnalyzeDeclarationFirstPass(declaration);
+            declared[declaration] = this.AnalyzeDeclarationFirstPass(declaration);
         }
 
         for declaration in module->declarations {
@@ -80,6 +63,10 @@ class SemanticAnalyzer {
 
         for declaration in module->declarations {
             declared[declaration] |= this.AnalyzeDeclarationThirdPass(declaration);
+        }
+
+        for declaration in module->declarations {
+            declared[declaration] |= this.AnalyzeDeclarationFourthPass(declaration);
 
             if !declared[declaration] {
                 Logger::Log("Unknown declaration '" + declaration->kind.ToString() + "'.", declaration, LogSeverity::Error);
@@ -88,8 +75,7 @@ class SemanticAnalyzer {
 
         this.class_data.Clear();
         this.structure_data.Clear();
-        this.AnalyzeForwardDeclarations();
-        this.forwards.Clear();
+        this.function_data.Clear();
 
         for generic in this.generics {
             delete generic;
@@ -97,73 +83,6 @@ class SemanticAnalyzer {
 
         this.generics.Clear();
         return this.module;
-    }
-
-    fn AnalyzeForwardDeclarations(&mut this) {
-        let mut i: usize = 0;
-
-        while i < this.forwards.Size() {
-            let forward: SemanticForward = this.forwards[i];
-            let mut symbols = Map<String, *Symbol>();
-            let prev_scope = this.scope_manager.current;
-            this.builder.SetCurrentFunction(forward.function);
-            this.current_class = forward._class;
-
-            if forward.generic != null {
-                this.scope_manager.current = forward.generic->scope;
-                let mut index: usize = 0;
-
-                for _type in forward.types {
-                    let name = forward.generic->type_names[index];
-                    symbols[name] = this.scope_manager.current->Set(name, _type, forward.node as *ASTDeclaration);
-                    index += 1;
-                }
-            }
-
-            this.scope_manager.PushScope(forward.node->name, false);
-
-            for parameter in forward.function->parameters {
-                let declaration = parameter as *HIRDeclaration;
-                this.scope_manager.current->Set(declaration->name, parameter, false, forward.node as *ASTDeclaration);
-
-                if declaration->_type->IsClass() {
-                    this.scope_manager.current->instances.PushBack(this.builder.ReferenceDeclaration(parameter, false));
-                }
-            }
-
-            for constructor in forward.node->constructors {
-                let _type = this.ResolveType((constructor->expression as *ASTPathExpression)->path);
-                if _type == null { continue; }
-
-                if !_type->IsClass() {
-                    Logger::Log("Constructor target must be a class.", constructor as *ASTExpression, LogSeverity::Error);
-                    continue;
-                }
-
-                let mut values = Vector<*HIRExpression>();
-
-                for argument in constructor->arguments {
-                    let value = this.AnalyzeExpression(argument);
-                    if value == null { continue; }
-                    values.PushBack(value);
-                }
-            }
-
-            forward.function->body = this.AnalyzeBlockStatement(forward.node->body);
-            this.scope_manager.PopScope();
-
-            if forward.generic != null {
-                for pair in symbols {
-                    this.scope_manager.current->symbols[pair.left].Remove(pair.right);
-
-                    if this.scope_manager.current->symbols[pair.left].Empty() {
-                        this.scope_manager.current->symbols.Remove(pair.left);
-                    } delete pair.right;
-                }
-
-                this.scope_manager.current = prev_scope;
-            } i += 1;
-        }
     }
 
     fn AnalyzeDeclarationFirstPass(&mut this, declaration: *ASTDeclaration) -> bool {
@@ -220,8 +139,13 @@ class SemanticAnalyzer {
         if declaration->kind == ASTDeclarationKind::Static {
             this.AnalyzeStaticDeclaration(declaration as *ASTStaticDeclaration);
         } else if declaration->kind == ASTDeclarationKind::Function {
-            let function = this.AnalyzeFunctionDeclaration(declaration as *ASTFunctionDeclaration, null);
-            if function != null { this.module->declarations.PushBack(function); }
+            let function = declaration as *ASTFunctionDeclaration;
+            let data = this.AnalyzeFunctionDeclarationFirstPass(function, null);
+
+            if !function->generic && data != null {
+                this.module->declarations.PushBack(data);
+                this.function_data[declaration] = data;
+            }
         } else if declaration->kind == ASTDeclarationKind::Class {
             let _class = declaration as *ASTClassDeclaration;
 
@@ -237,9 +161,37 @@ class SemanticAnalyzer {
                 this.AnalyzeStructureDeclarationThirdPass(cache.left, structure, cache.right);
             }
         } else if declaration->kind == ASTDeclarationKind::Extern {
-            this.AnalyzeExternDeclaration(declaration as *ASTExternDeclaration);
+            this.AnalyzeExternDeclarationFirstPass(declaration as *ASTExternDeclaration);
         } else if declaration->kind == ASTDeclarationKind::Assembly {
             this.AnalyzeAssemblyDeclaration(declaration as *ASTAssemblyDeclaration);
+        } else {
+            return false;
+        } return true;
+    }
+
+    fn AnalyzeDeclarationFourthPass(&mut this, declaration: *ASTDeclaration) -> bool {
+        if declaration->kind == ASTDeclarationKind::Function {
+            let function = declaration as *ASTFunctionDeclaration;
+
+            if !function->generic {
+                this.AnalyzeFunctionDeclarationSecondPass(this.function_data[declaration], function);
+            }
+        } else if declaration->kind == ASTDeclarationKind::Class {
+            let _class = declaration as *ASTClassDeclaration;
+
+            if !_class->generic {
+                let cache = this.class_data[declaration];
+                this.AnalyzeClassDeclarationFourthPass(cache.left, _class, cache.right);
+            }
+        } else if declaration->kind == ASTDeclarationKind::Structure {
+            let structure = declaration as *ASTStructureDeclaration;
+
+            if !structure->generic {
+                let cache = this.structure_data[declaration];
+                this.AnalyzeStructureDeclarationFourthPass(cache.left, structure, cache.right);
+            }
+        } else if declaration->kind == ASTDeclarationKind::Extern {
+            this.AnalyzeExternDeclarationSecondPass(declaration as *ASTExternDeclaration);
         } else {
             return false;
         } return true;
@@ -367,7 +319,7 @@ class SemanticAnalyzer {
         this.scope_manager.current->Set(_static->name, declaration, false, _static as *ASTDeclaration);
     }
 
-    pub fn AnalyzeFunctionDeclaration(&mut this, function: *ASTFunctionDeclaration, generic: *mut Generic) -> *HIRFunctionDeclaration {
+    fn AnalyzeFunctionDeclarationFirstPass(&mut this, function: *ASTFunctionDeclaration, generic: *mut Generic) -> *mut HIRFunctionDeclaration {
         if function->generic && generic == null {
             let _generic = new Generic(function);
             this.scope_manager.current->Set(function->name, _generic, function as *ASTDeclaration);
@@ -414,14 +366,50 @@ class SemanticAnalyzer {
             generic->Set(declaration);
         } else {
             this.scope_manager.current->Set(function->name, declaration, this.abi == HIRDeclarationABI::Native && !function->no_mangle, function as *ASTDeclaration);
+        } return declaration;
+    }
+
+    fn AnalyzeFunctionDeclarationSecondPass(&mut this, declaration: *mut HIRFunctionDeclaration, function: *ASTFunctionDeclaration) {
+        if function->body == null { return; }
+        this.builder.SetCurrentFunction(declaration);
+        this.scope_manager.PushScope(function->name, false);
+
+        for parameter in declaration->parameters {
+            let declaration = parameter as *HIRDeclaration;
+            this.scope_manager.current->Set(declaration->name, parameter, false, function as *ASTDeclaration);
+
+            if declaration->_type->IsClass() {
+                this.scope_manager.current->instances.PushBack(this.builder.ReferenceDeclaration(parameter, false));
+            }
         }
 
-        if function->body != null {
-            if this.current_generic != null {
-                this.forwards.PushBack(SemanticForward(this.current_class, this.current_generic, this.current_generic->types, function, declaration));
-            } else {
-                this.forwards.PushBack(SemanticForward(this.current_class, function, declaration));
+        for constructor in function->constructors {
+            let _type = this.ResolveType((constructor->expression as *ASTPathExpression)->path);
+            if _type == null { continue; }
+
+            if !_type->IsClass() {
+                Logger::Log("Constructor target must be a class.", constructor as *ASTExpression, LogSeverity::Error);
+                continue;
             }
+
+            let mut values = Vector<*HIRExpression>();
+
+            for argument in constructor->arguments {
+                let value = this.AnalyzeExpression(argument);
+                if value == null { continue; }
+                values.PushBack(value);
+            }
+        }
+
+        declaration->body = this.AnalyzeBlockStatement(function->body);
+        this.scope_manager.PopScope();
+    }
+
+    pub fn AnalyzeFunctionDeclaration(&mut this, function: *ASTFunctionDeclaration, generic: *mut Generic) -> *HIRFunctionDeclaration {
+        let declaration = this.AnalyzeFunctionDeclarationFirstPass(function, generic);
+
+        if declaration != null {
+            this.AnalyzeFunctionDeclarationSecondPass(declaration, function);
         } return declaration;
     }
 
@@ -478,7 +466,7 @@ class SemanticAnalyzer {
         (this.current_class, this.scope_manager.current) = (_type, scope);
 
         for constructor in _class->constructors {
-            let function = this.AnalyzeFunctionDeclaration(constructor, null);
+            let function = this.AnalyzeFunctionDeclarationFirstPass(constructor, null);
 
             if function != null {
                 declaration->constructors.PushBack(function);
@@ -494,7 +482,7 @@ class SemanticAnalyzer {
         }
 
         if _class->destructor != null {
-            let function = this.AnalyzeFunctionDeclaration(_class->destructor, null);
+            let function = this.AnalyzeFunctionDeclarationFirstPass(_class->destructor, null);
 
             if function != null {
                 declaration->destructor = function;
@@ -502,7 +490,7 @@ class SemanticAnalyzer {
         }
 
         for method in _class->methods {
-            let function = this.AnalyzeFunctionDeclaration(method, null);
+            let function = this.AnalyzeFunctionDeclarationFirstPass(method, null);
 
             if function != null {
                 declaration->methods.PushBack(function);
@@ -590,13 +578,34 @@ class SemanticAnalyzer {
         (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
     }
 
-    pub fn AnalyzeClassDeclaration(&mut this, _class: *ASTClassDeclaration, generic: *mut Generic) -> *HIRClassDeclaration {
-        let cache = this.AnalyzeClassDeclarationFirstPass(_class, generic);
+    fn AnalyzeClassDeclarationFourthPass(&mut this, declaration: *mut HIRClassDeclaration, _class: *ASTClassDeclaration, scope: *mut Scope) {
+        let _type = (declaration as *HIRDeclaration)->_type;
+        let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
+        (this.current_class, this.scope_manager.current) = (_type, scope);
 
-        if cache.left != null {
-            this.AnalyzeClassDeclarationSecondPass(cache.left, _class, cache.right);
-            this.AnalyzeClassDeclarationThirdPass(cache.left, _class, cache.right);
-        } return cache.left;
+        for i in 0.._class->constructors.Size() {
+            this.AnalyzeFunctionDeclarationSecondPass(declaration->constructors[i], _class->constructors[i]);
+        }
+
+        if _class->destructor != null {
+            this.AnalyzeFunctionDeclarationSecondPass(declaration->destructor, _class->destructor);
+        }
+
+        for i in 0.._class->methods.Size() {
+            this.AnalyzeFunctionDeclarationSecondPass(declaration->methods[i], _class->methods[i]);
+        }
+
+        (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
+    }
+
+    pub fn AnalyzeClassDeclaration(&mut this, _class: *ASTClassDeclaration, generic: *mut Generic) -> *HIRClassDeclaration {
+        let pair = this.AnalyzeClassDeclarationFirstPass(_class, generic);
+
+        if pair.left != null {
+            this.AnalyzeClassDeclarationSecondPass(pair.left, _class, pair.right);
+            this.AnalyzeClassDeclarationThirdPass(pair.left, _class, pair.right);
+            this.AnalyzeClassDeclarationFourthPass(pair.left, _class, pair.right);
+        } return pair.left;
     }
 
     fn AnalyzeStructureDeclarationFirstPass(&mut this, structure: *ASTStructureDeclaration, generic: *mut Generic) -> Pair<*mut HIRStructureDeclaration, *mut Scope> {
@@ -644,11 +653,9 @@ class SemanticAnalyzer {
         (this.current_class, this.scope_manager.current) = (_type, scope);
 
         for method in structure->methods {
-            let function = this.AnalyzeFunctionDeclaration(method, null);
-            let _static = method->instance_kind == ASTInstanceKind::None;
-            if function == null { continue; }
+            let function = this.AnalyzeFunctionDeclarationFirstPass(method, null);
 
-            if !method->generic {
+            if function != null {
                 declaration->methods.PushBack(function);
             }
         }
@@ -656,13 +663,26 @@ class SemanticAnalyzer {
         (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
     }
 
-    pub fn AnalyzeStructureDeclaration(&mut this, structure: *ASTStructureDeclaration, generic: *mut Generic) -> *HIRStructureDeclaration {
-        let cache = this.AnalyzeStructureDeclarationFirstPass(structure, generic);
+    fn AnalyzeStructureDeclarationFourthPass(&mut this, declaration: *mut HIRStructureDeclaration, structure: *ASTStructureDeclaration, scope: *mut Scope) {
+        let _type = (declaration as *HIRDeclaration)->_type;
+        let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
+        (this.current_class, this.scope_manager.current) = (_type, scope);
 
-        if cache.left != null {
-            this.AnalyzeStructureDeclarationSecondPass(cache.left, structure, cache.right);
-            this.AnalyzeStructureDeclarationThirdPass(cache.left, structure, cache.right);
-        } return cache.left;
+        for i in 0..structure->methods.Size() {
+            this.AnalyzeFunctionDeclarationSecondPass(declaration->methods[i], structure->methods[i]);
+        }
+
+        (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
+    }
+
+    pub fn AnalyzeStructureDeclaration(&mut this, structure: *ASTStructureDeclaration, generic: *mut Generic) -> *HIRStructureDeclaration {
+        let pair = this.AnalyzeStructureDeclarationFirstPass(structure, generic);
+
+        if pair.left != null {
+            this.AnalyzeStructureDeclarationSecondPass(pair.left, structure, pair.right);
+            this.AnalyzeStructureDeclarationThirdPass(pair.left, structure, pair.right);
+            this.AnalyzeStructureDeclarationFourthPass(pair.left, structure, pair.right);
+        } return pair.left;
     }
 
     fn AnalyzeEnumerationDeclaration(&mut this, enumeration: *ASTEnumerationDeclaration) {
@@ -706,7 +726,7 @@ class SemanticAnalyzer {
         this.scope_manager.PopScope();
     }
 
-    fn AnalyzeExternDeclaration(&mut this, _extern: *ASTExternDeclaration) {
+    fn AnalyzeExternDeclarationFirstPass(&mut this, _extern: *ASTExternDeclaration) {
         if this.abi != HIRDeclarationABI::Native {
             Logger::Log("Already in an extern block.", _extern as *ASTDeclaration, LogSeverity::Error);
             return;
@@ -722,6 +742,17 @@ class SemanticAnalyzer {
 
         for declaration in _extern->declarations {
             this.AnalyzeDeclarationThirdPass(declaration);
+        }
+
+        (this.abi, this.linkage) = (previous_abi, previous_linkage);
+    }
+
+    fn AnalyzeExternDeclarationSecondPass(&mut this, _extern: *ASTExternDeclaration) {
+        let (previous_abi, previous_linkage) = (this.abi, this.linkage);
+        (this.abi, this.linkage) = (HIRDeclarationABI::C, HIRDeclarationLinkage::External);
+
+        for declaration in _extern->declarations {
+            this.AnalyzeDeclarationFourthPass(declaration);
         }
 
         (this.abi, this.linkage) = (previous_abi, previous_linkage);
@@ -1556,7 +1587,7 @@ class SemanticAnalyzer {
             if call->expression->kind == ASTExpressionKind::Path {
                 let path = (call->expression as *ASTPathExpression)->path;
 
-                for symbol in this.scope_manager.Resolve(path, true) {
+                for symbol in this.scope_manager.ResolveType(path, true) {
                     if symbol->kind == SymbolKind::Type && symbol->_type->IsClass() {
                         let (_class, arguments) = (symbol->_type, Vector<*HIRExpression>(values));
                         values.Insert(0, this.builder.NullLiteral() as *HIRLiteral);

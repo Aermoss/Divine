@@ -1,0 +1,231 @@
+/*
+ * Copyright 2026 Yusuf Rençber
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#[include "std/str", "std/vec", "std/map",
+    "src/MIR.zir", "src/LIR.zir", "src/Logger.zir" : *]
+
+class MIRLowerer2 {
+    context: LIRContext,
+    builder: LIRBuilder,
+    values: Map<*MIRValue, *LIROperand>,
+    blocks: Map<*MIRBlock, *mut LIRBlock>,
+    module: *mut LIRModule;
+
+    MIRLowerer2(&mut this) {}
+
+    pub fn Lower(&mut this, module: *MIRModule) -> *LIRModule {
+        this.module = this.context->arena.New<LIRModule>();
+        this.builder = LIRBuilder(&mut this.context, this.module);
+        this.LowerModule(module);
+        return this.module;
+    }
+
+    fn LowerModule(&mut this, module: *MIRModule) {
+        for declaration in module->declarations {
+            this.LowerDeclaration(declaration);
+        }
+    }
+
+    fn LowerDeclaration(&mut this, declaration: *MIRDeclaration) {
+        if declaration->kind == MIRDeclarationKind::Function {
+            this.LowerFunctionDeclaration((declaration as *MIRLinkableDeclaration) as *MIRFunctionDeclaration);
+        }
+    }
+
+    fn LowerFunctionDeclaration(&mut this, function: *MIRFunctionDeclaration) {
+        let declaration = (function as *MIRLinkableDeclaration) as *MIRDeclaration;
+        let lowered = this.builder.BuildFunction(declaration->name);
+        if function->blocks.Empty() { return; }
+        this.builder.SetCurrentFunction(lowered);
+        this.blocks.Clear();
+
+        for block in function->blocks {
+            this.blocks[block] = this.builder.BuildBlock(block->name);
+        }
+
+        this.values.Clear();
+
+        for block in function->blocks {
+            this.builder.SetCurrentBlock(this.blocks[block]);
+
+            for instruction in block->instructions {
+                this.values[instruction as *MIRValue] = this.LowerInstruction(instruction);
+            }
+
+            if block->terminator != null {
+                this.LowerTerminator(block->terminator);
+            }
+        }
+    }
+
+    fn LowerValue(&mut this, value: *MIRValue) -> *LIROperand {
+        if value->kind == MIRValueKind::Constant {
+            return this.LowerConstant(value as *MIRConstant);
+        } else if value->kind == MIRValueKind::Instruction || value->kind == MIRValueKind::Parameter {
+            return this.values.Get(value, null);
+        } else {
+            return null;
+        }
+    }
+
+    fn LowerConstant(&mut this, constant: *MIRConstant) -> *LIROperand {
+        if constant->kind == MIRConstantKind::Expression {
+            return this.LowerConstantExpression(constant as *MIRConstantExpression);
+        } else {
+            return null;
+        }
+    }
+
+    fn LowerConstantExpression(&mut this, expression: *MIRConstantExpression) -> *LIROperand {
+        if expression->kind == MIRConstantExpressionKind::Unary {
+            return this.LowerUnaryExpression(expression as *MIRUnaryExpression);
+        } else if expression->kind == MIRConstantExpressionKind::Binary {
+            return this.LowerBinaryExpression(expression as *MIRBinaryExpression);
+        } else if expression->kind == MIRConstantExpressionKind::Cast {
+            return this.LowerCastExpression(expression as *MIRCastExpression);
+        } else if expression->kind == MIRConstantExpressionKind::ArrayGEP {
+            return this.LowerArrayGEPExpression(expression as *MIRArrayGEPExpression);
+        } else if expression->kind == MIRConstantExpressionKind::StructGEP {
+            return this.LowerStructGEPExpression(expression as *MIRStructGEPExpression);
+        } else {
+            return null;
+        }
+    }
+
+    fn LowerUnaryExpression(&mut this, unary: *MIRUnaryExpression) -> *LIROperand {
+        return null;
+    }
+
+    fn LowerBinaryExpression(&mut this, binary: *MIRBinaryExpression) -> *LIROperand {
+        return null;
+    }
+
+    fn LowerCastExpression(&mut this, cast: *MIRCastExpression) -> *LIROperand {
+        return null;
+    }
+
+    fn LowerArrayGEPExpression(&mut this, gep: *MIRArrayGEPExpression) -> *LIROperand {
+        return null;
+    }
+
+    fn LowerStructGEPExpression(&mut this, gep: *MIRStructGEPExpression) -> *LIROperand {
+        return null;
+    }
+
+    fn LowerInstruction(&mut this, instruction: *MIRInstruction) -> *LIROperand {
+        if instruction->kind == MIRInstructionKind::Alloca {
+            return this.LowerAllocaInstruction(instruction as *MIRAllocaInstruction);
+        } else if instruction->kind == MIRInstructionKind::Load {
+            return this.LowerLoadInstruction(instruction as *MIRLoadInstruction);
+        } else if instruction->kind == MIRInstructionKind::Store {
+            return this.LowerStoreInstruction(instruction as *MIRStoreInstruction);
+        } else if instruction->kind == MIRInstructionKind::ArrayGEP {
+            return this.LowerArrayGEPInstruction(instruction as *MIRArrayGEPInstruction);
+        } else if instruction->kind == MIRInstructionKind::StructGEP {
+            return this.LowerStructGEPInstruction(instruction as *MIRStructGEPInstruction);
+        } else if instruction->kind == MIRInstructionKind::Unary {
+            return this.LowerUnaryInstruction(instruction as *MIRUnaryInstruction);
+        } else if instruction->kind == MIRInstructionKind::Binary {
+            return this.LowerBinaryInstruction(instruction as *MIRBinaryInstruction);
+        } else if instruction->kind == MIRInstructionKind::Call {
+            return this.LowerCallInstruction(instruction as *MIRCallInstruction);
+        } else if instruction->kind == MIRInstructionKind::Cast {
+            return this.LowerCastInstruction(instruction as *MIRCastInstruction);
+        } else if instruction->kind == MIRInstructionKind::Select {
+            return this.LowerSelectInstruction(instruction as *MIRSelectInstruction);
+        } else if instruction->kind == MIRInstructionKind::Phi {
+            return this.LowerPhiInstruction(instruction as *MIRPhiInstruction);
+        } else if instruction->kind == MIRInstructionKind::Terminator {
+            return this.LowerTerminator(instruction as *MIRTerminator);
+        } else {
+            return null;
+        }
+    }
+
+    fn LowerAllocaInstruction(&mut this, alloca: *MIRAllocaInstruction) -> *LIROperand {
+        return null;
+    }
+
+    fn LowerLoadInstruction(&mut this, load: *MIRLoadInstruction) -> *LIROperand {
+        return null;
+    }
+
+    fn LowerStoreInstruction(&mut this, store: *MIRStoreInstruction) -> *LIROperand {
+        return null;
+    }
+
+    fn LowerArrayGEPInstruction(&mut this, gep: *MIRArrayGEPInstruction) -> *LIROperand {
+        return null;
+    }
+
+    fn LowerStructGEPInstruction(&mut this, gep: *MIRStructGEPInstruction) -> *LIROperand {
+        return null;
+    }
+
+    fn LowerUnaryInstruction(&mut this, unary: *MIRUnaryInstruction) -> *LIROperand {
+        return null;
+    }
+
+    fn LowerBinaryInstruction(&mut this, binary: *MIRBinaryInstruction) -> *LIROperand {
+        return null;
+    }
+
+    fn LowerCallInstruction(&mut this, call: *MIRCallInstruction) -> *LIROperand {
+        return null;
+    }
+
+    fn LowerCastInstruction(&mut this, cast: *MIRCastInstruction) -> *LIROperand {
+        return null;
+    }
+
+    fn LowerSelectInstruction(&mut this, select: *MIRSelectInstruction) -> *LIROperand {
+        return null;
+    }
+
+    fn LowerPhiInstruction(&mut this, phi: *MIRPhiInstruction) -> *LIROperand {
+        return null;
+    }
+
+    fn LowerTerminator(&mut this, terminator: *MIRTerminator) -> *LIROperand {
+        if terminator->kind == MIRTerminatorKind::Return {
+            return this.LowerReturnInstruction(terminator as *MIRReturnInstruction);
+        } else if terminator->kind == MIRTerminatorKind::Branch {
+            return this.LowerBranchInstruction(terminator as *MIRBranchInstruction);
+        } else if terminator->kind == MIRTerminatorKind::ConditionalBranch {
+            return this.LowerConditionalBranchInstruction(terminator as *MIRConditionalBranchInstruction);
+        } else if terminator->kind == MIRTerminatorKind::Unreachable {
+            return this.LowerUnreachableInstruction(terminator as *MIRUnreachableInstruction);
+        } else {
+            return null;
+        }
+    }
+
+    fn LowerReturnInstruction(&mut this, _return: *MIRReturnInstruction) -> *LIROperand {
+        return null;
+    }
+
+    fn LowerBranchInstruction(&mut this, branch: *MIRBranchInstruction) -> *LIROperand {
+        return null;
+    }
+
+    fn LowerConditionalBranchInstruction(&mut this, branch: *MIRConditionalBranchInstruction) -> *LIROperand {
+        return null;
+    }
+
+    fn LowerUnreachableInstruction(&mut this, unreachable: *MIRUnreachableInstruction) -> *LIROperand {
+        return null;
+    }
+}

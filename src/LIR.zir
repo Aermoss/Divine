@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#[include "std/str", "std/vec" : *]
+#[include "std/str", "std/vec", "std/arena" : *]
 
 enum LIROperandKind: u8 {
     Register, Immediate, Memory, Block, Symbol
@@ -123,7 +123,7 @@ class LIRBlockOperand : LIROperand {
     }
 
     pub fn ToString(&this) -> String {
-        return this.block->name;
+        return this.block->ToString();
     }
 }
 
@@ -248,6 +248,18 @@ class LIRBlock {
     LIRBlock(&mut this, name: String) {
         this.name = name;
     }
+
+    pub fn ToDefinitionString(&this) -> String {
+        let mut result = this.name + ':';
+
+        for instruction in this.instructions {
+            result += "\n  " + instruction->ToString();
+        } return result;
+    }
+
+    pub fn ToString(&this) -> String {
+        return this.name;
+    }
 }
 
 class LIRFunction {
@@ -257,10 +269,87 @@ class LIRFunction {
     LIRFunction(&mut this, name: String) {
         this.name = name;
     }
+
+    pub fn ToString(&this) -> String {
+        let mut result = "fn @\"" + this.name + '"';
+
+        if !this.blocks.Empty() {
+            result += " {\n";
+
+            for i in 0..this.blocks.Size() {
+                if i != 0 { result += '\n'; }
+                let block: *LIRBlock = this.blocks[i];
+                result += block->ToDefinitionString() + '\n';
+            } result += '}';
+        } return result;
+    }
 }
 
 class LIRModule {
     pub functions: Vector<*LIRFunction>;
 
     LIRModule(&mut this) {}
+
+    pub fn ToString(&this) -> String {
+        let mut result = String();
+        let mut previous: *LIRFunction = null;
+
+        for function in this.functions {
+            if previous != null {
+                result += '\n';
+
+                if !function->blocks.Empty() || !previous->blocks.Empty() {
+                    result += '\n';
+                }
+            }
+
+            result += function->ToString();
+            previous = function;
+        } return result;
+    }
+}
+
+class LIRContext {
+    pub arena: Arena;
+
+    LIRContext(&mut this) {}
+}
+
+class LIRBuilder {
+    context: *mut LIRContext,
+    module: *mut LIRModule,
+    function: *mut LIRFunction = null,
+    block: *mut LIRBlock = null;
+
+    LIRBuilder(&mut this, context: *mut LIRContext, module: *mut LIRModule) {
+        (this.context, this.module) = (context, module);
+    }
+
+    pub fn BuildBlock(&mut this, name: String) -> *mut LIRBlock {
+        let block = this.context->arena.New<LIRBlock>(name);
+        this.function->blocks.PushBack(block);
+        return block;
+    }
+
+    pub fn SetCurrentBlock(&mut this, block: *mut LIRBlock) {
+        this.block = block;
+    }
+
+    pub fn GetCurrentBlock(&mut this) -> *mut LIRBlock {
+        return this.block;
+    }
+
+    pub fn BuildFunction(&mut this, name: String) -> *mut LIRFunction {
+        let function = this.context->arena.New<LIRFunction>(name);
+        this.module->functions.PushBack(function);
+        return function;
+    }
+
+    pub fn SetCurrentFunction(&mut this, function: *mut LIRFunction) {
+        this.function = function;
+    }
+
+    pub fn GetCurrentFunction(&mut this) -> *mut LIRFunction {
+        return this.function;
+    }
 }

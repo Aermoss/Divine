@@ -274,7 +274,7 @@ class SemanticAnalyzer {
                 return (expression as *HIRUnaryExpression)->operand;
             }
 
-            return this.builder.AddressOf(expression, expression->mutable);
+            return this.builder.AddressOf(expression, expression->category == HIRExpressionCategory::Place ? expression->mutable : true);
         } return expression;
     }
 
@@ -858,7 +858,7 @@ class SemanticAnalyzer {
                         this.builder.BuildExpressionStatement(expression);
                     }
 
-                    this.FlushTemporaries(null);
+                    this.BuildTemporaryDestructors(null);
                     assignment = assignment->next;
                 }
             } else {
@@ -866,7 +866,7 @@ class SemanticAnalyzer {
 
                 if expression != null {
                     this.builder.BuildExpressionStatement(expression);
-                } this.FlushTemporaries(null);
+                } this.BuildTemporaryDestructors(null);
             }
         } else if statement->kind == ASTStatementKind::If {
             this.AnalyzeIfStatement(statement as *ASTIfStatement);
@@ -901,11 +901,23 @@ class SemanticAnalyzer {
             let return_type = (function as *HIRDeclaration)->_type->Return();
             value = this.Coerce(this.AnalyzeExpression(_return->expression), return_type);
             if value == null { return; }
+
+            if value->_type->IsClass() && value->category == HIRExpressionCategory::Place {
+                let mut values = Vector<*HIRExpression>();
+                values.PushBack(this.ImplicitAddressOf(value));
+                let arguments = Vector<*HIRExpression>(values);
+                values.Insert(0, this.builder.NullLiteral() as *HIRLiteral);
+                let candidates = (value->_type as *HIRClassType)->declaration->constructors;
+                let function = this.ResolveOverload(candidates, values, _return->expression, false);
+                if function == null { return; }
+                let callee = this.builder.ReferenceDeclaration(function as *HIRDeclaration, false);
+                value = this.builder.Constructor(callee, arguments, value->_type);
+            }
         }
 
-        this.FlushTemporaries(value);
-        this.AnalyzeDestructors(null, value);
-        this.builder.BuildReturnStatement(value);
+        let mut destructors = this.GetTemporaryDestructors(value);
+        destructors += this.GetDestructors(null, value);
+        this.builder.BuildReturnStatement(value, destructors);
     }
 
     fn AnalyzeIfStatement(&mut this, _if: *ASTIfStatement) {
@@ -1086,21 +1098,30 @@ class SemanticAnalyzer {
         this.builder.BuildLoopStatement(body);
     }
 
-    fn FlushTemporaries(&mut this, exception: *HIRExpression) {
+    fn GetTemporaryDestructors(&mut this, exception: *HIRExpression) -> Vector<*HIRExpression> {
+        let mut destructors = Vector<*HIRExpression>();
+
         for instance in this.temporaries.Reverse() {
             if instance == exception { continue; }
             let mut values = Vector<*HIRExpression>();
             values.PushBack(instance);
             let function = (instance->_type as *HIRClassType)->declaration->destructor;
             let callee = this.builder.ReferenceDeclaration(function as *HIRDeclaration, false);
-            let expression = this.builder.Destructor(instance, callee);
-            this.builder.BuildExpressionStatement(expression);
+            destructors.PushBack(this.builder.Destructor(instance, callee));
         }
 
         this.temporaries.Clear();
+        return destructors;
     }
 
-    fn AnalyzeDestructors(&mut this, target: *mut Scope, exception: *HIRExpression) {
+    fn BuildTemporaryDestructors(&mut this, exception: *HIRExpression) {
+        for destructor in this.GetTemporaryDestructors(exception) {
+            this.builder.BuildExpressionStatement(destructor);
+        }
+    }
+
+    fn GetDestructors(&mut this, target: *mut Scope, exception: *HIRExpression) -> Vector<*HIRExpression> {
+        let mut destructors = Vector<*HIRExpression>();
         let mut scope = this.scope_manager.current;
 
         while scope != null && !scope->global {
@@ -1117,12 +1138,17 @@ class SemanticAnalyzer {
                 values.PushBack(instance);
                 let function = (instance->_type as *HIRClassType)->declaration->destructor;
                 let callee = this.builder.ReferenceDeclaration(function as *HIRDeclaration, false);
-                let expression = this.builder.Destructor(instance, callee);
-                this.builder.BuildExpressionStatement(expression);
+                destructors.PushBack(this.builder.Destructor(instance, callee));
             }
 
             if scope == target { break; }
             scope = scope->parent;
+        } return destructors;
+    }
+
+    fn BuildDestructors(&mut this, target: *mut Scope, exception: *HIRExpression) {
+        for destructor in this.GetDestructors(target, exception) {
+            this.builder.BuildExpressionStatement(destructor);
         }
     }
 
@@ -1132,7 +1158,7 @@ class SemanticAnalyzer {
             return;
         }
 
-        this.AnalyzeDestructors(this.loop_scopes.Back(), null);
+        this.BuildDestructors(this.loop_scopes.Back(), null);
         this.builder.BuildContinueStatement();
     }
 
@@ -1142,7 +1168,7 @@ class SemanticAnalyzer {
             return;
         }
 
-        this.AnalyzeDestructors(this.loop_scopes.Back(), null);
+        this.BuildDestructors(this.loop_scopes.Back(), null);
         this.builder.BuildBreakStatement();
     }
 
@@ -1166,7 +1192,7 @@ class SemanticAnalyzer {
             this.AnalyzeStatement(statement);
         }
 
-        this.AnalyzeDestructors(this.scope_manager.current, null);
+        this.BuildDestructors(this.scope_manager.current, null);
         this.builder.SetCurrentBlock(prev_block);
         return statement;
     }
@@ -1243,9 +1269,9 @@ class SemanticAnalyzer {
 
             if _type->IsClass() {
                 this.scope_manager.current->instances.PushBack(this.builder.ReferenceVariable(statement));
-                this.FlushTemporaries(initializer);
+                this.BuildTemporaryDestructors(initializer);
             } else {
-                this.FlushTemporaries(null);
+                this.BuildTemporaryDestructors(null);
             }
         }
 
@@ -1764,6 +1790,18 @@ class SemanticAnalyzer {
 
             if value->_type->IsReference() && param_type->IsCompatible(value->_type->Pointee()) {
                 value = this.ImplicitDereference(value);
+            }
+
+            if value->_type->IsClass() && value->category == HIRExpressionCategory::Place {
+                let mut values = Vector<*HIRExpression>();
+                values.PushBack(this.ImplicitAddressOf(value));
+                let arguments = Vector<*HIRExpression>(values);
+                values.Insert(0, this.builder.NullLiteral() as *HIRLiteral);
+                let candidates = (value->_type as *HIRClassType)->declaration->constructors;
+                let function = this.ResolveOverload(candidates, values, node, false);
+                if function == null { return null; }
+                let callee = this.builder.ReferenceDeclaration(function as *HIRDeclaration, false);
+                value = this.builder.Constructor(callee, arguments, value->_type);
             }
 
             if !param_type->IsCompatible(value->_type) {

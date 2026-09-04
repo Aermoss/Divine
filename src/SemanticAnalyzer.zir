@@ -613,12 +613,9 @@ class SemanticAnalyzer {
                 let this_field = this.builder.MemberAccess(this_dereferenced, field_type, i);
 
                 if field_type->IsClass() {
-                    let name = ((field_type as *HIRClassType)->declaration as *HIRDeclaration)->name;
-                    let candidates = field_type->GetCandidates(name, _class as *ASTDeclaration, false);
-                    if candidates.Empty() { continue; }
-
                     let mut values = Vector<*HIRExpression>();
                     values.PushBack(this.ImplicitAddressOf(this_field));
+                    let candidates = (field_type as *HIRClassType)->declaration->constructors;
                     let function = this.ResolveOverload(candidates, values, _class as *ASTDeclaration, false);
                     if function == null { continue; }
                     let call = this.AnalyzeResolvedCallExpression(function, values, _class as *ASTDeclaration);
@@ -654,13 +651,10 @@ class SemanticAnalyzer {
                 let other_field = this.builder.MemberAccess(other_dereferenced, field_type, i);
 
                 if field_type->IsClass() {
-                    let name = ((field_type as *HIRClassType)->declaration as *HIRDeclaration)->name;
-                    let candidates = field_type->GetCandidates(name, _class as *ASTDeclaration, false);
-                    if candidates.Empty() { continue; }
-
                     let mut values = Vector<*HIRExpression>();
                     values.PushBack(this.ImplicitAddressOf(this_field));
                     values.PushBack(this.ImplicitAddressOf(other_field));
+                    let candidates = (field_type as *HIRClassType)->declaration->constructors;
                     let function = this.ResolveOverload(candidates, values, _class as *ASTDeclaration, false);
                     if function == null { continue; }
                     let call = this.AnalyzeResolvedCallExpression(function, values, _class as *ASTDeclaration);
@@ -693,14 +687,9 @@ class SemanticAnalyzer {
                 let this_field = this.builder.MemberAccess(this_dereferenced, field_type, i);
 
                 if field_type->IsClass() {
-                    let name = ((field_type as *HIRClassType)->declaration as *HIRDeclaration)->name;
-                    let candidates = field_type->GetCandidates('~' + name, _class as *ASTDeclaration, false);
-                    if candidates.Empty() { continue; }
-
                     let mut values = Vector<*HIRExpression>();
                     values.PushBack(this.ImplicitAddressOf(this_field));
-                    let function = this.ResolveOverload(candidates, values, _class as *ASTDeclaration, false);
-                    if function == null { continue; }
+                    let function = (field_type as *HIRClassType)->declaration->destructor;
                     let call = this.AnalyzeResolvedCallExpression(function, values, _class as *ASTDeclaration);
                     if call == null { continue; }
                     this.builder.BuildExpressionStatement(call);
@@ -1102,18 +1091,7 @@ class SemanticAnalyzer {
             if instance == exception { continue; }
             let mut values = Vector<*HIRExpression>();
             values.PushBack(instance);
-            let mut declaration: *HIRDeclaration = null;
-            let _type = instance->_type;
-
-            if _type->IsClass() {
-                declaration = (_type as *HIRClassType)->declaration;
-            } else {
-                declaration = (_type as *HIRStructureType)->declaration;
-            }
-
-            let candidates = _type->GetCandidates('~' + declaration->name, null, true);
-            let function = this.ResolveOverload(candidates, values, null, true);
-            if function == null { continue; }
+            let function = (instance->_type as *HIRClassType)->declaration->destructor;
             let callee = this.builder.ReferenceDeclaration(function as *HIRDeclaration, false);
             let expression = this.builder.Destructor(instance, callee);
             this.builder.BuildExpressionStatement(expression);
@@ -1137,18 +1115,7 @@ class SemanticAnalyzer {
 
                 let mut values = Vector<*HIRExpression>();
                 values.PushBack(instance);
-                let mut declaration: *HIRDeclaration = null;
-                let _type = instance->_type;
-
-                if _type->IsClass() {
-                    declaration = (_type as *HIRClassType)->declaration;
-                } else {
-                    declaration = (_type as *HIRStructureType)->declaration;
-                }
-
-                let candidates = _type->GetCandidates('~' + declaration->name, null, true);
-                let function = this.ResolveOverload(candidates, values, null, true);
-                if function == null { continue; }
+                let function = (instance->_type as *HIRClassType)->declaration->destructor;
                 let callee = this.builder.ReferenceDeclaration(function as *HIRDeclaration, false);
                 let expression = this.builder.Destructor(instance, callee);
                 this.builder.BuildExpressionStatement(expression);
@@ -1250,20 +1217,18 @@ class SemanticAnalyzer {
         }
 
         if _type != null {
-            let call_constructor = _type->IsClass() && initializer->kind != HIRExpressionKind::Constructor;
-            let statement = this.builder.BuildVariableStatement(variable->name, _type, !call_constructor ? initializer : null, variable->mutable);
+            let construct = _type->IsClass() && (initializer != null ? initializer->_type->IsClass() && initializer->category == HIRExpressionCategory::Place : true);
+            let statement = this.builder.BuildVariableStatement(variable->name, _type, !construct ? initializer : null, variable->mutable);
             this.scope_manager.current->Set(variable->name, statement, variable as *ASTStatement);
 
-            if call_constructor {
+            if construct {
                 let mut values = Vector<*HIRExpression>();
                 let reciever = this.builder.ReferenceVariable(statement);
                 (reciever as *mut HIRExpression)->mutable = true;
                 values.PushBack(reciever);
 
                 if initializer != null { values.PushBack(initializer); }
-                let name = ((_type as *HIRClassType)->declaration as *HIRDeclaration)->name;
-                let candidates = _type->GetCandidates(name, variable as *ASTStatement, initializer == null);
-                if initializer != null && candidates.Empty() { return; }
+                let candidates = (_type as *HIRClassType)->declaration->constructors;
                 let function = this.ResolveOverload(candidates, values, variable as *ASTStatement, initializer == null);
                 if initializer != null && function == null { return; }
 
@@ -1705,15 +1670,13 @@ class SemanticAnalyzer {
 
                 for symbol in this.scope_manager.ResolveType(path, true) {
                     if symbol->kind == SymbolKind::Type && symbol->_type->IsClass() {
-                        let (_class, arguments) = (symbol->_type, Vector<*HIRExpression>(values));
+                        let arguments = Vector<*HIRExpression>(values);
                         values.Insert(0, this.builder.NullLiteral() as *HIRLiteral);
-                        let declaration = (_class as *HIRClassType)->declaration as *HIRDeclaration;
-                        let candidates = _class->GetCandidates(declaration->name, call as *ASTExpression, false);
-                        if candidates.Empty() { return null; }
+                        let candidates = (symbol->_type as *HIRClassType)->declaration->constructors;
                         let function = this.ResolveOverload(candidates, values, call as *ASTExpression, false);
                         if function == null { return null; }
                         let callee = this.builder.ReferenceDeclaration(function as *HIRDeclaration, false);
-                        let constructor = this.builder.Constructor(callee, arguments, _class);
+                        let constructor = this.builder.Constructor(callee, arguments, symbol->_type);
                         this.temporaries.PushBack(constructor);
                         return constructor;
                     }
@@ -1840,19 +1803,10 @@ class SemanticAnalyzer {
                 return null;
             }
 
-            if _type->HasFields() {
+            if _type->IsClass() {
                 let mut values = Vector<*HIRExpression>();
                 values.PushBack(this.builder.NullLiteral() as *HIRLiteral);
-                let mut declaration: *HIRDeclaration = null;
-
-                if _type->IsClass() {
-                    declaration = (_type as *HIRClassType)->declaration;
-                } else {
-                    declaration = (_type as *HIRStructureType)->declaration;
-                }
-
-                let candidates = _type->GetCandidates(declaration->name, _new as *ASTExpression, false);
-                if candidates.Empty() { return null; }
+                let candidates = (_type as *HIRClassType)->declaration->constructors;
                 let function = this.ResolveOverload(candidates, values, _new as *ASTExpression, false);
                 if function == null { return null; }
                 let callee = this.builder.ReferenceDeclaration(function as *HIRDeclaration, false);
@@ -1869,19 +1823,10 @@ class SemanticAnalyzer {
                 values.PushBack(value);
             }
 
-            if _type->HasFields() {
+            if _type->IsClass() {
                 let arguments = Vector<*HIRExpression>(values);
                 values.Insert(0, this.builder.NullLiteral() as *HIRLiteral);
-                let mut declaration: *HIRDeclaration = null;
-
-                if _type->IsClass() {
-                    declaration = (_type as *HIRClassType)->declaration;
-                } else {
-                    declaration = (_type as *HIRStructureType)->declaration;
-                }
-
-                let candidates = _type->GetCandidates(declaration->name, _new as *ASTExpression, false);
-                if candidates.Empty() { return null; }
+                let candidates = (_type as *HIRClassType)->declaration->constructors;
                 let function = this.ResolveOverload(candidates, values, _new as *ASTExpression, false);
                 if function == null { return null; }
                 let callee = this.builder.ReferenceDeclaration(function as *HIRDeclaration, false);
@@ -1921,22 +1866,10 @@ class SemanticAnalyzer {
             return null;
         }
 
-        if pointer->_type->Pointee().HasFields() {
+        if pointer->_type->Pointee().IsClass() {
             let mut values = Vector<*HIRExpression>();
             values.PushBack(this.builder.NullLiteral() as *HIRLiteral);
-            let mut declaration: *HIRDeclaration = null;
-            let _type = pointer->_type->Pointee();
-
-            if _type->IsClass() {
-                declaration = (_type as *HIRClassType)->declaration;
-            } else {
-                declaration = (_type as *HIRStructureType)->declaration;
-            }
-
-            let candidates = _type->GetCandidates('~' + declaration->name, _delete as *ASTExpression, false);
-            if candidates.Empty() { return null; }
-            let function = this.ResolveOverload(candidates, values, _delete as *ASTExpression, false);
-            if function == null { return null; }
+            let function = (pointer->_type->Pointee() as *HIRClassType)->declaration->destructor;
             let callee = this.builder.ReferenceDeclaration(function as *HIRDeclaration, false);
             return this.builder.Delete(pointer, _delete->array, callee, Vector<*HIRExpression>());
         } else {

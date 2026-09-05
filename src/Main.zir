@@ -15,7 +15,7 @@
  */
 
 #[include "std/io", "std/file", "std/std", "vendor/llvm-c/Core.zir", "vendor/llvm-c/IRReader.zir", "vendor/llvm-c/BitReader.zir", "vendor/llvm-c/BitWriter.zir", "vendor/llvm-c/Transforms/PassBuilder.zir",
-    "src/Target.zir", "src/Lexer.zir", "src/Preprocessor.zir", "src/Parser.zir", "src/SemanticAnalyzer.zir", "src/HIRLowerer.zir", "src/MIRLowerer.zir", "src/MIRLowerer2.zir", "src/Assembler.zir", "src/Logger.zir" : *]
+    "src/Target.zir", "src/Lexer.zir", "src/Preprocessor.zir", "src/Parser.zir", "src/HIRLowerer.zir", "src/MIRLowerer.zir", "src/LLVMLowerer.zir", "src/LIRLowerer.zir", "src/Assembler.zir", "src/Logger.zir" : *]
 
 #[if WINDOWS]
 const INFINITE: u32 = 0xFFFFFFFF;
@@ -629,7 +629,7 @@ fn Main(args: &mut Vector<String>) -> i32 {
 
         let mut module: LLVMModuleRef = null;
         let target = Target(triple, arch, code_model, features, opt_level);
-        let mut mir_lowerer = MIRLowerer(target, freestanding, no_red_zone);
+        let mut llvm_lowerer = LLVMLowerer(target, freestanding, no_red_zone);
         let mut assembler = Assembler(target);
 
         if extension == ".zir" {
@@ -654,18 +654,18 @@ fn Main(args: &mut Vector<String>) -> i32 {
             let mut parser = Parser();
             let ast_module = parser.Parse(tokens);
 
-            let mut semantic_analyzer = SemanticAnalyzer();
-            let hir_module = semantic_analyzer.Analyze(ast_module);
+            let mut hir_lowerer = HIRLowerer();
+            let hir_module = hir_lowerer.Lower(ast_module);
 
             if !Logger::HasError() {
                 _WriteFile(name + ".hir", hir_module->ToString());
-                let mut hir_lowerer = HIRLowerer(target.Info());
-                let mir_module = hir_lowerer.Lower(hir_module);
+                let mut mir_lowerer = MIRLowerer(target.Info());
+                let mir_module = mir_lowerer.Lower(hir_module);
                 _WriteFile(name + ".mir", mir_module->ToString());
-                let mut mir_lowerer2 = MIRLowerer2();
-                let lir_module = mir_lowerer2.Lower(mir_module);
+                let mut lir_lowerer = LIRLowerer();
+                let lir_module = lir_lowerer.Lower(mir_module);
                 _WriteFile(name + ".lir", lir_module->ToString());
-                module = mir_lowerer.Lower(mir_module);
+                module = llvm_lowerer.Lower(mir_module);
             }
         } else if extension == ".ll" || extension == ".bc" {
             if verbose {

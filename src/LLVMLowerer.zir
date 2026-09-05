@@ -1,0 +1,686 @@
+/*
+ * Copyright 2026 Yusuf Rençber
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#[include "std/str", "std/vec", "std/map", "vendor/llvm-c/Core.zir", "vendor/llvm-c/Analysis.zir",
+    "src/Target.zir", "src/MIR.zir", "src/Logger.zir" : *]
+
+class LLVMLowerer {
+    module: LLVMModuleRef = null,
+    builder: LLVMBuilderRef = null,
+    context: LLVMContextRef,
+    pub target: *Target,
+
+    types: Map<*MIRType, LLVMTypeRef>,
+    declarations: Map<*MIRDeclaration, LLVMValueRef>,
+    phis: Map<*MIRPhiInstruction, LLVMValueRef>,
+    blocks: Map<*MIRBlock, LLVMBasicBlockRef>,
+    values: Map<*MIRValue, LLVMValueRef>,
+
+    freestanding: bool,
+    no_red_zone: bool;
+
+    LLVMLowerer(&mut this, target: &Target, freestanding: bool, no_red_zone: bool) {
+        if llvm_lowerer != null {
+            Logger::Log("Another instance of 'LLVMLowerer' already exists!", LogSeverity::Fatal);
+        } llvm_lowerer = this;
+
+        (this.freestanding, this.no_red_zone) = (freestanding, no_red_zone);
+        (this.context, this.target) = (LLVMContextCreate(), target);
+    }
+
+    ~LLVMLowerer(&mut this) {
+        if this.builder != null {
+            LLVMDisposeBuilder(this.builder);
+            this.builder = null;
+        }
+
+        if this.module != null {
+            LLVMDisposeModule(this.module);
+            this.module = null;
+        }
+
+        LLVMContextDispose(this.context);
+        llvm_lowerer = null;
+    }
+
+    pub fn Lower(&mut this, module: *MIRModule) -> LLVMModuleRef {
+        if this.builder != null {
+            LLVMDisposeBuilder(this.builder);
+            this.builder = null;
+        }
+
+        if this.module != null {
+            LLVMDisposeModule(this.module);
+            this.module = null;
+        }
+
+        this.module = LLVMModuleCreateWithNameInContext("zircon", this.context);
+        this.builder = LLVMCreateBuilderInContext(this.context);
+        LLVMSetModuleDataLayout(this.module, this.target->layout);
+        LLVMSetTarget(this.module, this.target->triple.Data());
+
+        if module != null {
+            this.LowerModule(module);
+        }
+
+        let mut message: *mut i8 = null;
+
+        if LLVMVerifyModule(this.module, LLVMVerifierFailureAction::LLVMReturnStatusAction, &mut message) != 0 {
+            let final_message = message != null ? message : "Unknown reason.";
+            Logger::Log("Module verification failed: " + final_message.ToString(), LogSeverity::Error);
+
+            if message != null {
+                LLVMDisposeMessage(message);
+            } return this.module;
+        }
+
+        if message != null {
+            LLVMDisposeMessage(message);
+        } return this.module;
+    }
+
+    fn LowerModule(&mut this, module: *MIRModule) {
+        for declaration in module->declarations {
+            this.LowerDeclarationFirstPass(declaration);
+        }
+
+        for declaration in module->declarations {
+            this.LowerDeclarationSecondPass(declaration);
+        }
+
+        for declaration in module->declarations {
+            this.LowerDeclarationThirdPass(declaration);
+        }
+
+        for declaration in module->declarations {
+            this.LowerDeclarationFourthPass(declaration);
+        }
+
+        for declaration in module->declarations {
+            this.LowerDeclarationFifthPass(declaration);
+        }
+    }
+
+    fn LowerDeclarationFirstPass(&mut this, declaration: *MIRDeclaration) {
+        if declaration->kind == MIRDeclarationKind::Type {
+            this.LowerTypeDeclarationFirstPass(declaration as *MIRTypeDeclaration);
+        }
+    }
+
+    fn LowerDeclarationSecondPass(&mut this, declaration: *MIRDeclaration) {
+        if declaration->kind == MIRDeclarationKind::Type {
+            this.LowerTypeDeclarationSecondPass(declaration as *MIRTypeDeclaration);
+        }
+    }
+
+    fn LowerDeclarationThirdPass(&mut this, declaration: *MIRDeclaration) {
+        if declaration->kind == MIRDeclarationKind::Constant {
+            this.LowerConstantDeclarationFirstPass(declaration as *MIRConstantDeclaration);
+        } else if declaration->kind == MIRDeclarationKind::Static {
+            this.LowerStaticDeclarationFirstPass((declaration as *MIRLinkableDeclaration) as *MIRStaticDeclaration);
+        } else if declaration->kind == MIRDeclarationKind::Function {
+            this.LowerFunctionDeclarationFirstPass((declaration as *MIRLinkableDeclaration) as *MIRFunctionDeclaration);
+        }
+    }
+
+    fn LowerDeclarationFourthPass(&mut this, declaration: *MIRDeclaration) {
+        if declaration->kind == MIRDeclarationKind::Constant {
+            this.LowerConstantDeclarationSecondPass(declaration as *MIRConstantDeclaration);
+        } else if declaration->kind == MIRDeclarationKind::Static {
+            this.LowerStaticDeclarationSecondPass((declaration as *MIRLinkableDeclaration) as *MIRStaticDeclaration);
+        }
+    }
+
+    fn LowerDeclarationFifthPass(&mut this, declaration: *MIRDeclaration) {
+        if declaration->kind == MIRDeclarationKind::Function {
+            this.LowerFunctionDeclarationSecondPass((declaration as *MIRLinkableDeclaration) as *MIRFunctionDeclaration);
+        }
+    }
+
+    fn LowerTypeDeclarationFirstPass(&mut this, _type: *MIRTypeDeclaration) {
+        let declaration = _type as *MIRDeclaration;
+        this.types[declaration->_type] = LLVMStructCreateNamed(this.context, declaration->name.Data());
+    }
+
+    fn LowerTypeDeclarationSecondPass(&mut this, _type: *MIRTypeDeclaration) {
+        let declaration = _type as *MIRDeclaration;
+        let mut fields = Vector<LLVMTypeRef>();
+
+        for field in (declaration->_type as *MIRStructureType)->fields {
+            let lowered_field = this.LowerType(field);
+            if lowered_field == null { return; }
+            fields.PushBack(lowered_field);
+        }
+
+        LLVMStructSetBody(this.types[declaration->_type], fields.Data(), fields.Size() as u32, 0);
+    }
+
+    fn LowerConstantDeclarationFirstPass(&mut this, constant: *MIRConstantDeclaration) {
+        let declaration = constant as *MIRDeclaration;
+        let _type = this.LowerType(declaration->_type);
+        if _type == null { return; }
+
+        let global = LLVMAddGlobal(this.module, _type, declaration->name.Data());
+        this.declarations[declaration] = global;
+        LLVMSetGlobalConstant(global, 1);
+    }
+
+    fn LowerConstantDeclarationSecondPass(&mut this, constant: *MIRConstantDeclaration) {
+        let declaration = constant as *MIRDeclaration;
+        let initializer = this.LowerValue(constant->initializer);
+        if initializer == null { return; }
+        LLVMSetInitializer(this.declarations[declaration], initializer);
+    }
+
+    fn LowerLinkage(&mut this, linkage: MIRDeclarationLinkage) -> LLVMLinkage {
+        if linkage == MIRDeclarationLinkage::Private { return LLVMLinkage::LLVMPrivateLinkage; }
+        else if linkage == MIRDeclarationLinkage::Internal { return LLVMLinkage::LLVMInternalLinkage; }
+        else { return LLVMLinkage::LLVMExternalLinkage; }
+    }
+
+    fn LowerStaticDeclarationFirstPass(&mut this, _static: *MIRStaticDeclaration) {
+        let linkable_declaration = _static as *MIRLinkableDeclaration;
+        let declaration = linkable_declaration as *MIRDeclaration;
+        let _type = this.LowerType(declaration->_type);
+        if _type == null { return; }
+
+        let global = LLVMAddGlobal(this.module, _type, declaration->name.Data());
+        LLVMSetLinkage(global, this.LowerLinkage(linkable_declaration->linkage));
+        LLVMSetGlobalConstant(global, !_static->mutable ? 1 : 0);
+        this.declarations[declaration] = global;
+    }
+
+    fn LowerStaticDeclarationSecondPass(&mut this, _static: *MIRStaticDeclaration) {
+        if _static->initializer == null { return; }
+        let initializer = this.LowerValue(_static->initializer);
+        if initializer == null { return; }
+        let declaration = (_static as *MIRLinkableDeclaration) as *MIRDeclaration;
+        LLVMSetInitializer(this.declarations[declaration], initializer);
+    }
+
+    fn LowerFunctionDeclarationFirstPass(&mut this, function: *MIRFunctionDeclaration) {
+        let linkable_declaration = function as *MIRLinkableDeclaration;
+        let declaration = linkable_declaration as *MIRDeclaration;
+        let mut parameters = Vector<LLVMTypeRef>();
+
+        for parameter in function->parameters {
+            let lowered_parameter_type = this.LowerType((parameter as *MIRValue)->_type);
+            if lowered_parameter_type == null { return; }
+            parameters.PushBack(lowered_parameter_type);
+        }
+
+        let _return = this.LowerType(function->_return);
+        if _return == null { return; }
+        let value = LLVMAddFunction(this.module, declaration->name.Data(), LLVMFunctionType(_return, parameters.Data(), parameters.Size() as u32, 0));
+        LLVMSetFunctionCallConv(value, (linkable_declaration->linkage == MIRDeclarationLinkage::Internal ? LLVMCallConv::LLVMFastCallConv : LLVMCallConv::LLVMCCallConv) as u32);
+        this.declarations[declaration] = value;
+
+        if this.freestanding || true {
+            let attribute = LLVMCreateStringAttribute(this.context, "no-stack-arg-probe", 18, "", 0);
+            LLVMAddAttributeAtIndex(value, LLVMAttributeIndex::LLVMAttributeFunctionIndex, attribute);
+        }
+
+        if this.no_red_zone {
+            let attribute = LLVMCreateEnumAttribute(this.context, LLVMGetEnumAttributeKindForName("noredzone", 9), 0);
+            LLVMAddAttributeAtIndex(value, LLVMAttributeIndex::LLVMAttributeFunctionIndex, attribute);
+        }
+
+        if !this.target->features.Empty() {
+            let attribute = LLVMCreateStringAttribute(this.context, "target-features", 15, this.target->features.Data(), this.target->features.Length() as u32);
+            LLVMAddAttributeAtIndex(value, LLVMAttributeIndex::LLVMAttributeFunctionIndex, attribute);
+        }
+    }
+
+    fn LowerFunctionDeclarationSecondPass(&mut this, function: *MIRFunctionDeclaration) {
+        if function->blocks.Empty() { return; }
+        let declaration = (function as *MIRLinkableDeclaration) as *MIRDeclaration;
+        let value = this.declarations[declaration];
+        this.values.Clear();
+
+        for parameter in function->parameters {
+            let param = LLVMGetParam(value, parameter->index);
+            LLVMSetValueName2(param, parameter->name.Data(), parameter->name.Length());
+            this.values[parameter] = param;
+        }
+
+        this.blocks.Clear();
+
+        for block in function->blocks {
+            this.blocks[block] = LLVMAppendBasicBlockInContext(this.context, value, block->name.Data());
+        }
+
+        this.phis.Clear();
+
+        for block in function->blocks {
+            LLVMPositionBuilderAtEnd(this.builder, this.blocks[block]);
+
+            for instruction in block->instructions {
+                this.values[instruction as *MIRValue] = this.LowerInstruction(instruction);
+            }
+
+            if block->terminator != null {
+                this.LowerTerminator(block->terminator);
+            }
+        }
+
+        for pair in this.phis {
+            let (phi, lowered) = (pair.left, pair.right);
+
+            for incoming in phi->incomings {
+                let mut value = this.LowerValue(incoming.value);
+                if value == null { continue; }
+                let mut block = this.blocks.Get(incoming.block, null);
+                if block == null { continue; }
+                LLVMAddIncoming(lowered, &mut value, &mut block, 1);
+            }
+        }
+    }
+
+    fn LowerValue(&mut this, value: *MIRValue) -> LLVMValueRef {
+        if value->kind == MIRValueKind::Constant {
+            return this.LowerConstant(value as *MIRConstant);
+        } else if value->kind == MIRValueKind::Instruction || value->kind == MIRValueKind::Parameter {
+            return this.values.Get(value, null);
+        } else if value->kind == MIRValueKind::DeclarationReference {
+            return this.declarations.Get((value as *MIRDeclarationReference)->declaration, null);
+        } else {
+            return null;
+        }
+    }
+
+    fn LowerConstant(&mut this, constant: *MIRConstant) -> LLVMValueRef {
+        let _type = this.LowerType((constant as *MIRValue)->_type);
+        if _type == null { return null; }
+
+        if constant->kind == MIRConstantKind::Integer {
+            return LLVMConstInt(_type, (constant as *MIRConstantInteger)->value, 0);
+        } else if constant->kind == MIRConstantKind::Float {
+            return LLVMConstReal(_type, (constant as *MIRConstantFloat)->value);
+        } else if constant->kind == MIRConstantKind::String {
+            let value = (constant as *MIRConstantString)->value;
+            return LLVMConstStringInContext2(this.context, value.Data(), value.Length(), 0);
+        } else if constant->kind == MIRConstantKind::Array {
+            let elements = Vector<LLVMValueRef>();
+
+            for element in (constant as *MIRConstantArray)->elements {
+                let lowered_element = this.LowerValue(element);
+                if lowered_element == null { return null; }
+                elements.PushBack(lowered_element);
+            }
+
+            let _type = this.LowerType(((constant as *MIRValue)->_type as *MIRArrayType)->element);
+            if _type == null { return null; }
+            return LLVMConstArray2(_type, elements.Data(), elements.Size() as u64);
+        } else if constant->kind == MIRConstantKind::Structure {
+            let fields = Vector<LLVMValueRef>();
+
+            for field in (constant as *MIRConstantStructure)->fields {
+                let lowered_field = this.LowerValue(field);
+                if lowered_field == null { return null; }
+                fields.PushBack(lowered_field);
+            }
+
+            return LLVMConstNamedStruct(_type, fields.Data(), fields.Size() as u32);
+        } else if constant->kind == MIRConstantKind::Null {
+            return LLVMConstNull(_type);
+        } else if constant->kind == MIRConstantKind::Expression {
+            return this.LowerConstantExpression(constant as *MIRConstantExpression);
+        } else {
+            return null;
+        }
+    }
+
+    fn LowerConstantExpression(&mut this, expression: *MIRConstantExpression) -> LLVMValueRef {
+        if expression->kind == MIRConstantExpressionKind::Unary {
+            return this.LowerUnaryExpression(expression as *MIRUnaryExpression);
+        } else if expression->kind == MIRConstantExpressionKind::Binary {
+            return this.LowerBinaryExpression(expression as *MIRBinaryExpression);
+        } else if expression->kind == MIRConstantExpressionKind::Cast {
+            return this.LowerCastExpression(expression as *MIRCastExpression);
+        } else if expression->kind == MIRConstantExpressionKind::ArrayGEP {
+            return this.LowerArrayGEPExpression(expression as *MIRArrayGEPExpression);
+        } else if expression->kind == MIRConstantExpressionKind::StructGEP {
+            return this.LowerStructGEPExpression(expression as *MIRStructGEPExpression);
+        } else {
+            return null;
+        }
+    }
+
+    fn LowerUnaryExpression(&mut this, unary: *MIRUnaryExpression) -> LLVMValueRef {
+        let operand = this.LowerValue(unary->operand);
+        if operand == null { return null; }
+        return this.LowerResolvedUnary(unary->kind, operand, "");
+    }
+
+    fn LowerBinaryExpression(&mut this, binary: *MIRBinaryExpression) -> LLVMValueRef {
+        let left = this.LowerValue(binary->left);
+        if left == null { return null; }
+        let right = this.LowerValue(binary->right);
+        if right == null { return null; }
+        return this.LowerResolvedBinary(binary->kind, left, right, "");
+    }
+
+    fn LowerCastExpression(&mut this, cast: *MIRCastExpression) -> LLVMValueRef {
+        let expression = cast as *MIRConstantExpression;
+        let target = this.LowerType(((expression as *MIRConstant) as *MIRValue)->_type);
+        if target == null { return null; }
+        let value = this.LowerValue(cast->value);
+        if value == null { return null; }
+        return this.LowerResolvedCast(cast->kind, value, target, "");
+    }
+
+    fn LowerArrayGEPExpression(&mut this, gep: *MIRArrayGEPExpression) -> LLVMValueRef {
+        let _type = this.LowerType((gep->pointer->_type as *MIRPointerType)->pointee);
+        if _type == null { return null; }
+        let pointer = this.LowerValue(gep->pointer);
+        if pointer == null { return null; }
+        let mut index = this.LowerValue(gep->index);
+        if index == null { return null; }
+        return LLVMBuildGEP2(this.builder, _type, pointer, &mut index, 1, "");
+    }
+
+    fn LowerStructGEPExpression(&mut this, gep: *MIRStructGEPExpression) -> LLVMValueRef {
+        let _type = this.LowerType((gep->pointer->_type as *MIRPointerType)->pointee);
+        if _type == null { return null; }
+        let pointer = this.LowerValue(gep->pointer);
+        if pointer == null { return null; }
+        return LLVMBuildStructGEP2(this.builder, _type, pointer, gep->index, "");
+    }
+
+    fn LowerInstruction(&mut this, instruction: *MIRInstruction) -> LLVMValueRef {
+        if instruction->kind == MIRInstructionKind::Alloca {
+            return this.LowerAllocaInstruction(instruction as *MIRAllocaInstruction);
+        } else if instruction->kind == MIRInstructionKind::Load {
+            return this.LowerLoadInstruction(instruction as *MIRLoadInstruction);
+        } else if instruction->kind == MIRInstructionKind::Store {
+            return this.LowerStoreInstruction(instruction as *MIRStoreInstruction);
+        } else if instruction->kind == MIRInstructionKind::ArrayGEP {
+            return this.LowerArrayGEPInstruction(instruction as *MIRArrayGEPInstruction);
+        } else if instruction->kind == MIRInstructionKind::StructGEP {
+            return this.LowerStructGEPInstruction(instruction as *MIRStructGEPInstruction);
+        } else if instruction->kind == MIRInstructionKind::Unary {
+            return this.LowerUnaryInstruction(instruction as *MIRUnaryInstruction);
+        } else if instruction->kind == MIRInstructionKind::Binary {
+            return this.LowerBinaryInstruction(instruction as *MIRBinaryInstruction);
+        } else if instruction->kind == MIRInstructionKind::Call {
+            return this.LowerCallInstruction(instruction as *MIRCallInstruction);
+        } else if instruction->kind == MIRInstructionKind::Cast {
+            return this.LowerCastInstruction(instruction as *MIRCastInstruction);
+        } else if instruction->kind == MIRInstructionKind::Select {
+            return this.LowerSelectInstruction(instruction as *MIRSelectInstruction);
+        } else if instruction->kind == MIRInstructionKind::Phi {
+            return this.LowerPhiInstruction(instruction as *MIRPhiInstruction);
+        } else if instruction->kind == MIRInstructionKind::Terminator {
+            return this.LowerTerminator(instruction as *MIRTerminator);
+        } else {
+            return null;
+        }
+    }
+
+    fn LowerAllocaInstruction(&mut this, alloca: *MIRAllocaInstruction) -> LLVMValueRef {
+        let instruction = alloca as *MIRInstruction;
+        let _type = this.LowerType(alloca->_type);
+        if _type == null { return null; }
+        return LLVMBuildAlloca(this.builder, _type, instruction->name.Data());
+    }
+
+    fn LowerLoadInstruction(&mut this, load: *MIRLoadInstruction) -> LLVMValueRef {
+        let instruction = load as *MIRInstruction;
+        let _type = this.LowerType((instruction as *MIRValue)->_type);
+        if _type == null { return null; }
+        let pointer = this.LowerValue(load->pointer);
+        if pointer == null { return null; }
+        return LLVMBuildLoad2(this.builder, _type, pointer, instruction->name.Data());
+    }
+
+    fn LowerStoreInstruction(&mut this, store: *MIRStoreInstruction) -> LLVMValueRef {
+        let value = this.LowerValue(store->value);
+        if value == null { return null; }
+        let pointer = this.LowerValue(store->pointer);
+        if pointer == null { return null; }
+        return LLVMBuildStore(this.builder, value, pointer);
+    }
+
+    fn LowerArrayGEPInstruction(&mut this, gep: *MIRArrayGEPInstruction) -> LLVMValueRef {
+        let instruction = gep as *MIRInstruction;
+        let _type = this.LowerType((gep->pointer->_type as *MIRPointerType)->pointee);
+        if _type == null { return null; }
+        let pointer = this.LowerValue(gep->pointer);
+        if pointer == null { return null; }
+        let mut index = this.LowerValue(gep->index);
+        if index == null { return null; }
+        return LLVMBuildGEP2(this.builder, _type, pointer, &mut index, 1, instruction->name.Data());
+    }
+
+    fn LowerStructGEPInstruction(&mut this, gep: *MIRStructGEPInstruction) -> LLVMValueRef {
+        let instruction = gep as *MIRInstruction;
+        let _type = this.LowerType((gep->pointer->_type as *MIRPointerType)->pointee);
+        if _type == null { return null; }
+        let pointer = this.LowerValue(gep->pointer);
+        if pointer == null { return null; }
+        return LLVMBuildStructGEP2(this.builder, _type, pointer, gep->index, instruction->name.Data());
+    }
+
+    fn LowerUnaryInstruction(&mut this, unary: *MIRUnaryInstruction) -> LLVMValueRef {
+        let instruction = unary as *MIRInstruction;
+        let operand = this.LowerValue(unary->operand);
+        if operand == null { return null; }
+        return this.LowerResolvedUnary(unary->kind, operand, instruction->name.Data());
+    }
+
+    fn LowerResolvedUnary(&mut this, kind: MIRUnaryKind, operand: LLVMValueRef, name: *i8) -> LLVMValueRef {
+        if kind == MIRUnaryKind::Neg { return LLVMBuildNeg(this.builder, operand, name); }
+        else if kind == MIRUnaryKind::FNeg { return LLVMBuildFNeg(this.builder, operand, name); }
+        else if kind == MIRUnaryKind::Not { return LLVMBuildNot(this.builder, operand, name); }
+        else { return null; }
+    }
+
+    fn LowerBinaryInstruction(&mut this, binary: *MIRBinaryInstruction) -> LLVMValueRef {
+        let instruction = binary as *MIRInstruction;
+        let left = this.LowerValue(binary->left);
+        if left == null { return null; }
+        let right = this.LowerValue(binary->right);
+        if right == null { return null; }
+        return this.LowerResolvedBinary(binary->kind, left, right, instruction->name.Data());
+    }
+
+    fn LowerResolvedBinary(&mut this, kind: MIRBinaryKind, left: LLVMValueRef, right: LLVMValueRef, name: *i8) -> LLVMValueRef {
+        if kind == MIRBinaryKind::Add { return LLVMBuildAdd(this.builder, left, right, name); }
+        else if kind == MIRBinaryKind::Sub { return LLVMBuildSub(this.builder, left, right, name); }
+        else if kind == MIRBinaryKind::Mul { return LLVMBuildMul(this.builder, left, right, name); }
+        else if kind == MIRBinaryKind::SDiv { return LLVMBuildSDiv(this.builder, left, right, name); }
+        else if kind == MIRBinaryKind::UDiv { return LLVMBuildUDiv(this.builder, left, right, name); }
+        else if kind == MIRBinaryKind::SRem { return LLVMBuildSRem(this.builder, left, right, name); }
+        else if kind == MIRBinaryKind::URem { return LLVMBuildURem(this.builder, left, right, name); }
+        else if kind == MIRBinaryKind::And { return LLVMBuildAnd(this.builder, left, right, name); }
+        else if kind == MIRBinaryKind::Or { return LLVMBuildOr(this.builder, left, right, name); }
+        else if kind == MIRBinaryKind::Xor { return LLVMBuildXor(this.builder, left, right, name); }
+        else if kind == MIRBinaryKind::Shl { return LLVMBuildShl(this.builder, left, right, name); }
+        else if kind == MIRBinaryKind::LShr { return LLVMBuildLShr(this.builder, left, right, name); }
+        else if kind == MIRBinaryKind::AShr { return LLVMBuildAShr(this.builder, left, right, name); }
+        else if kind == MIRBinaryKind::FAdd { return LLVMBuildFAdd(this.builder, left, right, name); }
+        else if kind == MIRBinaryKind::FSub { return LLVMBuildFSub(this.builder, left, right, name); }
+        else if kind == MIRBinaryKind::FMul { return LLVMBuildFMul(this.builder, left, right, name); }
+        else if kind == MIRBinaryKind::FDiv { return LLVMBuildFDiv(this.builder, left, right, name); }
+        else if kind == MIRBinaryKind::FRem { return LLVMBuildFRem(this.builder, left, right, name); }
+        else if kind == MIRBinaryKind::ICmpEq { return LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntEQ, left, right, name); }
+        else if kind == MIRBinaryKind::ICmpNe { return LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntNE, left, right, name); }
+        else if kind == MIRBinaryKind::ICmpSlt { return LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntSLT, left, right, name); }
+        else if kind == MIRBinaryKind::ICmpSgt { return LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntSGT, left, right, name); }
+        else if kind == MIRBinaryKind::ICmpSle { return LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntSLE, left, right, name); }
+        else if kind == MIRBinaryKind::ICmpSge { return LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntSGE, left, right, name); }
+        else if kind == MIRBinaryKind::ICmpUlt { return LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntULT, left, right, name); }
+        else if kind == MIRBinaryKind::ICmpUgt { return LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntUGT, left, right, name); }
+        else if kind == MIRBinaryKind::ICmpUle { return LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntULE, left, right, name); }
+        else if kind == MIRBinaryKind::ICmpUge { return LLVMBuildICmp(this.builder, LLVMIntPredicate::LLVMIntUGE, left, right, name); }
+        else if kind == MIRBinaryKind::FCmpEq { return LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOEQ, left, right, name); }
+        else if kind == MIRBinaryKind::FCmpNe { return LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealONE, left, right, name); }
+        else if kind == MIRBinaryKind::FCmpLt { return LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOLT, left, right, name); }
+        else if kind == MIRBinaryKind::FCmpGt { return LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOGT, left, right, name); }
+        else if kind == MIRBinaryKind::FCmpLe { return LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOLE, left, right, name); }
+        else if kind == MIRBinaryKind::FCmpGe { return LLVMBuildFCmp(this.builder, LLVMRealPredicate::LLVMRealOGE, left, right, name); }
+        else { return null; }
+    }
+
+    fn LowerCallInstruction(&mut this, call: *MIRCallInstruction) -> LLVMValueRef {
+        let instruction = call as *MIRInstruction;
+        let _type = this.LowerType(call->callee->_type);
+        if _type == null { return null; }
+        let callee = this.LowerValue(call->callee);
+        if callee == null { return null; }
+        let mut arguments = Vector<LLVMValueRef>();
+
+        for argument in call->arguments {
+            let lowered_argument = this.LowerValue(argument);
+            if lowered_argument == null { return null; }
+            arguments.PushBack(lowered_argument);
+        }
+
+        return LLVMBuildCall2(this.builder, _type, callee, arguments.Data(), arguments.Size() as u32, instruction->name.Data());
+    }
+
+    fn LowerCastInstruction(&mut this, cast: *MIRCastInstruction) -> LLVMValueRef {
+        let instruction = cast as *MIRInstruction;
+        let target = this.LowerType((instruction as *MIRValue)->_type);
+        if target == null { return null; }
+        let value = this.LowerValue(cast->value);
+        if value == null { return null; }
+        return this.LowerResolvedCast(cast->kind, value, target, instruction->name.Data());
+    }
+
+    fn LowerResolvedCast(&mut this, kind: MIRCastKind, value: LLVMValueRef, target: LLVMTypeRef, name: *i8) -> LLVMValueRef {
+        if kind == MIRCastKind::Trunc { return LLVMBuildTrunc(this.builder, value, target, name); }
+        else if kind == MIRCastKind::ZExt { return LLVMBuildZExt(this.builder, value, target, name); }
+        else if kind == MIRCastKind::SExt { return LLVMBuildSExt(this.builder, value, target, name); }
+        else if kind == MIRCastKind::FPTrunc { return LLVMBuildFPTrunc(this.builder, value, target, name); }
+        else if kind == MIRCastKind::FPExt { return LLVMBuildFPExt(this.builder, value, target, name); }
+        else if kind == MIRCastKind::FPToSI { return LLVMBuildFPToSI(this.builder, value, target, name); }
+        else if kind == MIRCastKind::FPToUI { return LLVMBuildFPToUI(this.builder, value, target, name); }
+        else if kind == MIRCastKind::SIToFP { return LLVMBuildSIToFP(this.builder, value, target, name); }
+        else if kind == MIRCastKind::UIToFP { return LLVMBuildUIToFP(this.builder, value, target, name); }
+        else if kind == MIRCastKind::PtrToInt { return LLVMBuildPtrToInt(this.builder, value, target, name); }
+        else if kind == MIRCastKind::IntToPtr { return LLVMBuildIntToPtr(this.builder, value, target, name); }
+        else if kind == MIRCastKind::Bitcast { return LLVMBuildBitCast(this.builder, value, target, name); }
+        else { return null; }
+    }
+
+    fn LowerSelectInstruction(&mut this, select: *MIRSelectInstruction) -> LLVMValueRef {
+        let instruction = select as *MIRInstruction;
+        let condition = this.LowerValue(select->condition);
+        if condition == null { return null; }
+        let then_value = this.LowerValue(select->then_value);
+        if then_value == null { return null; }
+        let else_value = this.LowerValue(select->else_value);
+        if else_value == null { return null; }
+        return LLVMBuildSelect(this.builder, condition, then_value, else_value, instruction->name.Data());
+    }
+
+    fn LowerPhiInstruction(&mut this, phi: *MIRPhiInstruction) -> LLVMValueRef {
+        let instruction = phi as *MIRInstruction;
+        let _type = this.LowerType((instruction as *MIRValue)->_type);
+        if _type == null { return null; }
+        let lowered = LLVMBuildPhi(this.builder, _type, instruction->name.Data());
+        this.phis[phi] = lowered;
+        return lowered;
+    }
+
+    fn LowerTerminator(&mut this, terminator: *MIRTerminator) -> LLVMValueRef {
+        if terminator->kind == MIRTerminatorKind::Return {
+            return this.LowerReturnInstruction(terminator as *MIRReturnInstruction);
+        } else if terminator->kind == MIRTerminatorKind::Branch {
+            return this.LowerBranchInstruction(terminator as *MIRBranchInstruction);
+        } else if terminator->kind == MIRTerminatorKind::ConditionalBranch {
+            return this.LowerConditionalBranchInstruction(terminator as *MIRConditionalBranchInstruction);
+        } else if terminator->kind == MIRTerminatorKind::Unreachable {
+            return this.LowerUnreachableInstruction(terminator as *MIRUnreachableInstruction);
+        } else {
+            return null;
+        }
+    }
+
+    fn LowerReturnInstruction(&mut this, _return: *MIRReturnInstruction) -> LLVMValueRef {
+        if _return->value != null {
+            let value = this.LowerValue(_return->value);
+            if value == null { return null; }
+            return LLVMBuildRet(this.builder, value);
+        } else {
+            return LLVMBuildRetVoid(this.builder);
+        }
+    }
+
+    fn LowerBranchInstruction(&mut this, branch: *MIRBranchInstruction) -> LLVMValueRef {
+        let target = this.blocks.Get(branch->target, null);
+        if target == null { return null; }
+        return LLVMBuildBr(this.builder, target);
+    }
+
+    fn LowerConditionalBranchInstruction(&mut this, branch: *MIRConditionalBranchInstruction) -> LLVMValueRef {
+        let condition = this.LowerValue(branch->condition);
+        if condition == null { return null; }
+        let then_target = this.blocks.Get(branch->then_target, null);
+        if then_target == null { return null; }
+        let else_target = this.blocks.Get(branch->else_target, null);
+        if else_target == null { return null; }
+        return LLVMBuildCondBr(this.builder, condition, then_target, else_target);
+    }
+
+    fn LowerUnreachableInstruction(&mut this, unreachable: *MIRUnreachableInstruction) -> LLVMValueRef {
+        return LLVMBuildUnreachable(this.builder);
+    }
+
+    fn LowerType(&mut this, _type: *MIRType) -> LLVMTypeRef {
+        if _type->kind == MIRTypeKind::Void {
+            return LLVMVoidTypeInContext(this.context);
+        } else if _type->kind == MIRTypeKind::Integer {
+            return LLVMIntTypeInContext(this.context, (_type as *MIRIntegerType)->width);
+        } else if _type->kind == MIRTypeKind::Float {
+            if (_type as *MIRFloatType)->width == 64 {
+                return LLVMDoubleTypeInContext(this.context);
+            } else {
+                return LLVMFloatTypeInContext(this.context);
+            }
+        } else if _type->kind == MIRTypeKind::Pointer {
+            let pointer = _type as *MIRPointerType;
+            let pointee = this.LowerType(pointer->pointee);
+            if pointee == null { return null; }
+            return LLVMPointerType(pointee, 0);
+        } else if _type->kind == MIRTypeKind::Array {
+            let array = _type as *MIRArrayType;
+            let element = this.LowerType(array->element);
+            if element == null { return null; }
+            return LLVMArrayType2(element, array->length as u64);
+        } else if _type->kind == MIRTypeKind::Structure {
+            return this.types.Get(_type, null);
+        } else if _type->kind == MIRTypeKind::Function {
+            let function = _type as *MIRFunctionType;
+            let mut parameters = Vector<LLVMTypeRef>();
+
+            for parameter in function->parameters {
+                let lowered_parameter = this.LowerType(parameter);
+                if lowered_parameter == null { return null; }
+                parameters.PushBack(lowered_parameter);
+            }
+
+            let _return = this.LowerType(function->_return);
+            if _return == null { return null; }
+            return LLVMFunctionType(_return, parameters.Data(), parameters.Size() as u32, 0);
+        } else {
+            return null;
+        }
+    }
+}
+
+static mut llvm_lowerer: *mut LLVMLowerer = null;

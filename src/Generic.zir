@@ -22,8 +22,8 @@ class GenericInstance {
     pub symbol: *Symbol = null,
     pub scope: *mut Scope = null,
     pub declaration: *mut HIRDeclaration = null,
-    pub completed: SemanticPass = SemanticPass::None,
-    pub active: SemanticPass = SemanticPass::None,
+    pub completed: HIRLoweringPass = HIRLoweringPass::None,
+    pub active: HIRLoweringPass = HIRLoweringPass::None,
     pub types: Vector<*HIRType>;
 
     GenericInstance(&mut this, name: &String, types: &Vector<*HIRType>) {
@@ -42,7 +42,7 @@ class GenericDeclaration {
     pub types: Vector<String>;
 
     GenericDeclaration(&mut this, declaration: *ASTDeclaration) {
-        (this.declaration, this.scope, this._class) = (declaration, analyzer->scope_manager.current, analyzer->current_class);
+        (this.declaration, this.scope, this._class) = (declaration, hir_lowerer->scope_manager.current, hir_lowerer->current_class);
 
         if declaration->kind == ASTDeclarationKind::Class {
             let _class = declaration as *ASTClassDeclaration;
@@ -70,15 +70,15 @@ class GenericDeclaration {
             return null;
         }
 
-        let (prev_unsafe, prev_class) = (analyzer->_unsafe, analyzer->current_class);
-        let (prev_scope, prev_generic) = (analyzer->scope_manager.current, analyzer->current_generic);
-        let prev_function = analyzer->builder.GetCurrentFunction();
-        let prev_block = analyzer->builder.GetCurrentBlock();
+        let (prev_unsafe, prev_class) = (hir_lowerer->_unsafe, hir_lowerer->current_class);
+        let (prev_scope, prev_generic) = (hir_lowerer->scope_manager.current, hir_lowerer->current_generic);
+        let prev_function = hir_lowerer->builder.GetCurrentFunction();
+        let prev_block = hir_lowerer->builder.GetCurrentBlock();
 
-        analyzer->builder.SetCurrentBlock(null);
-        analyzer->builder.SetCurrentFunction(null);
-        (analyzer->scope_manager.current, analyzer->current_generic) = (this.scope, this);
-        (analyzer->_unsafe, analyzer->current_class) = (false, this._class);
+        hir_lowerer->builder.SetCurrentBlock(null);
+        hir_lowerer->builder.SetCurrentFunction(null);
+        (hir_lowerer->scope_manager.current, hir_lowerer->current_generic) = (this.scope, this);
+        (hir_lowerer->_unsafe, hir_lowerer->current_class) = (false, this._class);
         let mut name = this.name + '<';
 
         for i in 0..types.Size() {
@@ -95,100 +95,100 @@ class GenericDeclaration {
             this.cache[name] = instance;
         }
 
-        if instance->active != SemanticPass::None {
-            analyzer->builder.SetCurrentBlock(prev_block);
-            analyzer->builder.SetCurrentFunction(prev_function);
-            (analyzer->scope_manager.current, analyzer->current_generic) = (prev_scope, prev_generic);
-            (analyzer->_unsafe, analyzer->current_class) = (prev_unsafe, prev_class);
+        if instance->active != HIRLoweringPass::None {
+            hir_lowerer->builder.SetCurrentBlock(prev_block);
+            hir_lowerer->builder.SetCurrentFunction(prev_function);
+            (hir_lowerer->scope_manager.current, hir_lowerer->current_generic) = (prev_scope, prev_generic);
+            (hir_lowerer->_unsafe, hir_lowerer->current_class) = (prev_unsafe, prev_class);
             return instance;
         }
 
-        analyzer->scope_manager.PushScope("<generic>".ToString(), true);
+        hir_lowerer->scope_manager.PushScope("<generic>".ToString(), true);
 
         for i in 0..this.types.Size() {
-            analyzer->scope_manager.current->Set(this.types[i], types[i], this.declaration);
+            hir_lowerer->scope_manager.current->Set(this.types[i], types[i], this.declaration);
         }
 
         if this.declaration->kind == ASTDeclarationKind::Class {
             let _class = this.declaration as *ASTClassDeclaration;
 
-            if instance->completed < SemanticPass::First && analyzer->current_pass >= SemanticPass::First {
-                instance->active = SemanticPass::First;
-                let pair = analyzer->AnalyzeClassDeclarationFirstPass(_class, instance);
-                (instance->completed, instance->active) = (SemanticPass::First, SemanticPass::None);
-                (instance->declaration, instance->scope) = (pair.left, analyzer->scope_manager.current);
+            if instance->completed < HIRLoweringPass::First && hir_lowerer->current_pass >= HIRLoweringPass::First {
+                instance->active = HIRLoweringPass::First;
+                let pair = hir_lowerer->LowerClassDeclarationFirstPass(_class, instance);
+                (instance->completed, instance->active) = (HIRLoweringPass::First, HIRLoweringPass::None);
+                (instance->declaration, instance->scope) = (pair.left, hir_lowerer->scope_manager.current);
                 instance->symbol = new Symbol(instance->declaration->_type);
             }
 
-            if instance->completed < SemanticPass::Second && analyzer->current_pass >= SemanticPass::Second {
-                instance->active = SemanticPass::Second;
-                analyzer->AnalyzeClassDeclarationSecondPass(instance->declaration as *mut HIRClassDeclaration, _class, instance->scope);
-                (instance->completed, instance->active) = (SemanticPass::Second, SemanticPass::None);
+            if instance->completed < HIRLoweringPass::Second && hir_lowerer->current_pass >= HIRLoweringPass::Second {
+                instance->active = HIRLoweringPass::Second;
+                hir_lowerer->LowerClassDeclarationSecondPass(instance->declaration as *mut HIRClassDeclaration, _class, instance->scope);
+                (instance->completed, instance->active) = (HIRLoweringPass::Second, HIRLoweringPass::None);
             }
 
-            if instance->completed < SemanticPass::Third && analyzer->current_pass >= SemanticPass::Third {
-                instance->active = SemanticPass::Third;
-                analyzer->AnalyzeClassDeclarationThirdPass(instance->declaration as *mut HIRClassDeclaration, _class, instance->scope);
-                (instance->completed, instance->active) = (SemanticPass::Third, SemanticPass::None);
+            if instance->completed < HIRLoweringPass::Third && hir_lowerer->current_pass >= HIRLoweringPass::Third {
+                instance->active = HIRLoweringPass::Third;
+                hir_lowerer->LowerClassDeclarationThirdPass(instance->declaration as *mut HIRClassDeclaration, _class, instance->scope);
+                (instance->completed, instance->active) = (HIRLoweringPass::Third, HIRLoweringPass::None);
             }
 
-            if instance->completed < SemanticPass::Fourth && analyzer->current_pass >= SemanticPass::Fourth {
-                instance->active = SemanticPass::Fourth;
-                analyzer->AnalyzeClassDeclarationFourthPass(instance->declaration as *mut HIRClassDeclaration, _class, instance->scope);
-                (instance->completed, instance->active) = (SemanticPass::Fourth, SemanticPass::None);
+            if instance->completed < HIRLoweringPass::Fourth && hir_lowerer->current_pass >= HIRLoweringPass::Fourth {
+                instance->active = HIRLoweringPass::Fourth;
+                hir_lowerer->LowerClassDeclarationFourthPass(instance->declaration as *mut HIRClassDeclaration, _class, instance->scope);
+                (instance->completed, instance->active) = (HIRLoweringPass::Fourth, HIRLoweringPass::None);
             }
         } else if this.declaration->kind == ASTDeclarationKind::Structure {
             let structure = this.declaration as *ASTStructureDeclaration;
 
-            if instance->completed < SemanticPass::First && analyzer->current_pass >= SemanticPass::First {
-                instance->active = SemanticPass::First;
-                let pair = analyzer->AnalyzeStructureDeclarationFirstPass(structure, instance);
-                (instance->completed, instance->active) = (SemanticPass::First, SemanticPass::None);
-                (instance->declaration, instance->scope) = (pair.left, analyzer->scope_manager.current);
+            if instance->completed < HIRLoweringPass::First && hir_lowerer->current_pass >= HIRLoweringPass::First {
+                instance->active = HIRLoweringPass::First;
+                let pair = hir_lowerer->LowerStructureDeclarationFirstPass(structure, instance);
+                (instance->completed, instance->active) = (HIRLoweringPass::First, HIRLoweringPass::None);
+                (instance->declaration, instance->scope) = (pair.left, hir_lowerer->scope_manager.current);
                 instance->symbol = new Symbol(instance->declaration->_type);
             }
 
-            if instance->completed < SemanticPass::Second && analyzer->current_pass >= SemanticPass::Second {
-                instance->active = SemanticPass::Second;
-                analyzer->AnalyzeStructureDeclarationSecondPass(instance->declaration as *mut HIRStructureDeclaration, structure, instance->scope);
-                (instance->completed, instance->active) = (SemanticPass::Second, SemanticPass::None);
+            if instance->completed < HIRLoweringPass::Second && hir_lowerer->current_pass >= HIRLoweringPass::Second {
+                instance->active = HIRLoweringPass::Second;
+                hir_lowerer->LowerStructureDeclarationSecondPass(instance->declaration as *mut HIRStructureDeclaration, structure, instance->scope);
+                (instance->completed, instance->active) = (HIRLoweringPass::Second, HIRLoweringPass::None);
             }
 
-            if instance->completed < SemanticPass::Third && analyzer->current_pass >= SemanticPass::Third {
-                instance->active = SemanticPass::Third;
-                analyzer->AnalyzeStructureDeclarationThirdPass(instance->declaration as *mut HIRStructureDeclaration, structure, instance->scope);
-                (instance->completed, instance->active) = (SemanticPass::Third, SemanticPass::None);
+            if instance->completed < HIRLoweringPass::Third && hir_lowerer->current_pass >= HIRLoweringPass::Third {
+                instance->active = HIRLoweringPass::Third;
+                hir_lowerer->LowerStructureDeclarationThirdPass(instance->declaration as *mut HIRStructureDeclaration, structure, instance->scope);
+                (instance->completed, instance->active) = (HIRLoweringPass::Third, HIRLoweringPass::None);
             }
 
-            if instance->completed < SemanticPass::Fourth && analyzer->current_pass >= SemanticPass::Fourth {
-                instance->active = SemanticPass::Fourth;
-                analyzer->AnalyzeStructureDeclarationFourthPass(instance->declaration as *mut HIRStructureDeclaration, structure, instance->scope);
-                (instance->completed, instance->active) = (SemanticPass::Fourth, SemanticPass::None);
+            if instance->completed < HIRLoweringPass::Fourth && hir_lowerer->current_pass >= HIRLoweringPass::Fourth {
+                instance->active = HIRLoweringPass::Fourth;
+                hir_lowerer->LowerStructureDeclarationFourthPass(instance->declaration as *mut HIRStructureDeclaration, structure, instance->scope);
+                (instance->completed, instance->active) = (HIRLoweringPass::Fourth, HIRLoweringPass::None);
             }
         } else {
             let function = this.declaration as *ASTFunctionDeclaration;
 
-            if instance->completed < SemanticPass::Third && analyzer->current_pass >= SemanticPass::Third {
-                instance->active = SemanticPass::Third;
-                instance->declaration = analyzer->AnalyzeFunctionDeclarationFirstPass(function, instance);
-                (instance->completed, instance->active) = (SemanticPass::Third, SemanticPass::None);
+            if instance->completed < HIRLoweringPass::Third && hir_lowerer->current_pass >= HIRLoweringPass::Third {
+                instance->active = HIRLoweringPass::Third;
+                instance->declaration = hir_lowerer->LowerFunctionDeclarationFirstPass(function, instance);
+                (instance->completed, instance->active) = (HIRLoweringPass::Third, HIRLoweringPass::None);
                 instance->symbol = new Symbol(instance->declaration);
             }
 
-            if instance->completed < SemanticPass::Fourth && analyzer->current_pass >= SemanticPass::Fourth {
-                instance->active = SemanticPass::Fourth;
-                analyzer->AnalyzeFunctionDeclarationSecondPass(instance->declaration as *mut HIRFunctionDeclaration, function);
-                (instance->completed, instance->active) = (SemanticPass::Fourth, SemanticPass::None);
+            if instance->completed < HIRLoweringPass::Fourth && hir_lowerer->current_pass >= HIRLoweringPass::Fourth {
+                instance->active = HIRLoweringPass::Fourth;
+                hir_lowerer->LowerFunctionDeclarationSecondPass(instance->declaration as *mut HIRFunctionDeclaration, function);
+                (instance->completed, instance->active) = (HIRLoweringPass::Fourth, HIRLoweringPass::None);
             }
         }
 
-        analyzer->scope_manager.PopScope();
-        analyzer->builder.SetCurrentBlock(prev_block);
-        analyzer->builder.SetCurrentFunction(prev_function);
-        (analyzer->scope_manager.current, analyzer->current_generic) = (prev_scope, prev_generic);
-        (analyzer->_unsafe, analyzer->current_class) = (prev_unsafe, prev_class);
+        hir_lowerer->scope_manager.PopScope();
+        hir_lowerer->builder.SetCurrentBlock(prev_block);
+        hir_lowerer->builder.SetCurrentFunction(prev_function);
+        (hir_lowerer->scope_manager.current, hir_lowerer->current_generic) = (prev_scope, prev_generic);
+        (hir_lowerer->_unsafe, hir_lowerer->current_class) = (prev_unsafe, prev_class);
         return instance;
     }
 }
 
-#[include "src/SemanticAnalyzer.zir" : *]
+#[include "src/HIRLowerer.zir" : *]

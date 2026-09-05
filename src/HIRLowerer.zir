@@ -14,1299 +14,2566 @@
  * limitations under the License.
  */
 
-#[include "std/map", "std/arena", "src/HIR.zir", "src/MIR.zir", "src/Mangler.zir" : *]
+enum HIRLoweringPass: u8 {
+    None, First, Second, Third, Fourth
+}
+
+#[include "std/str", "std/vec", "std/map", "std/pair", "std/arena",
+    "src/ScopeManager.zir", "src/Scope.zir", "src/Symbol.zir", "src/Generic.zir",
+        "src/Token.zir", "src/AST.zir", "src/HIR.zir", "src/Logger.zir" : *]
 
 class HIRLowerer {
-    context: MIRContext,
-    builder: MIRBuilder,
-    target_info: TargetInfo,
-    namespaces: Vector<String>,
-    strings: Map<String, *MIRStaticDeclaration>,
-    variables: Map<*HIRVariableStatement, *MIRValue>,
-    declarations: Map<*HIRDeclaration, *mut MIRDeclaration>,
-    types: Map<*HIRType, *mut MIRDeclaration>,
-    parameters: Map<*HIRDeclaration, *MIRValue>,
-    temporaries: Map<*HIRExpression, *MIRValue>,
-    runtime_functions: Map<String, *MIRFunctionDeclaration>,
-    break_blocks: Vector<*mut MIRBlock>,
-    continue_blocks: Vector<*mut MIRBlock>,
-    indirect_return: *MIRValue,
-    current_return: *HIRType,
-    module: *mut MIRModule;
+    context: HIRContext,
+    module: *mut HIRModule = null,
+    pub builder: HIRBuilder,
+    pub scope_manager: ScopeManager,
 
-    HIRLowerer(&mut this, target_info: &TargetInfo) {
-        this.target_info = target_info;
+    pub current_pass: HIRLoweringPass = HIRLoweringPass::None,
+    class_data: Map<*ASTNode, Pair<*mut HIRClassDeclaration, *mut Scope>>,
+    structure_data: Map<*ASTNode, Pair<*mut HIRStructureDeclaration, *mut Scope>>,
+    function_data: Map<*ASTNode, *mut HIRFunctionDeclaration>,
+
+    temporaries: Vector<*HIRExpression>,
+    loop_scopes: Vector<*mut Scope>,
+
+    pub abi: HIRDeclarationABI = HIRDeclarationABI::Native,
+    pub linkage: HIRDeclarationLinkage = HIRDeclarationLinkage::Internal,
+    pub _unsafe: bool = false,
+
+    pub generics: Vector<*GenericDeclaration>,
+    pub current_generic: *mut GenericDeclaration = null,
+    pub current_class: *HIRType = null;
+
+    HIRLowerer(&mut this) {
+        if hir_lowerer != null {
+            Logger::Log("Another instance of 'HIRLowerer' already exists!", LogSeverity::Fatal);
+        } hir_lowerer = this;
     }
 
-    pub fn Lower(&mut this, module: *HIRModule) -> *MIRModule {
-        this.module = this.context->arena.New<MIRModule>();
-        this.builder = MIRBuilder(&mut this.context, this.module);
-        this.LowerModule(module);
+    ~HIRLowerer(&mut this) {
+        hir_lowerer = null;
+    }
+
+    pub fn Lower(&mut this, module: *ASTModule) -> *HIRModule {
+        this.module = this.context->arena.New<HIRModule>();
+        this.builder = HIRBuilder(&mut this.context, this.module);
+        let mut declared = Map<*ASTNode, bool>();
+
+        for declaration in module->declarations {
+            this.current_pass = HIRLoweringPass::First;
+            declared[declaration] = this.LowerDeclarationFirstPass(declaration);
+        }
+
+        for declaration in module->declarations {
+            this.current_pass = HIRLoweringPass::Second;
+            declared[declaration] |= this.LowerDeclarationSecondPass(declaration);
+        }
+
+        for declaration in module->declarations {
+            this.current_pass = HIRLoweringPass::Third;
+            declared[declaration] |= this.LowerDeclarationThirdPass(declaration);
+        }
+
+        for declaration in module->declarations {
+            this.current_pass = HIRLoweringPass::Fourth;
+            declared[declaration] |= this.LowerDeclarationFourthPass(declaration);
+
+            if !declared[declaration] {
+                Logger::Log("Unknown declaration '" + declaration->kind.ToString() + "'.", declaration, LogSeverity::Error);
+            }
+        }
+
+        this.class_data.Clear();
+        this.structure_data.Clear();
+        this.function_data.Clear();
+
+        for generic in this.generics {
+            delete generic;
+        }
+
+        this.generics.Clear();
+        this.current_pass = HIRLoweringPass::None;
         return this.module;
     }
 
-    fn LowerModule(&mut this, module: *HIRModule) {
-        for declaration in module->declarations {
-            this.LowerDeclarationFirstPass(declaration);
-        }
+    fn LowerDeclarationFirstPass(&mut this, declaration: *ASTDeclaration) -> bool {
+        if declaration->kind == ASTDeclarationKind::Class {
+            let _class = declaration as *ASTClassDeclaration;
+            let pair = this.LowerClassDeclarationFirstPass(_class, null);
 
-        for declaration in module->declarations {
-            this.LowerDeclarationSecondPass(declaration);
-        }
+            if !_class->generic && pair.left != null && pair.right != null {
+                this.class_data[declaration] = pair;
+            }
+        } else if declaration->kind == ASTDeclarationKind::Structure {
+            let structure = declaration as *ASTStructureDeclaration;
+            let pair = this.LowerStructureDeclarationFirstPass(structure, null);
 
-        for declaration in module->declarations {
-            this.LowerDeclarationThirdPass(declaration);
-        }
-
-        for declaration in module->declarations {
-            this.LowerDeclarationFourthPass(declaration);
-        }
-
-        for declaration in module->declarations {
-            this.LowerDeclarationFifthPass(declaration);
-        }
-    }
-
-    fn LowerDeclarationFirstPass(&mut this, declaration: *HIRDeclaration) {
-        if declaration->kind == HIRDeclarationKind::Class {
-            this.LowerClassDeclarationFirstPass(declaration as *HIRClassDeclaration);
-        } else if declaration->kind == HIRDeclarationKind::Structure {
-            this.LowerStructureDeclarationFirstPass(declaration as *HIRStructureDeclaration);
-        }
-    }
-
-    fn LowerDeclarationSecondPass(&mut this, declaration: *HIRDeclaration) {
-        if declaration->kind == HIRDeclarationKind::Class {
-            this.LowerClassDeclarationSecondPass(declaration as *HIRClassDeclaration);
-        } else if declaration->kind == HIRDeclarationKind::Structure {
-            this.LowerStructureDeclarationSecondPass(declaration as *HIRStructureDeclaration);
-        }
-    }
-
-    fn LowerDeclarationThirdPass(&mut this, declaration: *HIRDeclaration) {
-        if declaration->kind == HIRDeclarationKind::Constant {
-            this.LowerConstantDeclarationFirstPass(declaration as *HIRConstantDeclaration);
-        } else if declaration->kind == HIRDeclarationKind::Static {
-            this.LowerStaticDeclarationFirstPass(declaration as *HIRStaticDeclaration);
-        } else if declaration->kind == HIRDeclarationKind::Class {
-            this.LowerClassDeclarationThirdPass(declaration as *HIRClassDeclaration);
-        } else if declaration->kind == HIRDeclarationKind::Structure {
-            this.LowerStructureDeclarationThirdPass(declaration as *HIRStructureDeclaration);
-        } else if declaration->kind == HIRDeclarationKind::Function {
-            this.LowerFunctionDeclarationFirstPass(declaration as *HIRFunctionDeclaration);
-        }
-    }
-
-    fn LowerDeclarationFourthPass(&mut this, declaration: *HIRDeclaration) {
-        if declaration->kind == HIRDeclarationKind::Constant {
-            this.LowerConstantDeclarationSecondPass(declaration as *HIRConstantDeclaration);
-        } else if declaration->kind == HIRDeclarationKind::Static {
-            this.LowerStaticDeclarationSecondPass(declaration as *HIRStaticDeclaration);
-        }
-    }
-
-    fn LowerDeclarationFifthPass(&mut this, declaration: *HIRDeclaration) {
-        if declaration->kind == HIRDeclarationKind::Class {
-            this.LowerClassDeclarationFourthPass(declaration as *HIRClassDeclaration);
-        } else if declaration->kind == HIRDeclarationKind::Structure {
-            this.LowerStructureDeclarationFourthPass(declaration as *HIRStructureDeclaration);
-        } else if declaration->kind == HIRDeclarationKind::Function {
-            this.LowerFunctionDeclarationSecondPass(declaration as *HIRFunctionDeclaration);
-        }
-    }
-
-    fn LowerConstantDeclarationFirstPass(&mut this, constant: *HIRConstantDeclaration) {
-        let declaration = constant as *HIRDeclaration;
-        let _type = this.LowerType(declaration->_type);
-        if _type == null { return; }
-        let lowered = this.builder.BuildConstant(declaration->name, _type, null);
-        this.declarations[declaration] = lowered;
-    }
-
-    fn LowerConstantDeclarationSecondPass(&mut this, constant: *HIRConstantDeclaration) {
-        let initializer = this.LowerConstantExpression(constant->initializer);
-        if initializer == null { return; }
-
-        let declaration = constant as *HIRDeclaration;
-        let lowered_declaration: *mut MIRDeclaration = this.declarations[declaration];
-        let lowered = lowered_declaration as *mut MIRConstantDeclaration;
-        lowered->initializer = initializer;
-    }
-
-    fn LowerLinkage(&this, linkage: HIRDeclarationLinkage) -> MIRDeclarationLinkage {
-        if linkage == HIRDeclarationLinkage::Private { return MIRDeclarationLinkage::Private; }
-        else if linkage == HIRDeclarationLinkage::Internal { return MIRDeclarationLinkage::Internal; }
-        else { return MIRDeclarationLinkage::External; }
-    }
-
-    fn LowerStaticDeclarationFirstPass(&mut this, _static: *HIRStaticDeclaration) {
-        let declaration = _static as *HIRDeclaration;
-        let _type = this.LowerType(declaration->_type);
-        if _type == null { return; }
-        let lowered = this.builder.BuildStatic(declaration->name, _type, _static->mutable, null, this.LowerLinkage(declaration->linkage));
-        this.declarations[declaration] = lowered as *mut MIRLinkableDeclaration;
-    }
-
-    fn LowerStaticDeclarationSecondPass(&mut this, _static: *HIRStaticDeclaration) {
-        if _static->initializer == null { return; }
-        let initializer = this.LowerConstantExpression(_static->initializer);
-        if initializer == null { return; }
-
-        let declaration = _static as *HIRDeclaration;
-        let lowered_declaration: *mut MIRDeclaration = this.declarations[declaration];
-        let lowered = (lowered_declaration as *mut MIRLinkableDeclaration) as *mut MIRStaticDeclaration;
-        lowered->initializer = initializer;
-    }
-
-    fn IsAggregate(&mut this, _type: *HIRType) -> bool {
-        return _type != null && _type->HasFields();
-    }
-
-    fn IsIndirectAggregate(&mut this, _type: *HIRType) -> bool {
-        if !this.IsAggregate(_type) { return false; }
-        return _type->Size() > 8 || !_type->IsTrivial();
-    }
-
-    fn LowerAggregateType(&mut this, _type: *HIRType) -> *MIRType {
-        let lowered_type = this.LowerType(_type);
-
-        if !this.IsAggregate(_type) {
-            return lowered_type;
-        } else if this.IsIndirectAggregate(_type) {
-            return this.context->PointerType(lowered_type);
+            if !structure->generic && pair.left != null && pair.right != null {
+                this.structure_data[declaration] = pair;
+            }
         } else {
-            let size = _type->Size();
-            let width: u32 = size > 4 ? 64 : size > 2 ? 32 : size > 1 ? 16 : 8;
-            return this.context->IntegerType(width);
-        }
+            return false;
+        } return true;
     }
 
-    fn LowerFunctionDeclarationFirstPass(&mut this, function: *HIRFunctionDeclaration) {
-        let declaration = function as *HIRDeclaration;
-        let mut name = declaration->name;
+    fn LowerDeclarationSecondPass(&mut this, declaration: *ASTDeclaration) -> bool {
+        if declaration->kind == ASTDeclarationKind::Constant {
+            this.LowerConstantDeclaration(declaration as *ASTConstantDeclaration);
+        } else if declaration->kind == ASTDeclarationKind::Class {
+            let _class = declaration as *ASTClassDeclaration;
 
-        if declaration->abi == HIRDeclarationABI::Native && !function->no_mangle {
-            name = Mangler::MangleFunction(name, declaration->_type, Vector<*HIRType>(), this.namespaces);
+            if !_class->generic {
+                let cache = this.class_data[declaration];
+                this.LowerClassDeclarationSecondPass(cache.left, _class, cache.right);
+            }
+        } else if declaration->kind == ASTDeclarationKind::Structure {
+            let structure = declaration as *ASTStructureDeclaration;
+
+            if !structure->generic {
+                let cache = this.structure_data[declaration];
+                this.LowerStructureDeclarationSecondPass(cache.left, structure, cache.right);
+            }
+        } else if declaration->kind == ASTDeclarationKind::Enumeration {
+            this.LowerEnumerationDeclaration(declaration as *ASTEnumerationDeclaration);
+        } else if declaration->kind == ASTDeclarationKind::Type {
+            this.LowerTypeDeclaration(declaration as *ASTTypeDeclaration);
+        } else {
+            return false;
+        } return true;
+    }
+
+    fn LowerTypeDeclaration(&mut this, type_definition: *ASTTypeDeclaration) {
+        this.scope_manager.current->Set(type_definition->name, this.LowerType(type_definition->_type), type_definition as *ASTDeclaration);
+    }
+
+    fn LowerDeclarationThirdPass(&mut this, declaration: *ASTDeclaration) -> bool {
+        if declaration->kind == ASTDeclarationKind::Static {
+            this.LowerStaticDeclaration(declaration as *ASTStaticDeclaration);
+        } else if declaration->kind == ASTDeclarationKind::Function {
+            let function = declaration as *ASTFunctionDeclaration;
+            let data = this.LowerFunctionDeclarationFirstPass(function, null);
+
+            if !function->generic && data != null {
+                this.module->declarations.PushBack(data);
+                this.function_data[declaration] = data;
+            }
+        } else if declaration->kind == ASTDeclarationKind::Class {
+            let _class = declaration as *ASTClassDeclaration;
+
+            if !_class->generic {
+                let cache = this.class_data[declaration];
+                this.LowerClassDeclarationThirdPass(cache.left, _class, cache.right);
+            }
+        } else if declaration->kind == ASTDeclarationKind::Structure {
+            let structure = declaration as *ASTStructureDeclaration;
+
+            if !structure->generic {
+                let cache = this.structure_data[declaration];
+                this.LowerStructureDeclarationThirdPass(cache.left, structure, cache.right);
+            }
+        } else if declaration->kind == ASTDeclarationKind::Extern {
+            this.LowerExternDeclarationFirstPass(declaration as *ASTExternDeclaration);
+        } else if declaration->kind == ASTDeclarationKind::Assembly {
+            this.LowerAssemblyDeclaration(declaration as *ASTAssemblyDeclaration);
+        } else {
+            return false;
+        } return true;
+    }
+
+    fn LowerDeclarationFourthPass(&mut this, declaration: *ASTDeclaration) -> bool {
+        if declaration->kind == ASTDeclarationKind::Function {
+            let function = declaration as *ASTFunctionDeclaration;
+
+            if !function->generic {
+                this.LowerFunctionDeclarationSecondPass(this.function_data[declaration], function);
+            }
+        } else if declaration->kind == ASTDeclarationKind::Class {
+            let _class = declaration as *ASTClassDeclaration;
+
+            if !_class->generic {
+                let cache = this.class_data[declaration];
+                this.LowerClassDeclarationFourthPass(cache.left, _class, cache.right);
+            }
+        } else if declaration->kind == ASTDeclarationKind::Structure {
+            let structure = declaration as *ASTStructureDeclaration;
+
+            if !structure->generic {
+                let cache = this.structure_data[declaration];
+                this.LowerStructureDeclarationFourthPass(cache.left, structure, cache.right);
+            }
+        } else if declaration->kind == ASTDeclarationKind::Extern {
+            this.LowerExternDeclarationSecondPass(declaration as *ASTExternDeclaration);
+        } else {
+            return false;
+        } return true;
+    }
+
+    pub fn Coerce(&mut this, _expression: *HIRExpression, target: *HIRType) -> *HIRExpression {
+        unsafe {
+            let expression = _expression as *mut HIRExpression;
         }
 
-        let mut parameters = Vector<*MIRParameter>();
-        let mut _return = this.LowerAggregateType(function->_return);
-        if _return == null { return; }
+        if expression == null {
+            return expression;
+        } else if expression->kind == HIRExpressionKind::Deferred {
+            return this.Coerce(this.LowerExpression((expression as *HIRDeferredExpression)->expression, target), target);
+        }
 
-        if this.IsIndirectAggregate(function->_return) {
-            parameters.PushBack(this.builder.BuildParameter("sret".ToString(), 0, _return));
-            _return = this.context->VoidType();
+        if expression->_type->IsInteger() && expression->_type->IsLiteral() && target->IsPointer() {
+            if !(target->IsReference() && target->Pointee().IsInteger()) {
+                expression->_type = this.context.IntegerPointerType(false);
+            }
+        }
+
+        if expression->_type->IsLiteral() {
+            if expression->_type->IsInteger() {
+                if !target->IsInteger() || target->IsLiteral() {
+                    expression->_type = this.context.IntegerType(32, true);
+                } else {
+                    expression->_type = target;
+                }
+            } else if !target->IsFloat() || target->IsLiteral() {
+                expression->_type = this.context.FloatType(64);
+            } else {
+                expression->_type = target;
+            }
+        } return expression;
+    }
+
+    fn Coerce(&mut this, _expression: *HIRExpression) -> *HIRExpression {
+        unsafe {
+            let expression = _expression as *mut HIRExpression;
+        }
+
+        if expression != null {
+            if expression->kind == HIRExpressionKind::Deferred {
+                return this.Coerce(this.LowerExpression((expression as *HIRDeferredExpression)->expression, null));
+            } else if expression->_type->IsLiteral() {
+                if expression->_type->IsInteger() {
+                    expression->_type = this.context.IntegerType(32, true);
+                } else {
+                    expression->_type = this.context.FloatType(64);
+                }
+            }
+        } return expression;
+    }
+
+    fn ImplicitDereference(&mut this, expression: *HIRExpression) -> *HIRExpression {
+        if expression != null && expression->_type->IsReference() {
+            if expression->kind == HIRExpressionKind::Unary && (expression as *HIRUnaryExpression)->kind == HIRUnaryKind::AddressOf {
+                return (expression as *HIRUnaryExpression)->operand;
+            }
+
+            return this.builder.Dereference(expression);
+        } return expression;
+    }
+
+    fn ImplicitAddressOf(&mut this, expression: *HIRExpression) -> *HIRExpression {
+        if expression != null && (expression->category == HIRExpressionCategory::Place || expression->_type->HasFields()) {
+            if expression->kind == HIRExpressionKind::Unary && (expression as *HIRUnaryExpression)->kind == HIRUnaryKind::Dereference {
+                return (expression as *HIRUnaryExpression)->operand;
+            }
+
+            return this.builder.AddressOf(expression, expression->category == HIRExpressionCategory::Place ? expression->mutable : true);
+        } return expression;
+    }
+
+    fn MakeCompatible(&mut this, expression: *HIRExpression, target: *HIRType) -> *HIRExpression {
+        if target->IsPointer() && expression->_type->IsPointer() {
+            if target->Pointee().IsClass() && expression->_type->Pointee().IsClass() {
+                let declaration = (target->Pointee() as *HIRClassType)->declaration;
+
+                for field in expression->_type->Pointee().Fields() {
+                    if (field as *HIRDeclaration)->name == (declaration as *HIRDeclaration)->name {
+                        return this.builder.Cast(expression, target);
+                    }
+                }
+            }
+        } return expression;
+    }
+
+    fn LowerConstantDeclaration(&mut this, constant: *ASTConstantDeclaration) {
+        let mut initializer: *HIRExpression = null;
+        let _type = this.LowerType(constant->_type);
+        if _type == null { return; }
+
+        if constant->initializer != null {
+            initializer = this.Coerce(this.LowerExpression(constant->initializer), _type);
+        }
+
+        let declaration = this.builder.BuildConstantDeclaration(constant->name, _type, initializer);
+        this.scope_manager.current->Set(constant->name, declaration, false, constant as *ASTDeclaration);
+    }
+
+    fn LowerStaticDeclaration(&mut this, _static: *ASTStaticDeclaration) {
+        let mut initializer: *HIRExpression = null;
+        let _type = this.LowerType(_static->_type);
+        if _type == null { return; }
+
+        if _static->initializer != null && !_static->zero_initializer {
+            initializer = this.Coerce(this.LowerExpression(_static->initializer), _type);
+        }
+
+        let mut alignment: *HIRExpression = null;
+
+        if _static->alignment != null {
+            alignment = this.Coerce(this.LowerExpression(_static->alignment), this.context.IntegerPointerType(false));
+            if alignment == null { return; }
+
+            if !alignment->_type->IsIntegerPointer() || alignment->_type->IsSigned() {
+                Logger::Log("Static alignment must be of type 'usize'.", _static as *ASTDeclaration, LogSeverity::Error);
+                return;
+            }
+        }
+
+        let declaration = this.builder.BuildStaticDeclaration(_static->name, _type, initializer, alignment, _static->mutable, this.linkage);
+        this.scope_manager.current->Set(_static->name, declaration, false, _static as *ASTDeclaration);
+    }
+
+    pub fn LowerFunctionDeclarationFirstPass(&mut this, function: *ASTFunctionDeclaration, instance: *mut GenericInstance) -> *mut HIRFunctionDeclaration {
+        if function->generic && instance == null {
+            let generic = new GenericDeclaration(function);
+            this.scope_manager.current->Set(function->name, generic, function as *ASTDeclaration);
+            this.generics.PushBack(generic);
+            return null;
+        }
+
+        if this.current_class == null && !function->constructors.Empty() {
+            Logger::Log("Constructors can only be declared inside classes.", function as *ASTDeclaration, LogSeverity::Error);
+            return null;
+        }
+
+        let mut parameter_types = Vector<*HIRType>();
+        let mut parameters = Vector<*HIRParameterDeclaration>();
+
+        if function->instance_kind != ASTInstanceKind::None {
+            if this.current_class == null {
+                Logger::Log("Instance parameters are only allowed in class, structure, and variant methods.", function as *ASTDeclaration, LogSeverity::Error);
+                return null;
+            }
+
+            let mut _type = this.current_class;
+
+            if function->instance_kind != ASTInstanceKind::Copy {
+                _type = this.context.ReferenceType(this.current_class, function->instance_kind == ASTInstanceKind::MutRef);
+            }
+
+            parameters.PushBack(this.builder.BuildParameterDeclaration("this".ToString(), _type, false));
+            parameter_types.PushBack(_type);
         }
 
         for parameter in function->parameters {
-            let declaration = parameter as *HIRDeclaration;
-            parameters.PushBack(this.builder.BuildParameter(declaration->name, parameters.Size() as u32, this.LowerAggregateType(declaration->_type)));
+            let _type = this.LowerType(parameter->_type);
+            if _type == null { return null; }
+            parameters.PushBack(this.builder.BuildParameterDeclaration(parameter->name, _type, parameter->mutable));
+            parameter_types.PushBack(_type);
         }
 
-        let lowered = this.builder.BuildFunction(name, parameters, _return, this.LowerLinkage(declaration->linkage));
-        this.declarations[declaration] = lowered as *mut MIRLinkableDeclaration;
+        let _return = this.LowerType(function->_return);
+        if _return == null { return null; }
+        let declaration = this.builder.BuildFunctionDeclaration(function->name, parameters, _return, this.context.FunctionType(parameter_types, _return), function->no_mangle, function->public, this.abi);
+
+        if instance == null {
+            this.scope_manager.current->Set(function->name, declaration, this.abi == HIRDeclarationABI::Native && !function->no_mangle, function as *ASTDeclaration);
+        } return declaration;
     }
 
-    fn LowerFunctionDeclarationSecondPass(&mut this, function: *HIRFunctionDeclaration) {
+    pub fn LowerFunctionDeclarationSecondPass(&mut this, declaration: *mut HIRFunctionDeclaration, function: *ASTFunctionDeclaration) {
         if function->body == null { return; }
-        let declaration: *mut MIRDeclaration = this.declarations[function as *HIRDeclaration];
-        this.builder.SetCurrentFunction((declaration as *mut MIRLinkableDeclaration) as *mut MIRFunctionDeclaration);
-        this.builder.SetCurrentBlock(this.builder.BuildBlock("entry".ToString()));
-        let indirect_return = this.IsIndirectAggregate(function->_return);
-        this.current_return = function->_return;
-        this.parameters.Clear();
+        this.builder.SetCurrentFunction(declaration);
+        this.scope_manager.PushScope(function->name, false);
 
-        if indirect_return {
-            this.indirect_return = this.builder.GetCurrentFunction()->parameters[0];
-        } else {
-            this.indirect_return = null;
-        }
-
-        for i in 0..function->parameters.Size() {
-            let parameter: *HIRParameterDeclaration = function->parameters[i];
-            let lowered_parameter: *MIRParameter = this.builder.GetCurrentFunction()->parameters[(indirect_return ? 1 : 0) + i];
+        for parameter in declaration->parameters {
             let declaration = parameter as *HIRDeclaration;
+            this.scope_manager.current->Set(declaration->name, parameter, false, function as *ASTDeclaration);
 
-            if this.IsIndirectAggregate(declaration->_type) {
-                this.parameters[declaration] = lowered_parameter;
-            } else if this.IsAggregate(declaration->_type) {
-                let alloca = this.builder.BuildAlloca(declaration->name, this.LowerType(declaration->_type));
-                this.parameters[declaration] = (alloca as *MIRInstruction) as *MIRValue;
-                let target = this.context->PointerType(this.LowerAggregateType(declaration->_type));
-                let pointer = this.builder.BuildCast("abi.cast".ToString(), MIRCastKind::Bitcast, alloca as *MIRInstruction, target);
-                this.builder.BuildStore(lowered_parameter, pointer as *MIRInstruction);
-            } else {
-                let alloca = this.builder.BuildAlloca(declaration->name, this.LowerType(declaration->_type));
-                this.parameters[declaration] = (alloca as *MIRInstruction) as *MIRValue;
-                this.builder.BuildStore(lowered_parameter, alloca as *MIRInstruction);
+            if declaration->_type->IsClass() {
+                this.scope_manager.current->instances.PushBack(this.builder.ReferenceDeclaration(parameter, false));
             }
         }
 
-        this.LowerBlockStatement(function->body);
+        for constructor in function->constructors {
+            let _type = this.LowerType((constructor->expression as *ASTPathExpression)->path);
+            if _type == null { continue; }
 
-        if !this.builder.GetCurrentBlock()->HasTerminator() {
-            if this.builder.GetCurrentFunction()->_return->kind == MIRTypeKind::Void {
-                this.builder.BuildReturn(null);
+            if !_type->IsClass() {
+                Logger::Log("Constructor target must be a class.", constructor as *ASTExpression, LogSeverity::Error);
+                continue;
+            }
+
+            let mut values = Vector<*HIRExpression>();
+
+            for argument in constructor->arguments {
+                let value = this.LowerExpression(argument);
+                if value == null { continue; }
+                values.PushBack(value);
             }
         }
+
+        declaration->body = this.LowerBlockStatement(function->body);
+        this.scope_manager.PopScope();
     }
 
-    fn LowerClassDeclarationFirstPass(&mut this, _class: *HIRClassDeclaration) {
-        let declaration = _class as *HIRDeclaration;
-        let lowered = this.builder.BuildType(declaration->name, this.context->StructureType(declaration->name));
-        this.types[declaration->_type] = lowered;
+    pub fn LowerClassDeclarationFirstPass(&mut this, _class: *ASTClassDeclaration, instance: *mut GenericInstance) -> Pair<*mut HIRClassDeclaration, *mut Scope> {
+        if _class->generic && instance == null {
+            let generic = new GenericDeclaration(_class);
+            this.scope_manager.current->Set(_class->name, generic, _class as *ASTDeclaration);
+            this.generics.PushBack(generic);
+            return Pair<*mut HIRClassDeclaration, *mut Scope>(null, null);
+        }
+
+        let mut scope: *mut Scope = null;
+        let _type = this.context.ClassType(null);
+        let declaration = this.builder.BuildClassDeclaration(_class->name, _type);
+        _type->declaration = declaration;
+
+        if instance == null {
+            this.scope_manager.current->Set(_class->name, _type, _class as *ASTDeclaration);
+            this.scope_manager.PushScope(_class->name, true);
+            scope = this.scope_manager.current;
+            this.scope_manager.PopScope();
+        }
+
+        return Pair<*mut HIRClassDeclaration, *mut Scope>(declaration, scope);
     }
 
-    fn LowerClassDeclarationSecondPass(&mut this, _class: *HIRClassDeclaration) {
-        let declaration = _class as *HIRDeclaration;
-        let lowered: *mut MIRDeclaration = this.types[declaration->_type];
-        let fields = Vector<*MIRType>();
+    pub fn LowerClassDeclarationSecondPass(&mut this, declaration: *mut HIRClassDeclaration, _class: *ASTClassDeclaration, scope: *mut Scope) {
+        let _type = (declaration as *HIRDeclaration)->_type;
+        let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
+        (this.current_class, this.scope_manager.current) = (_type, scope);
+
+        for parent in _class->parents {
+            let parent_type = this.LowerType(parent);
+            if parent_type == null { continue; }
+            let parent_name = ((parent_type as *HIRClassType)->declaration as *HIRDeclaration)->name;
+            declaration->fields.PushBack(this.builder.BuildFieldDeclaration(parent_name, parent_type, null, false));
+        }
 
         for field in _class->fields {
-            let declaration = field as *HIRDeclaration;
-            let lowered_field = this.LowerType(declaration->_type);
-            if lowered_field == null { return; }
-            fields.PushBack(lowered_field);
+            let field_type = this.LowerType(field->_type);
+            if field_type == null { continue; }
+            declaration->fields.PushBack(this.builder.BuildFieldDeclaration(field->name, field_type, field->initializer, field->public));
         }
 
-        (lowered->_type as *mut MIRStructureType)->SetBody(fields);
+        (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
     }
 
-    fn LowerClassDeclarationThirdPass(&mut this, _class: *HIRClassDeclaration) {
-        this.namespaces.PushBack((_class as *HIRDeclaration)->name);
+    pub fn LowerClassDeclarationThirdPass(&mut this, declaration: *mut HIRClassDeclaration, _class: *ASTClassDeclaration, scope: *mut Scope) {
+        let _type = (declaration as *HIRDeclaration)->_type;
+        let (mut has_copy_constructor, mut has_copy_assign) = (false, false);
+        let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
+        (this.current_class, this.scope_manager.current) = (_type, scope);
 
         for constructor in _class->constructors {
-            this.LowerFunctionDeclarationFirstPass(constructor);
+            let function = this.LowerFunctionDeclarationFirstPass(constructor, null);
+
+            if function != null {
+                declaration->constructors.PushBack(function);
+
+                if function->parameters.Size() == 2 {
+                    let parameter: *HIRParameterDeclaration = function->parameters[1];
+
+                    if *(parameter as *HIRDeclaration)->_type == *(this.context.ReferenceType(_type, false) as *HIRType) {
+                        has_copy_constructor = true;
+                    }
+                }
+            }
         }
 
         if _class->destructor != null {
-            this.LowerFunctionDeclarationFirstPass(_class->destructor);
+            let function = this.LowerFunctionDeclarationFirstPass(_class->destructor, null);
+
+            if function != null {
+                declaration->destructor = function;
+            }
         }
 
         for method in _class->methods {
-            this.LowerFunctionDeclarationFirstPass(method);
+            let function = this.LowerFunctionDeclarationFirstPass(method, null);
+
+            if function != null {
+                declaration->methods.PushBack(function);
+
+                if method->name == "operator=" && function->parameters.Size() == 2 {
+                    let parameter: *HIRParameterDeclaration = function->parameters[1];
+
+                    if *(parameter as *HIRDeclaration)->_type == *(this.context.ReferenceType(_type, false) as *HIRType) {
+                        if *function->_return == *(this.context.ReferenceType(_type, false) as *HIRType) {
+                            has_copy_assign = true;
+                        }
+                    }
+                }
+            }
         }
 
-        this.namespaces.PopBack();
+        if _class->constructors.Empty() {
+            let mut parameter_types = Vector<*HIRType>();
+            let mut parameters = Vector<*HIRParameterDeclaration>();
+            let _return = this.context.VoidType();
+
+            let this_type = this.context.ReferenceType(_type, true);
+            parameters.PushBack(this.builder.BuildParameterDeclaration("this".ToString(), this_type, false));
+            parameter_types.PushBack(this_type);
+
+            let name = (declaration as *HIRDeclaration)->name;
+            let function = this.builder.BuildFunctionDeclaration(name, parameters, _return, this.context.FunctionType(parameter_types, _return), false, true, HIRDeclarationABI::Native);
+            this.scope_manager.current->Set(name, function, true, _class as *ASTDeclaration);
+            declaration->constructors.PushBack(function);
+        }
+
+        if _class->destructor == null {
+            let mut parameter_types = Vector<*HIRType>();
+            let mut parameters = Vector<*HIRParameterDeclaration>();
+            let _return = this.context.VoidType();
+
+            let this_type = this.context.ReferenceType(_type, true);
+            parameters.PushBack(this.builder.BuildParameterDeclaration("this".ToString(), this_type, false));
+            parameter_types.PushBack(this_type);
+
+            let name = '~' + (declaration as *HIRDeclaration)->name;
+            let function = this.builder.BuildFunctionDeclaration(name, parameters, _return, this.context.FunctionType(parameter_types, _return), false, true, HIRDeclarationABI::Native);
+            this.scope_manager.current->Set(name, function, true, _class as *ASTDeclaration);
+            declaration->destructor = function;
+        }
+
+        if !has_copy_constructor {
+            let mut parameter_types = Vector<*HIRType>();
+            let mut parameters = Vector<*HIRParameterDeclaration>();
+            let _return = this.context.VoidType();
+
+            let this_type = this.context.ReferenceType(_type, true);
+            parameters.PushBack(this.builder.BuildParameterDeclaration("this".ToString(), this_type, false));
+            parameter_types.PushBack(this_type);
+
+            let other_type = this.context.ReferenceType(_type, false);
+            parameters.PushBack(this.builder.BuildParameterDeclaration("other".ToString(), other_type, false));
+            parameter_types.PushBack(other_type);
+
+            let name = (declaration as *HIRDeclaration)->name;
+            let function = this.builder.BuildFunctionDeclaration(name, parameters, _return, this.context.FunctionType(parameter_types, _return), false, true, HIRDeclarationABI::Native);
+            this.scope_manager.current->Set(name, function, true, _class as *ASTDeclaration);
+            declaration->constructors.PushBack(function);
+        }
+
+        if !has_copy_assign {
+            let mut parameter_types = Vector<*HIRType>();
+            let mut parameters = Vector<*HIRParameterDeclaration>();
+            let _return = this.context.ReferenceType(_type, false);
+
+            let this_type = this.context.ReferenceType(_type, true);
+            parameters.PushBack(this.builder.BuildParameterDeclaration("this".ToString(), this_type, false));
+            parameter_types.PushBack(this_type);
+
+            let other_type = this.context.ReferenceType(_type, false);
+            parameters.PushBack(this.builder.BuildParameterDeclaration("other".ToString(), other_type, false));
+            parameter_types.PushBack(other_type);
+
+            let name = "operator=".ToString();
+            let function = this.builder.BuildFunctionDeclaration(name, parameters, _return, this.context.FunctionType(parameter_types, _return), false, true, HIRDeclarationABI::Native);
+            this.scope_manager.current->Set(name, function, true, _class as *ASTDeclaration);
+            declaration->methods.PushBack(function);
+        }
+
+        (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
     }
 
-    fn LowerClassDeclarationFourthPass(&mut this, _class: *HIRClassDeclaration) {
-        for constructor in _class->constructors {
-            this.LowerFunctionDeclarationSecondPass(constructor);
+    pub fn LowerClassDeclarationFourthPass(&mut this, declaration: *mut HIRClassDeclaration, _class: *ASTClassDeclaration, scope: *mut Scope) {
+        let _type = (declaration as *HIRDeclaration)->_type;
+        let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
+        (this.current_class, this.scope_manager.current) = (_type, scope);
+
+        for i in 0.._class->constructors.Size() {
+            this.LowerFunctionDeclarationSecondPass(declaration->constructors[i], _class->constructors[i]);
         }
 
         if _class->destructor != null {
-            this.LowerFunctionDeclarationSecondPass(_class->destructor);
+            this.LowerFunctionDeclarationSecondPass(declaration->destructor, _class->destructor);
         }
 
-        for method in _class->methods {
-            this.LowerFunctionDeclarationSecondPass(method);
+        for i in 0.._class->methods.Size() {
+            this.LowerFunctionDeclarationSecondPass(declaration->methods[i], _class->methods[i]);
         }
+
+        if _class->constructors.Empty() {
+            let fields = (_type as *HIRClassType)->declaration->fields;
+            let function: *mut HIRFunctionDeclaration = declaration->constructors.Back();
+            this.scope_manager.PushScope((function as *HIRDeclaration)->name, false);
+            this.builder.SetCurrentFunction(function);
+            let block = this.builder.BuildBlockStatement();
+            this.builder.SetCurrentBlock(block);
+            function->body = block;
+
+            let this_parameter: *HIRParameterDeclaration = function->parameters[0];
+            let this_reference = this.builder.ReferenceDeclaration(this_parameter, false);
+            let this_dereferenced = this.builder.Dereference(this_reference);
+
+            for i in 0..fields.Size() {
+                let field: *HIRFieldDeclaration = fields[i];
+                let field_type = (field as *HIRDeclaration)->_type;
+                let this_field = this.builder.MemberAccess(this_dereferenced, field_type, i);
+
+                if field_type->IsClass() {
+                    let mut values = Vector<*HIRExpression>();
+                    values.PushBack(this.ImplicitAddressOf(this_field));
+                    let candidates = (field_type as *HIRClassType)->declaration->constructors;
+                    let function = this.ResolveOverload(candidates, values, _class as *ASTDeclaration, false);
+                    if function == null { continue; }
+                    let call = this.LowerResolvedCallExpression(function, values, _class as *ASTDeclaration);
+                    if call == null { continue; }
+                    this.builder.BuildExpressionStatement(call);
+                } else if field->initializer != null {
+                    this.builder.BuildExpressionStatement(this.builder.Assignment(this_field, this.LowerExpression(field->initializer)));
+                }
+            }
+
+            this.scope_manager.PopScope();
+        } else if _class->constructors.Size() < declaration->constructors.Size() {
+            let fields = (_type as *HIRClassType)->declaration->fields;
+            let function: *mut HIRFunctionDeclaration = declaration->constructors.Back();
+            this.scope_manager.PushScope((function as *HIRDeclaration)->name, false);
+            this.builder.SetCurrentFunction(function);
+            let block = this.builder.BuildBlockStatement();
+            this.builder.SetCurrentBlock(block);
+            function->body = block;
+
+            let this_parameter: *HIRParameterDeclaration = function->parameters[0];
+            let this_reference = this.builder.ReferenceDeclaration(this_parameter, false);
+            let this_dereferenced = this.builder.Dereference(this_reference);
+
+            let other_parameter: *HIRParameterDeclaration = function->parameters[1];
+            let other_reference = this.builder.ReferenceDeclaration(other_parameter, false);
+            let other_dereferenced = this.builder.Dereference(other_reference);
+
+            for i in 0..fields.Size() {
+                let field: *HIRFieldDeclaration = fields[i];
+                let field_type = (field as *HIRDeclaration)->_type;
+                let this_field = this.builder.MemberAccess(this_dereferenced, field_type, i);
+                let other_field = this.builder.MemberAccess(other_dereferenced, field_type, i);
+
+                if field_type->IsClass() {
+                    let mut values = Vector<*HIRExpression>();
+                    values.PushBack(this.ImplicitAddressOf(this_field));
+                    values.PushBack(this.ImplicitAddressOf(other_field));
+                    let candidates = (field_type as *HIRClassType)->declaration->constructors;
+                    let function = this.ResolveOverload(candidates, values, _class as *ASTDeclaration, false);
+                    if function == null { continue; }
+                    let call = this.LowerResolvedCallExpression(function, values, _class as *ASTDeclaration);
+                    if call == null { continue; }
+                    this.builder.BuildExpressionStatement(call);
+                } else {
+                    this.builder.BuildExpressionStatement(this.builder.Assignment(this_field, other_field));
+                }
+            }
+
+            this.scope_manager.PopScope();
+        }
+
+        if _class->destructor == null {
+            let function = declaration->destructor;
+            let fields = (_type as *HIRClassType)->declaration->fields;
+            this.scope_manager.PushScope((function as *HIRDeclaration)->name, false);
+            this.builder.SetCurrentFunction(function);
+            let block = this.builder.BuildBlockStatement();
+            this.builder.SetCurrentBlock(block);
+            function->body = block;
+
+            let this_parameter: *HIRParameterDeclaration = function->parameters[0];
+            let this_reference = this.builder.ReferenceDeclaration(this_parameter, false);
+            let this_dereferenced = this.builder.Dereference(this_reference);
+
+            for i in 0..fields.Size() {
+                let field: *HIRFieldDeclaration = fields[i];
+                let field_type = (field as *HIRDeclaration)->_type;
+                let this_field = this.builder.MemberAccess(this_dereferenced, field_type, i);
+
+                if field_type->IsClass() {
+                    let mut values = Vector<*HIRExpression>();
+                    values.PushBack(this.ImplicitAddressOf(this_field));
+                    let function = (field_type as *HIRClassType)->declaration->destructor;
+                    let call = this.LowerResolvedCallExpression(function, values, _class as *ASTDeclaration);
+                    if call == null { continue; }
+                    this.builder.BuildExpressionStatement(call);
+                }
+            }
+
+            this.scope_manager.PopScope();
+        }
+
+        (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
     }
 
-    fn LowerStructureDeclarationFirstPass(&mut this, structure: *HIRStructureDeclaration) {
-        let declaration = structure as *HIRDeclaration;
-        let lowered = this.builder.BuildType(declaration->name, this.context->StructureType(declaration->name));
-        this.types[declaration->_type] = lowered;
+    pub fn LowerStructureDeclarationFirstPass(&mut this, structure: *ASTStructureDeclaration, instance: *mut GenericInstance) -> Pair<*mut HIRStructureDeclaration, *mut Scope> {
+        if structure->generic && instance == null {
+            let generic = new GenericDeclaration(structure);
+            this.scope_manager.current->Set(structure->name, generic, structure as *ASTDeclaration);
+            this.generics.PushBack(generic);
+            return Pair<*mut HIRStructureDeclaration, *mut Scope>(null, null);
+        }
+
+        let mut scope: *mut Scope = null;
+        let _type = this.context.StructureType(null);
+        let declaration = this.builder.BuildStructureDeclaration(structure->name, _type);
+        _type->declaration = declaration;
+
+        if instance == null {
+            this.scope_manager.current->Set(structure->name, _type, structure as *ASTDeclaration);
+            this.scope_manager.PushScope(structure->name, true);
+            scope = this.scope_manager.current;
+            this.scope_manager.PopScope();
+        }
+
+        return Pair<*mut HIRStructureDeclaration, *mut Scope>(declaration, scope);
     }
 
-    fn LowerStructureDeclarationSecondPass(&mut this, structure: *HIRStructureDeclaration) {
-        let declaration = structure as *HIRDeclaration;
-        let lowered: *mut MIRDeclaration = this.types[declaration->_type];
-        let fields = Vector<*MIRType>();
+    pub fn LowerStructureDeclarationSecondPass(&mut this, declaration: *mut HIRStructureDeclaration, structure: *ASTStructureDeclaration, scope: *mut Scope) {
+        let _type = (declaration as *HIRDeclaration)->_type;
+        let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
+        (this.current_class, this.scope_manager.current) = (_type, scope);
 
         for field in structure->fields {
-            let declaration = field as *HIRDeclaration;
-            let lowered_field = this.LowerType(declaration->_type);
-            if lowered_field == null { return; }
-            fields.PushBack(lowered_field);
+            let field_type = this.LowerType(field->_type);
+            if field_type == null { continue; }
+            declaration->fields.PushBack(this.builder.BuildFieldDeclaration(field->name, field_type, field->initializer, field->public));
         }
 
-        (lowered->_type as *mut MIRStructureType)->SetBody(fields);
+        (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
     }
 
-    fn LowerStructureDeclarationThirdPass(&mut this, structure: *HIRStructureDeclaration) {
-        this.namespaces.PushBack((structure as *HIRDeclaration)->name);
+    pub fn LowerStructureDeclarationThirdPass(&mut this, declaration: *mut HIRStructureDeclaration, structure: *ASTStructureDeclaration, scope: *mut Scope) {
+        let _type = (declaration as *HIRDeclaration)->_type;
+        let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
+        (this.current_class, this.scope_manager.current) = (_type, scope);
 
         for method in structure->methods {
-            this.LowerFunctionDeclarationFirstPass(method);
+            let function = this.LowerFunctionDeclarationFirstPass(method, null);
+
+            if function != null {
+                declaration->methods.PushBack(function);
+            }
         }
 
-        this.namespaces.PopBack();
+        (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
     }
 
-    fn LowerStructureDeclarationFourthPass(&mut this, structure: *HIRStructureDeclaration) {
-        for method in structure->methods {
-            this.LowerFunctionDeclarationSecondPass(method);
+    pub fn LowerStructureDeclarationFourthPass(&mut this, declaration: *mut HIRStructureDeclaration, structure: *ASTStructureDeclaration, scope: *mut Scope) {
+        let _type = (declaration as *HIRDeclaration)->_type;
+        let (prev_class, prev_scope) = (this.current_class, this.scope_manager.current);
+        (this.current_class, this.scope_manager.current) = (_type, scope);
+
+        for i in 0..structure->methods.Size() {
+            this.LowerFunctionDeclarationSecondPass(declaration->methods[i], structure->methods[i]);
+        }
+
+        (this.current_class, this.scope_manager.current) = (prev_class, prev_scope);
+    }
+
+    fn LowerEnumerationDeclaration(&mut this, enumeration: *ASTEnumerationDeclaration) {
+        let underlying_type = this.LowerType(enumeration->underlying_type);
+        if underlying_type == null { return; }
+
+        if !underlying_type->IsInteger() {
+            Logger::Log("Expected an integer type.", enumeration as *ASTDeclaration, LogSeverity::Error);
+            return;
+        }
+
+        let _type = this.context.EnumerationType(null, underlying_type as *HIRIntegerType);
+        let declaration = this.builder.BuildEnumerationDeclaration(enumeration->name, _type);
+        _type->declaration = declaration;
+
+        let mut value: *HIRExpression = this.builder.IntegerLiteral(0, _type) as *HIRLiteral;
+        this.scope_manager.current->Set(enumeration->name, _type, enumeration as *ASTDeclaration);
+        this.scope_manager.PushScope(enumeration->name, true);
+
+        for member in enumeration->members {
+            if member->value != null {
+                value = this.Coerce(this.LowerExpression(member->value), underlying_type);
+                if value == null { continue; }
+
+                if !underlying_type->IsCompatible(value->_type) {
+                    Logger::Log("Expected an expression of type '" + underlying_type->ToString() + "'.", member->value, LogSeverity::Error);
+                    continue;
+                }
+
+                unsafe {
+                    (value as *mut HIRExpression)->_type = _type;
+                }
+            }
+
+            let member_declaration = this.builder.BuildMemberDeclaration(member->name, value, _type);
+            value = this.builder.Binary(HIRBinaryKind::Add, value, this.builder.IntegerLiteral(1, _type) as *HIRLiteral, _type);
+            this.scope_manager.current->Set(member->name, member_declaration, false, enumeration as *ASTDeclaration);
+            declaration->members.PushBack(member_declaration);
+        }
+
+        this.scope_manager.PopScope();
+    }
+
+    fn LowerExternDeclarationFirstPass(&mut this, _extern: *ASTExternDeclaration) {
+        if this.abi != HIRDeclarationABI::Native {
+            Logger::Log("Already in an extern block.", _extern as *ASTDeclaration, LogSeverity::Error);
+            return;
+        }
+
+        if _extern->linkage != "C" {
+            Logger::Log("Unknown linkage '" + _extern->linkage + "'.", _extern as *ASTDeclaration, LogSeverity::Error);
+            return;
+        }
+
+        let (previous_abi, previous_linkage) = (this.abi, this.linkage);
+        (this.abi, this.linkage) = (HIRDeclarationABI::C, HIRDeclarationLinkage::External);
+
+        for declaration in _extern->declarations {
+            this.LowerDeclarationThirdPass(declaration);
+        }
+
+        (this.abi, this.linkage) = (previous_abi, previous_linkage);
+    }
+
+    fn LowerExternDeclarationSecondPass(&mut this, _extern: *ASTExternDeclaration) {
+        let (previous_abi, previous_linkage) = (this.abi, this.linkage);
+        (this.abi, this.linkage) = (HIRDeclarationABI::C, HIRDeclarationLinkage::External);
+
+        for declaration in _extern->declarations {
+            this.LowerDeclarationFourthPass(declaration);
+        }
+
+        (this.abi, this.linkage) = (previous_abi, previous_linkage);
+    }
+
+    fn LowerAssemblyDeclaration(&mut this, assembly: *ASTAssemblyDeclaration) {}
+
+    fn LowerStatement(&mut this, statement: *ASTStatement) {
+        if statement->kind == ASTStatementKind::Return {
+            this.LowerReturnStatement(statement as *ASTReturnStatement);
+        } else if statement->kind == ASTStatementKind::Expression {
+            let expression = (statement as *ASTExpressionStatement)->expression;
+
+            if expression->kind == ASTExpressionKind::Assignment {
+                let mut assignment = expression as *ASTAssignmentExpression;
+
+                while assignment != null {
+                    let expression = this.LowerAssignmentExpression(assignment);
+
+                    if expression != null {
+                        this.builder.BuildExpressionStatement(expression);
+                    }
+
+                    this.BuildTemporaryDestructors(null);
+                    assignment = assignment->next;
+                }
+            } else {
+                let expression = this.LowerExpression(expression);
+
+                if expression != null {
+                    this.builder.BuildExpressionStatement(expression);
+                } this.BuildTemporaryDestructors(null);
+            }
+        } else if statement->kind == ASTStatementKind::If {
+            this.LowerIfStatement(statement as *ASTIfStatement);
+        } else if statement->kind == ASTStatementKind::While {
+            this.LowerWhileStatement(statement as *ASTWhileStatement);
+        } else if statement->kind == ASTStatementKind::For {
+            this.LowerForStatement(statement as *ASTForStatement);
+        } else if statement->kind == ASTStatementKind::Loop {
+            this.LowerLoopStatement(statement as *ASTLoopStatement);
+        } else if statement->kind == ASTStatementKind::Unsafe {
+            this.LowerUnsafeStatement(statement as *ASTUnsafeStatement);
+        } else if statement->kind == ASTStatementKind::Block {
+            this.LowerBlockStatement(statement as *ASTBlockStatement);
+        } else if statement->kind == ASTStatementKind::Continue {
+            this.LowerContinueStatement(statement as *ASTContinueStatement);
+        } else if statement->kind == ASTStatementKind::Break {
+            this.LowerBreakStatement(statement as *ASTBreakStatement);
+        } else if statement->kind == ASTStatementKind::Variable {
+            this.LowerVariableStatement(statement as *ASTVariableStatement);
+        } else if statement->kind == ASTStatementKind::Assembly {
+            this.LowerAssemblyStatement(statement as *ASTAssemblyStatement);
+        } else {
+            Logger::Log("Unknown statement '" + statement->kind.ToString() + "'.", statement, LogSeverity::Error);
         }
     }
 
-    fn LowerStatement(&mut this, statement: *HIRStatement) {
-        if statement->kind == HIRStatementKind::Block {
-            this.LowerBlockStatement(statement as *HIRBlockStatement);
-        } else if statement->kind == HIRStatementKind::Return {
-            this.LowerReturnStatement(statement as *HIRReturnStatement);
-        } else if statement->kind == HIRStatementKind::Variable {
-            this.LowerVariableStatement(statement as *HIRVariableStatement);
-        } else if statement->kind == HIRStatementKind::Expression {
-            this.LowerExpression((statement as *HIRExpressionStatement)->expression);
-        } else if statement->kind == HIRStatementKind::If {
-            this.LowerIfStatement(statement as *HIRIfStatement);
-        } else if statement->kind == HIRStatementKind::While {
-            this.LowerWhileStatement(statement as *HIRWhileStatement);
-        } else if statement->kind == HIRStatementKind::Loop {
-            this.LowerLoopStatement(statement as *HIRLoopStatement);
-        } else if statement->kind == HIRStatementKind::For {
-            this.LowerForStatement(statement as *HIRForStatement);
-        } else if statement->kind == HIRStatementKind::Break {
-            this.LowerBreakStatement(statement as *HIRBreakStatement);
-        } else if statement->kind == HIRStatementKind::Continue {
-            this.LowerContinueStatement(statement as *HIRContinueStatement);
+    fn LowerReturnStatement(&mut this, _return: *ASTReturnStatement) {
+        let mut value: *HIRExpression = null;
+
+        if _return->expression != null {
+            let function = this.builder.GetCurrentFunction();
+            let return_type = (function as *HIRDeclaration)->_type->Return();
+            value = this.Coerce(this.LowerExpression(_return->expression), return_type);
+            if value == null { return; }
+
+            if value->_type->IsClass() && value->category == HIRExpressionCategory::Place {
+                let mut values = Vector<*HIRExpression>();
+                values.PushBack(this.ImplicitAddressOf(value));
+                let arguments = Vector<*HIRExpression>(values);
+                values.Insert(0, this.builder.NullLiteral() as *HIRLiteral);
+                let candidates = (value->_type as *HIRClassType)->declaration->constructors;
+                let function = this.ResolveOverload(candidates, values, _return->expression, false);
+                if function == null { return; }
+                let callee = this.builder.ReferenceDeclaration(function as *HIRDeclaration, false);
+                value = this.builder.Constructor(callee, arguments, value->_type);
+            }
+        }
+
+        let mut destructors = this.GetTemporaryDestructors(value);
+        destructors += this.GetDestructors(null, value);
+        this.builder.BuildReturnStatement(value, destructors);
+    }
+
+    fn LowerIfStatement(&mut this, _if: *ASTIfStatement) {
+        let condition = this.ImplicitDereference(this.LowerExpression(_if->condition));
+
+        if condition != null && !condition->_type->IsBoolean() {
+            Logger::Log("Invalid condition type '" + condition->_type->ToString() + "'.", _if->condition, LogSeverity::Error);
+        }
+
+        this.scope_manager.PushScope("<then>".ToString(), false);
+        let (then_body, mut else_body: *HIRBlockStatement) = (this.LowerBlockStatement(_if->body), null);
+        this.scope_manager.PopScope();
+
+        if _if->_else != null {
+            this.scope_manager.PushScope("<else>".ToString(), false);
+
+            if _if->_else->kind == ASTStatementKind::Block {
+                else_body = this.LowerBlockStatement(_if->_else as *ASTBlockStatement);
+            } else {
+                let prev_block = this.builder.GetCurrentBlock();
+                let else_block = this.builder.BuildBlockStatement();
+                this.builder.SetCurrentBlock(else_block);
+                this.LowerStatement(_if->_else);
+                this.builder.SetCurrentBlock(prev_block);
+                else_body = else_block;
+            }
+
+            this.scope_manager.PopScope();
+        }
+
+        this.builder.BuildIfStatement(condition, then_body, else_body);
+    }
+
+    fn LowerWhileStatement(&mut this, _while: *ASTWhileStatement) {
+        let condition = this.ImplicitDereference(this.LowerExpression(_while->condition));
+
+        if condition != null && !condition->_type->IsBoolean() {
+            Logger::Log("Invalid condition type '" + condition->_type->ToString() + "'.", _while->condition, LogSeverity::Error);
+        }
+
+        this.scope_manager.PushScope("<while>".ToString(), false);
+        this.loop_scopes.PushBack(this.scope_manager.current);
+        let (while_body, mut else_body: *HIRBlockStatement) = (this.LowerBlockStatement(_while->body), null);
+        this.loop_scopes.PopBack();
+        this.scope_manager.PopScope();
+
+        if _while->_else != null {
+            this.scope_manager.PushScope("<else>".ToString(), false);
+            else_body = this.LowerBlockStatement(_while->_else);
+            this.scope_manager.PopScope();
+        }
+
+        this.builder.BuildWhileStatement(condition, while_body, else_body);
+    }
+
+    fn LowerForStatement(&mut this, _for: *ASTForStatement) {
+        let (mut start: *HIRExpression, mut end: *HIRExpression);
+        let (mut is_range, mut inclusive) = (false, false);
+
+        if _for->iterable->kind == ASTExpressionKind::Range {
+            let range = _for->iterable as *ASTRangeExpression;
+            (is_range, inclusive) = (true, range->inclusive);
+            start = this.LowerExpression(range->start);
+            end = this.LowerExpression(range->end);
+            if start == null || end == null { return; }
+            start = this.Coerce(start, end->_type);
+            end = this.Coerce(end, start->_type);
+        } else {
+            let iterable = this.ImplicitDereference(this.LowerExpression(_for->iterable));
+            if iterable == null { return; }
+
+            let mut values = Vector<*HIRExpression>();
+            values.PushBack(this.ImplicitAddressOf(iterable));
+            let mut begin_function: *HIRFunctionDeclaration = null;
+            let mut end_function: *HIRFunctionDeclaration = null;
+
+            if iterable->_type->HasMethods() {
+                let begin_candidates = iterable->_type->GetCandidates("Begin".ToString(), _for as *ASTStatement, true);
+                begin_function = this.ResolveOverload(begin_candidates, values, _for as *ASTStatement, true);
+
+                let end_candidates = iterable->_type->GetCandidates("End".ToString(), _for as *ASTStatement, true);
+                end_function = this.ResolveOverload(end_candidates, values, _for as *ASTStatement, true);
+            }
+
+            if begin_function == null || end_function == null {
+                Logger::Log("For loop iterable must provide 'Begin()' and 'End()' methods.", _for as *ASTStatement, LogSeverity::Error);
+                return;
+            }
+
+            start = this.LowerResolvedCallExpression(begin_function, values, _for as *ASTStatement);
+            end = this.LowerResolvedCallExpression(end_function, values, _for as *ASTStatement);
+            if start == null || end == null { return; }
+        }
+
+        if *start->_type != *end->_type {
+            Logger::Log("Start and end expressions of a for loop must have the same type.", _for as *ASTStatement, LogSeverity::Error);
+            return;
+        }
+
+        let iterator_type = start->_type;
+
+        if is_range && !iterator_type->IsInteger() && !iterator_type->IsFloat() {
+            Logger::Log("For loop ranges require an integer or floating point type.", _for as *ASTStatement, LogSeverity::Error);
+            return;
+        }
+
+        if !is_range && !iterator_type->IsPointer() && !iterator_type->HasMethods() {
+            Logger::Log("For loop requires a pointer iterator or an iterator class.", _for as *ASTStatement, LogSeverity::Error);
+            return;
+        }
+
+        let iterator = this.builder.BuildVariableStatement("iterator".ToString(), iterator_type, start, true);
+        let iterator_ref = this.builder.ReferenceVariable(iterator);
+
+        let mut variable: *HIRVariableStatement = null;
+        let mut condition: *HIRExpression = null;
+        let mut step: *HIRExpression = null;
+
+        if is_range {
+            let mut one: *HIRExpression = null;
+
+            if iterator_type->IsFloat() {
+                one = this.builder.FloatLiteral(1.0, iterator_type) as *HIRLiteral;
+            } else {
+                one = this.builder.IntegerLiteral(1, iterator_type) as *HIRLiteral;
+            }
+
+            let kind = inclusive ? HIRBinaryKind::LessEqual : HIRBinaryKind::Less;
+            condition = this.builder.Binary(kind, iterator_ref, end, this.context.BooleanType());
+            let next = this.builder.Binary(HIRBinaryKind::Add, iterator_ref, one, iterator_type);
+            step = this.builder.Assignment(iterator_ref, next);
+            variable = this.builder.BuildVariableStatement(_for->variable, iterator_type, iterator_ref, false);
+        } else if iterator_type->IsPointer() {
+            condition = this.builder.Binary(HIRBinaryKind::NotEqual, iterator_ref, end, this.context.BooleanType());
+            let one: *HIRExpression = this.builder.IntegerLiteral(1, this.context.IntegerPointerType(false)) as *HIRLiteral;
+            let step_value = this.builder.Binary(HIRBinaryKind::Add, iterator_ref, one, iterator_type);
+            step = this.builder.Assignment(iterator_ref, step_value);
+            let value = this.builder.Dereference(iterator_ref);
+            variable = this.builder.BuildVariableStatement(_for->variable, iterator_type->Pointee(), value, false);
+        } else {
+            let mut values = Vector<*HIRExpression>();
+            values.PushBack(iterator_ref);
+            values.PushBack(end);
+            let condition_candidates = iterator_type->GetCandidates("operator!=".ToString(), _for as *ASTStatement, false);
+            condition = this.LowerResolvedCallExpression(condition_candidates, values, _for as *ASTStatement);
+            if condition == null { return; }
+
+            values = Vector<*HIRExpression>();
+            values.PushBack(iterator_ref);
+            values.PushBack(this.builder.IntegerLiteral(1, this.context.IntegerPointerType(false)) as *HIRLiteral);
+            let step_candidates = iterator_type->GetCandidates("operator+=".ToString(), _for as *ASTStatement, false);
+            step = this.LowerResolvedCallExpression(step_candidates, values, _for as *ASTStatement);
+            if step == null { return; }
+
+            values = Vector<*HIRExpression>();
+            values.PushBack(iterator_ref);
+            let dereference_candidates = iterator_type->GetCandidates("operator*".ToString(), _for as *ASTStatement, false);
+            let value = this.LowerResolvedCallExpression(dereference_candidates, values, _for as *ASTStatement);
+            if value == null { return; }
+            variable = this.builder.BuildVariableStatement(_for->variable, (value as *HIRExpression)->_type, value, false);
+        }
+
+        this.scope_manager.PushScope("<for>".ToString(), false);
+        this.loop_scopes.PushBack(this.scope_manager.current);
+        this.scope_manager.current->Set(_for->variable, variable, _for as *ASTStatement);
+        let body = this.LowerBlockStatement(_for->body);
+        this.loop_scopes.PopBack();
+        this.scope_manager.PopScope();
+        this.builder.BuildForStatement(iterator, variable, condition, step, body);
+    }
+
+    fn LowerLoopStatement(&mut this, _loop: *ASTLoopStatement) {
+        this.scope_manager.PushScope("<loop>".ToString(), false);
+        this.loop_scopes.PushBack(this.scope_manager.current);
+        let body = this.LowerBlockStatement(_loop->body);
+        this.loop_scopes.PopBack();
+        this.scope_manager.PopScope();
+        this.builder.BuildLoopStatement(body);
+    }
+
+    fn GetTemporaryDestructors(&mut this, exception: *HIRExpression) -> Vector<*HIRExpression> {
+        let mut destructors = Vector<*HIRExpression>();
+
+        for instance in this.temporaries.Reverse() {
+            if instance == exception { continue; }
+            let mut values = Vector<*HIRExpression>();
+            values.PushBack(instance);
+            let function = (instance->_type as *HIRClassType)->declaration->destructor;
+            let callee = this.builder.ReferenceDeclaration(function as *HIRDeclaration, false);
+            destructors.PushBack(this.builder.Destructor(instance, callee));
+        }
+
+        this.temporaries.Clear();
+        return destructors;
+    }
+
+    fn BuildTemporaryDestructors(&mut this, exception: *HIRExpression) {
+        for destructor in this.GetTemporaryDestructors(exception) {
+            this.builder.BuildExpressionStatement(destructor);
         }
     }
 
-    fn LowerBlockStatement(&mut this, block: *HIRBlockStatement) {
+    fn GetDestructors(&mut this, target: *mut Scope, exception: *HIRExpression) -> Vector<*HIRExpression> {
+        let mut destructors = Vector<*HIRExpression>();
+        let mut scope = this.scope_manager.current;
+
+        while scope != null && !scope->global {
+            for instance in scope->instances.Reverse() {
+                if exception != null {
+                    if instance->kind == HIRExpressionKind::VariableReference && exception->kind == HIRExpressionKind::VariableReference {
+                        if (instance as *HIRVariableReference)->variable == (exception as *HIRVariableReference)->variable { continue; }
+                    } else if instance->kind == HIRExpressionKind::DeclarationReference && exception->kind == HIRExpressionKind::DeclarationReference {
+                        if (instance as *HIRDeclarationReference)->declaration == (exception as *HIRDeclarationReference)->declaration { continue; }
+                    }
+                }
+
+                let mut values = Vector<*HIRExpression>();
+                values.PushBack(instance);
+                let function = (instance->_type as *HIRClassType)->declaration->destructor;
+                let callee = this.builder.ReferenceDeclaration(function as *HIRDeclaration, false);
+                destructors.PushBack(this.builder.Destructor(instance, callee));
+            }
+
+            if scope == target { break; }
+            scope = scope->parent;
+        } return destructors;
+    }
+
+    fn BuildDestructors(&mut this, target: *mut Scope, exception: *HIRExpression) {
+        for destructor in this.GetDestructors(target, exception) {
+            this.builder.BuildExpressionStatement(destructor);
+        }
+    }
+
+    fn LowerContinueStatement(&mut this, _continue: *ASTContinueStatement) {
+        if this.loop_scopes.Empty() {
+            Logger::Log("Continue statement outside of loop.", _continue as *ASTStatement, LogSeverity::Error);
+            return;
+        }
+
+        this.BuildDestructors(this.loop_scopes.Back(), null);
+        this.builder.BuildContinueStatement();
+    }
+
+    fn LowerBreakStatement(&mut this, _break: *ASTBreakStatement) {
+        if this.loop_scopes.Empty() {
+            Logger::Log("Break statement outside of loop.", _break as *ASTStatement, LogSeverity::Error);
+            return;
+        }
+
+        this.BuildDestructors(this.loop_scopes.Back(), null);
+        this.builder.BuildBreakStatement();
+    }
+
+    fn LowerUnsafeStatement(&mut this, _unsafe: *ASTUnsafeStatement) {
+        if this._unsafe {
+            Logger::Log("Already in an unsafe statement.", _unsafe as *ASTStatement, LogSeverity::Error);
+            return;
+        }
+
+        this._unsafe = true;
+        this.LowerBlockStatement(_unsafe->body);
+        this._unsafe = false;
+    }
+
+    fn LowerBlockStatement(&mut this, block: *ASTBlockStatement) -> *HIRBlockStatement {
+        let prev_block = this.builder.GetCurrentBlock();
+        let statement = this.builder.BuildBlockStatement();
+        this.builder.SetCurrentBlock(statement);
+
         for statement in block->statements {
-            if this.builder.GetCurrentBlock()->HasTerminator() { break; }
             this.LowerStatement(statement);
         }
+
+        this.BuildDestructors(this.scope_manager.current, null);
+        this.builder.SetCurrentBlock(prev_block);
+        return statement;
     }
 
-    fn LowerReturnStatement(&mut this, _return: *HIRReturnStatement) {
-        if this.indirect_return != null {
-            this.LowerExpressionTo(_return->expression, this.indirect_return);
-            for destructor in _return->destructors { this.LowerExpression(destructor); }
-            this.builder.BuildReturn(null);
-        } else if this.IsAggregate(this.current_return) {
-            let _type = this.LowerType(this.current_return);
-            if _type == null { return; }
-            let alloca = this.builder.BuildAlloca("abi.aggregate".ToString(), _type);
-            this.LowerExpressionTo(_return->expression, alloca as *MIRInstruction);
-            let target = this.context->PointerType(this.LowerAggregateType(this.current_return));
-            let pointer = this.builder.BuildCast("abi.cast".ToString(), MIRCastKind::Bitcast, alloca as *MIRInstruction, target);
-            let load = this.builder.BuildLoad("abi.value".ToString(), pointer as *MIRInstruction);
-            for destructor in _return->destructors { this.LowerExpression(destructor); }
-            this.builder.BuildReturn(load as *MIRInstruction);
+    fn LowerVariableStatement(&mut this, variable: *ASTVariableStatement) {
+        let mut initializer: *HIRExpression = null;
+        let mut _type: *HIRType = null;
+
+        if variable->_type != null {
+            _type = this.LowerType(variable->_type);
+
+            if variable->initializer != null {
+                initializer = this.Coerce(this.LowerExpression(variable->initializer), _type);
+
+                if initializer != null {
+                    let same = _type->IsSame(initializer->_type);
+
+                    if _type->IsReference() && _type->Pointee().IsCompatible(initializer->_type) {
+                        initializer = this.ImplicitAddressOf(initializer);
+                    }
+
+                    if initializer->_type->IsReference() && _type->IsCompatible(initializer->_type->Pointee()) {
+                        initializer = this.ImplicitDereference(initializer);
+                    }
+
+                    if ! _type->IsCompatible(initializer->_type) {
+                        Logger::Log("Incompatible variable initialization types. ('" + _type->ToString() + "' != '" + initializer->_type->ToString() + "').", variable as *ASTStatement, LogSeverity::Error);
+                        return;
+                    }
+
+                    if ! _type->IsMutabilityCompatible(initializer->_type) {
+                        Logger::Log("Cannot assign immutable pointer to mutable pointer.", variable as *ASTStatement, LogSeverity::Error);
+                        return;
+                    }
+
+                    if same && !this.LiteralNeedsExplicitType(variable->initializer, _type) {
+                        Logger::Log("Unnecessary type annotation, type can be inferred from initializer.", variable as *ASTStatement, LogSeverity::Warning);
+                    }
+
+                    initializer = this.MakeCompatible(initializer, _type);
+                }
+            }
+        } else if variable->initializer != null {
+            initializer = this.Coerce(this.LowerExpression(variable->initializer));
+            _type = initializer->_type;
         } else {
-            let mut value: *MIRValue = null;
+            Logger::Log("Type annotation required for variable '" + variable->name + "' without initializer.", variable as *ASTStatement, LogSeverity::Error);
+        }
 
-            if _return->expression != null {
-                value = this.LowerExpression(_return->expression);
-                if value == null { return; }
+        if _type != null {
+            let construct = _type->IsClass() && (initializer != null ? initializer->_type->IsClass() && initializer->category == HIRExpressionCategory::Place : true);
+            let statement = this.builder.BuildVariableStatement(variable->name, _type, !construct ? initializer : null, variable->mutable);
+            this.scope_manager.current->Set(variable->name, statement, variable as *ASTStatement);
+
+            if construct {
+                let mut values = Vector<*HIRExpression>();
+                let reciever = this.builder.ReferenceVariable(statement);
+                (reciever as *mut HIRExpression)->mutable = true;
+                values.PushBack(reciever);
+
+                if initializer != null { values.PushBack(initializer); }
+                let candidates = (_type as *HIRClassType)->declaration->constructors;
+                let function = this.ResolveOverload(candidates, values, variable as *ASTStatement, initializer == null);
+                if initializer != null && function == null { return; }
+
+                if function != null {
+                    let call = this.LowerResolvedCallExpression(function, values, variable as *ASTStatement);
+
+                    if call != null {
+                        this.builder.BuildExpressionStatement(call);
+                    }
+                }
             }
 
-            for destructor in _return->destructors {
-                this.LowerExpression(destructor);
-            } this.builder.BuildReturn(value);
-        }
-    }
-
-    fn LowerVariableStatement(&mut this, variable: *HIRVariableStatement) {
-        let _type = this.LowerType(variable->_type);
-        if _type == null { return; }
-        let alloca = this.builder.BuildAlloca(variable->name, _type);
-        this.variables[variable] = (alloca as *MIRInstruction) as *MIRValue;
-
-        if variable->initializer != null {
-            this.LowerExpressionTo(variable->initializer, alloca as *MIRInstruction);
-        }
-    }
-
-    fn LowerIfStatement(&mut this, _if: *HIRIfStatement) {
-        let condition = this.LowerExpression(_if->condition);
-        if condition == null { return; }
-
-        let then_block = this.builder.BuildBlock("if.then".ToString());
-        let mut merge_block: *mut MIRBlock = null;
-
-        if _if->else_body == null {
-            merge_block = this.builder.BuildBlock("if.merge".ToString());
-            this.builder.BuildConditionalBranch(condition, then_block, merge_block);
-        } else {
-            let else_block = this.builder.BuildBlock("if.else".ToString());
-            this.builder.BuildConditionalBranch(condition, then_block, else_block);
-            this.builder.SetCurrentBlock(else_block);
-            this.LowerBlockStatement(_if->else_body);
-
-            if !this.builder.GetCurrentBlock()->HasTerminator() {
-                merge_block = this.builder.BuildBlock("if.merge".ToString());
-                this.builder.BuildBranch(merge_block);
-            }
-        }
-
-        this.builder.SetCurrentBlock(then_block);
-        this.LowerBlockStatement(_if->then_body);
-
-        if !this.builder.GetCurrentBlock()->HasTerminator() {
-            if merge_block == null {
-                merge_block = this.builder.BuildBlock("if.merge".ToString());
-            } this.builder.BuildBranch(merge_block);
-        }
-
-        if merge_block != null {
-            this.builder.SetCurrentBlock(merge_block);
-        }
-    }
-
-    fn LowerWhileStatement(&mut this, _while: *HIRWhileStatement) {
-        let condition_block = this.builder.BuildBlock("while.cond".ToString());
-        let body_block = this.builder.BuildBlock("while.body".ToString());
-        let end_block = this.builder.BuildBlock("while.end".ToString());
-        this.builder.BuildBranch(condition_block);
-
-        this.builder.SetCurrentBlock(condition_block);
-        let condition = this.LowerExpression(_while->condition);
-        if condition == null { return; }
-        this.builder.BuildConditionalBranch(condition, body_block, end_block);
-
-        this.builder.SetCurrentBlock(body_block);
-        this.break_blocks.PushBack(end_block);
-        this.continue_blocks.PushBack(condition_block);
-        this.LowerBlockStatement(_while->while_body);
-        this.continue_blocks.PopBack();
-        this.break_blocks.PopBack();
-
-        if !this.builder.GetCurrentBlock()->HasTerminator() {
-            this.builder.BuildBranch(condition_block);
-        }
-
-        this.builder.SetCurrentBlock(end_block);
-    }
-
-    fn LowerLoopStatement(&mut this, _loop: *HIRLoopStatement) {
-        let body_block = this.builder.BuildBlock("loop.body".ToString());
-        let end_block = this.builder.BuildBlock("loop.end".ToString());
-        this.builder.BuildBranch(body_block);
-
-        this.builder.SetCurrentBlock(body_block);
-        this.break_blocks.PushBack(end_block);
-        this.continue_blocks.PushBack(body_block);
-        this.LowerBlockStatement(_loop->body);
-        this.continue_blocks.PopBack();
-        this.break_blocks.PopBack();
-
-        if !this.builder.GetCurrentBlock()->HasTerminator() {
-            this.builder.BuildBranch(body_block);
-        }
-
-        this.builder.SetCurrentBlock(end_block);
-    }
-
-    fn LowerForStatement(&mut this, _for: *HIRForStatement) {
-        this.LowerVariableStatement(_for->iterator);
-        let alloca = this.builder.BuildAlloca(_for->variable->name, this.LowerType(_for->variable->_type));
-        this.variables[_for->variable] = (alloca as *MIRInstruction) as *MIRValue;
-
-        let condition_block = this.builder.BuildBlock("for.cond".ToString());
-        let body_block = this.builder.BuildBlock("for.body".ToString());
-        let step_block = this.builder.BuildBlock("for.step".ToString());
-        let end_block = this.builder.BuildBlock("for.end".ToString());
-        this.builder.BuildBranch(condition_block);
-
-        this.builder.SetCurrentBlock(condition_block);
-        let condition = this.LowerExpression(_for->condition);
-        if condition == null { return; }
-        this.builder.BuildConditionalBranch(condition, body_block, end_block);
-
-        this.builder.SetCurrentBlock(body_block);
-        this.LowerExpressionTo(_for->variable->initializer, alloca as *MIRInstruction);
-
-        this.break_blocks.PushBack(end_block);
-        this.continue_blocks.PushBack(step_block);
-        this.LowerBlockStatement(_for->body);
-        this.continue_blocks.PopBack();
-        this.break_blocks.PopBack();
-
-        if !this.builder.GetCurrentBlock()->HasTerminator() {
-            this.builder.BuildBranch(step_block);
-        }
-
-        this.builder.SetCurrentBlock(step_block);
-        this.LowerExpression(_for->step);
-
-        if !this.builder.GetCurrentBlock()->HasTerminator() {
-            this.builder.BuildBranch(condition_block);
-        }
-
-        this.builder.SetCurrentBlock(end_block);
-    }
-
-    fn LowerBreakStatement(&mut this, _break: *HIRBreakStatement) {
-        if !this.break_blocks.Empty() {
-            this.builder.BuildBranch(this.break_blocks.Back());
-        }
-    }
-
-    fn LowerContinueStatement(&mut this, _continue: *HIRContinueStatement) {
-        if !this.continue_blocks.Empty() {
-            this.builder.BuildBranch(this.continue_blocks.Back());
-        }
-    }
-
-    fn LowerConstantExpression(&mut this, expression: *HIRExpression) -> *MIRValue {
-        if expression->kind == HIRExpressionKind::Literal {
-            let literal = expression as *HIRLiteral;
-
-            if literal->kind == HIRLiteralKind::String {
-                return this.builder.ConstantString((literal as *HIRStringLiteral)->value, this.LowerType(expression->_type)) as *MIRConstant;
-            }
-        } return this.LowerExpression(expression);
-    }
-
-    fn LowerPlaceExpression(&mut this, expression: *HIRExpression) -> *MIRValue {
-        if this.temporaries.Has(expression) {
-            return this.temporaries[expression];
-        } else if expression->kind == HIRExpressionKind::VariableReference {
-            return this.variables.Get((expression as *HIRVariableReference)->variable, null);
-        } else if expression->kind == HIRExpressionKind::DeclarationReference {
-            let declaration = (expression as *HIRDeclarationReference)->declaration;
-
-            if this.declarations.Has(declaration) {
-                return this.builder.ReferenceDeclaration(this.declarations[declaration]);
+            if _type->IsClass() {
+                this.scope_manager.current->instances.PushBack(this.builder.ReferenceVariable(statement));
+                this.BuildTemporaryDestructors(initializer);
             } else {
-                return this.parameters.Get(declaration, null);
+                this.BuildTemporaryDestructors(null);
             }
-        } else if expression->kind == HIRExpressionKind::MemberAccess {
-            return this.LowerMemberAccessExpression(expression as *HIRMemberAccessExpression);
-        } else if expression->kind == HIRExpressionKind::Unary && (expression as *HIRUnaryExpression)->kind == HIRUnaryKind::Dereference {
-            return this.LowerUnaryExpression(expression as *HIRUnaryExpression);
-        } else {
-            let alloca = this.builder.BuildAlloca("temporary".ToString(), this.LowerType(expression->_type));
-            this.LowerExpressionTo(expression, alloca as *MIRInstruction);
-            this.temporaries[expression] = (alloca as *MIRInstruction) as *MIRValue;
-            return alloca as *MIRInstruction;
+        }
+
+        if variable->next != null {
+            this.LowerVariableStatement(variable->next);
         }
     }
 
-    fn LowerExpressionTo(&mut this, expression: *HIRExpression, destination: *MIRValue) {
-        if expression->kind == HIRExpressionKind::Call {
-            this.LowerCallExpression(expression as *HIRCallExpression, destination);
-            this.temporaries[expression] = destination;
-        } else if expression->kind == HIRExpressionKind::Constructor {
-            this.LowerConstructorExpression(expression as *HIRConstructorExpression, destination);
-            this.temporaries[expression] = destination;
-        } else {
-            let value = this.LowerExpression(expression);
-            if value == null { return; }
-            this.builder.BuildStore(value, destination as *MIRInstruction);
+    fn LowerAssemblyStatement(&mut this, assembly: *ASTAssemblyStatement) {
+        if assembly->outputs.Size() > 1 {
+            Logger::Log("Multiple outputs are not supported.", assembly as *ASTStatement, LogSeverity::Error);
         }
     }
 
-    fn LowerExpression(&mut this, expression: *HIRExpression) -> *MIRValue {
-        if expression->kind == HIRExpressionKind::Literal {
-            return this.LowerLiteral(expression as *HIRLiteral);
-        } else if expression->kind == HIRExpressionKind::Intrinsic {
-            return this.LowerIntrinsicExpression(expression as *HIRIntrinsicExpression);
-        } else if expression->kind == HIRExpressionKind::Assignment {
-            return this.LowerAssignmentExpression(expression as *HIRAssignmentExpression);
-        } else if expression->kind == HIRExpressionKind::Call && !this.IsAggregate(expression->_type) {
-            return this.LowerCallExpression(expression as *HIRCallExpression, null);
-        } else if expression->kind == HIRExpressionKind::Destructor {
-            return this.LowerDestructorExpression(expression as *HIRDestructorExpression);
-        } else if expression->kind == HIRExpressionKind::New {
-            return this.LowerNewExpression(expression as *HIRNewExpression);
-        } else if expression->kind == HIRExpressionKind::Delete {
-            return this.LowerDeleteExpression(expression as *HIRDeleteExpression);
-        } else if expression->kind == HIRExpressionKind::Cast {
-            return this.LowerCastExpression(expression as *HIRCastExpression);
-        } else if expression->kind == HIRExpressionKind::IndexAccess {
-            return this.LowerIndexAccessExpression(expression as *HIRIndexAccessExpression);
-        } else if expression->kind == HIRExpressionKind::Unary && (expression as *HIRUnaryExpression)->kind != HIRUnaryKind::Dereference {
-            return this.LowerUnaryExpression(expression as *HIRUnaryExpression);
-        } else if expression->kind == HIRExpressionKind::Binary {
-            return this.LowerBinaryExpression(expression as *HIRBinaryExpression);
-        } else if expression->kind == HIRExpressionKind::Ternary {
-            return this.LowerTernaryExpression(expression as *HIRTernaryExpression);
-        } else {
-            let place = this.LowerPlaceExpression(expression);
-            if place == null { return null; }
-            if place->_type->kind == MIRTypeKind::Function { return place; }
-            return this.builder.BuildLoad("load".ToString(), place) as *MIRInstruction;
-        }
+    fn AssignmentToBinaryKind(&this, kind: ASTAssignmentKind) -> ASTBinaryKind {
+        if kind == ASTAssignmentKind::AddAssign { return ASTBinaryKind::Add; }
+        else if kind == ASTAssignmentKind::SubtractAssign { return ASTBinaryKind::Subtract; }
+        else if kind == ASTAssignmentKind::MultiplyAssign { return ASTBinaryKind::Multiply; }
+        else if kind == ASTAssignmentKind::DivideAssign { return ASTBinaryKind::Divide; }
+        else if kind == ASTAssignmentKind::ModuloAssign { return ASTBinaryKind::Modulo; }
+        else if kind == ASTAssignmentKind::LeftShiftAssign { return ASTBinaryKind::LeftShift; }
+        else if kind == ASTAssignmentKind::RightShiftAssign { return ASTBinaryKind::RightShift; }
+        else if kind == ASTAssignmentKind::AndAssign { return ASTBinaryKind::BitwiseAnd; }
+        else if kind == ASTAssignmentKind::OrAssign { return ASTBinaryKind::BitwiseOr; }
+        else { return ASTBinaryKind::BitwiseXor; }
     }
 
-    fn LowerLiteral(&mut this, literal: *HIRLiteral) -> *MIRValue {
-        let _type = this.LowerType((literal as *HIRExpression)->_type);
+    fn LowerAssignmentExpression(&mut this, assignment: *ASTAssignmentExpression) -> *HIRExpression {
+        let left_raw = this.LowerExpression(assignment->left);
+        let mut left = this.ImplicitDereference(left_raw);
+        if left == null { return null; }
 
-        if literal->kind == HIRLiteralKind::Boolean {
-            return this.builder.ConstantInteger((literal as *HIRBooleanLiteral)->value ? 1 : 0, _type) as *MIRConstant;
-        } else if literal->kind == HIRLiteralKind::Character {
-            return this.builder.ConstantInteger((literal as *HIRCharacterLiteral)->value as u64, _type) as *MIRConstant;
-        } else if literal->kind == HIRLiteralKind::Integer {
-            return this.builder.ConstantInteger((literal as *HIRIntegerLiteral)->value, _type) as *MIRConstant;
-        } else if literal->kind == HIRLiteralKind::Float {
-            return this.builder.ConstantFloat((literal as *HIRFloatLiteral)->value, _type) as *MIRConstant;
-        } else if literal->kind == HIRLiteralKind::String {
-            let value = (literal as *HIRStringLiteral)->value;
-            let mut _static: *MIRStaticDeclaration = null;
+        let right_raw = this.LowerExpression(assignment->right);
+        let mut right = this.ImplicitDereference(right_raw);
+        if right == null { return null; }
 
-            if this.strings.Has(value) {
-                _static = this.strings[value];
+        if left->_type->IsPointer() && (assignment->kind == ASTAssignmentKind::AddAssign || assignment->kind == ASTAssignmentKind::SubtractAssign) {
+            right = this.Coerce(right, this.context.IntegerPointerType(false));
+        } else {
+            right = this.Coerce(right, left->_type);
+        }
+
+        if left->_type->HasMethods() {
+            let mut values = Vector<*HIRExpression>();
+            values.PushBack(this.ImplicitAddressOf(left));
+            values.PushBack(right_raw);
+
+            let name = "operator" + assignment->kind.ToString();
+            let candidates = left->_type->GetCandidates(name, assignment as *ASTExpression, true);
+            let function = this.ResolveOverload(candidates, values, assignment as *ASTExpression, true);
+
+            if function != null {
+                return this.LowerResolvedCallExpression(function, values, assignment as *ASTExpression);
+            } else if left->_type == right->_type {
+                if assignment->kind != ASTAssignmentKind::Assign {
+                    Logger::Log("Invalid class assignment operation '" + assignment->kind.ToString() + "' for type '" + left->_type->ToString() + "'.", assignment as *ASTExpression, LogSeverity::Error);
+                    return null;
+                }
             } else {
-                let name = "string." + String::FromInteger(this.strings.Size() as u64);
-                let array_type = this.context->ArrayType(this.context->IntegerType(8), value->Length() + 1);
-                let initializer = this.builder.ConstantString(value, array_type) as *MIRConstant;
-                _static = this.builder.BuildStatic(name, array_type, false, initializer, MIRDeclarationLinkage::Private);
-                this.strings[value] = _static;
+                Logger::Log("Incompatible class assignment types. ('" + left->_type->ToString() + "' != '" + right->_type->ToString() + "').", assignment as *ASTExpression, LogSeverity::Error);
+                return null;
+            }
+        }
+
+        if left->category != HIRExpressionCategory::Place {
+            Logger::Log("Cannot assign to non-place value.", assignment as *ASTExpression, LogSeverity::Error);
+            return null;
+        }
+
+        if !left->mutable {
+            Logger::Log("Cannot assign to immutable value.", assignment as *ASTExpression, LogSeverity::Error);
+            return null;
+        }
+
+        if assignment->kind != ASTAssignmentKind::Assign {
+            right = this.LowerResolvedBinaryExpression(this.AssignmentToBinaryKind(assignment->kind), left, right, assignment as *ASTExpression);
+            if right == null { return null; }
+        }
+
+        return this.builder.Assignment(left, right);
+    }
+
+    fn IsDeferrableExpression(&mut this, expression: *ASTExpression) -> *HIRType {
+        if expression->kind == ASTExpressionKind::Literal {
+            let literal = expression as *ASTLiteral;
+
+            if literal->kind == ASTLiteralKind::Integer && (literal as *ASTIntegerLiteral)->suffix.Empty() {
+                return this.context.IntegerLiteralType();
+            } else if literal->kind == ASTLiteralKind::Float && (literal as *ASTFloatLiteral)->suffix.Empty() {
+                return this.context.FloatLiteralType();
+            } else {
+                return null;
+            }
+        } else if expression->kind == ASTExpressionKind::Ternary {
+            let ternary = expression as *ASTTernaryExpression;
+            let then_type = this.IsDeferrableExpression(ternary->then);
+            if then_type == null { return null; }
+            let else_type = this.IsDeferrableExpression(ternary->_else);
+            if else_type == null { return null; }
+
+            if *then_type == *else_type {
+                return then_type;
+            } else {
+                return null;
+            }
+        } else if expression->kind == ASTExpressionKind::Binary {
+            let binary = expression as *ASTBinaryExpression;
+
+            if binary->kind == ASTBinaryKind::Equal || binary->kind == ASTBinaryKind::NotEqual || binary->kind == ASTBinaryKind::Greater || binary->kind == ASTBinaryKind::Less || binary->kind == ASTBinaryKind::GreaterEqual || binary->kind == ASTBinaryKind::LessEqual || binary->kind == ASTBinaryKind::LogicalAnd || binary->kind == ASTBinaryKind::LogicalOr {
+                return null;
             }
 
-            let reference = this.builder.ReferenceDeclaration(_static as *MIRLinkableDeclaration);
-            return this.builder.BuildCast("string.cast".ToString(), MIRCastKind::Bitcast, reference, _type);
-        } else if literal->kind == HIRLiteralKind::Array {
-            let mut elements = Vector<*MIRValue>();
+            let left_type = this.IsDeferrableExpression(binary->left);
+            if left_type == null { return null; }
+            let right_type = this.IsDeferrableExpression(binary->right);
+            if right_type == null { return null; }
 
-            for element in (literal as *HIRArrayLiteral)->elements {
-                let lowered_element = this.LowerExpression(element);
-                if lowered_element == null { return null; }
-                elements.PushBack(lowered_element);
+            if *left_type == *right_type {
+                return left_type;
+            } else {
+                return null;
             }
+        } else if expression->kind == ASTExpressionKind::Unary {
+            let unary = expression as *ASTUnaryExpression;
 
-            return this.builder.ConstantArray(elements, _type) as *MIRConstant;
-        } else if literal->kind == HIRLiteralKind::Structure {
-            let mut fields = Vector<*MIRValue>();
-
-            for field in (literal as *HIRStructureLiteral)->fields {
-                let lowered_field = this.LowerExpression(field);
-                if lowered_field == null { return null; }
-                fields.PushBack(lowered_field);
+            if unary->kind == ASTUnaryKind::Negate || unary->kind == ASTUnaryKind::Not {
+                return this.IsDeferrableExpression(unary->operand);
+            } else {
+                return null;
             }
-
-            return this.builder.ConstantStruct(fields, _type) as *MIRConstant;
-        } else if literal->kind == HIRLiteralKind::Null {
-            return this.builder.ConstantNull(_type) as *MIRConstant;
         } else {
             return null;
         }
     }
 
-    fn LowerIntrinsicExpression(&mut this, intrinsic: *HIRIntrinsicExpression) -> *MIRValue {
-        let value = intrinsic->kind == HIRIntrinsicKind::SizeOf ? intrinsic->_type->Size() : intrinsic->_type->Alignment();
-        return this.builder.ConstantInteger(value as u64, this.LowerType((intrinsic as *HIRExpression)->_type)) as *MIRConstant;
-    }
+    fn LowerExpression(&mut this, expression: *ASTExpression) -> *HIRExpression {
+        if expression->kind == ASTExpressionKind::Unary || expression->kind == ASTExpressionKind::Binary || expression->kind == ASTExpressionKind::Ternary {
+            let _type = this.IsDeferrableExpression(expression);
 
-    fn LowerAssignmentExpression(&mut this, assignment: *HIRAssignmentExpression) -> *MIRValue {
-        let place = this.LowerPlaceExpression(assignment->left);
-        let value = this.LowerExpression(assignment->right);
-        if place == null || value == null { return null; }
-        this.builder.BuildStore(value, place);
-        return value;
-    }
-
-    fn LowerCallExpression(&mut this, call: *HIRCallExpression, destination: *MIRValue) -> *MIRValue {
-        let _return = call->callee->_type->Return();
-        let parameters = call->callee->_type->Parameters();
-        let callee = this.LowerExpression(call->callee);
-        if callee == null { return null; }
-        let mut arguments = Vector<*MIRValue>();
-
-        if this.IsIndirectAggregate(_return) {
-            arguments.PushBack(destination);
-        }
-
-        for i in 0..call->arguments.Size() {
-            let argument: *HIRExpression = call->arguments[i];
-            let _type: *HIRType = parameters[i];
-
-            if this.IsAggregate(_type) {
-                let lowered_type = this.LowerType(_type);
-                if lowered_type == null { return null; }
-                let alloca = this.builder.BuildAlloca("abi.aggregate".ToString(), lowered_type);
-                this.LowerExpressionTo(argument, alloca as *MIRInstruction);
-
-                if this.IsIndirectAggregate(_type) {
-                    arguments.PushBack(alloca as *MIRInstruction);
-                } else {
-                    let target = this.context->PointerType(this.LowerAggregateType(_type));
-                    let pointer = this.builder.BuildCast("abi.cast".ToString(), MIRCastKind::Bitcast, alloca as *MIRInstruction, target);
-                    let load = this.builder.BuildLoad("abi.value".ToString(), pointer as *MIRInstruction);
-                    arguments.PushBack(load as *MIRInstruction);
-                }
-            } else {
-                let value = this.LowerExpression(argument);
-                if value == null { return null; }
-                arguments.PushBack(value);
+            if _type != null {
+                return this.builder.Deferred(expression, _type);
             }
         }
 
-        let result = this.builder.BuildCall("call".ToString(), callee, arguments) as *MIRInstruction;
-
-        if this.IsIndirectAggregate(_return) {
-            return destination;
-        } else if this.IsAggregate(_return) {
-            let target = this.context->PointerType(this.LowerAggregateType(_return));
-            let pointer = this.builder.BuildCast("abi.cast".ToString(), MIRCastKind::Bitcast, destination, target);
-            this.builder.BuildStore(result, pointer as *MIRInstruction);
-            return destination;
-        } else if destination != null {
-            this.builder.BuildStore(result, destination as *MIRInstruction);
-        } return result;
+        return this.LowerExpression(expression, null);
     }
 
-    fn LowerConstructorExpression(&mut this, constructor: *HIRConstructorExpression, destination: *MIRValue) -> *MIRValue {
-        let callee = this.LowerExpression(constructor->callee);
-        if callee == null { return null; }
-        let mut arguments = Vector<*MIRValue>();
-        arguments.PushBack(destination);
+    pub fn LowerExpression(&mut this, expression: *ASTExpression, target: *HIRType) -> *HIRExpression {
+        if expression->kind == ASTExpressionKind::Literal {
+            return this.LowerLiteral(expression as *ASTLiteral);
+        } else if expression->kind == ASTExpressionKind::Path {
+            let path = (expression as *ASTPathExpression)->path;
+            let symbols = this.scope_manager.Resolve(path, false);
+            if symbols.Empty() { return null; }
 
-        for argument in constructor->arguments {
-            let lowered = this.LowerExpression(argument);
-            if lowered == null { return null; }
-            arguments.PushBack(lowered);
-        }
+            for symbol in symbols {
+                if symbol->kind == SymbolKind::Statement {
+                    return this.builder.ReferenceVariable(symbol->statement as *HIRVariableStatement);
+                } else if symbol->kind == SymbolKind::Declaration {
+                    let declaration = symbol->declaration;
 
-        this.builder.BuildCall("constructor".ToString(), callee, arguments) as *MIRInstruction;
-        return destination;
-    }
-
-    fn LowerDestructorExpression(&mut this, destructor: *HIRDestructorExpression) -> *MIRValue {
-        let instance = this.LowerPlaceExpression(destructor->instance);
-        if instance == null { return null; }
-        let callee = this.LowerExpression(destructor->callee);
-        if callee == null { return null; }
-        let mut arguments = Vector<*MIRValue>();
-        arguments.PushBack(instance);
-        this.builder.BuildCall("destructor".ToString(), callee, arguments) as *MIRInstruction;
-        return null;
-    }
-
-    fn LowerRuntimeFunction(&mut this, name: String, parameters: &Vector<*MIRType>, _return: *MIRType) -> *MIRFunctionDeclaration {
-        for declaration in this.module->declarations {
-            if declaration->kind == MIRDeclarationKind::Function && declaration->name == name {
-                return (declaration as *MIRLinkableDeclaration) as *MIRFunctionDeclaration;
-            }
-        }
-
-        if this.runtime_functions.Has(name) { return this.runtime_functions[name]; }
-        let function = this.builder.BuildFunction(name, parameters, _return, MIRDeclarationLinkage::External);
-        this.runtime_functions[name] = function;
-        return function;
-    }
-
-    fn LowerNewExpression(&mut this, _new: *HIRNewExpression) -> *MIRValue {
-        let mut parameters = Vector<*MIRType>();
-        let size_type = this.context->IntegerType(this.target_info.pointer_size as u32 * 8);
-        parameters.PushBack(size_type);
-        let malloc = this.LowerRuntimeFunction("malloc".ToString(), parameters, this.context->PointerType(this.context->VoidType()));
-        let mut allocation_size = (this.builder.ConstantInteger(_new->_type->Size() as u64, size_type) as *MIRConstant) as *MIRValue;
-        let callee = this.builder.ReferenceDeclaration(malloc as *MIRLinkableDeclaration);
-        let mut pointer: *MIRValue = null;
-
-        if _new->size != null {
-            let size = this.LowerExpression(_new->size);
-            if size == null { return null; }
-            allocation_size = this.builder.BuildBinary("new.size".ToString(), MIRBinaryKind::Mul, size, allocation_size, size_type);
-            let pointer_size = this.builder.ConstantInteger(this.target_info.pointer_size as u64, size_type) as *MIRConstant;
-
-            let mut arguments = Vector<*MIRValue>();
-            arguments.PushBack(this.builder.BuildBinary("new.size".ToString(), MIRBinaryKind::Add, allocation_size, pointer_size, size_type));
-            pointer = this.builder.BuildCall("new".ToString(), callee, arguments) as *MIRInstruction;
-            this.builder.BuildStore(size, this.builder.BuildCast("new.cast".ToString(), MIRCastKind::Bitcast, pointer, this.context->PointerType(size_type)));
-            pointer = this.builder.BuildCast("new.cast".ToString(), MIRCastKind::Bitcast, pointer, this.context->PointerType(this.context->IntegerType(8)));
-            pointer = this.builder.BuildArrayGEP("new.gep".ToString(), pointer, this.builder.ConstantInteger(8, size_type) as *MIRConstant);
-            pointer = this.builder.BuildCast("new.cast".ToString(), MIRCastKind::Bitcast, pointer, this.context->PointerType(this.LowerType(_new->_type)));
-
-            if _new->callee != null {
-                let alloca = this.builder.BuildAlloca("new.index".ToString(), size_type) as *MIRInstruction;
-                this.builder.BuildStore(this.builder.ConstantInteger(0, size_type) as *MIRConstant, alloca);
-                let condition_block = this.builder.BuildBlock("new.cond".ToString());
-                let loop_block = this.builder.BuildBlock("new.loop".ToString());
-                let end_block = this.builder.BuildBlock("new.end".ToString());
-                this.builder.BuildBranch(condition_block);
-
-                this.builder.SetCurrentBlock(condition_block);
-                let index = this.builder.BuildLoad("new.index.load".ToString(), alloca) as *MIRInstruction;
-                let condition = this.builder.BuildBinary("new.lt".ToString(), MIRBinaryKind::ICmpUlt, index, size, this.context->IntegerType(1));
-                this.builder.BuildConditionalBranch(condition, loop_block, end_block);
-
-                this.builder.SetCurrentBlock(loop_block);
-                let arguments = Vector<*MIRValue>();
-                arguments.PushBack(this.builder.BuildArrayGEP("new.gep".ToString(), pointer, index));
-                let callee = this.LowerExpression(_new->callee);
-                this.builder.BuildCall("new.constructor".ToString(), callee, arguments) as *MIRInstruction;
-                this.builder.BuildStore(this.builder.BuildBinary("new.add".ToString(), MIRBinaryKind::Add, index, this.builder.ConstantInteger(1, size_type) as *MIRConstant, size_type), alloca);
-                this.builder.BuildBranch(condition_block);
-                this.builder.SetCurrentBlock(end_block);
-            }
-        } else {
-            let mut arguments = Vector<*MIRValue>();
-            arguments.PushBack(allocation_size);
-            pointer = this.builder.BuildCall("new".ToString(), callee, arguments) as *MIRInstruction;
-            pointer = this.builder.BuildCast("new.cast".ToString(), MIRCastKind::Bitcast, pointer, this.context->PointerType(this.LowerType(_new->_type)));
-
-            if _new->callee != null {
-                let arguments = Vector<*MIRValue>();
-                arguments.PushBack(pointer);
-                let callee = this.LowerExpression(_new->callee);
-                this.builder.BuildCall("new.constructor".ToString(), callee, arguments) as *MIRInstruction;
-            }
-        } return pointer;
-    }
-
-    fn LowerDeleteExpression(&mut this, _delete: *HIRDeleteExpression) -> *MIRValue {
-        let pointer = this.LowerExpression(_delete->value);
-        if pointer == null { return null; }
-        let mut parameters = Vector<*MIRType>();
-        parameters.PushBack(this.context->PointerType(this.context->VoidType()));
-        let free = this.LowerRuntimeFunction("free".ToString(), parameters, this.context->VoidType());
-        let callee = this.builder.ReferenceDeclaration(free as *MIRLinkableDeclaration);
-        let pointer_type = pointer->_type as *MIRPointerType;
-        let mut raw_pointer = pointer;
-
-        if pointer_type->pointee->kind != MIRTypeKind::Integer || (pointer_type->pointee as *MIRIntegerType)->width != 8 {
-            raw_pointer = this.builder.BuildCast("delete.cast".ToString(), MIRCastKind::Bitcast, pointer, this.context->PointerType(this.context->IntegerType(8))) as *MIRInstruction;
-        }
-
-        if _delete->array {
-            let size_type = this.context->IntegerType(this.target_info.pointer_size as u32 * 8);
-            raw_pointer = this.builder.BuildArrayGEP("delete.gep".ToString(), raw_pointer, this.builder.ConstantInteger(-8 as u64, size_type) as *MIRConstant);
-
-            if _delete->callee != null {
-                let size = this.builder.BuildLoad("delete.size".ToString(), this.builder.BuildCast("delete.cast".ToString(), MIRCastKind::Bitcast, raw_pointer, this.context->PointerType(size_type))) as *MIRInstruction;
-
-                let alloca = this.builder.BuildAlloca("delete.index".ToString(), size_type) as *MIRInstruction;
-                this.builder.BuildStore(this.builder.ConstantInteger(0, size_type) as *MIRConstant, alloca);
-                let condition_block = this.builder.BuildBlock("delete.cond".ToString());
-                let loop_block = this.builder.BuildBlock("delete.loop".ToString());
-                let end_block = this.builder.BuildBlock("delete.end".ToString());
-                this.builder.BuildBranch(condition_block);
-
-                this.builder.SetCurrentBlock(condition_block);
-                let index = this.builder.BuildLoad("delete.index.load".ToString(), alloca) as *MIRInstruction;
-                let condition = this.builder.BuildBinary("delete.lt".ToString(), MIRBinaryKind::ICmpUlt, index, size, this.context->IntegerType(1));
-                this.builder.BuildConditionalBranch(condition, loop_block, end_block);
-
-                this.builder.SetCurrentBlock(loop_block);
-                let arguments = Vector<*MIRValue>();
-                arguments.PushBack(this.builder.BuildArrayGEP("delete.gep".ToString(), pointer, index));
-                let callee = this.LowerExpression(_delete->callee);
-                this.builder.BuildCall("delete.destructor".ToString(), callee, arguments) as *MIRInstruction;
-                this.builder.BuildStore(this.builder.BuildBinary("delete.add".ToString(), MIRBinaryKind::Add, index, this.builder.ConstantInteger(1, size_type) as *MIRConstant, size_type), alloca);
-                this.builder.BuildBranch(condition_block);
-                this.builder.SetCurrentBlock(end_block);
-            }
-        } else if _delete->callee != null {
-            let arguments = Vector<*MIRValue>();
-            arguments.PushBack(pointer);
-            let callee = this.LowerExpression(_delete->callee);
-            this.builder.BuildCall("delete.destructor".ToString(), callee, arguments) as *MIRInstruction;
-        }
-
-        let mut arguments = Vector<*MIRValue>();
-        arguments.PushBack(raw_pointer);
-        this.builder.BuildCall("delete".ToString(), callee, arguments);
-        return null;
-    }
-
-    fn LowerCastExpression(&mut this, cast: *HIRCastExpression) -> *MIRValue {
-        let mut lowered: *MIRInstruction = null;
-        let expression = cast as *HIRExpression;
-        let target_type = expression->_type;
-
-        let value_type = cast->value->_type;
-        let mut value = this.LowerExpression(cast->value);
-        if value == null { return null; }
-
-        if value_type->IsBoolean() {
-            if target_type->IsInteger() {
-                return this.builder.BuildCast("cast".ToString(), MIRCastKind::ZExt, value, this.LowerType(target_type));
-            }
-        } else if value_type->IsCharacter() {
-            if target_type->IsInteger() {
-                if value_type->Width() < target_type->Width() {
-                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::ZExt, value, this.LowerType(target_type));
-                } else if value_type->Width() > target_type->Width() {
-                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::Trunc, value, this.LowerType(target_type));
-                }
-            }
-        } else if value_type->IsInteger() {
-            if target_type->IsCharacter() {
-                if value_type->Width() == 8 && !value_type->IsSigned() {
-                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::ZExt, value, this.LowerType(target_type));
-                }
-            }
-
-            if target_type->IsInteger() || target_type->IsEnumeration() {
-                if value_type->Width() < target_type->Width() {
-                    if value_type->IsSigned() {
-                        return this.builder.BuildCast("cast".ToString(), MIRCastKind::SExt, value, this.LowerType(target_type));
+                    if declaration->kind == HIRDeclarationKind::Member {
+                        return (declaration as *HIRMemberDeclaration)->value;
+                    } else if declaration->kind == HIRDeclarationKind::Static {
+                        return this.builder.ReferenceDeclaration(declaration, (declaration as *HIRStaticDeclaration)->mutable);
+                    } else if declaration->kind == HIRDeclarationKind::Parameter {
+                        return this.builder.ReferenceDeclaration(declaration, (declaration as *HIRParameterDeclaration)->mutable);
                     } else {
-                        return this.builder.BuildCast("cast".ToString(), MIRCastKind::ZExt, value, this.LowerType(target_type));
+                        return this.builder.ReferenceDeclaration(declaration, false);
                     }
-                } else if value_type->Width() > target_type->Width() {
-                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::Trunc, value, this.LowerType(target_type));
                 }
             }
 
-            if target_type->IsFloat() {
-                if value_type->IsSigned() {
-                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::SIToFP, value, this.LowerType(target_type));
+            Logger::Log("Symbol '" + path->ToString() + "' cannot be used as an expression.", expression, LogSeverity::Error);
+            return null;
+        } else if expression->kind == ASTExpressionKind::Assignment {
+            return this.LowerAssignmentExpression(expression as *ASTAssignmentExpression);
+        } else if expression->kind == ASTExpressionKind::New {
+            return this.LowerNewExpression(expression as *ASTNewExpression);
+        } else if expression->kind == ASTExpressionKind::Delete {
+            return this.LowerDeleteExpression(expression as *ASTDeleteExpression);
+        } else if expression->kind == ASTExpressionKind::Call {
+            return this.LowerCallExpression(expression as *ASTCallExpression);
+        } else if expression->kind == ASTExpressionKind::Cast {
+            return this.LowerCastExpression(expression as *ASTCastExpression);
+        } else if expression->kind == ASTExpressionKind::IndexAccess {
+            return this.LowerIndexAccessExpression(expression as *ASTIndexAccessExpression);
+        } else if expression->kind == ASTExpressionKind::MemberAccess {
+            return this.LowerMemberAccessExpression(expression as *ASTMemberAccessExpression);
+        } else if expression->kind == ASTExpressionKind::Unary {
+            return this.LowerUnaryExpression(expression as *ASTUnaryExpression, target);
+        } else if expression->kind == ASTExpressionKind::Binary {
+            return this.LowerBinaryExpression(expression as *ASTBinaryExpression, target);
+        } else if expression->kind == ASTExpressionKind::Ternary {
+            return this.LowerTernaryExpression(expression as *ASTTernaryExpression, target);
+        } else {
+            Logger::Log("Unknown expression '" + expression->kind.ToString() + "'.", expression, LogSeverity::Error);
+            return null;
+        }
+    }
+
+    fn LowerLiteral(&mut this, literal: *ASTLiteral) -> *HIRExpression {
+        if literal->kind == ASTLiteralKind::Boolean {
+            return this.builder.BooleanLiteral((literal as *ASTBooleanLiteral)->value, this.context.BooleanType()) as *HIRLiteral;
+        } else if literal->kind == ASTLiteralKind::Character {
+            return this.builder.CharacterLiteral((literal as *ASTCharacterLiteral)->value, this.context.IntegerType(8, true)) as *HIRLiteral;
+        } else if literal->kind == ASTLiteralKind::Integer {
+            let integer = literal as *ASTIntegerLiteral;
+            let mut _type = this.context.IntegerLiteralType();
+
+            if !integer->suffix.Empty() {
+                let signed = integer->suffix.StartsWith("i");
+                let suffix = integer->suffix.SubString(1);
+
+                if suffix == "size" {
+                    _type = this.context.IntegerPointerType(signed);
                 } else {
-                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::UIToFP, value, this.LowerType(target_type));
+                    let width = suffix.ToInteger() as u32;
+
+                    if width == 128 || width == 64 || width == 32 || width == 16 || width == 8 {
+                        _type = this.context.IntegerType(width, signed);
+                    } else {
+                        Logger::Log("Invalid integer suffix '" + integer->suffix +  "'.", literal as *ASTExpression, LogSeverity::Error);
+                        return null;
+                    }
                 }
             }
 
-            if target_type->IsPointer() {
-                return this.builder.BuildCast("cast".ToString(), MIRCastKind::IntToPtr, value, this.LowerType(target_type));
-            }
-        } else if value_type->IsFloat() {
-            if target_type->IsInteger() {
-                if target_type->IsSigned() {
-                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::FPToSI, value, this.LowerType(target_type));
+            return this.builder.IntegerLiteral(integer->value, _type) as *HIRLiteral;
+        } else if literal->kind == ASTLiteralKind::Float {
+            let float = literal as *ASTFloatLiteral;
+            let mut _type = this.context.FloatLiteralType();
+
+            if !float->suffix.Empty() {
+                let width = float->suffix.SubString(1).ToInteger() as u32;
+
+                if width == 64 || width == 32 {
+                    _type = this.context.FloatType(width);
                 } else {
-                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::FPToUI, value, this.LowerType(target_type));
+                    Logger::Log("Invalid float suffix '" + float->suffix +  "'.", literal as *ASTExpression, LogSeverity::Error);
+                    return null;
                 }
             }
 
-            if target_type->IsFloat() {
-                if value_type->Width() < target_type->Width() {
-                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::FPExt, value, this.LowerType(target_type));
-                } else if value_type->Width() > target_type->Width() {
-                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::FPTrunc, value, this.LowerType(target_type));
+            return this.builder.FloatLiteral(float->value, _type) as *HIRLiteral;
+        } else if literal->kind == ASTLiteralKind::String {
+            return this.builder.StringLiteral((literal as *ASTStringLiteral)->value, this.context.PointerType(this.context.IntegerType(8, true), false)) as *HIRLiteral;
+        } else if literal->kind == ASTLiteralKind::Array {
+            let mut elements = Vector<*HIRExpression>();
+            let mut _type: *HIRType = null;
+
+            for element in (literal as *ASTArrayLiteral)->elements {
+                let value = this.LowerExpression(element);
+                if value == null { return null; }
+                elements.PushBack(value);
+
+                if _type == null {
+                    _type = value->_type;
+                } else if *_type != *value->_type {
+                    Logger::Log("Array elements must have the same type.", element, LogSeverity::Error);
+                    return null;
                 }
             }
-        } else if value_type->IsPointer() {
-            if target_type->IsInteger() {
-                return this.builder.BuildCast("cast".ToString(), MIRCastKind::PtrToInt, value, this.LowerType(target_type));
+
+            return this.builder.ArrayLiteral(elements, this.context.ArrayType(_type, elements.Size())) as *HIRLiteral;
+        } else if literal->kind == ASTLiteralKind::Structure {
+            let structure = literal as *ASTStructureLiteral;
+
+            if structure->expression->kind != ASTExpressionKind::Path {
+                Logger::Log("Structure initializer target must be a path.", literal as *ASTExpression, LogSeverity::Error);
+                return null;
             }
 
-            if target_type->IsPointer() {
-                if value_type->Pointee().IsClass() && target_type->Pointee().IsClass() {
-                    let (source_class, target_class) = (value_type->Pointee(), target_type->Pointee());
-                    let (source_fields, target_fields) = (source_class->Fields(), target_class->Fields());
-                    let (mut related, mut index: u32) = (false, 0);
+            let _type = this.LowerType((structure->expression as *ASTPathExpression)->path);
+            if _type == null { return null; }
 
-                    for i in 0..source_fields.Size() {
-                        let source_field: *HIRFieldDeclaration = source_fields[i];
-                        let target_declaration = (target_class as *HIRClassType)->declaration;
+            if !_type->IsStructure() {
+                Logger::Log("Structure initializer target must be a structure.", literal as *ASTExpression, LogSeverity::Error);
+                return null;
+            }
 
-                        if (source_field as *HIRDeclaration)->name == (target_declaration as *HIRDeclaration)->name {
-                            (related, index) = (true, i as u32);
+            let fields = _type->Fields();
+            let mut values = Vector<*HIRExpression>();
+            values.Resize(fields.Size());
+
+            if structure->fields.Size() != fields.Size() {
+                Logger::Log("Structure '" + ((_type as *HIRStructureType)->declaration as *HIRDeclaration)->name + "' argument count mismatch.", literal as *ASTExpression, LogSeverity::Error);
+                return null;
+            }
+
+            for field in structure->fields {
+                let index = _type->Index(field.left);
+
+                if index == -1 {
+                    Logger::Log("Unknown field '" + field.left + "' for structure '" + ((_type as *HIRStructureType)->declaration as *HIRDeclaration)->name + "'.", literal as *ASTExpression, LogSeverity::Error);
+                    return null;
+                }
+
+                let field_declaration: *HIRFieldDeclaration = fields[index as usize];
+                let value = this.Coerce(this.LowerExpression(field.right), (field_declaration as *HIRDeclaration)->_type);
+                if value == null { return null; }
+                values[index as usize] = value;
+            }
+
+            return this.builder.StructureLiteral(values, _type) as *HIRLiteral;
+        } else if literal->kind == ASTLiteralKind::Null {
+            return this.builder.NullLiteral() as *HIRLiteral;
+        } else {
+            Logger::Log("Unknown literal type '" + literal->kind.ToString() + "'.", literal as *ASTExpression, LogSeverity::Error);
+            return null;
+        }
+    }
+
+    fn LowerCallExpression(&mut this, call: *ASTCallExpression) -> *HIRExpression {
+        if call->expression->kind == ASTExpressionKind::Path {
+            let path = (call->expression as *ASTPathExpression)->path;
+
+            if !path->absolute && path->segments.Size() == 1 && (path->segments[0].name == "sizeof" || path->segments[0].name == "alignof") && path->segments[0].types.Empty() {
+                if call->arguments.Size() != 1 {
+                    Logger::Log("Invalid number of arguments for intrinsic '" + path->segments[0].name + "'.", call as *ASTExpression, LogSeverity::Error);
+                    return null;
+                }
+
+                let mut _type: *HIRType;
+                let argument: *ASTExpression = call->arguments[0];
+
+                if argument->kind == ASTExpressionKind::Path {
+                    let path = (argument as *ASTPathExpression)->path;
+                    let symbols = this.scope_manager.Resolve(path, false);
+                    if symbols.Empty() { return null; }
+
+                    for symbol in symbols {
+                        if symbol->kind == SymbolKind::Statement {
+                            _type = (symbol->statement as *HIRVariableStatement)->_type;
+                        } else if symbol->kind == SymbolKind::Declaration {
+                            _type = symbol->declaration->_type;
+                        } else {
+                            _type = symbol->_type;
+                        }
+
+                        if _type != null {
                             break;
                         }
                     }
 
-                    if !related {
-                        for i in 0..target_fields.Size() {
-                            let target_field: *HIRFieldDeclaration = target_fields[i];
-                            let source_declaration = (source_class as *HIRClassType)->declaration;
-
-                            if (target_field as *HIRDeclaration)->name == (source_declaration as *HIRDeclaration)->name {
-                                (related, index) = (true, -(i as isize) as u32);
-                                break;
-                            }
-                        }
-                    }
-
-                    if index != 0 {
-                        value = this.builder.BuildStructGEP("cast.base".ToString(), value, index, this.LowerType(target_type));
-                    } else if !related {
+                    if _type == null {
+                        Logger::Log("Symbol '" + path->ToString() + "' cannot be used as a type.", path, LogSeverity::Error);
                         return null;
                     }
-                }
-
-                return this.builder.BuildCast("cast".ToString(), MIRCastKind::Bitcast, value, this.LowerType(target_type));
-            }
-        } else if value_type->IsEnumeration() {
-            if target_type->IsInteger() {
-                if value_type->Width() < target_type->Width() {
-                    if value_type->IsSigned() {
-                        return this.builder.BuildCast("cast".ToString(), MIRCastKind::SExt, value, this.LowerType(target_type));
-                    } else {
-                        return this.builder.BuildCast("cast".ToString(), MIRCastKind::ZExt, value, this.LowerType(target_type));
-                    }
-                } else if value_type->Width() > target_type->Width() {
-                    return this.builder.BuildCast("cast".ToString(), MIRCastKind::Trunc, value, this.LowerType(target_type));
-                }
-            }
-        } return value;
-    }
-
-    fn LowerIndexAccessExpression(&mut this, index_access: *HIRIndexAccessExpression) -> *MIRValue {
-        let value = this.LowerExpression(index_access->value);
-        let index = this.LowerExpression(index_access->index);
-        if value == null || index == null { return null; }
-        return this.builder.BuildArrayGEP("index.access".ToString(), value, index);
-    }
-
-    fn LowerMemberAccessExpression(&mut this, member_access: *HIRMemberAccessExpression) -> *MIRValue {
-        let expression = member_access as *HIRExpression;
-        let instance = this.LowerPlaceExpression(member_access->instance);
-        if instance == null { return null; }
-        let field_type = this.context->PointerType(this.LowerType(expression->_type));
-        return this.builder.BuildStructGEP("field.access".ToString(), instance, member_access->index as u32, field_type);
-    }
-
-    fn LowerUnaryExpression(&mut this, unary: *HIRUnaryExpression) -> *MIRValue {
-        if unary->kind == HIRUnaryKind::AddressOf {
-            return this.LowerPlaceExpression(unary->operand);
-        } else {
-            let operand = this.LowerExpression(unary->operand);
-            if operand == null { return null; }
-
-            if unary->kind == HIRUnaryKind::Dereference {
-                return operand;
-            } else if unary->kind == HIRUnaryKind::Negate {
-                if unary->operand->_type->IsFloat() {
-                    return this.builder.BuildUnary("neg".ToString(), MIRUnaryKind::FNeg, operand);
                 } else {
-                    return this.builder.BuildUnary("neg".ToString(), MIRUnaryKind::Neg, operand);
+                    Logger::Log("Invalid argument kind '" + argument->kind.ToString() + "' for intrinsic '" + path->segments[0].name + "'.", call as *ASTExpression, LogSeverity::Error);
+                    return null;
                 }
-            } else if unary->kind == HIRUnaryKind::Not {
-                return this.builder.BuildUnary("not".ToString(), MIRUnaryKind::Not, operand);
-            } else { return null; }
+
+                return this.builder.Intrinsic(path->segments[0].name == "sizeof" ? HIRIntrinsicKind::SizeOf : HIRIntrinsicKind::AlignOf, _type);
+            }
+        }
+
+        let mut values = Vector<*HIRExpression>();
+
+        for argument in call->arguments {
+            let value = this.LowerExpression(argument);
+            if value == null { return null; }
+            values.PushBack(value);
+        }
+
+        if call->expression->kind == ASTExpressionKind::MemberAccess {
+            let member_access = call->expression as *ASTMemberAccessExpression;
+            let mut instance = this.ImplicitDereference(this.LowerExpression(member_access->expression));
+            if instance == null { return null; }
+
+            if member_access->arrow {
+                if instance->_type->HasMethods() {
+                    let values = Vector<*HIRExpression>();
+                    values.PushBack(this.ImplicitAddressOf(instance));
+
+                    let candidates = instance->_type->GetCandidates("operator->".ToString(), member_access as *ASTExpression, false);
+                    if candidates.Empty() { return null; }
+
+                    instance = this.ImplicitDereference(this.LowerResolvedCallExpression(candidates, values, member_access as *ASTExpression));
+                } else if instance->_type->IsPointer() {
+                    instance = this.ImplicitDereference(instance);
+                } else {
+                    Logger::Log("Expected a pointer type for arrow operator.", member_access as *ASTExpression, LogSeverity::Error);
+                    return null;
+                }
+            }
+
+            if !instance->_type->HasFields() && !instance->_type->HasMethods() {
+                if member_access->arrow {
+                    Logger::Log("Expected a dot operator.", call as *ASTExpression, LogSeverity::Error);
+                    return null;
+                }
+
+                values.Insert(0, this.ImplicitAddressOf(instance));
+                let candidates = this.scope_manager.ResolveCandidates(member_access->member, call as *ASTExpression, false);
+                if candidates.Empty() { return null; }
+                return this.LowerResolvedCallExpression(candidates, values, call as *ASTExpression);
+            } else {
+                let index = instance->_type->HasFields() ? instance->_type->Index(member_access->member) : -1;
+
+                if index != -1 {
+                    let field: *HIRFieldDeclaration = instance->_type->Fields()[index as usize];
+
+                    if !field->public && (this.current_class != null && *this.current_class != *instance->_type) {
+                        Logger::Log("Field '" + member_access->member + "' is private.", call as *ASTExpression, LogSeverity::Error);
+                        return null;
+                    }
+
+                    let target = this.builder.MemberAccess(instance, (field as *HIRDeclaration)->_type, index as usize);
+                    return this.LowerResolvedCallExpression(target, values, call as *ASTExpression);
+                } else {
+                    values.Insert(0, this.ImplicitAddressOf(instance));
+                    let candidates = instance->_type->GetCandidates(member_access->member, call as *ASTExpression, false);
+                    if candidates.Empty() { return null; }
+                    return this.LowerResolvedCallExpression(candidates, values, call as *ASTExpression);
+                }
+            }
+        } else {
+            if call->expression->kind == ASTExpressionKind::Path {
+                let path = (call->expression as *ASTPathExpression)->path;
+
+                for symbol in this.scope_manager.ResolveType(path, true) {
+                    if symbol->kind == SymbolKind::Type && symbol->_type->IsClass() {
+                        let arguments = Vector<*HIRExpression>(values);
+                        values.Insert(0, this.builder.NullLiteral() as *HIRLiteral);
+                        let candidates = (symbol->_type as *HIRClassType)->declaration->constructors;
+                        let function = this.ResolveOverload(candidates, values, call as *ASTExpression, false);
+                        if function == null { return null; }
+                        let callee = this.builder.ReferenceDeclaration(function as *HIRDeclaration, false);
+                        let constructor = this.builder.Constructor(callee, arguments, symbol->_type);
+                        this.temporaries.PushBack(constructor);
+                        return constructor;
+                    }
+                }
+
+                let candidates = this.scope_manager.ResolveCandidates(path, true);
+
+                if !candidates.Empty() {
+                    return this.LowerResolvedCallExpression(candidates, values, call as *ASTExpression);
+                }
+            }
+
+            let value = this.LowerExpression(call->expression);
+
+            if value != null {
+                return this.LowerResolvedCallExpression(value, values, call as *ASTExpression);
+            } else {
+                return null;
+            }
         }
     }
 
-    fn LowerBinaryExpression(&mut this, binary: *HIRBinaryExpression) -> *MIRValue {
-        let expression = binary as *HIRExpression;
-        let result_type = this.LowerType(expression->_type);
-        if result_type == null { return null; }
+    fn ResolveOverload(&mut this, candidates: &Vector<*HIRFunctionDeclaration>, values: &Vector<*HIRExpression>, node: *ASTNode, test: bool) -> *HIRFunctionDeclaration {
+        let mut index: usize = 0;
+        let mut best: u64 = 0;
 
-        let left_type = binary->left->_type;
-        let left = this.LowerExpression(binary->left);
+        for i in 0..candidates.Size() {
+            let function: *HIRFunctionDeclaration = candidates[i];
+            let params = (function as *HIRDeclaration)->_type->Parameters();
+            if values.Size() != params.Size() { continue; }
+            let (mut _match, mut score: u64) = (true, 1);
+
+            for j in 0..params.Size() {
+                let param_score = params[j]->ScoreParameter(values[j]->_type);
+
+                if param_score != 0 {
+                    score += param_score;
+                } else {
+                    _match = false;
+                    break;
+                }
+            }
+
+            if _match && score > best {
+                (index, best) = (i, score);
+            }
+        }
+
+        if best != 0 {
+            return candidates[index];
+        } else {
+            if !test {
+                let candidate: *HIRFunctionDeclaration = candidates[0];
+                Logger::Log("Invalid arguments for: '" + (candidate as *HIRDeclaration)->name + "'.", node, LogSeverity::Error);
+            } return null;
+        }
+    }
+
+    fn LowerResolvedCallExpression(&mut this, candidates: &Vector<*HIRFunctionDeclaration>, values: &Vector<*HIRExpression>, node: *ASTNode) -> *HIRCallExpression {
+        let function = this.ResolveOverload(candidates, values, node, false);
+        if function == null { return null; }
+        return this.LowerResolvedCallExpression(function, values, node);
+    }
+
+    fn LowerResolvedCallExpression(&mut this, function: *HIRFunctionDeclaration, values: &Vector<*HIRExpression>, node: *ASTNode) -> *HIRCallExpression {
+        let expression = this.builder.ReferenceDeclaration(function as *HIRDeclaration, false);
+        return this.LowerResolvedCallExpression(expression, values, node);
+    }
+
+    fn LowerResolvedCallExpression(&mut this, function: *HIRExpression, values: &Vector<*HIRExpression>, node: *ASTNode) -> *HIRCallExpression {
+        if !function->_type->IsFunction() {
+            Logger::Log("Call target is not a function.", node, LogSeverity::Error);
+            return null;
+        }
+
+        let param_types = function->_type->Parameters();
+
+        for i in 0..param_types.Size() {
+            let param_type: *HIRType = param_types[i];
+            let mut value = this.Coerce(values[i], param_type);
+
+            if param_type->IsReference() && param_type->Pointee().IsCompatible(value->_type) {
+                value = this.ImplicitAddressOf(value);
+            }
+
+            if value->_type->IsReference() && param_type->IsCompatible(value->_type->Pointee()) {
+                value = this.ImplicitDereference(value);
+            }
+
+            if value->_type->IsClass() && value->category == HIRExpressionCategory::Place {
+                let mut values = Vector<*HIRExpression>();
+                values.PushBack(this.ImplicitAddressOf(value));
+                let arguments = Vector<*HIRExpression>(values);
+                values.Insert(0, this.builder.NullLiteral() as *HIRLiteral);
+                let candidates = (value->_type as *HIRClassType)->declaration->constructors;
+                let function = this.ResolveOverload(candidates, values, node, false);
+                if function == null { return null; }
+                let callee = this.builder.ReferenceDeclaration(function as *HIRDeclaration, false);
+                value = this.builder.Constructor(callee, arguments, value->_type);
+            }
+
+            if !param_type->IsCompatible(value->_type) {
+                if function->kind == HIRExpressionKind::DeclarationReference {
+                    let name = (function as *HIRDeclarationReference)->declaration->name;
+                    Logger::Log("Incompatible argument types for function '" + name + "'. ('" + param_type->ToString() + "' != '" + value->_type->ToString() + "').", node, LogSeverity::Error);
+                } else {
+                    Logger::Log("Incompatible argument types for function. ('" + param_type->ToString() + "' != '" + value->_type->ToString() + "').", node, LogSeverity::Error);
+                } return null;
+            }
+
+            if !param_type->IsMutabilityCompatible(value->_type) {
+                Logger::Log("Cannot assign immutable pointer to mutable pointer.", node, LogSeverity::Error);
+                return null;
+            }
+
+            values[i] = this.MakeCompatible(value, param_type);
+        }
+
+        let call = this.builder.Call(function, values);
+
+        if function->_type->Return()->HasFields() {
+            this.temporaries.PushBack(call);
+        } return call;
+    }
+
+    fn LowerNewExpression(&mut this, _new: *ASTNewExpression) -> *HIRExpression {
+        let _type = this.LowerType(_new->_type);
+        if _type == null { return null; }
+
+        if _new->size != null {
+            let size = this.Coerce(this.LowerExpression(_new->size), this.context.IntegerPointerType(false));
+            if size == null { return null; }
+
+            if !size->_type->IsIntegerPointer() || size->_type->IsSigned() {
+                Logger::Log("Array size must be of type 'usize'.", _new as *ASTExpression, LogSeverity::Error);
+                return null;
+            }
+
+            if _type->IsClass() {
+                let mut values = Vector<*HIRExpression>();
+                values.PushBack(this.builder.NullLiteral() as *HIRLiteral);
+                let candidates = (_type as *HIRClassType)->declaration->constructors;
+                let function = this.ResolveOverload(candidates, values, _new as *ASTExpression, false);
+                if function == null { return null; }
+                let callee = this.builder.ReferenceDeclaration(function as *HIRDeclaration, false);
+                return this.builder.New(_type, size, false, callee, Vector<*HIRExpression>());
+            } else {
+                return this.builder.New(_type, size, false, null, Vector<*HIRExpression>());
+            }
+        } else if _new->initialized {
+            let mut values = Vector<*HIRExpression>();
+
+            for argument in _new->arguments {
+                let value = this.LowerExpression(argument);
+                if value == null { return null; }
+                values.PushBack(value);
+            }
+
+            if _type->IsClass() {
+                let arguments = Vector<*HIRExpression>(values);
+                values.Insert(0, this.builder.NullLiteral() as *HIRLiteral);
+                let candidates = (_type as *HIRClassType)->declaration->constructors;
+                let function = this.ResolveOverload(candidates, values, _new as *ASTExpression, false);
+                if function == null { return null; }
+                let callee = this.builder.ReferenceDeclaration(function as *HIRDeclaration, false);
+                return this.builder.New(_type, null, true, callee, arguments);
+            } else {
+                if values.Size() != 1 {
+                    Logger::Log("Primitive type initialization requires exactly 1 argument.", _new as *ASTExpression, LogSeverity::Error);
+                    return null;
+                }
+
+                let value = values[0];
+
+                if _type->IsCompatible(value->_type) {
+                    if _type->IsMutabilityCompatible(value->_type) {
+                        values[0] = this.MakeCompatible(value, _type);
+                        return this.builder.New(_type, null, true, null, values);
+                    } else {
+                        Logger::Log("Cannot assign immutable pointer to mutable pointer.", _new as *ASTExpression, LogSeverity::Error);
+                        return null;
+                    }
+                } else {
+                    Logger::Log("Incompatible primitive type initialization types. ('" + _type->ToString() + "' != '" + value->_type->ToString() + "').", _new as *ASTExpression, LogSeverity::Error);
+                    return null;
+                }
+            }
+        } else {
+            return this.builder.New(_type, null, false, null, Vector<*HIRExpression>());
+        }
+    }
+
+    fn LowerDeleteExpression(&mut this, _delete: *ASTDeleteExpression) -> *HIRExpression {
+        let pointer = this.LowerExpression(_delete->expression);
+        if pointer == null { return null; }
+
+        if !pointer->_type->IsPointer() {
+            Logger::Log("Delete value must be a pointer.", _delete as *ASTExpression, LogSeverity::Error);
+            return null;
+        }
+
+        if pointer->_type->Pointee().IsClass() {
+            let mut values = Vector<*HIRExpression>();
+            values.PushBack(this.builder.NullLiteral() as *HIRLiteral);
+            let function = (pointer->_type->Pointee() as *HIRClassType)->declaration->destructor;
+            let callee = this.builder.ReferenceDeclaration(function as *HIRDeclaration, false);
+            return this.builder.Delete(pointer, _delete->array, callee, Vector<*HIRExpression>());
+        } else {
+            return this.builder.Delete(pointer, _delete->array, null, Vector<*HIRExpression>());
+        }
+    }
+
+    fn LiteralNeedsExplicitType(&mut this, expression: *ASTExpression, target: *HIRType) -> bool {
+        let _type = this.IsDeferrableExpression(expression);
+
+        if _type == null {
+            return false;
+        } else if _type->IsInteger() {
+            return target->IsInteger() && !target->IsSame(this.context.IntegerType(32, true));
+        } else if _type->IsFloat() {
+            return target->IsFloat() && !target->IsSame(this.context.FloatType(64));
+        } else {
+            return false;
+        }
+    }
+
+    fn LowerCastExpression(&mut this, cast: *ASTCastExpression) -> *HIRExpression {
+        let mut target = this.LowerType(cast->target);
+        if target == null { return null; }
+
+        let value = this.Coerce(this.LowerExpression(cast->expression), target);
+        if value == null { return null; }
+
+        if *value->_type == *target && this.LiteralNeedsExplicitType(cast->expression, target) {
+            return value;
+        }
+
+        return this.LowerResolvedCastExpression(value, target, cast as *ASTExpression);
+    }
+
+    fn LowerResolvedCastExpression(&mut this, mut value: *HIRExpression, target: *HIRType, node: *ASTNode) -> *HIRExpression {
+        if !target->IsPointer() {
+            value = this.ImplicitDereference(value);
+        }
+
+        let (mut state, mut failed) = (false, false);
+        let (mut left, mut right) = (target, value->_type);
+
+        while left->IsPointer() && right->IsPointer() {
+            if left->IsMutable() != right->IsMutable() {
+                if left->IsMutable() && !right->IsNullPointer() {
+                    failed = true;
+                } state = true;
+            }
+
+            (left, right) = (left->Pointee(), right->Pointee());
+        }
+
+        if *value->_type == target {
+            if !state {
+                Logger::Log("Redundant cast. ('" + value->_type->ToString() + "' to '" + target->ToString() + "')", node, LogSeverity::Warning);
+            } else {
+                if !failed || this._unsafe {
+                    return this.builder.Cast(value, target);
+                } else {
+                    Logger::Log("Cannot cast immutable pointer to mutable pointer.", node, LogSeverity::Error);
+                    return null;
+                }
+            }
+        }
+
+        if value->_type->IsBoolean() {
+            if target->IsInteger() {
+                return this.builder.Cast(value, target);
+            }
+        } else if value->_type->IsCharacter() {
+            if target->IsInteger() {
+                return this.builder.Cast(value, target);
+            }
+        } else if value->_type->IsInteger() {
+            if target->IsPointer() || target->IsInteger() || target->IsFloat() || target->IsEnumeration() {
+                return this.builder.Cast(value, target);
+            } else if target->IsCharacter() {
+                if value->_type->Width() == 8 && !value->_type->IsSigned() {
+                    return this.builder.Cast(value, target);
+                }
+            }
+        } else if value->_type->IsFloat() {
+            if target->IsInteger() || target->IsFloat() {
+                return this.builder.Cast(value, target);
+            }
+        } else if value->_type->IsPointer() {
+            if target->IsInteger() {
+                return this.builder.Cast(value, target);
+            }
+        } else if value->_type->IsEnumeration() {
+            if target->IsInteger() {
+                return this.builder.Cast(value, target);
+            }
+        }
+
+        if value->_type->IsPointer() && target->IsPointer() {
+            if value->_type->Pointee().IsClass() && target->Pointee().IsClass() {
+                let mut related = false;
+
+                for field in value->_type->Pointee().Fields() {
+                    let target_declaration = (target->Pointee() as *HIRClassType)->declaration;
+
+                    if (field as *HIRDeclaration)->name == (target_declaration as *HIRDeclaration)->name {
+                        related = true;
+                        break;
+                    }
+                }
+
+                if !related {
+                    for field in target->Pointee().Fields() {
+                        let source_declaration = (value->_type->Pointee() as *HIRClassType)->declaration;
+
+                        if (field as *HIRDeclaration)->name == (source_declaration as *HIRDeclaration)->name {
+                            related = true;
+                            break;
+                        }
+                    }
+                }
+
+                if !related {
+                    let target_name = ((target->Pointee() as *HIRClassType)->declaration as *HIRDeclaration)->name;
+                    let source_name = ((value->_type->Pointee() as *HIRClassType)->declaration as *HIRDeclaration)->name;
+                    Logger::Log("Cannot cast class '" + source_name + "' to unrelated class '" + target_name + "'.", node, LogSeverity::Error);
+                    return null;
+                }
+            }
+
+            return this.builder.Cast(value, target);
+        } else {
+            Logger::Log("Cannot cast '" + value->_type->ToString() + "' to '" + target->ToString() + "'.", node, LogSeverity::Error);
+            return null;
+        }
+    }
+
+    fn LowerIndexAccessExpression(&mut this, index_access: *ASTIndexAccessExpression) -> *HIRExpression {
+        let value = this.ImplicitDereference(this.LowerExpression(index_access->expression));
+
+        if value == null {
+            return null;
+        }
+
+        let index = this.Coerce(this.ImplicitDereference(this.LowerExpression(index_access->index)), this.context.IntegerPointerType(false));
+
+        if index == null {
+            return null;
+        }
+
+        if value->_type->HasMethods() {
+            let mut values = Vector<*HIRExpression>();
+            values.PushBack(this.ImplicitAddressOf(value));
+            values.PushBack(index);
+
+            let candidates = value->_type->GetCandidates("operator[]".ToString(), index_access as *ASTExpression, false);
+            if candidates.Empty() { return null; }
+
+            return this.LowerResolvedCallExpression(candidates, values, index_access as *ASTExpression);
+        }
+
+        if !value->_type->IsPointer() {
+            Logger::Log("Indexed value must be a pointer.", index_access as *ASTExpression, LogSeverity::Error);
+            return null;
+        }
+
+        if !index->_type->IsIntegerPointer() || index->_type->IsSigned() {
+            Logger::Log("Index must be of type 'usize'.", index_access as *ASTExpression, LogSeverity::Error);
+            return null;
+        }
+
+        return this.builder.IndexAccess(value, index);
+    }
+
+    fn LowerMemberAccessExpression(&mut this, member_access: *ASTMemberAccessExpression) -> *HIRExpression {
+        let mut instance = this.ImplicitDereference(this.LowerExpression(member_access->expression));
+
+        if instance == null {
+            return null;
+        }
+
+        if member_access->arrow {
+            if instance->_type->HasMethods() {
+                let values = Vector<*HIRExpression>();
+                values.PushBack(this.ImplicitAddressOf(instance));
+
+                let candidates = instance->_type->GetCandidates("operator->".ToString(), member_access as *ASTExpression, false);
+                if candidates.Empty() { return null; }
+
+                instance = this.ImplicitDereference(this.LowerResolvedCallExpression(candidates, values, member_access as *ASTExpression));
+            } else if instance->_type->IsPointer() {
+                instance = this.ImplicitDereference(instance);
+            } else {
+                Logger::Log("Expected a pointer type for arrow operator.", member_access as *ASTExpression, LogSeverity::Error);
+                return null;
+            }
+        }
+
+        if !instance->_type->HasFields() {
+            Logger::Log("Cannot access field '" + member_access->member + "' of type '" + instance->_type->ToString() + "'.", member_access as *ASTExpression, LogSeverity::Error);
+            return null;
+        }
+
+        let index = instance->_type->Index(member_access->member);
+
+        if index != -1 {
+            let field: *HIRFieldDeclaration = instance->_type->Fields()[index as usize];
+
+            if !field->public && (this.current_class != null && *this.current_class != *instance->_type) {
+                Logger::Log("Field '" + member_access->member + "' is private.", member_access as *ASTExpression, LogSeverity::Error);
+                return null;
+            }
+
+            return this.builder.MemberAccess(instance, (field as *HIRDeclaration)->_type, index as usize);
+        } else {
+            Logger::Log("Field '" + member_access->member + "' not found in type '" + instance->_type->ToString() + "'.", member_access as *ASTExpression, LogSeverity::Error);
+            return null;
+        }
+    }
+
+    fn LowerUnaryExpression(&mut this, unary: *ASTUnaryExpression, target: *HIRType) -> *HIRExpression {
+        let raw = this.LowerExpression(unary->operand);
+        let mut value = this.ImplicitDereference(raw);
+        if value == null { return null; }
+
+        let mut values = Vector<*HIRExpression>();
+        values.PushBack(this.ImplicitAddressOf(value));
+
+        let name = "operator" + unary->kind.ToString();
+        let candidates = this.scope_manager.ResolveCandidates(name, unary as *ASTExpression, true);
+        let function = this.ResolveOverload(candidates, values, unary as *ASTExpression, true);
+
+        if function != null {
+            return this.LowerResolvedCallExpression(function, values, unary as *ASTExpression);
+        }
+
+        if value->_type->HasMethods() {
+            let candidates = value->_type->GetCandidates(name, unary as *ASTExpression, true);
+            let function = this.ResolveOverload(candidates, values, unary as *ASTExpression, true);
+
+            if function != null {
+                return this.LowerResolvedCallExpression(function, values, unary as *ASTExpression);
+            }
+        }
+
+        if unary->kind == ASTUnaryKind::AddressOf {
+            if raw->category != HIRExpressionCategory::Place {
+                Logger::Log("Cannot take reference to non-place value.", unary as *ASTExpression, LogSeverity::Error);
+                return null;
+            }
+
+            if unary->mutable && !raw->mutable {
+                Logger::Log("Cannot take mutable reference to immutable value.", unary as *ASTExpression, LogSeverity::Error);
+                return null;
+            }
+
+            return this.builder.AddressOf(raw, unary->mutable);
+        } else if unary->kind == ASTUnaryKind::Dereference {
+            if !raw->_type->IsPointer() {
+                Logger::Log("Cannot dereference non-pointer type '" + raw->_type->ToString() + "'.", unary as *ASTExpression, LogSeverity::Error);
+                return null;
+            }
+
+            return this.builder.Dereference(raw);
+        } else {
+            let mut operand_target: *HIRType = null;
+
+            if target != null {
+                if unary->kind == ASTUnaryKind::Negate {
+                    if target->IsFloat() || (target->IsInteger() && target->IsSigned()) {
+                        operand_target = target;
+                    }
+                } else if unary->kind == ASTUnaryKind::Not {
+                    operand_target = target;
+                }
+            }
+
+            if operand_target != null {
+                value = this.Coerce(value, operand_target);
+            } else {
+                value = this.Coerce(value);
+            }
+
+            if unary->kind == ASTUnaryKind::Negate {
+                if !value->_type->IsInteger() && !value->_type->IsFloat() {
+                    Logger::Log("Cannot negate type '" + value->_type->ToString() + "'.", unary as *ASTExpression, LogSeverity::Error);
+                    return null;
+                }
+
+                if value->_type->IsInteger() && !value->_type->IsSigned() {
+                    Logger::Log("Cannot negate unsigned type '" + value->_type->ToString() + "'.", unary as *ASTExpression, LogSeverity::Error);
+                    return null;
+                }
+
+                return this.builder.Unary(HIRUnaryKind::Negate, value);
+            } else if unary->kind == ASTUnaryKind::Not {
+                if !value->_type->IsInteger() && !value->_type->IsBoolean() {
+                    Logger::Log("Cannot invert type '" + value->_type->ToString() + "'.", unary as *ASTExpression, LogSeverity::Error);
+                    return null;
+                }
+
+                return this.builder.Unary(HIRUnaryKind::Not, value);
+            } else {
+                Logger::Log("Invalid unary operation '" + unary->kind.ToString() + "'.", unary as *ASTExpression, LogSeverity::Error);
+                return null;
+            }
+        }
+    }
+
+    fn LowerBinaryKind(&this, kind: ASTBinaryKind) -> HIRBinaryKind {
+        if kind == ASTBinaryKind::Add { return HIRBinaryKind::Add; }
+        else if kind == ASTBinaryKind::Subtract { return HIRBinaryKind::Subtract; }
+        else if kind == ASTBinaryKind::Multiply { return HIRBinaryKind::Multiply; }
+        else if kind == ASTBinaryKind::Divide { return HIRBinaryKind::Divide; }
+        else if kind == ASTBinaryKind::Modulo { return HIRBinaryKind::Modulo; }
+        else if kind == ASTBinaryKind::Equal { return HIRBinaryKind::Equal; }
+        else if kind == ASTBinaryKind::NotEqual { return HIRBinaryKind::NotEqual; }
+        else if kind == ASTBinaryKind::Less { return HIRBinaryKind::Less; }
+        else if kind == ASTBinaryKind::LessEqual { return HIRBinaryKind::LessEqual; }
+        else if kind == ASTBinaryKind::Greater { return HIRBinaryKind::Greater; }
+        else if kind == ASTBinaryKind::GreaterEqual { return HIRBinaryKind::GreaterEqual; }
+        else if kind == ASTBinaryKind::LogicalAnd { return HIRBinaryKind::LogicalAnd; }
+        else if kind == ASTBinaryKind::LogicalOr { return HIRBinaryKind::LogicalOr; }
+        else if kind == ASTBinaryKind::BitwiseAnd { return HIRBinaryKind::BitwiseAnd; }
+        else if kind == ASTBinaryKind::BitwiseOr { return HIRBinaryKind::BitwiseOr; }
+        else if kind == ASTBinaryKind::BitwiseXor { return HIRBinaryKind::BitwiseXor; }
+        else if kind == ASTBinaryKind::LeftShift { return HIRBinaryKind::LeftShift; }
+        else { return HIRBinaryKind::RightShift; }
+    }
+
+    fn LowerBinaryExpression(&mut this, binary: *ASTBinaryExpression, target: *HIRType) -> *HIRExpression {
+        let mut operand_target: *HIRType = null;
+
+        if target != null && binary->kind != ASTBinaryKind::Equal && binary->kind != ASTBinaryKind::NotEqual && binary->kind != ASTBinaryKind::Greater && binary->kind != ASTBinaryKind::Less && binary->kind != ASTBinaryKind::GreaterEqual && binary->kind != ASTBinaryKind::LessEqual && binary->kind != ASTBinaryKind::LogicalAnd && binary->kind != ASTBinaryKind::LogicalOr {
+            if target->IsInteger() || target->IsFloat() || target->IsBoolean() {
+                operand_target = target;
+            }
+        }
+
+        let mut left = this.LowerExpression(binary->left);
         if left == null { return null; }
 
-        if binary->kind == HIRBinaryKind::LogicalAnd || binary->kind == HIRBinaryKind::LogicalOr { 
-            let mut right_block = this.builder.BuildBlock("binary.right".ToString());
-            let merge_block = this.builder.BuildBlock("binary.merge".ToString());
-            let left_block = this.builder.GetCurrentBlock();
-
-            if binary->kind == HIRBinaryKind::LogicalAnd {
-                this.builder.BuildConditionalBranch(left, right_block, merge_block);
-            } else {
-                this.builder.BuildConditionalBranch(left, merge_block, right_block);
-            }
-
-            this.builder.SetCurrentBlock(right_block);
-            let right = this.LowerExpression(binary->right);
-            if right == null { return null; }
-            right_block = this.builder.GetCurrentBlock();
-            this.builder.BuildBranch(merge_block);
-
-            this.builder.SetCurrentBlock(merge_block);
-            let phi = this.builder.BuildPhi("short.circuit".ToString(), result_type);
-            phi->AddIncoming(left, left_block);
-            phi->AddIncoming(right, right_block);
-            return phi as *MIRInstruction;
+        if operand_target != null {
+            left = this.Coerce(left, operand_target);
         }
 
-        let right_type = binary->right->_type;
-        let right = this.LowerExpression(binary->right);
+        if binary->kind == ASTBinaryKind::LogicalAnd || binary->kind == ASTBinaryKind::LogicalOr {
+            if !left->_type->IsBoolean() {
+                Logger::Log("Invalid type '" + left->_type->ToString() + "' for binary operation '" + binary->kind.ToString() + "'.", binary as *ASTExpression, LogSeverity::Error);
+                return null;
+            }
+
+            this.scope_manager.PushScope("<short circuit>".ToString(), false);
+            let right = this.LowerExpression(binary->right);
+            this.scope_manager.PopScope();
+
+            if right == null {
+                return null;
+            }
+
+            if !right->_type->IsBoolean() {
+                Logger::Log("Invalid type '" + right->_type->ToString() + "' for binary operation '" + binary->kind.ToString() + "'.", binary as *ASTExpression, LogSeverity::Error);
+                return null;
+            }
+
+            return this.builder.Binary(this.LowerBinaryKind(binary->kind), left, right, left->_type);
+        }
+
+        let mut right = this.LowerExpression(binary->right);
         if right == null { return null; }
 
-        if left_type->IsBoolean() && right_type->IsBoolean() {
-            if binary->kind == HIRBinaryKind::BitwiseAnd {
-                return this.builder.BuildBinary("and".ToString(), MIRBinaryKind::And, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::BitwiseOr {
-                return this.builder.BuildBinary("or".ToString(), MIRBinaryKind::Or, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::BitwiseXor {
-                return this.builder.BuildBinary("xor".ToString(), MIRBinaryKind::Xor, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::Equal {
-                return this.builder.BuildBinary("eq".ToString(), MIRBinaryKind::ICmpEq, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::NotEqual {
-                return this.builder.BuildBinary("ne".ToString(), MIRBinaryKind::ICmpNe, left, right, result_type);
-            } else { return null; }
-        } else if left_type->IsCharacter() && right_type->IsCharacter() {
-            if binary->kind == HIRBinaryKind::Equal {
-                return this.builder.BuildBinary("eq".ToString(), MIRBinaryKind::ICmpEq, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::NotEqual {
-                return this.builder.BuildBinary("ne".ToString(), MIRBinaryKind::ICmpNe, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::Less {
-                return this.builder.BuildBinary("lt".ToString(), MIRBinaryKind::ICmpUlt, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::LessEqual {
-                return this.builder.BuildBinary("le".ToString(), MIRBinaryKind::ICmpUle, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::Greater {
-                return this.builder.BuildBinary("gt".ToString(), MIRBinaryKind::ICmpUgt, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::GreaterEqual {
-                return this.builder.BuildBinary("ge".ToString(), MIRBinaryKind::ICmpUge, left, right, result_type);
-            } else { return null; }
-        } else if left_type->IsInteger() && right_type->IsInteger() {
-            let signed = left_type->IsSigned();
+        if operand_target != null {
+            right = this.Coerce(right, operand_target);
+        }
 
-            if binary->kind == HIRBinaryKind::Add {
-                return this.builder.BuildBinary("add".ToString(), MIRBinaryKind::Add, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::Subtract {
-                return this.builder.BuildBinary("sub".ToString(), MIRBinaryKind::Sub, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::Multiply {
-                return this.builder.BuildBinary("mul".ToString(), MIRBinaryKind::Mul, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::Divide {
-                return this.builder.BuildBinary("div".ToString(), signed ? MIRBinaryKind::SDiv : MIRBinaryKind::UDiv, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::Modulo {
-                return this.builder.BuildBinary("rem".ToString(), signed ? MIRBinaryKind::SRem : MIRBinaryKind::URem, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::Equal {
-                return this.builder.BuildBinary("eq".ToString(), MIRBinaryKind::ICmpEq, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::NotEqual {
-                return this.builder.BuildBinary("ne".ToString(), MIRBinaryKind::ICmpNe, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::Less {
-                return this.builder.BuildBinary("lt".ToString(), signed ? MIRBinaryKind::ICmpSlt : MIRBinaryKind::ICmpUlt, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::LessEqual {
-                return this.builder.BuildBinary("le".ToString(), signed ? MIRBinaryKind::ICmpSle : MIRBinaryKind::ICmpUle, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::Greater {
-                return this.builder.BuildBinary("gt".ToString(), signed ? MIRBinaryKind::ICmpSgt : MIRBinaryKind::ICmpUgt, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::GreaterEqual {
-                return this.builder.BuildBinary("ge".ToString(), signed ? MIRBinaryKind::ICmpSge : MIRBinaryKind::ICmpUge, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::BitwiseAnd {
-                return this.builder.BuildBinary("and".ToString(), MIRBinaryKind::And, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::BitwiseOr {
-                return this.builder.BuildBinary("or".ToString(), MIRBinaryKind::Or, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::BitwiseXor {
-                return this.builder.BuildBinary("xor".ToString(), MIRBinaryKind::Xor, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::LeftShift {
-                return this.builder.BuildBinary("shl".ToString(), MIRBinaryKind::Shl, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::RightShift {
-                return this.builder.BuildBinary("shr".ToString(), signed ? MIRBinaryKind::AShr : MIRBinaryKind::LShr, left, right, result_type);
-            } else { return null; }
-        } else if left_type->IsFloat() && right_type->IsFloat() {
-            if binary->kind == HIRBinaryKind::Add {
-                return this.builder.BuildBinary("add".ToString(), MIRBinaryKind::FAdd, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::Subtract {
-                return this.builder.BuildBinary("sub".ToString(), MIRBinaryKind::FSub, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::Multiply {
-                return this.builder.BuildBinary("mul".ToString(), MIRBinaryKind::FMul, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::Divide {
-                return this.builder.BuildBinary("div".ToString(), MIRBinaryKind::FDiv, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::Modulo {
-                return this.builder.BuildBinary("rem".ToString(), MIRBinaryKind::FRem, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::Equal {
-                return this.builder.BuildBinary("eq".ToString(), MIRBinaryKind::FCmpEq, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::NotEqual {
-                return this.builder.BuildBinary("ne".ToString(), MIRBinaryKind::FCmpNe, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::Less {
-                return this.builder.BuildBinary("lt".ToString(), MIRBinaryKind::FCmpLt, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::LessEqual {
-                return this.builder.BuildBinary("le".ToString(), MIRBinaryKind::FCmpLe, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::Greater {
-                return this.builder.BuildBinary("gt".ToString(), MIRBinaryKind::FCmpGt, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::GreaterEqual {
-                return this.builder.BuildBinary("ge".ToString(), MIRBinaryKind::FCmpGe, left, right, result_type);
-            } else { return null; }
-        } else if left_type->IsPointer() || right_type->IsPointer() {
-            let mut pointer = left_type->IsPointer() ? left : right;
-            let mut other = left_type->IsPointer() ? right : left;
-
-            if left_type->IsPointer() && right_type->IsPointer() {
-                if binary->kind == HIRBinaryKind::Subtract {
-                    let element_type = left_type->IsNullPointer() ? right_type->Pointee() : left_type->Pointee();
-                    let size_type = this.context->IntegerType(this.target_info.pointer_size as u32 * 8);
-                    let left = this.builder.BuildCast("ptr.diff.left".ToString(), MIRCastKind::PtrToInt, pointer, size_type);
-                    let right = this.builder.BuildCast("ptr.diff.right".ToString(), MIRCastKind::PtrToInt, other, size_type);
-                    let difference = this.builder.BuildBinary("ptr.diff.bytes".ToString(), MIRBinaryKind::Sub, left, right, size_type) as *MIRInstruction;
-                    let size_value = this.builder.ConstantInteger(element_type->Size() as u64, size_type) as *MIRConstant;
-                    return this.builder.BuildBinary("ptr.diff".ToString(), MIRBinaryKind::UDiv, difference, size_value, size_type);
-                } else if binary->kind == HIRBinaryKind::Equal {
-                    return this.builder.BuildBinary("eq".ToString(), MIRBinaryKind::ICmpEq, pointer, other, result_type);
-                } else if binary->kind == HIRBinaryKind::NotEqual {
-                    return this.builder.BuildBinary("ne".ToString(), MIRBinaryKind::ICmpNe, pointer, other, result_type);
-                } else if binary->kind == HIRBinaryKind::Greater {
-                    return this.builder.BuildBinary("gt".ToString(), MIRBinaryKind::ICmpUgt, pointer, other, result_type);
-                } else if binary->kind == HIRBinaryKind::GreaterEqual {
-                    return this.builder.BuildBinary("ge".ToString(), MIRBinaryKind::ICmpUge, pointer, other, result_type);
-                } else if binary->kind == HIRBinaryKind::Less {
-                    return this.builder.BuildBinary("lt".ToString(), MIRBinaryKind::ICmpUlt, pointer, other, result_type);
-                } else if binary->kind == HIRBinaryKind::LessEqual {
-                    return this.builder.BuildBinary("le".ToString(), MIRBinaryKind::ICmpUle, pointer, other, result_type);
-                } else { return null; }
-            }
-
-            if binary->kind == HIRBinaryKind::Add {
-                return this.builder.BuildArrayGEP("ptr.add".ToString(), pointer, other);
-            } else if binary->kind == HIRBinaryKind::Subtract && left_type->IsPointer() {
-                let neg = this.builder.BuildUnary("ptr.neg".ToString(), MIRUnaryKind::Neg, other);
-                return this.builder.BuildArrayGEP("ptr.sub".ToString(), pointer, neg);
-            } else { return null; }
-        } else if left_type->IsEnumeration() && right_type->IsEnumeration() {
-            let signed = left_type->IsSigned();
-
-            if binary->kind == HIRBinaryKind::Equal {
-                return this.builder.BuildBinary("eq".ToString(), MIRBinaryKind::ICmpEq, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::NotEqual {
-                return this.builder.BuildBinary("ne".ToString(), MIRBinaryKind::ICmpNe, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::Less {
-                return this.builder.BuildBinary("lt".ToString(), signed ? MIRBinaryKind::ICmpSlt : MIRBinaryKind::ICmpUlt, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::LessEqual {
-                return this.builder.BuildBinary("le".ToString(), signed ? MIRBinaryKind::ICmpSle : MIRBinaryKind::ICmpUle, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::Greater {
-                return this.builder.BuildBinary("gt".ToString(), signed ? MIRBinaryKind::ICmpSgt : MIRBinaryKind::ICmpUgt, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::GreaterEqual {
-                return this.builder.BuildBinary("ge".ToString(), signed ? MIRBinaryKind::ICmpSge : MIRBinaryKind::ICmpUge, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::BitwiseAnd {
-                return this.builder.BuildBinary("and".ToString(), MIRBinaryKind::And, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::BitwiseOr {
-                return this.builder.BuildBinary("or".ToString(), MIRBinaryKind::Or, left, right, result_type);
-            } else if binary->kind == HIRBinaryKind::BitwiseXor {
-                return this.builder.BuildBinary("xor".ToString(), MIRBinaryKind::Xor, left, right, result_type);
-            } else { return null; }
-        } else { return null; }
+        return this.LowerResolvedBinaryExpression(binary->kind, left, right, binary as *ASTExpression);
     }
 
-    fn LowerTernaryExpression(&mut this, ternary: *HIRTernaryExpression) -> *MIRValue {
-        let expression = ternary as *HIRExpression;
-        let condition = this.LowerExpression(ternary->condition);
-        if condition == null { return null; }
+    fn LowerResolvedBinaryExpression(&mut this, kind: ASTBinaryKind, mut left: *HIRExpression, mut right: *HIRExpression, node: *ASTNode) -> *HIRExpression {
+        let (left_raw, right_raw) = (left, right);
+        (left, right) = (this.ImplicitDereference(left), this.ImplicitDereference(right));
 
-        let mut then_block = this.builder.BuildBlock("ternary.then".ToString());
-        let mut else_block = this.builder.BuildBlock("ternary.else".ToString());
-        let merge_block = this.builder.BuildBlock("ternary.merge".ToString());
-        this.builder.BuildConditionalBranch(condition, then_block, else_block);
+        let mut values = Vector<*HIRExpression>();
+        values.PushBack(left);
+        values.PushBack(right);
 
-        this.builder.SetCurrentBlock(then_block);
-        let then_value = this.LowerExpression(ternary->then_value);
-        if then_value == null { return null; }
-        then_block = this.builder.GetCurrentBlock();
-        this.builder.BuildBranch(merge_block);
+        let name = "operator" + kind.ToString();
+        let candidates = this.scope_manager.ResolveCandidates(name, node, true);
+        let function = this.ResolveOverload(candidates, values, node, true);
 
-        this.builder.SetCurrentBlock(else_block);
-        let else_value = this.LowerExpression(ternary->else_value);
-        if else_value == null { return null; }
-        else_block = this.builder.GetCurrentBlock();
-        this.builder.BuildBranch(merge_block);
+        if function != null {
+            return this.LowerResolvedCallExpression(function, values, node);
+        } else if left->_type->HasFields() || right->_type->HasFields() {
+            let instance = left->_type->HasFields() ? left : right;
+            let value = left->_type->HasFields() ? right_raw : left_raw;
 
-        this.builder.SetCurrentBlock(merge_block);
-        let _type = this.LowerType(expression->_type);
-        if _type == null { return null; }
-        let phi = this.builder.BuildPhi("ternary".ToString(), _type);
-        phi->AddIncoming(then_value, then_block);
-        phi->AddIncoming(else_value, else_block);
-        return phi as *MIRInstruction;
-    }
+            let mut values = Vector<*HIRExpression>();
+            values.PushBack(this.ImplicitAddressOf(instance));
+            values.PushBack(value);
 
-    pub fn LowerType(&mut this, _type: *HIRType) -> *MIRType {
-        if _type->IsVoid() {
-            return this.context->VoidType();
-        } else if _type->IsBoolean() || _type->IsCharacter() || _type->IsInteger() || _type->IsEnumeration() {
-            return this.context->IntegerType(_type->Width());
-        } else if _type->IsFloat() {
-            return this.context->FloatType(_type->Width());
-        } else if _type->IsPointer() {
-            let pointee = this.LowerType(_type->Pointee());
-            if pointee == null { return null; }
-            return this.context->PointerType(pointee);
-        } else if _type->IsArray() {
-            let element = this.LowerType(_type->Element());
-            if element == null { return null; }
-            return this.context->ArrayType(element, _type->Length());
-        } else if _type->IsClass() || _type->IsStructure() {
-            let declaration = this.types.Get(_type, null);
-            return declaration != null ? declaration->_type : null;
-        } else if _type->IsFunction() {
-            let mut parameters = Vector<*MIRType>();
-            let mut _return = this.LowerAggregateType(_type->Return());
-            if _return == null { return null; }
+            if instance->_type->HasMethods() {
+                let candidates = instance->_type->GetCandidates(name, node, true);
+                let function = this.ResolveOverload(candidates, values, node, true);
 
-            if this.IsIndirectAggregate(_type->Return()) {
-                parameters.PushBack(_return);
-                _return = this.context->VoidType();
+                if function != null {
+                    return this.LowerResolvedCallExpression(function, values, node);
+                }
             }
 
-            for parameter in _type->Parameters() {
-                let lowered_parameter = this.LowerAggregateType(parameter);
-                if lowered_parameter == null { return null; }
-                parameters.PushBack(lowered_parameter);
-            }
+            if *left->_type == *right->_type {
+                if kind != ASTBinaryKind::Equal && kind != ASTBinaryKind::NotEqual {
+                    Logger::Log("Invalid binary operation '" + kind.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
+                    return null;
+                }
 
-            return this.context->PointerType(this.context->FunctionType(parameters, _return));
+                return this.builder.Binary(this.LowerBinaryKind(kind), left, right, this.context.BooleanType());
+            } else {
+                Logger::Log("Incompatible binary operation types. ('" + left->_type->ToString() + "' != '" + right->_type->ToString() + "').", node, LogSeverity::Error);
+                return null;
+            }
+        }
+
+        if left->_type->IsPointer() && right->_type->IsInteger() && right->_type->IsLiteral() {
+            right = this.Coerce(right, this.context.IntegerPointerType(false));
+        } else if right->_type->IsPointer() && left->_type->IsInteger() && left->_type->IsLiteral() {
+            left = this.Coerce(left, this.context.IntegerPointerType(false));
         } else {
+            (left, right) = (this.Coerce(left, right->_type), this.Coerce(right, left->_type));
+        }
+
+        if left->_type->IsBoolean() && right->_type->IsBoolean() {
+            if kind == ASTBinaryKind::Equal || kind == ASTBinaryKind::NotEqual {
+                return this.builder.Binary(this.LowerBinaryKind(kind), left, right, this.context.BooleanType());
+            } else if kind == ASTBinaryKind::LogicalAnd || kind == ASTBinaryKind::BitwiseAnd || kind == ASTBinaryKind::LogicalOr || kind == ASTBinaryKind::BitwiseOr || kind == ASTBinaryKind::BitwiseXor {
+                return this.builder.Binary(this.LowerBinaryKind(kind), left, right, left->_type);
+            } else {
+                Logger::Log("Invalid binary operation '" + kind.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
+                return null;
+            }
+        } else if left->_type->IsCharacter() && right->_type->IsCharacter() {
+            if kind == ASTBinaryKind::Equal || kind == ASTBinaryKind::NotEqual || kind == ASTBinaryKind::Greater || kind == ASTBinaryKind::GreaterEqual || kind == ASTBinaryKind::Less || kind == ASTBinaryKind::LessEqual {
+                return this.builder.Binary(this.LowerBinaryKind(kind), left, right, this.context.BooleanType());
+            } else {
+                Logger::Log("Invalid binary operation '" + kind.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
+                return null;
+            }
+        } else if left->_type->IsInteger() && right->_type->IsInteger() {
+            if *left->_type != *right->_type {
+                Logger::Log("Incompatible binary operation types. ('" + left->_type->ToString() + "' != '" + right->_type->ToString() + "').", node, LogSeverity::Error);
+                return null;
+            }
+
+            if kind == ASTBinaryKind::Add || kind == ASTBinaryKind::Subtract || kind == ASTBinaryKind::Multiply || kind == ASTBinaryKind::Divide || kind == ASTBinaryKind::Modulo {
+                return this.builder.Binary(this.LowerBinaryKind(kind), left, right, left->_type);
+            } else if kind == ASTBinaryKind::Equal || kind == ASTBinaryKind::NotEqual || kind == ASTBinaryKind::Greater || kind == ASTBinaryKind::GreaterEqual || kind == ASTBinaryKind::Less || kind == ASTBinaryKind::LessEqual {
+                return this.builder.Binary(this.LowerBinaryKind(kind), left, right, this.context.BooleanType());
+            } else if kind == ASTBinaryKind::BitwiseAnd || kind == ASTBinaryKind::BitwiseOr || kind == ASTBinaryKind::BitwiseXor || kind == ASTBinaryKind::LeftShift || kind == ASTBinaryKind::RightShift {
+                return this.builder.Binary(this.LowerBinaryKind(kind), left, right, left->_type);
+            } else {
+                Logger::Log("Invalid binary operation '" + kind.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
+                return null;
+            }
+        } else if left->_type->IsFloat() && right->_type->IsFloat() {
+            if *left->_type != *right->_type {
+                Logger::Log("Incompatible binary operation types. ('" + left->_type->ToString() + "' != '" + right->_type->ToString() + "').", node, LogSeverity::Error);
+                return null;
+            }
+
+            if kind == ASTBinaryKind::Add || kind == ASTBinaryKind::Subtract || kind == ASTBinaryKind::Multiply || kind == ASTBinaryKind::Divide || kind == ASTBinaryKind::Modulo {
+                return this.builder.Binary(this.LowerBinaryKind(kind), left, right, left->_type);
+            } else if kind == ASTBinaryKind::Equal || kind == ASTBinaryKind::NotEqual || kind == ASTBinaryKind::Greater || kind == ASTBinaryKind::GreaterEqual || kind == ASTBinaryKind::Less || kind == ASTBinaryKind::LessEqual {
+                return this.builder.Binary(this.LowerBinaryKind(kind), left, right, this.context.BooleanType());
+            } else {
+                Logger::Log("Invalid binary operation '" + kind.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
+                return null;
+            }
+        } else if left->_type->IsPointer() && right->_type->IsPointer() {
+            if *left->_type != *right->_type && !(left->_type->IsNullPointer() || right->_type->IsNullPointer()) {
+                Logger::Log("Incompatible binary operation types. ('" + left->_type->ToString() + "' != '" + right->_type->ToString() + "').", node, LogSeverity::Error);
+                return null;
+            }
+
+            if kind == ASTBinaryKind::Subtract {
+                return this.builder.Binary(this.LowerBinaryKind(kind), left, right, this.context.IntegerPointerType(false));
+            } else if kind == ASTBinaryKind::Equal || kind == ASTBinaryKind::NotEqual || kind == ASTBinaryKind::Greater || kind == ASTBinaryKind::GreaterEqual || kind == ASTBinaryKind::Less || kind == ASTBinaryKind::LessEqual {
+                return this.builder.Binary(this.LowerBinaryKind(kind), left, right, this.context.BooleanType());
+            } else {
+                Logger::Log("Invalid pointer binary operation '" + kind.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
+                return null;
+            }
+        } else if (left->_type->IsPointer() && right->_type->IsInteger()) || (left->_type->IsInteger() && right->_type->IsPointer()) {
+            let pointer = left->_type->IsPointer() ? left : right;
+            let index = left->_type->IsPointer() ? right : left;
+
+            if !index->_type->IsIntegerPointer() {
+                Logger::Log("Pointer arithmetic requires an operand of pointer-sized type.", node, LogSeverity::Error);
+                return null;
+            }
+
+            if kind == ASTBinaryKind::Add {
+                return this.builder.Binary(this.LowerBinaryKind(kind), left, right, pointer->_type);
+            } else if kind == ASTBinaryKind::Subtract {
+                if left->_type->IsInteger() {
+                    Logger::Log("Cannot subtract a pointer from an integer.", node, LogSeverity::Error);
+                    return null;
+                }
+
+                return this.builder.Binary(this.LowerBinaryKind(kind), left, right, pointer->_type);
+            } else {
+                Logger::Log("Invalid pointer binary operation '" + kind.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
+                return null;
+            }
+        } else if left->_type->IsEnumeration() && right->_type->IsEnumeration() {
+            if *left->_type != *right->_type {
+                Logger::Log("Incompatible binary operation types. ('" + left->_type->ToString() + "' != '" + right->_type->ToString() + "').", node, LogSeverity::Error);
+                return null;
+            }
+
+            if kind == ASTBinaryKind::BitwiseAnd || kind == ASTBinaryKind::BitwiseOr || kind == ASTBinaryKind::BitwiseXor {
+                return this.builder.Binary(this.LowerBinaryKind(kind), left, right, left->_type);
+            } else if kind == ASTBinaryKind::Equal || kind == ASTBinaryKind::NotEqual || kind == ASTBinaryKind::Greater || kind == ASTBinaryKind::GreaterEqual || kind == ASTBinaryKind::Less || kind == ASTBinaryKind::LessEqual {
+                return this.builder.Binary(this.LowerBinaryKind(kind), left, right, this.context.BooleanType());
+            } else {
+                Logger::Log("Invalid binary operation '" + kind.ToString() + "' for type '" + left->_type->ToString() + "'.", node, LogSeverity::Error);
+                return null;
+            }
+        } else {
+            Logger::Log("Invalid type '" + left->_type->ToString() + "' for binary operation '" + kind.ToString() + "'.", node, LogSeverity::Error);
+            return null;
+        }
+    }
+
+    fn LowerTernaryExpression(&mut this, ternary: *ASTTernaryExpression, target: *HIRType) -> *HIRExpression {
+        let condition = this.ImplicitDereference(this.LowerExpression(ternary->condition));
+
+        if condition != null && !condition->_type->IsBoolean() {
+            Logger::Log("Invalid condition type '" + condition->_type->ToString() + "'.", ternary->condition, LogSeverity::Error);
+        }
+
+        let mut then_value = this.LowerExpression(ternary->then);
+        if then_value == null { return null; }
+
+        let mut else_value = this.LowerExpression(ternary->_else);
+        if else_value == null { return null; }
+
+        this.Coerce(then_value, target != null ? target : else_value->_type);
+        this.Coerce(else_value, target != null ? target : then_value->_type);
+
+        let mutable = then_value->mutable && else_value->mutable ? true : false;
+        let category = (then_value->category == HIRExpressionCategory::Place && else_value->category == HIRExpressionCategory::Place)
+            ? HIRExpressionCategory::Place : HIRExpressionCategory::Value;
+        return this.builder.Ternary(condition, then_value, else_value, category, mutable);
+    }
+
+    pub fn LowerType(&mut this, path: *ASTPath) -> *HIRType {
+        if path == null {
+            return this.context.VoidType();
+        }
+
+        if !path->absolute && path->segments.Size() == 1 && path->segments[0].types.Empty() {
+            let name = path->segments[0].name;
+
+            if name == "void" {
+                return this.context.VoidType();
+            } else if name == "bool" {
+                return this.context.BooleanType();
+            } else if name == "char" {
+                return this.context.CharacterType();
+            } else if name.StartsWith('i') || name.StartsWith('u') {
+                let specifier = name.SubString(1);
+                let signed = name[0] != 'u';
+
+                if specifier == "size" {
+                    return this.context.IntegerPointerType(signed);
+                } else {
+                    let width = specifier.ToUnsignedInteger() as u32;
+
+                    if width != 8 && width != 16 && width != 32 && width != 64 && width != 128 {
+                        Logger::Log("Invalid integer type '" + name + "'.", path, LogSeverity::Error);
+                        return null;
+                    }
+
+                    return this.context.IntegerType(width, signed);
+                }
+            } else if name.StartsWith('f') {
+                let width = name.SubString(1).ToUnsignedInteger() as u32;
+
+                if width != 32 && width != 64 {
+                    Logger::Log("Invalid float type '" + name + "'.", path, LogSeverity::Error);
+                    return null;
+                }
+
+                return this.context.FloatType(width);
+            }
+        }
+
+        let mut generic = false;
+        let symbols = this.scope_manager.ResolveType(path, false);
+        if symbols.Empty() { return null; }
+
+        for symbol in symbols {
+            if symbol->kind == SymbolKind::Type {
+                return symbol->_type;
+            } else if symbol->kind == SymbolKind::Generic {
+                generic = true;
+            }
+        }
+
+        if generic {
+            Logger::Log("Generic '" + path->ToString() + "' requires type arguments.", path, LogSeverity::Error);
+        } else {
+            Logger::Log("Symbol '" + path->ToString() + "' cannot be used as a type.", path, LogSeverity::Error);
+        } return null;
+    }
+
+    pub fn LowerType(&mut this, _type: *ASTType) -> *HIRType {
+        if _type == null {
+            return this.context.VoidType();
+        }
+
+        if _type->kind == ASTTypeKind::Path {
+            return this.LowerType((_type as *ASTPathType)->path);
+        } else if _type->kind == ASTTypeKind::Pointer {
+            let pointer = _type as *ASTPointerType;
+            let pointee = this.LowerType(pointer->pointee);
+            if pointee == null { return null; }
+            return this.context.PointerType(pointee, pointer->mutable);
+        } else if _type->kind == ASTTypeKind::Reference {
+            let reference = _type as *ASTReferenceType;
+            let pointee = this.LowerType(reference->pointee);
+            if pointee == null { return null; }
+            return this.context.ReferenceType(pointee, reference->mutable);
+        } else if _type->kind == ASTTypeKind::Array {
+            let array = _type as *ASTArrayType;
+            let element = this.LowerType(array->element);
+            if element == null { return null; }
+
+            if array->length != null {
+                let length = this.LowerExpression(array->length);
+                if length == null { return null; }
+
+                if length->kind != HIRExpressionKind::Literal && (length as *HIRLiteral)->kind != HIRLiteralKind::Integer {
+                    Logger::Log("Array length must be an integer literal.", array->length, LogSeverity::Error);
+                    return null;
+                }
+
+                return this.context.ArrayType(element, ((length as *HIRLiteral) as *HIRIntegerLiteral)->value as usize);
+            } else {
+                return this.context.PointerType(element, true);
+            }
+        } else if _type->kind == ASTTypeKind::Function {
+            let function = _type as *ASTFunctionType;
+            let mut parameters = Vector<*HIRType>();
+
+            for parameter in function->parameters {
+                let _type = this.LowerType(parameter);
+                if _type == null { return null; }
+                parameters.PushBack(_type);
+            }
+
+            let _return = this.LowerType(function->_return);
+            if _return == null { return null; }
+            return this.context.FunctionType(parameters, _return);
+        } else {
+            Logger::Log("Unknown type '" + _type->kind.ToString() + "'.", _type, LogSeverity::Error);
             return null;
         }
     }
 }
+
+static mut hir_lowerer: *mut HIRLowerer = null;

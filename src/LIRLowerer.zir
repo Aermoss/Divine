@@ -159,17 +159,17 @@ class LIRLowerer {
         }
     }
 
-    pub fn AlignOf(&this, _type: *MIRType) -> usize {
+    fn AlignOf(&this, _type: *MIRType) -> u32 {
         if _type->kind == MIRTypeKind::Integer {
-            return ((_type as *MIRIntegerType)->width / 8) as usize;
+            return (_type as *MIRIntegerType)->width / 8;
         } else if _type->kind == MIRTypeKind::Float {
-            return ((_type as *MIRFloatType)->width / 8) as usize;
+            return (_type as *MIRFloatType)->width / 8;
         } else if _type->kind == MIRTypeKind::Pointer {
             return 4;
         } else if _type->kind == MIRTypeKind::Array {
             return this.AlignOf((_type as *MIRArrayType)->element);
         } else if _type->kind == MIRTypeKind::Structure {
-            let mut alignment: usize = 1;
+            let mut alignment: u32 = 1;
 
             for field in (_type as *MIRStructureType)->fields {
                 let field_alignment = this.AlignOf(field);
@@ -183,37 +183,48 @@ class LIRLowerer {
         }
     }
 
-    pub fn SizeOf(&this, _type: *MIRType) -> usize {
+    fn SizeOf(&this, _type: *MIRType) -> u32 {
         if _type->kind == MIRTypeKind::Integer {
-            return ((_type as *MIRIntegerType)->width / 8) as usize;
+            return (_type as *MIRIntegerType)->width / 8;
         } else if _type->kind == MIRTypeKind::Float {
-            return ((_type as *MIRFloatType)->width / 8) as usize;
+            return (_type as *MIRFloatType)->width / 8;
         } else if _type->kind == MIRTypeKind::Pointer {
             return 4;
         } else if _type->kind == MIRTypeKind::Array {
             let array = _type as *MIRArrayType;
-            return this.SizeOf(array->element) * array->length;
+            return this.SizeOf(array->element) * array->length as u32;
         } else if _type->kind == MIRTypeKind::Structure {
-            let mut size: usize = 0;
+            let mut size: u32 = 0;
             let alignment = this.AlignOf(_type);
 
             for field in (_type as *MIRStructureType)->fields {
                 let field_alignment = this.AlignOf(field);
-                let remainder = size % field_alignment;
-                if remainder != 0 { size += field_alignment - remainder; }
+                size = this.AlignUp(size, field_alignment);
                 size += this.SizeOf(field);
             }
 
-            let remainder = size % alignment;
-            if remainder != 0 { size += alignment - remainder; }
-            return size;
+            return this.AlignUp(size, alignment);
         } else {
             return 0;
         }
     }
 
+    fn AlignUp(&this, mut value: u32, alignment: u32) -> u32 {
+        let remainder = value % alignment;
+
+        if remainder != 0 {
+            value += alignment - remainder;
+        } return value;
+    }
+
     fn LowerAllocaInstruction(&mut this, alloca: *MIRAllocaInstruction) -> *LIROperand {
-        return null;
+        let size = this.SizeOf(alloca->_type);
+        if size == 0 { return null; }
+        let function = this.builder.GetCurrentFunction();
+        function->frame_size = this.AlignUp(function->frame_size, this.AlignOf(alloca->_type));
+        function->frame_size += size;
+        let frame = this.builder.PhysicalRegister(5, "fp".ToString()) as *LIRRegisterOperand;
+        return this.builder.MemoryOperand(frame, -(function->frame_size as i32)) as *LIROperand;
     }
 
     fn LowerLoadInstruction(&mut this, load: *MIRLoadInstruction) -> *LIROperand {

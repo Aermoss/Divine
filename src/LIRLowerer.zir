@@ -82,7 +82,11 @@ class LIRLowerer {
     }
 
     fn LowerConstant(&mut this, constant: *MIRConstant) -> *LIROperand {
-        if constant->kind == MIRConstantKind::Expression {
+        if constant->kind == MIRConstantKind::Integer {
+            return this.builder.ImmediateOperand((constant as *MIRConstantInteger)->value as i64) as *LIROperand;
+        } else if constant->kind == MIRConstantKind::Null {
+            return this.builder.ImmediateOperand(0) as *LIROperand;
+        } else if constant->kind == MIRConstantKind::Expression {
             return this.LowerConstantExpression(constant as *MIRConstantExpression);
         } else {
             return null;
@@ -152,6 +156,59 @@ class LIRLowerer {
             return this.LowerTerminator(instruction as *MIRTerminator);
         } else {
             return null;
+        }
+    }
+
+    pub fn AlignOf(&this, _type: *MIRType) -> usize {
+        if _type->kind == MIRTypeKind::Integer {
+            return ((_type as *MIRIntegerType)->width / 8) as usize;
+        } else if _type->kind == MIRTypeKind::Float {
+            return ((_type as *MIRFloatType)->width / 8) as usize;
+        } else if _type->kind == MIRTypeKind::Pointer {
+            return 4;
+        } else if _type->kind == MIRTypeKind::Array {
+            return this.AlignOf((_type as *MIRArrayType)->element);
+        } else if _type->kind == MIRTypeKind::Structure {
+            let mut alignment: usize = 1;
+
+            for field in (_type as *MIRStructureType)->fields {
+                let field_alignment = this.AlignOf(field);
+
+                if field_alignment > alignment {
+                    alignment = field_alignment;
+                }
+            } return alignment;
+        } else {
+            return 1;
+        }
+    }
+
+    pub fn SizeOf(&this, _type: *MIRType) -> usize {
+        if _type->kind == MIRTypeKind::Integer {
+            return ((_type as *MIRIntegerType)->width / 8) as usize;
+        } else if _type->kind == MIRTypeKind::Float {
+            return ((_type as *MIRFloatType)->width / 8) as usize;
+        } else if _type->kind == MIRTypeKind::Pointer {
+            return 4;
+        } else if _type->kind == MIRTypeKind::Array {
+            let array = _type as *MIRArrayType;
+            return this.SizeOf(array->element) * array->length;
+        } else if _type->kind == MIRTypeKind::Structure {
+            let mut size: usize = 0;
+            let alignment = this.AlignOf(_type);
+
+            for field in (_type as *MIRStructureType)->fields {
+                let field_alignment = this.AlignOf(field);
+                let remainder = size % field_alignment;
+                if remainder != 0 { size += field_alignment - remainder; }
+                size += this.SizeOf(field);
+            }
+
+            let remainder = size % alignment;
+            if remainder != 0 { size += alignment - remainder; }
+            return size;
+        } else {
+            return 0;
         }
     }
 

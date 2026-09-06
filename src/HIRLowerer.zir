@@ -590,8 +590,21 @@ class HIRLowerer {
             this.LowerFunctionDeclarationSecondPass(declaration->destructor, _class->destructor);
         }
 
+        let mut has_copy_assign = false;
+
         for i in 0.._class->methods.Size() {
-            this.LowerFunctionDeclarationSecondPass(declaration->methods[i], _class->methods[i]);
+            let function: *mut HIRFunctionDeclaration = declaration->methods[i];
+            this.LowerFunctionDeclarationSecondPass(function, _class->methods[i]);
+
+            if _class->methods[i]->name == "operator=" && function->parameters.Size() == 2 {
+                let parameter: *HIRParameterDeclaration = function->parameters[1];
+
+                if *(parameter as *HIRDeclaration)->_type == *(this.context.ReferenceType(_type, false) as *HIRType) {
+                    if *function->_return == *(this.context.ReferenceType(_type, false) as *HIRType) {
+                        has_copy_assign = true;
+                    }
+                }
+            }
         }
 
         if _class->constructors.Empty() {
@@ -696,6 +709,49 @@ class HIRLowerer {
                 }
             }
 
+            this.scope_manager.PopScope();
+        }
+
+        if !has_copy_assign {
+            let fields = (_type as *HIRClassType)->declaration->fields;
+            let function: *mut HIRFunctionDeclaration = declaration->methods.Back();
+            this.scope_manager.PushScope((function as *HIRDeclaration)->name, false);
+            this.builder.SetCurrentFunction(function);
+            let block = this.builder.BuildBlockStatement();
+            this.builder.SetCurrentBlock(block);
+            function->body = block;
+
+            let this_parameter: *HIRParameterDeclaration = function->parameters[0];
+            let this_reference = this.builder.ReferenceDeclaration(this_parameter, false);
+            let this_dereferenced = this.builder.Dereference(this_reference);
+
+            let other_parameter: *HIRParameterDeclaration = function->parameters[1];
+            let other_reference = this.builder.ReferenceDeclaration(other_parameter, false);
+            let other_dereferenced = this.builder.Dereference(other_reference);
+
+            for i in 0..fields.Size() {
+                let field: *HIRFieldDeclaration = fields[i];
+                let field_type = (field as *HIRDeclaration)->_type;
+                let this_field = this.builder.MemberAccess(this_dereferenced, field_type, i);
+                let other_field = this.builder.MemberAccess(other_dereferenced, field_type, i);
+
+                if field_type->IsClass() {
+                    let mut values = Vector<*HIRExpression>();
+                    values.PushBack(this.ImplicitAddressOf(this_field));
+                    values.PushBack(this.ImplicitAddressOf(other_field));
+                    let candidates = field_type->GetCandidates("operator=".ToString(), _class as *ASTDeclaration, false);
+                    if candidates.Empty() { continue; }
+                    let function = this.ResolveOverload(candidates, values, _class as *ASTDeclaration, false);
+                    if function == null { continue; }
+                    let call = this.LowerResolvedCallExpression(function, values, _class as *ASTDeclaration);
+                    if call == null { continue; }
+                    this.builder.BuildExpressionStatement(call);
+                } else {
+                    this.builder.BuildExpressionStatement(this.builder.Assignment(this_field, other_field));
+                }
+            }
+
+            this.builder.BuildReturnStatement(this_reference, Vector<*HIRExpression>());
             this.scope_manager.PopScope();
         }
 

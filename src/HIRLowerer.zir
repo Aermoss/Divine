@@ -260,20 +260,12 @@ class HIRLowerer {
 
     fn ImplicitDereference(&mut this, expression: *HIRExpression) -> *HIRExpression {
         if expression != null && expression->_type->IsReference() {
-            if expression->kind == HIRExpressionKind::Unary && (expression as *HIRUnaryExpression)->kind == HIRUnaryKind::AddressOf {
-                return (expression as *HIRUnaryExpression)->operand;
-            }
-
             return this.builder.Dereference(expression);
         } return expression;
     }
 
     fn ImplicitAddressOf(&mut this, expression: *HIRExpression) -> *HIRExpression {
         if expression != null && (expression->category == HIRExpressionCategory::Place || expression->_type->HasFields()) {
-            if expression->kind == HIRExpressionKind::Unary && (expression as *HIRUnaryExpression)->kind == HIRUnaryKind::Dereference {
-                return (expression as *HIRUnaryExpression)->operand;
-            }
-
             return this.builder.AddressOf(expression, expression->category == HIRExpressionCategory::Place ? expression->mutable : true);
         } return expression;
     }
@@ -1370,26 +1362,17 @@ class HIRLowerer {
             right = this.Coerce(right, left->_type);
         }
 
-        if left->_type->HasMethods() {
+        if left->_type->HasFields() {
             let mut values = Vector<*HIRExpression>();
             values.PushBack(this.ImplicitAddressOf(left));
             values.PushBack(right_raw);
 
             let name = "operator" + assignment->kind.ToString();
-            let candidates = left->_type->GetCandidates(name, assignment as *ASTExpression, true);
-            let function = this.ResolveOverload(candidates, values, assignment as *ASTExpression, true);
-
-            if function != null {
-                return this.LowerResolvedCallExpression(function, values, assignment as *ASTExpression);
-            } else if left->_type == right->_type {
-                if assignment->kind != ASTAssignmentKind::Assign {
-                    Logger::Log("Invalid class assignment operation '" + assignment->kind.ToString() + "' for type '" + left->_type->ToString() + "'.", assignment as *ASTExpression, LogSeverity::Error);
-                    return null;
-                }
-            } else {
-                Logger::Log("Incompatible class assignment types. ('" + left->_type->ToString() + "' != '" + right->_type->ToString() + "').", assignment as *ASTExpression, LogSeverity::Error);
-                return null;
-            }
+            let candidates = left->_type->GetCandidates(name, assignment as *ASTExpression, false);
+            if candidates.Empty() { return null; }
+            let function = this.ResolveOverload(candidates, values, assignment as *ASTExpression, false);
+            if function == null { return null; }
+            return this.LowerResolvedCallExpression(function, values, assignment as *ASTExpression);
         }
 
         if left->category != HIRExpressionCategory::Place {

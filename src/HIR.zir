@@ -665,6 +665,48 @@ class HIRExpression {
         (this.kind, this._type, this.category, this.mutable) = (kind, _type, category, mutable);
     }
 
+    pub fn Precedence(&this) -> u8 {
+        if this.kind == HIRExpressionKind::Assignment {
+            return 10;
+        } else if this.kind == HIRExpressionKind::Ternary {
+            return 20;
+        } else if this.kind == HIRExpressionKind::Binary {
+            let binary = this as *HIRBinaryExpression;
+
+            if binary->kind == HIRBinaryKind::LogicalOr {
+                return 30;
+            } else if binary->kind == HIRBinaryKind::LogicalAnd {
+                return 40;
+            } else if binary->kind == HIRBinaryKind::BitwiseOr {
+                return 50;
+            } else if binary->kind == HIRBinaryKind::BitwiseXor {
+                return 60;
+            } else if binary->kind == HIRBinaryKind::BitwiseAnd {
+                return 70;
+            } else if binary->kind == HIRBinaryKind::Equal || binary->kind == HIRBinaryKind::NotEqual {
+                return 80;
+            } else if binary->kind == HIRBinaryKind::Less || binary->kind == HIRBinaryKind::LessEqual || binary->kind == HIRBinaryKind::Greater || binary->kind == HIRBinaryKind::GreaterEqual {
+                return 90;
+            } else if binary->kind == HIRBinaryKind::LeftShift || binary->kind == HIRBinaryKind::RightShift {
+                return 100;
+            } else if binary->kind == HIRBinaryKind::Add || binary->kind == HIRBinaryKind::Subtract {
+                return 110;
+            } else if binary->kind == HIRBinaryKind::Multiply || binary->kind == HIRBinaryKind::Divide || binary->kind == HIRBinaryKind::Modulo {
+                return 120;
+            } else {
+                return 0;
+            }
+        } else if this.kind == HIRExpressionKind::Unary || this.kind == HIRExpressionKind::New || this.kind == HIRExpressionKind::Delete {
+            return 130;
+        } else if this.kind == HIRExpressionKind::Cast {
+            return 140;
+        } else if this.kind == HIRExpressionKind::Call || this.kind == HIRExpressionKind::Constructor || this.kind == HIRExpressionKind::Destructor || this.kind == HIRExpressionKind::IndexAccess || this.kind == HIRExpressionKind::MemberAccess {
+            return 150;
+        } else {
+            return 160;
+        }
+    }
+
     pub fn ToString(&this) -> String {
         if this.kind == HIRExpressionKind::Literal {
             return (this as *HIRLiteral)->ToString();
@@ -883,7 +925,21 @@ class HIRAssignmentExpression : HIRExpression {
     }
 
     pub fn ToString(&this) -> String {
-        return this.left->ToString() + " = " + this.right->ToString();
+        let mut result = String();
+
+        if (this as *HIRExpression)->Precedence() > this.left->Precedence() {
+            result += '(' + this.left->ToString() + ')';
+        } else {
+            result += this.left->ToString();
+        }
+
+        result += " = ";
+
+        if (this as *HIRExpression)->Precedence() > this.right->Precedence() {
+            result += '(' + this.right->ToString() + ')';
+        } else {
+            result += this.right->ToString();
+        } return result;
     }
 }
 
@@ -908,7 +964,17 @@ class HIRUnaryExpression : HIRExpression {
     }
 
     pub fn ToString(&this) -> String {
-        return this.kind.ToString() + (this.kind == HIRUnaryKind::AddressOf && (this as *HIRExpression)->_type->IsMutable() ? "mut " : "") + this.operand->ToString();
+        let mut result = this.kind.ToString();
+
+        if this.kind == HIRUnaryKind::AddressOf && (this as *HIRExpression)->_type->IsMutable() {
+            result += "mut ";
+        }
+        
+        if (this as *HIRExpression)->Precedence() >= this.operand->Precedence() {
+            result += '(' + this.operand->ToString() + ')';
+        } else {
+            result += this.operand->ToString();
+        } return result;
     }
 }
 
@@ -951,7 +1017,21 @@ class HIRBinaryExpression : HIRExpression {
     }
 
     pub fn ToString(&this) -> String {
-        return this.left->ToString() + ' ' + this.kind.ToString() + ' ' + this.right->ToString();
+        let mut result = String();
+
+        if (this as *HIRExpression)->Precedence() > this.left->Precedence() {
+            result += '(' + this.left->ToString() + ')';
+        } else {
+            result += this.left->ToString();
+        }
+
+        result += ' ' + this.kind.ToString() + ' ';
+
+        if (this as *HIRExpression)->Precedence() >= this.right->Precedence() {
+            result += '(' + this.right->ToString() + ')';
+        } else {
+            result += this.right->ToString();
+        } return result;
     }
 }
 
@@ -965,7 +1045,29 @@ class HIRTernaryExpression : HIRExpression {
     }
 
     pub fn ToString(&this) -> String {
-        return this.condition->ToString() + " ? " + this.then_value->ToString() + " : " + this.else_value->ToString();
+        let mut result = String();
+
+        if (this as *HIRExpression)->Precedence() > this.condition->Precedence() {
+            result += '(' + this.condition->ToString() + ')';
+        } else {
+            result += this.condition->ToString();
+        }
+
+        result += " ? ";
+
+        if (this as *HIRExpression)->Precedence() > this.then_value->Precedence() {
+            result += '(' + this.then_value->ToString() + ')';
+        } else {
+            result += this.then_value->ToString();
+        }
+
+        result += " : ";
+
+        if (this as *HIRExpression)->Precedence() > this.else_value->Precedence() {
+            result += '(' + this.else_value->ToString() + ')';
+        } else {
+            result += this.else_value->ToString();
+        } return result;
     }
 }
 
@@ -978,7 +1080,13 @@ class HIRCallExpression : HIRExpression {
     }
 
     pub fn ToString(&this) -> String {
-        let mut result = "call " + this.callee->ToString() + '(';
+        let mut result = "call ".ToString();
+
+        if (this as *HIRExpression)->Precedence() > this.callee->Precedence() {
+            result += '(' + this.callee->ToString() + ')';
+        } else {
+            result += this.callee->ToString();
+        } result += '(';
 
         for i in 0..this.arguments.Size() {
             if i != 0 { result += ", "; }
@@ -996,7 +1104,15 @@ class HIRCastExpression : HIRExpression {
     }
 
     pub fn ToString(&this) -> String {
-        return this.value->ToString() + " as " + (this as *HIRExpression)->_type->ToString();
+        let mut result = String();
+
+        if (this as *HIRExpression)->Precedence() > this.value->Precedence() {
+            result += '(' + this.value->ToString() + ')';
+        } else {
+            result += this.value->ToString();
+        }
+
+        return result + " as " + (this as *HIRExpression)->_type->ToString();
     }
 }
 
@@ -1009,7 +1125,15 @@ class HIRIndexAccessExpression : HIRExpression {
     }
 
     pub fn ToString(&this) -> String {
-        return this.value->ToString() + '[' + this.index->ToString() + ']';
+        let mut result = String();
+
+        if (this as *HIRExpression)->Precedence() > this.value->Precedence() {
+            result += '(' + this.value->ToString() + ')';
+        } else {
+            result += this.value->ToString();
+        }
+
+        return result + '[' + this.index->ToString() + ']';
     }
 }
 
@@ -1022,7 +1146,15 @@ class HIRMemberAccessExpression : HIRExpression {
     }
 
     pub fn ToString(&this) -> String {
-        return this.instance->ToString() + '.' + String::FromInteger(this.index as u64); 
+        let mut result = String();
+
+        if (this as *HIRExpression)->Precedence() > this.instance->Precedence() {
+            result += '(' + this.instance->ToString() + ')';
+        } else {
+            result += this.instance->ToString();
+        }
+
+        return result + '.' + String::FromInteger(this.index as u64);
     }
 }
 
@@ -1065,7 +1197,13 @@ class HIRDeleteExpression : HIRExpression {
     }
 
     pub fn ToString(&this) -> String {
-        return "delete " + this.value->ToString();
+        let mut result = "delete ".ToString();
+
+        if (this as *HIRExpression)->Precedence() > this.value->Precedence() {
+            result += '(' + this.value->ToString() + ')';
+        } else {
+            result += this.value->ToString();
+        } return result;
     }
 }
 
@@ -1078,7 +1216,13 @@ class HIRConstructorExpression : HIRExpression {
     }
 
     pub fn ToString(&this) -> String {
-        let mut result = "constructor " + this.callee->ToString() + '(';
+        let mut result = "constructor ".ToString();
+
+        if (this as *HIRExpression)->Precedence() > this.callee->Precedence() {
+            result += '(' + this.callee->ToString() + ')';
+        } else {
+            result += this.callee->ToString();
+        } result += '(';
 
         for i in 0..this.arguments.Size() {
             if i != 0 { result += ", "; }
@@ -1097,7 +1241,15 @@ class HIRDestructorExpression : HIRExpression {
     }
 
     pub fn ToString(&this) -> String {
-        return "destructor " + this.callee->ToString() + '(' + this.instance->ToString() + ')';
+        let mut result = "destructor ".ToString();
+
+        if (this as *HIRExpression)->Precedence() > this.callee->Precedence() {
+            result += '(' + this.callee->ToString() + ')';
+        } else {
+            result += this.callee->ToString();
+        }
+
+        return result + '(' + this.instance->ToString() + ')';
     }
 }
 
@@ -1728,11 +1880,19 @@ class HIRBuilder {
         return this.context->arena.New<HIRAssignmentExpression>(left, right, this.context->VoidType());
     }
 
-    pub fn AddressOf(&mut this, operand: *HIRExpression, mutable: bool) -> *mut HIRUnaryExpression {
+    pub fn AddressOf(&mut this, operand: *HIRExpression, mutable: bool) -> *HIRExpression {
+        if operand->kind == HIRExpressionKind::Unary && (operand as *HIRUnaryExpression)->kind == HIRUnaryKind::Dereference {
+            return (operand as *HIRUnaryExpression)->operand;
+        }
+
         return this.context->arena.New<HIRUnaryExpression>(HIRUnaryKind::AddressOf, operand, this.context->ReferenceType(operand->_type, mutable), HIRExpressionCategory::Value, false);
     }
 
-    pub fn Dereference(&mut this, operand: *HIRExpression) -> *mut HIRUnaryExpression {
+    pub fn Dereference(&mut this, operand: *HIRExpression) -> *HIRExpression {
+        if operand->kind == HIRExpressionKind::Unary && (operand as *HIRUnaryExpression)->kind == HIRUnaryKind::AddressOf {
+            return (operand as *HIRUnaryExpression)->operand;
+        }
+
         return this.context->arena.New<HIRUnaryExpression>(HIRUnaryKind::Dereference, operand, operand->_type->Pointee(), HIRExpressionCategory::Place, operand->_type->IsMutable());
     }
 
